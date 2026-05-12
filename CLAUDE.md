@@ -15,8 +15,11 @@ Useful options when configuring:
 
 - `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` — promotes the GCC/Clang warning set (incl. `-Wsign-conversion`, `-Wconversion`, `-Wshadow`, `-Wold-style-cast`) to errors. The project compiles clean under it; keep it that way for new code.
 - `-DTHREADMAXX_BUILD_EXAMPLES=OFF` — library only.
+- `-DTHREADMAXX_BUILD_TESTS=OFF` — skip the test suite.
 
-There is no test suite yet. The example program (`examples/minimal`) is the integration smoke test: a successful run prints `[frame]` lines with monotonically increasing ticks and entity counts and ends with `[ConsoleRenderer] shutdown after N frames`.
+The test suite lives in `tests/` and runs through CTest: `cd build && ctest --output-on-failure`. It uses a tiny no-dependency harness (`tests/Check.hpp`) — one executable per test, non-zero exit means failure. New behavior should land with a test in the same PR; the suite is the contract for the invariants below.
+
+The example program (`examples/minimal`) is the integration smoke test: a successful run prints `[frame]` lines with monotonically increasing ticks and entity counts and ends with `[ConsoleRenderer] shutdown after N frames`.
 
 Always pass `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` on first configure — without it, clangd can't see the include paths or `cxx_std_20` and will report spurious errors on every header.
 
@@ -46,3 +49,5 @@ Missing any one of these will compile but corrupt state at runtime (dense arrays
 ## Render frame lifetime
 
 `EngineImpl::buildRenderFrame()` writes into the back of a double-buffered pair (`renderInstanceBuffers_[0/1]` and `renderFrames_[0/1]`) and publishes via `frontIndex_.store(back, release)`. The `RenderFrame::instances` span points into the engine-owned vector — renderers must finish using it before `submitFrame` returns or copy what they need. Today `submitFrame` is called synchronously from the sim thread immediately after the swap, so single-threaded renderers don't need to worry; if a future renderer reads from another thread, the atomic swap is the synchronization point.
+
+`RenderFrame::alpha` is the wall-clock fraction (0..1) past the last committed tick. `step()` always submits the post-tick frame with `alpha=0`. In `run()`, after the inner step loop, the engine additionally calls `submitInterpolatedFrame(alpha)` which mutates `alpha` on the current front frame and re-submits — there's no rebuild, since world state is unchanged between ticks. Bypassing this and re-running `buildRenderFrame()` per interp submit would be wasted work; just don't.

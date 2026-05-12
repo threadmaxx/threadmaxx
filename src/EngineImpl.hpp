@@ -6,6 +6,7 @@
 #include "threadmaxx/CommandBuffer.hpp"
 #include "threadmaxx/Config.hpp"
 #include "threadmaxx/RenderFrame.hpp"
+#include "threadmaxx/Stats.hpp"
 #include "threadmaxx/System.hpp"
 #include "threadmaxx/World.hpp"
 
@@ -42,12 +43,17 @@ public:
     // Per-system list of command buffers, in submission order.
     std::vector<CommandBuffer>& buffers() noexcept { return buffers_; }
 
+    // Number of jobs handed to JobSystem from this context. parallelFor
+    // chunks count; single() does not (it runs inline).
+    std::uint64_t jobsSubmitted() const noexcept { return jobsSubmitted_; }
+
 private:
     class EngineImpl& engine_;
     const World&      world_;
     double            dt_;
     std::uint64_t     tick_;
     std::vector<CommandBuffer> buffers_;
+    std::uint64_t     jobsSubmitted_ = 0;
 };
 
 // The full engine state. Hidden behind PImpl from the public Engine class.
@@ -73,6 +79,8 @@ public:
     std::uint64_t tick()   const noexcept { return tick_; }
     double simulationTime() const noexcept { return simulationTime_; }
 
+    EngineStats stats() const noexcept { return stats_; }
+
     JobSystem& jobs() noexcept { return *jobs_; }
 
 private:
@@ -81,6 +89,12 @@ private:
 
     // Build the back render frame from current world state, then publish it.
     void buildRenderFrame();
+
+    // Submit the currently-published front frame with an overridden alpha.
+    // Used by run() to deliver interpolation frames between sim steps,
+    // without rebuilding the instance array (world state is unchanged
+    // between ticks). Safe to call only on the sim thread.
+    void submitInterpolatedFrame(float alpha);
 
     Config cfg_;
     std::unique_ptr<JobSystem> jobs_;
@@ -107,6 +121,9 @@ private:
     // Wall-clock pacing.
     std::chrono::steady_clock::time_point lastIterationTime_{};
     double accumulatedTime_ = 0.0;
+
+    EngineStats stats_;
+    std::uint64_t commandsThisStep_ = 0;  // accumulated across commitBuffer calls
 };
 
 } // namespace threadmaxx::internal

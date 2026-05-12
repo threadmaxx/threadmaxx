@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Config.hpp"
+#include "Stats.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -66,6 +67,9 @@ public:
 
     std::uint64_t tick() const noexcept;
     double simulationTime() const noexcept;
+
+    // Per-tick instrumentation. Refreshed at the end of each step().
+    EngineStats stats() const noexcept;
 
 private:
     std::unique_ptr<internal::EngineImpl> impl_;

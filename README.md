@@ -39,7 +39,14 @@ CMake options:
 | Option | Default | What it does |
 | --- | --- | --- |
 | `THREADMAXX_BUILD_EXAMPLES` | `ON` | Builds `examples/minimal`. |
+| `THREADMAXX_BUILD_TESTS` | `ON` | Builds and registers the CTest suite under `tests/`. |
 | `THREADMAXX_WARNINGS_AS_ERRORS` | `OFF` | Promotes the project's warning set to errors. |
+
+Run the tests:
+
+```sh
+cd build && ctest --output-on-failure
+```
 
 ## Using it
 

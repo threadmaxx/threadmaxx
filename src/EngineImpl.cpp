@@ -53,6 +53,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
             done.count_down();
         });
     }
+    jobsSubmitted_ += chunkCount;
     done.wait();
 }
 
@@ -114,6 +115,7 @@ void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
 
 void EngineImpl::commitBuffer(CommandBuffer& cb) {
     auto& storage = world_.impl_().storage;
+    commandsThisStep_ += cb.commands().size();
     for (auto& cmd : cb.commands()) {
         std::visit([&](auto& c) {
             using T = std::decay_t<decltype(c)>;
@@ -165,15 +167,30 @@ void EngineImpl::buildRenderFrame() {
     frame.tick = tick_;
     frame.simulationTime = simulationTime_;
     frame.deltaTime = cfg_.fixedStepSeconds;
+    frame.alpha = 0.0f;
     frame.instances = std::span<const RenderInstance>(dst.data(), dst.size());
 
     frontIndex_.store(back, std::memory_order_release);
+}
+
+void EngineImpl::submitInterpolatedFrame(float alpha) {
+    if (!renderer_) return;
+    const unsigned front = frontIndex_.load(std::memory_order_acquire);
+    // Mutating alpha on the front frame is safe: submitFrame runs
+    // synchronously on the sim thread and the renderer must not retain
+    // pointers past it.
+    renderFrames_[front].alpha = alpha;
+    renderer_->submitFrame(renderFrames_[front]);
 }
 
 void EngineImpl::step() {
     if (!initialized_) return;
 
     const double dt = cfg_.fixedStepSeconds;
+    const auto stepStart = std::chrono::steady_clock::now();
+
+    commandsThisStep_ = 0;
+    std::uint64_t jobsThisStep = 0;
 
     // Run each system sequentially; each system parallelizes its own work
     // internally through SystemContext::parallelFor.
@@ -186,6 +203,7 @@ void EngineImpl::step() {
         for (auto& cb : ctx.buffers()) {
             commitBuffer(cb);
         }
+        jobsThisStep += ctx.jobsSubmitted();
     }
 
     tick_++;
@@ -196,6 +214,26 @@ void EngineImpl::step() {
         const unsigned front = frontIndex_.load(std::memory_order_acquire);
         renderer_->submitFrame(renderFrames_[front]);
     }
+
+    const auto stepEnd = std::chrono::steady_clock::now();
+    const double stepSeconds = std::chrono::duration<double>(stepEnd - stepStart).count();
+
+    stats_.tick = tick_;
+    stats_.lastStepSeconds = stepSeconds;
+    // EWMA with alpha = 1/16. First sample initializes the average.
+    if (stats_.totalTicks == 0) {
+        stats_.avgStepSeconds = stepSeconds;
+    } else {
+        constexpr double kEwmaAlpha = 1.0 / 16.0;
+        stats_.avgStepSeconds = stats_.avgStepSeconds * (1.0 - kEwmaAlpha)
+                              + stepSeconds * kEwmaAlpha;
+    }
+    stats_.jobsSubmittedLastStep = jobsThisStep;
+    stats_.commandsCommittedLastStep = commandsThisStep_;
+    stats_.aliveEntities = world_.size();
+    stats_.totalTicks++;
+    stats_.totalJobsSubmitted += jobsThisStep;
+    stats_.totalCommandsCommitted += commandsThisStep_;
 }
 
 void EngineImpl::run() {
@@ -224,6 +262,16 @@ void EngineImpl::run() {
         // last.
         if (accumulatedTime_ > cfg_.fixedStepSeconds * cfg_.maxStepsPerIteration) {
             accumulatedTime_ = 0.0;
+        }
+
+        // Hand the renderer an interpolation frame describing where we are
+        // between the last committed tick and the next one. step() already
+        // submitted alpha=0 immediately after the sim work; this extra
+        // submit reflects wall-clock drift since.
+        if (renderer_ && stepsThisIter > 0) {
+            const float alpha = static_cast<float>(
+                accumulatedTime_ / cfg_.fixedStepSeconds);
+            submitInterpolatedFrame(alpha);
         }
 
         if (cfg_.sleepToPace && !quit_.load(std::memory_order_acquire)) {

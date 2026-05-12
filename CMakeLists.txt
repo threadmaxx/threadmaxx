@@ -8,6 +8,7 @@ project(threadmaxx
 # Options
 # --------------------------------------------------------------------------
 option(THREADMAXX_BUILD_EXAMPLES "Build the bundled minimal example" ON)
+option(THREADMAXX_BUILD_TESTS "Build and register the test suite" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # --------------------------------------------------------------------------
@@ -19,7 +20,9 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/Handles.hpp
     include/threadmaxx/Components.hpp
     include/threadmaxx/CommandBuffer.hpp
+    include/threadmaxx/Query.hpp
     include/threadmaxx/RenderFrame.hpp
+    include/threadmaxx/Stats.hpp
     include/threadmaxx/System.hpp
     include/threadmaxx/Renderer.hpp
     include/threadmaxx/Game.hpp
@@ -82,4 +85,12 @@ endif()
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/minimal)
+endif()
+
+# --------------------------------------------------------------------------
+# Tests
+# --------------------------------------------------------------------------
+if (THREADMAXX_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()

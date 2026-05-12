@@ -23,10 +23,17 @@ struct RenderInstance {
 // Snapshot the renderer sees for a given tick. Owned by the engine; the
 // renderer borrows it via std::span and must not retain pointers across
 // submitFrame() calls.
+//
+// Interpolation alpha: when `alpha == 0` the frame is the state at the end
+// of `tick`. When `0 < alpha < 1` the frame represents wall-clock time
+// `alpha * deltaTime` past that tick — i.e. between `tick` and `tick+1`.
+// Renderers that want smooth motion should cache the previous frame's
+// transforms (keyed by entity) and lerp `prev -> current` by `alpha`.
 struct RenderFrame {
     std::uint64_t tick = 0;
     double simulationTime = 0.0;
     double deltaTime = 0.0;
+    float alpha = 0.0f;
 
     std::span<const RenderInstance> instances;
 };

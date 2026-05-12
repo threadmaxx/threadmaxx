@@ -27,4 +27,6 @@ const Config& Engine::config() const noexcept { return impl_->config(); }
 std::uint64_t Engine::tick() const noexcept { return impl_->tick(); }
 double Engine::simulationTime() const noexcept { return impl_->simulationTime(); }
 
+EngineStats Engine::stats() const noexcept { return impl_->stats(); }
+
 } // namespace threadmaxx
