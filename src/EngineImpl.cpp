@@ -111,6 +111,31 @@ void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
     if (!system) return;
     system->onRegister(world_);
     systems_.push_back(std::move(system));
+    rebuildWaves();
+}
+
+void EngineImpl::rebuildWaves() {
+    waves_.clear();
+    for (std::size_t i = 0; i < systems_.size(); ++i) {
+        const auto rI = systems_[i]->reads();
+        const auto wI = systems_[i]->writes();
+
+        std::size_t target = waves_.size();  // default: open a new wave
+        for (std::size_t w = 0; w < waves_.size(); ++w) {
+            bool conflicts = false;
+            for (std::size_t j : waves_[w]) {
+                const auto rJ = systems_[j]->reads();
+                const auto wJ = systems_[j]->writes();
+                if (wI.intersects(wJ) || wI.intersects(rJ) || rI.intersects(wJ)) {
+                    conflicts = true;
+                    break;
+                }
+            }
+            if (!conflicts) { target = w; break; }
+        }
+        if (target == waves_.size()) waves_.emplace_back();
+        waves_[target].push_back(i);
+    }
 }
 
 void EngineImpl::commitBuffer(CommandBuffer& cb) {
@@ -192,18 +217,45 @@ void EngineImpl::step() {
     commandsThisStep_ = 0;
     std::uint64_t jobsThisStep = 0;
 
-    // Run each system sequentially; each system parallelizes its own work
-    // internally through SystemContext::parallelFor.
-    for (auto& sys : systems_) {
-        SystemContextImpl ctx(*this, world_, dt, tick_);
-        sys->update(ctx);
-
-        // Commit this system's buffers in submission order. JobSystem
-        // execution order is irrelevant; only this order matters.
-        for (auto& cb : ctx.buffers()) {
-            commitBuffer(cb);
+    // Run systems wave by wave. Within a wave, all systems have pairwise
+    // non-conflicting declared read/write sets, so they're safe to drive
+    // concurrently — each writes into its own SystemContext's buffer list
+    // and reads through `const World&`. Across waves we serialize: a later
+    // wave's systems see the previous wave's commits.
+    for (const auto& wave : waves_) {
+        std::vector<std::unique_ptr<SystemContextImpl>> ctxs;
+        ctxs.reserve(wave.size());
+        for (std::size_t k = 0; k < wave.size(); ++k) {
+            ctxs.push_back(std::make_unique<SystemContextImpl>(
+                *this, world_, dt, tick_));
         }
-        jobsThisStep += ctx.jobsSubmitted();
+
+        if (wave.size() == 1) {
+            systems_[wave[0]]->update(*ctxs[0]);
+        } else {
+            // Spawn helper threads for all but the last system in the wave;
+            // run the tail on this thread to avoid a wasted join.
+            std::vector<std::thread> helpers;
+            helpers.reserve(wave.size() - 1);
+            for (std::size_t k = 0; k + 1 < wave.size(); ++k) {
+                helpers.emplace_back([this, idx = wave[k], ctx = ctxs[k].get()] {
+                    systems_[idx]->update(*ctx);
+                });
+            }
+            systems_[wave.back()]->update(*ctxs.back());
+            for (auto& t : helpers) t.join();
+        }
+
+        // Commit buffers in registration order (wave[] is already in
+        // registration order). Sibling systems wrote to disjoint component
+        // categories, so commit order among them is observationally a no-op,
+        // but we keep it deterministic to make stats and side-effects stable.
+        for (std::size_t k = 0; k < wave.size(); ++k) {
+            for (auto& cb : ctxs[k]->buffers()) {
+                commitBuffer(cb);
+            }
+            jobsThisStep += ctxs[k]->jobsSubmitted();
+        }
     }
 
     tick_++;

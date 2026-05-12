@@ -96,12 +96,21 @@ private:
     // between ticks). Safe to call only on the sim thread.
     void submitInterpolatedFrame(float alpha);
 
+    // Recompute waves_ from systems_'s declared read/write sets. Greedy
+    // first-fit in registration order, so within a wave the order is also
+    // registration order and ordering between waves is a topological sort.
+    void rebuildWaves();
+
     Config cfg_;
     std::unique_ptr<JobSystem> jobs_;
 
     World world_;
 
     std::vector<std::unique_ptr<ISystem>> systems_;
+    // Wave schedule: waves_[w] holds indices into systems_, all of whose
+    // declared read/write sets are pairwise non-conflicting. Recomputed when
+    // a system is registered. Empty waves never exist.
+    std::vector<std::vector<std::size_t>> waves_;
     IRenderer* renderer_ = nullptr;
     IGame*     game_     = nullptr;
     Engine*    publicEngine_ = nullptr;

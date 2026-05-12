@@ -119,6 +119,10 @@ Key properties:
 - Workers never mutate live world state; they emit commands into per-job
   `CommandBuffer`s. All mutations are applied on the sim thread, single-
   threaded, in submission order — so the same inputs produce the same world.
+- Systems declare `reads()` / `writes()` over a fixed set of component
+  categories. The engine groups non-conflicting systems into waves and runs
+  the wave's systems concurrently; defaults reduce cleanly to strict
+  registration-order serial.
 - The renderer sees only the published `RenderFrame`; the engine owns the
   storage and double-buffers it.
 - Gameplay code does not touch a mutex.

@@ -33,6 +33,8 @@ Always pass `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` on first configure — without 
 
 **The public surface (`include/threadmaxx/`) is the contract.** Everything in `src/` is PImpl'd behind `Engine`/`World` and can change freely. Resist adding new public headers; prefer extending existing ones (e.g. new accessor on `World`) over exposing internals. `EngineImpl` and `WorldImpl` are reachable from `World::impl_()` for engine-internal use only.
 
+**Systems declare reads/writes; the engine groups them into waves.** `ISystem::reads()` and `ISystem::writes()` return `ComponentSet`s. The defaults are `ComponentSet::all()`, which forces strict registration-order sequential execution. Overriding them lets non-conflicting systems share a wave and run concurrently. The conflict rule is `W∩W ∨ W∩R ∨ R∩W`. Waves are recomputed in `registerSystem`. A new built-in component must add a corresponding `Component::Foo` enum value (and update `ComponentSet::all()`'s mask) — otherwise systems writing it would alias another category in the scheduler. The single-threaded commit phase is preserved: same-wave systems write into their own `SystemContext` buffers, and commits happen in registration order after the wave finishes.
+
 ## Adding a new built-in component
 
 This is the one operation that crosses every layer. To add component `Foo`:

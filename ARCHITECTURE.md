@@ -20,7 +20,9 @@ and hands a snapshot of the world to a pluggable renderer each frame.
                           ─────────────────────────
    ┌─ tick begins
    │
-   │   for each registered System (in registration order):
+   │   for each wave (group of systems with non-conflicting read/write sets):
+   │       sibling systems in the wave run concurrently on helper threads;
+   │       within each system:
    │       1. System schedules work via SystemContext::parallelFor(N, grain, fn)
    │       2. Engine splits [0, N) into chunks and submits one Job per chunk
    │
@@ -119,12 +121,36 @@ threadmaxx/
     └── ConsoleRenderer.hpp / .cpp
 ```
 
+## System-level scheduling
+
+`ISystem` exposes `reads()` and `writes()` returning `ComponentSet` (a
+bitset over `Component::{Transform, Velocity, RenderTag, UserData,
+EntityStructural}`). At `registerSystem` time the engine greedy-packs
+systems into waves: within a wave every pair of systems is non-conflicting
+under the rule
+
+```
+conflict(A, B) ⇔ (A.writes ∩ B.writes) ∪
+                 (A.writes ∩ B.reads)  ∪
+                 (A.reads  ∩ B.writes) ≠ ∅
+```
+
+Each wave's systems are dispatched on (size-1) helper threads plus the
+sim thread; after they all return, the engine commits their command
+buffers in registration order on the sim thread. Defaults are
+`ComponentSet::all()` for both reads and writes, which makes every pair
+conflict and degrades cleanly to strict registration-order serial — the
+historical behavior. Tests in `tests/parallel_systems_test.cpp` pin the
+contract.
+
 ## Extensibility notes
 
-- More built-in components: extend `EntityStorage` and `World`'s read accessors;
-  the public surface only grows with new accessor methods.
+- More built-in components: extend `EntityStorage` and `World`'s read accessors,
+  and add a corresponding `Component::Foo` enum value (plus update
+  `ComponentSet::all()`'s mask) so the scheduler can distinguish it.
 - Custom renderers: implement `IRenderer` — no engine changes required.
-- System-level parallelism: today systems run sequentially with parallelized
-  internals. Adding a dependency DAG between systems is additive; the per-job
-  contract (read world, write to own command buffer) already supports it.
+- Finer-grained system scheduling: today the wave grouping is based on
+  declared component sets. A future DAG with explicit `depends_on(name)`
+  edges would slot in beside `reads()`/`writes()` — the per-job contract
+  (read world, write to own command buffer) already supports any topology.
 - Replacing the job system: `JobSystem` is private; only `EngineImpl` calls it.
