@@ -3,8 +3,9 @@
 namespace threadmaxx {
 
 void CommandBuffer::spawn(const Transform& t, const Velocity& v,
-                          const RenderTag& r, const UserData& u) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, nullptr});
+                          const RenderTag& r, const UserData& u,
+                          const Acceleration& a) {
+    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, nullptr});
 }
 void CommandBuffer::destroy(EntityHandle e) {
     commands_.emplace_back(detail::CmdDestroy{e});
@@ -20,6 +21,9 @@ void CommandBuffer::setRenderTag(EntityHandle e, const RenderTag& r) {
 }
 void CommandBuffer::setUserData(EntityHandle e, const UserData& u) {
     commands_.emplace_back(detail::CmdSetUserData{e, u});
+}
+void CommandBuffer::setAcceleration(EntityHandle e, const Acceleration& a) {
+    commands_.emplace_back(detail::CmdSetAcceleration{e, a});
 }
 
 } // namespace threadmaxx

@@ -22,7 +22,8 @@ public:
     EntityHandle spawn(const Transform& t,
                        const Velocity& v,
                        const RenderTag& r,
-                       const UserData& u);
+                       const UserData& u,
+                       const Acceleration& a);
 
     // Returns true if the handle was valid and the entity was destroyed.
     bool destroy(EntityHandle h) noexcept;
@@ -40,12 +41,14 @@ public:
     const std::vector<Velocity>&     velocities() const noexcept { return velocities_; }
     const std::vector<RenderTag>&    renderTags() const noexcept { return renderTags_; }
     const std::vector<UserData>&     userData()   const noexcept { return userData_; }
+    const std::vector<Acceleration>& accelerations() const noexcept { return accelerations_; }
 
     // Mutators — only called from the commit phase.
-    Transform* mutTransform(EntityHandle h) noexcept;
-    Velocity*  mutVelocity (EntityHandle h) noexcept;
-    RenderTag* mutRenderTag(EntityHandle h) noexcept;
-    UserData*  mutUserData (EntityHandle h) noexcept;
+    Transform*    mutTransform   (EntityHandle h) noexcept;
+    Velocity*     mutVelocity    (EntityHandle h) noexcept;
+    RenderTag*    mutRenderTag   (EntityHandle h) noexcept;
+    UserData*     mutUserData    (EntityHandle h) noexcept;
+    Acceleration* mutAcceleration(EntityHandle h) noexcept;
 
     void reserve(std::size_t n);
 
@@ -69,6 +72,7 @@ private:
     std::vector<Velocity>      velocities_;
     std::vector<RenderTag>     renderTags_;
     std::vector<UserData>      userData_;
+    std::vector<Acceleration>  accelerations_;
 };
 
 } // namespace threadmaxx::internal

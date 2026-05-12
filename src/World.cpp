@@ -30,6 +30,11 @@ const UserData* World::tryGetUserData(EntityHandle e) const noexcept {
     if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
     return &impl_ptr_->storage.userData()[i];
 }
+const Acceleration* World::tryGetAcceleration(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.accelerations()[i];
+}
 
 bool World::alive(EntityHandle e) const noexcept {
     return impl_ptr_->storage.alive(e);
@@ -49,6 +54,9 @@ std::span<const RenderTag> World::renderTags() const noexcept {
 }
 std::span<const UserData> World::userData() const noexcept {
     return {impl_ptr_->storage.userData().data(), impl_ptr_->storage.userData().size()};
+}
+std::span<const Acceleration> World::accelerations() const noexcept {
+    return {impl_ptr_->storage.accelerations().data(), impl_ptr_->storage.accelerations().size()};
 }
 
 std::size_t World::size() const noexcept {

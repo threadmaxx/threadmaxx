@@ -15,6 +15,7 @@ struct CmdSpawn {
     Velocity velocity;
     RenderTag render;
     UserData userData;
+    Acceleration acceleration;
     // Set by the engine during commit so callers (if needed) can be told what
     // handle was assigned. Not used during recording.
     EntityHandle* outHandle = nullptr;
@@ -38,6 +39,10 @@ struct CmdSetUserData {
     EntityHandle entity;
     UserData value;
 };
+struct CmdSetAcceleration {
+    EntityHandle entity;
+    Acceleration value;
+};
 
 using Command = std::variant<
     CmdSpawn,
@@ -45,7 +50,8 @@ using Command = std::variant<
     CmdSetTransform,
     CmdSetVelocity,
     CmdSetRenderTag,
-    CmdSetUserData>;
+    CmdSetUserData,
+    CmdSetAcceleration>;
 
 } // namespace detail
 
@@ -62,12 +68,14 @@ public:
     CommandBuffer& operator=(CommandBuffer&&) noexcept = default;
 
     void spawn(const Transform& t, const Velocity& v = {},
-               const RenderTag& r = {}, const UserData& u = {});
+               const RenderTag& r = {}, const UserData& u = {},
+               const Acceleration& a = {});
     void destroy(EntityHandle entity);
     void setTransform(EntityHandle entity, const Transform& t);
     void setVelocity(EntityHandle entity, const Velocity& v);
     void setRenderTag(EntityHandle entity, const RenderTag& r);
     void setUserData(EntityHandle entity, const UserData& u);
+    void setAcceleration(EntityHandle entity, const Acceleration& a);
 
     void reserve(std::size_t n) { commands_.reserve(n); }
     void clear() noexcept { commands_.clear(); }

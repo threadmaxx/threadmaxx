@@ -124,8 +124,8 @@ threadmaxx/
 ## System-level scheduling
 
 `ISystem` exposes `reads()` and `writes()` returning `ComponentSet` (a
-bitset over `Component::{Transform, Velocity, RenderTag, UserData,
-EntityStructural}`). At `registerSystem` time the engine greedy-packs
+bitset over `Component::{Transform, Velocity, Acceleration, RenderTag,
+UserData, EntityStructural}`). At `registerSystem` time the engine greedy-packs
 systems into waves: within a wave every pair of systems is non-conflicting
 under the rule
 
@@ -147,7 +147,8 @@ contract.
 
 - More built-in components: extend `EntityStorage` and `World`'s read accessors,
   and add a corresponding `Component::Foo` enum value (plus update
-  `ComponentSet::all()`'s mask) so the scheduler can distinguish it.
+  `ComponentSet::all()`'s mask) so the scheduler can distinguish it. The
+  built-in `Acceleration` component shows the full recipe end-to-end.
 - Custom renderers: implement `IRenderer` — no engine changes required.
 - Finer-grained system scheduling: today the wave grouping is based on
   declared component sets. A future DAG with explicit `depends_on(name)`

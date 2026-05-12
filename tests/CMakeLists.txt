@@ -10,6 +10,7 @@ set(THREADMAXX_TESTS
     query_test
     alpha_test
     parallel_systems_test
+    acceleration_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

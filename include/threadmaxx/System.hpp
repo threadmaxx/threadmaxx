@@ -54,6 +54,7 @@ enum class Component : std::uint32_t {
     RenderTag        = 1u << 2,
     UserData         = 1u << 3,
     EntityStructural = 1u << 4,
+    Acceleration     = 1u << 5,
 };
 
 // Bitset over Component values. Trivially copyable, no allocation.
@@ -69,7 +70,7 @@ public:
     // The set containing every Component.
     static constexpr ComponentSet all() noexcept {
         ComponentSet s;
-        s.bits_ = 0x1Fu;  // bits 0..4 — keep in sync with Component
+        s.bits_ = 0x3Fu;  // bits 0..5 — keep in sync with Component
         return s;
     }
     static constexpr ComponentSet none() noexcept { return ComponentSet{}; }

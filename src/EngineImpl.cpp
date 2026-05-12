@@ -146,7 +146,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             using T = std::decay_t<decltype(c)>;
             if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
                 const auto h = storage.spawn(c.transform, c.velocity,
-                                             c.render, c.userData);
+                                             c.render, c.userData,
+                                             c.acceleration);
                 if (c.outHandle) *c.outHandle = h;
             } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
                 storage.destroy(c.entity);
@@ -158,6 +159,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                 if (auto* p = storage.mutRenderTag(c.entity)) *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetUserData>) {
                 if (auto* p = storage.mutUserData(c.entity))  *p = c.value;
+            } else if constexpr (std::is_same_v<T, detail::CmdSetAcceleration>) {
+                if (auto* p = storage.mutAcceleration(c.entity)) *p = c.value;
             }
         }, cmd);
     }

@@ -30,6 +30,14 @@ struct Velocity {
     Vec3 angular;
 };
 
+// Per-tick rate-of-change applied to Velocity by user systems. The engine
+// itself does not integrate this — it's a data field that physics-style
+// systems read to update Velocity, which in turn drives Transform.
+struct Acceleration {
+    Vec3 linear;
+    Vec3 angular;
+};
+
 // Lightweight tag the renderer keys off of. A negative meshId means the
 // entity is not renderable.
 struct RenderTag {

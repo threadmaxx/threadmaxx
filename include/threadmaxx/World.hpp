@@ -26,10 +26,11 @@ public:
     World& operator=(World&&) noexcept;
 
     // Lookup. Returns nullptr if the handle is stale or not present.
-    const Transform* tryGetTransform(EntityHandle e) const noexcept;
-    const Velocity*  tryGetVelocity (EntityHandle e) const noexcept;
-    const RenderTag* tryGetRenderTag(EntityHandle e) const noexcept;
-    const UserData*  tryGetUserData (EntityHandle e) const noexcept;
+    const Transform*    tryGetTransform   (EntityHandle e) const noexcept;
+    const Velocity*     tryGetVelocity    (EntityHandle e) const noexcept;
+    const RenderTag*    tryGetRenderTag   (EntityHandle e) const noexcept;
+    const UserData*     tryGetUserData    (EntityHandle e) const noexcept;
+    const Acceleration* tryGetAcceleration(EntityHandle e) const noexcept;
 
     bool alive(EntityHandle e) const noexcept;
 
@@ -40,6 +41,7 @@ public:
     std::span<const Velocity>     velocities() const noexcept;
     std::span<const RenderTag>    renderTags() const noexcept;
     std::span<const UserData>     userData()   const noexcept;
+    std::span<const Acceleration> accelerations() const noexcept;
 
     std::size_t size() const noexcept;
 

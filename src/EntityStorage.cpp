@@ -13,6 +13,7 @@ EntityStorage::EntityStorage(std::uint32_t initialCapacity) {
     velocities_.reserve(initialCapacity);
     renderTags_.reserve(initialCapacity);
     userData_.reserve(initialCapacity);
+    accelerations_.reserve(initialCapacity);
 }
 
 void EntityStorage::reserve(std::size_t n) {
@@ -23,12 +24,14 @@ void EntityStorage::reserve(std::size_t n) {
     velocities_.reserve(n);
     renderTags_.reserve(n);
     userData_.reserve(n);
+    accelerations_.reserve(n);
 }
 
 EntityHandle EntityStorage::spawn(const Transform& t,
                                   const Velocity& v,
                                   const RenderTag& r,
-                                  const UserData& u) {
+                                  const UserData& u,
+                                  const Acceleration& a) {
     std::uint32_t slotIdx;
     if (!freeSlots_.empty()) {
         slotIdx = freeSlots_.back();
@@ -51,6 +54,7 @@ EntityHandle EntityStorage::spawn(const Transform& t,
     velocities_.push_back(v);
     renderTags_.push_back(r);
     userData_.push_back(u);
+    accelerations_.push_back(a);
     return h;
 }
 
@@ -63,12 +67,13 @@ bool EntityStorage::destroy(EntityHandle h) noexcept {
     if (deadDense != lastDense) {
         // Swap-and-pop: move the last element into the freed dense slot,
         // then update the owning slot's denseIndex.
-        entities_  [deadDense] = entities_  [lastDense];
-        transforms_[deadDense] = transforms_[lastDense];
-        velocities_[deadDense] = velocities_[lastDense];
-        renderTags_[deadDense] = renderTags_[lastDense];
-        userData_  [deadDense] = userData_  [lastDense];
-        denseToSlot_[deadDense] = denseToSlot_[lastDense];
+        entities_      [deadDense] = entities_      [lastDense];
+        transforms_    [deadDense] = transforms_    [lastDense];
+        velocities_    [deadDense] = velocities_    [lastDense];
+        renderTags_    [deadDense] = renderTags_    [lastDense];
+        userData_      [deadDense] = userData_      [lastDense];
+        accelerations_ [deadDense] = accelerations_ [lastDense];
+        denseToSlot_   [deadDense] = denseToSlot_   [lastDense];
         slots_[denseToSlot_[deadDense]].denseIndex = deadDense;
     }
 
@@ -77,6 +82,7 @@ bool EntityStorage::destroy(EntityHandle h) noexcept {
     velocities_.pop_back();
     renderTags_.pop_back();
     userData_.pop_back();
+    accelerations_.pop_back();
     denseToSlot_.pop_back();
 
     slot.alive = false;
@@ -111,6 +117,10 @@ RenderTag* EntityStorage::mutRenderTag(EntityHandle h) noexcept {
 UserData* EntityStorage::mutUserData(EntityHandle h) noexcept {
     const auto i = indexOf(h);
     return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &userData_[i];
+}
+Acceleration* EntityStorage::mutAcceleration(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &accelerations_[i];
 }
 
 } // namespace threadmaxx::internal
