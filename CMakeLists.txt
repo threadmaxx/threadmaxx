@@ -85,6 +85,7 @@ endif()
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/minimal)
+    add_subdirectory(examples/boids)
 endif()
 
 # --------------------------------------------------------------------------
