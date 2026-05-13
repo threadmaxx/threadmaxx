@@ -113,13 +113,26 @@ threadmaxx/
 │   ├── World.cpp               ← PImpl forwarding
 │   ├── Engine.cpp              ← PImpl forwarding
 │   └── CommandBuffer.cpp
-└── examples/minimal/           ← runnable headless example
+├── examples/minimal/           ← runnable headless example
+│   ├── CMakeLists.txt
+│   ├── main.cpp
+│   ├── MyGame.hpp / .cpp
+│   ├── MovementSystem.hpp / .cpp
+│   └── ConsoleRenderer.hpp / .cpp
+└── examples/boids/             ← non-headless example (SDL2)
     ├── CMakeLists.txt
     ├── main.cpp
-    ├── MyGame.hpp / .cpp
-    ├── MovementSystem.hpp / .cpp
-    └── ConsoleRenderer.hpp / .cpp
+    ├── BoidsGame.hpp / .cpp
+    ├── BoidsSystem.hpp / .cpp   ← steer (R: T,V → W: V)
+    ├── MoveSystem.hpp / .cpp    ← integrate + wrap (R: V,T → W: T)
+    └── SDLRenderer.hpp / .cpp   ← IRenderer over SDL2
 ```
+
+The boids example is built only when `find_package(SDL2)` succeeds — it
+exercises the wave scheduler (steer and integrate land in distinct waves
+because their read/write sets conflict on Velocity and Transform) and
+shows a concrete `IRenderer` implementation against a real windowing
+backend.
 
 ## System-level scheduling
 
