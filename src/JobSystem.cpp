@@ -1,73 +1,123 @@
 #include "JobSystem.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace threadmaxx::internal {
 
 JobSystem::JobSystem(std::uint32_t workerCount) {
     if (workerCount == 0) {
         const unsigned hw = std::thread::hardware_concurrency();
-        // Leave one logical core for the simulation/render thread when
-        // possible. Fall back to at least one worker.
         workerCount = std::max(1u, hw > 1 ? hw - 1 : 1u);
     }
     workers_.reserve(workerCount);
     for (std::uint32_t i = 0; i < workerCount; ++i) {
-        workers_.emplace_back([this] { workerLoop(); });
+        workers_.emplace_back(std::make_unique<Worker>());
+    }
+    // Spawn threads after every Worker is constructed so workerLoop can
+    // freely index into workers_ for stealing without a TOCTOU race.
+    for (std::uint32_t i = 0; i < workerCount; ++i) {
+        workers_[i]->thread = std::thread([this, i] { workerLoop(i); });
     }
 }
 
 JobSystem::~JobSystem() {
-    // Drain anything still in-flight, then signal workers to exit.
     waitIdle();
-    {
-        std::lock_guard<std::mutex> lk(queueMutex_);
-        stopping_.store(true, std::memory_order_release);
+    stopping_.store(true, std::memory_order_release);
+    // Take and release each worker's mutex so the stopping_ store is
+    // visible to a worker that is about to re-evaluate its wait predicate.
+    // notify_all then wakes any worker currently parked.
+    for (auto& w : workers_) {
+        { std::lock_guard<std::mutex> lk(w->mtx); }
+        w->cv.notify_all();
     }
-    queueCv_.notify_all();
-    for (auto& t : workers_) {
-        if (t.joinable()) t.join();
+    for (auto& w : workers_) {
+        if (w->thread.joinable()) w->thread.join();
     }
 }
 
 void JobSystem::submit(JobFn fn) {
+    outstanding_.fetch_add(1, std::memory_order_acq_rel);
+    const std::uint32_t n = static_cast<std::uint32_t>(workers_.size());
+    const std::uint32_t idx = pushCounter_.fetch_add(1, std::memory_order_relaxed) % n;
+    auto& w = *workers_[idx];
     {
-        std::lock_guard<std::mutex> lk(queueMutex_);
-        queue_.emplace_back(std::move(fn));
-        outstanding_.fetch_add(1, std::memory_order_release);
+        std::lock_guard<std::mutex> lk(w.mtx);
+        w.queue.emplace_back(std::move(fn));
     }
-    queueCv_.notify_one();
+    w.cv.notify_one();
 }
 
 void JobSystem::waitIdle() {
-    std::unique_lock<std::mutex> lk(queueMutex_);
+    std::unique_lock<std::mutex> lk(doneMtx_);
     doneCv_.wait(lk, [this] {
         return outstanding_.load(std::memory_order_acquire) == 0;
     });
 }
 
-void JobSystem::workerLoop() {
+JobSystem::JobFn JobSystem::trySteal(std::uint32_t selfIdx) noexcept {
+    const std::uint32_t n = static_cast<std::uint32_t>(workers_.size());
+    // Visit siblings in rotation. try_lock skips victims whose producer is
+    // currently pushing, so a busy submit thread doesn't block stealers.
+    for (std::uint32_t i = 1; i < n; ++i) {
+        auto& victim = *workers_[(selfIdx + i) % n];
+        if (!victim.mtx.try_lock()) continue;
+        std::lock_guard<std::mutex> lk(victim.mtx, std::adopt_lock);
+        if (!victim.queue.empty()) {
+            // Steal from the back of the victim's deque: producers push to
+            // the back and the victim itself pops from the front, so we
+            // contend with the producer (rare, by round-robin) rather
+            // than with the victim's own pop path.
+            JobFn job = std::move(victim.queue.back());
+            victim.queue.pop_back();
+            return job;
+        }
+    }
+    return nullptr;
+}
+
+void JobSystem::workerLoop(std::uint32_t selfIdx) {
+    auto& self = *workers_[selfIdx];
     for (;;) {
         JobFn job;
+
+        // 1) Drain own queue first (FIFO from producer's perspective).
         {
-            std::unique_lock<std::mutex> lk(queueMutex_);
-            queueCv_.wait(lk, [this] {
-                return !queue_.empty() || stopping_.load(std::memory_order_acquire);
-            });
-            if (queue_.empty()) {
-                if (stopping_.load(std::memory_order_acquire)) return;
-                continue;
+            std::lock_guard<std::mutex> lk(self.mtx);
+            if (!self.queue.empty()) {
+                job = std::move(self.queue.front());
+                self.queue.pop_front();
             }
-            job = std::move(queue_.front());
-            queue_.pop_front();
         }
 
-        job();
+        // 2) If own queue is empty, try stealing from siblings.
+        if (!job) job = trySteal(selfIdx);
 
-        if (outstanding_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            // Last in-flight job for the batch — wake anything in waitIdle().
-            std::lock_guard<std::mutex> lk(queueMutex_);
-            doneCv_.notify_all();
+        // 3) Still nothing — park until the producer notifies us or we are
+        //    asked to stop.
+        if (!job) {
+            std::unique_lock<std::mutex> lk(self.mtx);
+            self.cv.wait(lk, [this, &self] {
+                return !self.queue.empty() ||
+                       stopping_.load(std::memory_order_acquire);
+            });
+            if (stopping_.load(std::memory_order_acquire) && self.queue.empty()) {
+                return;
+            }
+            if (!self.queue.empty()) {
+                job = std::move(self.queue.front());
+                self.queue.pop_front();
+            }
+        }
+
+        if (job) {
+            job();
+            if (outstanding_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                // Last in-flight job for the batch. Acquiring doneMtx_
+                // here synchronizes with waitIdle's predicate check.
+                std::lock_guard<std::mutex> lk(doneMtx_);
+                doneCv_.notify_all();
+            }
         }
     }
 }

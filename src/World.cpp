@@ -35,6 +35,16 @@ const Acceleration* World::tryGetAcceleration(EntityHandle e) const noexcept {
     if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
     return &impl_ptr_->storage.accelerations()[i];
 }
+const Parent* World::tryGetParent(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.parents()[i];
+}
+const ComponentSet* World::tryGetComponentMask(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.componentMasks()[i];
+}
 
 bool World::alive(EntityHandle e) const noexcept {
     return impl_ptr_->storage.alive(e);
@@ -57,6 +67,12 @@ std::span<const UserData> World::userData() const noexcept {
 }
 std::span<const Acceleration> World::accelerations() const noexcept {
     return {impl_ptr_->storage.accelerations().data(), impl_ptr_->storage.accelerations().size()};
+}
+std::span<const Parent> World::parents() const noexcept {
+    return {impl_ptr_->storage.parents().data(), impl_ptr_->storage.parents().size()};
+}
+std::span<const ComponentSet> World::componentMasks() const noexcept {
+    return {impl_ptr_->storage.componentMasks().data(), impl_ptr_->storage.componentMasks().size()};
 }
 
 std::size_t World::size() const noexcept {

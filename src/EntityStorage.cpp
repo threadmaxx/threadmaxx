@@ -14,6 +14,8 @@ EntityStorage::EntityStorage(std::uint32_t initialCapacity) {
     renderTags_.reserve(initialCapacity);
     userData_.reserve(initialCapacity);
     accelerations_.reserve(initialCapacity);
+    parents_.reserve(initialCapacity);
+    masks_.reserve(initialCapacity);
 }
 
 void EntityStorage::reserve(std::size_t n) {
@@ -25,13 +27,17 @@ void EntityStorage::reserve(std::size_t n) {
     renderTags_.reserve(n);
     userData_.reserve(n);
     accelerations_.reserve(n);
+    parents_.reserve(n);
+    masks_.reserve(n);
 }
 
 EntityHandle EntityStorage::spawn(const Transform& t,
                                   const Velocity& v,
                                   const RenderTag& r,
                                   const UserData& u,
-                                  const Acceleration& a) {
+                                  const Acceleration& a,
+                                  const Parent& p,
+                                  ComponentSet initialMask) {
     std::uint32_t slotIdx;
     if (!freeSlots_.empty()) {
         slotIdx = freeSlots_.back();
@@ -55,6 +61,8 @@ EntityHandle EntityStorage::spawn(const Transform& t,
     renderTags_.push_back(r);
     userData_.push_back(u);
     accelerations_.push_back(a);
+    parents_.push_back(p);
+    masks_.push_back(initialMask);
     return h;
 }
 
@@ -73,6 +81,8 @@ bool EntityStorage::destroy(EntityHandle h) noexcept {
         renderTags_    [deadDense] = renderTags_    [lastDense];
         userData_      [deadDense] = userData_      [lastDense];
         accelerations_ [deadDense] = accelerations_ [lastDense];
+        parents_       [deadDense] = parents_       [lastDense];
+        masks_         [deadDense] = masks_         [lastDense];
         denseToSlot_   [deadDense] = denseToSlot_   [lastDense];
         slots_[denseToSlot_[deadDense]].denseIndex = deadDense;
     }
@@ -83,6 +93,8 @@ bool EntityStorage::destroy(EntityHandle h) noexcept {
     renderTags_.pop_back();
     userData_.pop_back();
     accelerations_.pop_back();
+    parents_.pop_back();
+    masks_.pop_back();
     denseToSlot_.pop_back();
 
     slot.alive = false;
@@ -121,6 +133,14 @@ UserData* EntityStorage::mutUserData(EntityHandle h) noexcept {
 Acceleration* EntityStorage::mutAcceleration(EntityHandle h) noexcept {
     const auto i = indexOf(h);
     return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &accelerations_[i];
+}
+Parent* EntityStorage::mutParent(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &parents_[i];
+}
+ComponentSet* EntityStorage::mutComponentMask(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &masks_[i];
 }
 
 } // namespace threadmaxx::internal

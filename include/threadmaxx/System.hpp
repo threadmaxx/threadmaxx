@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 
 namespace threadmaxx {
 
@@ -43,60 +44,6 @@ public:
     virtual void single(JobFn fn) = 0;
 };
 
-// Categories of state a system can declare it reads or writes. The engine
-// uses these to schedule independent systems concurrently within a wave.
-// `EntityStructural` covers spawn/destroy — any system that creates or
-// kills entities must list it as a write (even if it doesn't touch the
-// per-component arrays directly).
-enum class Component : std::uint32_t {
-    Transform        = 1u << 0,
-    Velocity         = 1u << 1,
-    RenderTag        = 1u << 2,
-    UserData         = 1u << 3,
-    EntityStructural = 1u << 4,
-    Acceleration     = 1u << 5,
-};
-
-// Bitset over Component values. Trivially copyable, no allocation.
-class ComponentSet {
-public:
-    constexpr ComponentSet() noexcept = default;
-    constexpr ComponentSet(Component c) noexcept
-        : bits_(static_cast<std::uint32_t>(c)) {}
-    constexpr ComponentSet(std::initializer_list<Component> cs) noexcept {
-        for (auto c : cs) bits_ |= static_cast<std::uint32_t>(c);
-    }
-
-    // The set containing every Component.
-    static constexpr ComponentSet all() noexcept {
-        ComponentSet s;
-        s.bits_ = 0x3Fu;  // bits 0..5 — keep in sync with Component
-        return s;
-    }
-    static constexpr ComponentSet none() noexcept { return ComponentSet{}; }
-
-    constexpr std::uint32_t bits()  const noexcept { return bits_; }
-    constexpr bool          empty() const noexcept { return bits_ == 0; }
-    constexpr bool intersects(ComponentSet o) const noexcept {
-        return (bits_ & o.bits_) != 0;
-    }
-
-    constexpr ComponentSet operator|(ComponentSet o) const noexcept {
-        ComponentSet r; r.bits_ = bits_ | o.bits_; return r;
-    }
-    constexpr ComponentSet& operator|=(ComponentSet o) noexcept {
-        bits_ |= o.bits_; return *this;
-    }
-    constexpr bool operator==(const ComponentSet&) const noexcept = default;
-
-private:
-    std::uint32_t bits_ = 0;
-};
-
-constexpr ComponentSet operator|(Component a, Component b) noexcept {
-    return ComponentSet{a} | ComponentSet{b};
-}
-
 // User-implemented unit of gameplay. Stateless or with internal state owned
 // by the implementation. Registered with the engine via IGame.
 class ISystem {
@@ -125,5 +72,15 @@ public:
     virtual ComponentSet reads()  const noexcept { return ComponentSet::all(); }
     virtual ComponentSet writes() const noexcept { return ComponentSet::all(); }
 };
+
+// Built-in: propagates `Parent`-attached entities' world `Transform` from
+// their parent's world `Transform` composed with `Parent::localOffset`.
+// Single-threaded inside ctx.single() to keep multi-level chains correct
+// in one pass (DFS with memoization). Scale does not chain — see the Parent
+// component doc. Register this *after* movement systems that write to
+// Transform so it runs in a later wave and observes their commits.
+//
+// reads = {Transform, Parent}, writes = {Transform}.
+std::unique_ptr<class ISystem> makeHierarchySystem();
 
 } // namespace threadmaxx

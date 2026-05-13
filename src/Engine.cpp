@@ -32,4 +32,7 @@ std::span<const SystemStats> Engine::systemStats() const noexcept {
     return impl_->systemStats();
 }
 
+ResourceRegistry&       Engine::resources()       noexcept { return impl_->resources(); }
+const ResourceRegistry& Engine::resources() const noexcept { return impl_->resources(); }
+
 } // namespace threadmaxx

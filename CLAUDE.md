@@ -40,13 +40,15 @@ Always pass `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` on first configure — without 
 This is the one operation that crosses every layer. To add component `Foo`:
 
 1. Define the POD in `include/threadmaxx/Components.hpp`.
-2. Add a parallel `std::vector<Foo>` to `EntityStorage` (storage, dense view accessor, `mutFoo`, and the swap-and-pop branch in `destroy()` and the push in `spawn()`).
-3. Extend `spawn()` and `CmdSpawn` (or add `CmdSetFoo`) in `CommandBuffer.hpp`, then the matching method in `CommandBuffer.cpp`.
-4. Handle the new variant alternative in `EngineImpl::commitBuffer` (the `std::visit` lambda).
-5. Add the read accessor + dense span on `World` (`tryGetFoo`, `foos()`).
-6. If it affects rendering, populate `RenderInstance` from it in `EngineImpl::buildRenderFrame`.
+2. Add a `Component::Foo` enum value and extend `ComponentSet::all()`'s mask to cover its bit.
+3. Add a parallel `std::vector<Foo>` to `EntityStorage` (storage, dense view accessor, `mutFoo`, and the swap-and-pop branch in `destroy()` and the push in `spawn()`). `EntityStorage::spawn` now also takes a `ComponentSet initialMask` — pass it through.
+4. Extend `CmdSpawn` (add a `Foo foo` field), add `CmdSetFoo`, both `spawn` overloads, and the matching method in `CommandBuffer.cpp`. Update `defaultSpawnMask` if presence should auto-derive from values (`RenderTag` does this from `meshId >= 0`).
+5. Handle the new variant alternatives in `EngineImpl::commitBuffer` (the `std::visit` lambda). For setters that change presence (`RenderTag`, `Parent`), also call `mutComponentMask` to add/remove the bit.
+6. Add the read accessor + dense span on `World` (`tryGetFoo`, `foos()`).
+7. If it affects rendering, populate `RenderInstance` from it in `EngineImpl::buildRenderFrame` (and gate on the new presence bit instead of a sentinel).
+8. Optionally extend `Query.hpp::detail::getSpan` and `componentBit` so `forEach<Foo>` and `forEachWith<Foo>` work.
 
-Missing any one of these will compile but corrupt state at runtime (dense arrays go out of sync). The `EntityStorage::destroy` swap-and-pop is the bit that tends to be forgotten.
+Missing any one of these will compile but corrupt state at runtime (dense arrays go out of sync). The `EntityStorage::destroy` swap-and-pop is the bit that tends to be forgotten. `Parent` (added 2026-05-13) and `Acceleration` show the full recipe end-to-end.
 
 ## Render frame lifetime
 

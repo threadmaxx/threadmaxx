@@ -40,6 +40,24 @@ auto getSpan(const World& w) noexcept {
         "RenderTag, UserData");
 }
 
+template <typename C>
+constexpr Component componentBit() noexcept {
+    if constexpr (std::is_same_v<C, Transform>) return Component::Transform;
+    else if constexpr (std::is_same_v<C, Velocity>) return Component::Velocity;
+    else if constexpr (std::is_same_v<C, RenderTag>) return Component::RenderTag;
+    else if constexpr (std::is_same_v<C, UserData>) return Component::UserData;
+    else static_assert(sizeof(C) == 0,
+        "forEachWith: component type must be one of Transform, Velocity, "
+        "RenderTag, UserData");
+}
+
+template <typename... Cs>
+constexpr ComponentSet requiredMask() noexcept {
+    ComponentSet s;
+    ((s |= ComponentSet{componentBit<Cs>()}), ...);
+    return s;
+}
+
 template <typename F, typename Spans, std::size_t... Is>
 void invokeAt(F& fn, EntityHandle e, const Spans& spans,
               CommandBuffer& cb, std::uint32_t i,
@@ -66,6 +84,35 @@ void forEach(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
         [entities, spans, fn = std::forward<F>(fn)]
         (Range r, CommandBuffer& cb) mutable {
             for (std::uint32_t i = r.begin; i < r.end; ++i) {
+                detail::invokeAt(fn, entities[i], spans, cb, i,
+                                 std::index_sequence_for<Components...>{});
+            }
+        });
+}
+
+// Presence-filtered variant. Same callable shape as forEach, but only invokes
+// it for entities whose component mask has all of the requested component
+// bits set. The mask is checked once per entity inside each chunk; the
+// dispatch is still over `count` entities so jobs are sized identically to
+// forEach. Use this in place of sentinel checks like `meshId < 0`.
+template <typename... Components, typename F>
+void forEachWith(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
+    static_assert(sizeof...(Components) > 0,
+                  "forEachWith requires at least one required Component");
+    const auto& world = ctx.world();
+    const auto entities = world.entities();
+    const auto count = static_cast<std::uint32_t>(entities.size());
+    if (count == 0) return;
+
+    auto spans = std::make_tuple(detail::getSpan<Components>(world)...);
+    const auto masks = world.componentMasks();
+    constexpr ComponentSet required = detail::requiredMask<Components...>();
+
+    ctx.parallelFor(count, grain,
+        [entities, masks, spans, required, fn = std::forward<F>(fn)]
+        (Range r, CommandBuffer& cb) mutable {
+            for (std::uint32_t i = r.begin; i < r.end; ++i) {
+                if (!masks[i].hasAll(required)) continue;
                 detail::invokeAt(fn, entities[i], spans, cb, i,
                                  std::index_sequence_for<Components...>{});
             }

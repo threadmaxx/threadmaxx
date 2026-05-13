@@ -6,6 +6,7 @@
 #include "threadmaxx/CommandBuffer.hpp"
 #include "threadmaxx/Config.hpp"
 #include "threadmaxx/RenderFrame.hpp"
+#include "threadmaxx/Resource.hpp"
 #include "threadmaxx/Stats.hpp"
 #include "threadmaxx/System.hpp"
 #include "threadmaxx/World.hpp"
@@ -86,6 +87,9 @@ public:
                                             systemStats_.size());
     }
 
+    ResourceRegistry&       resources()       noexcept { return resources_; }
+    const ResourceRegistry& resources() const noexcept { return resources_; }
+
     JobSystem& jobs() noexcept { return *jobs_; }
 
 private:
@@ -142,6 +146,10 @@ private:
     // Per-system snapshot, one entry per registered system in registration
     // order. Grown by registerSystem; updated at the end of each step().
     std::vector<SystemStats> systemStats_;
+
+    // Engine-owned, thread-safe registry for game-side resources (meshes,
+    // textures, audio clips, ...). Lifetime matches the engine.
+    ResourceRegistry resources_;
 };
 
 } // namespace threadmaxx::internal

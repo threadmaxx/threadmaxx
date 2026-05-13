@@ -22,6 +22,7 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/CommandBuffer.hpp
     include/threadmaxx/Query.hpp
     include/threadmaxx/RenderFrame.hpp
+    include/threadmaxx/Resource.hpp
     include/threadmaxx/Stats.hpp
     include/threadmaxx/System.hpp
     include/threadmaxx/Renderer.hpp
@@ -37,6 +38,8 @@ set(THREADMAXX_SOURCES
     src/World.cpp
     src/Engine.cpp
     src/EngineImpl.cpp
+    src/HierarchySystem.cpp
+    src/ResourceRegistry.cpp
 )
 
 add_library(threadmaxx STATIC ${THREADMAXX_SOURCES} ${THREADMAXX_PUBLIC_HEADERS})

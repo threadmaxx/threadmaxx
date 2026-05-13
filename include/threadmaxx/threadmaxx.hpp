@@ -15,6 +15,7 @@
 #include "Query.hpp"
 #include "RenderFrame.hpp"
 #include "Renderer.hpp"
+#include "Resource.hpp"
 #include "Stats.hpp"
 #include "System.hpp"
 #include "World.hpp"

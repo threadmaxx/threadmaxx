@@ -12,6 +12,10 @@ set(THREADMAXX_TESTS
     alpha_test
     parallel_systems_test
     acceleration_test
+    resource_registry_test
+    component_mask_test
+    hierarchy_test
+    job_system_stress_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

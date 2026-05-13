@@ -150,7 +150,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
                 const auto h = storage.spawn(c.transform, c.velocity,
                                              c.render, c.userData,
-                                             c.acceleration);
+                                             c.acceleration, c.parent,
+                                             c.initialMask);
                 if (c.outHandle) *c.outHandle = h;
             } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
                 storage.destroy(c.entity);
@@ -160,10 +161,24 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                 if (auto* p = storage.mutVelocity(c.entity))  *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetRenderTag>) {
                 if (auto* p = storage.mutRenderTag(c.entity)) *p = c.value;
+                // Sync the RenderTag presence bit so renderers stay aligned
+                // with the per-entity mask without a separate command.
+                if (auto* m = storage.mutComponentMask(c.entity)) {
+                    if (c.value.meshId >= 0) m->add(Component::RenderTag);
+                    else                     m->remove(Component::RenderTag);
+                }
             } else if constexpr (std::is_same_v<T, detail::CmdSetUserData>) {
                 if (auto* p = storage.mutUserData(c.entity))  *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetAcceleration>) {
                 if (auto* p = storage.mutAcceleration(c.entity)) *p = c.value;
+            } else if constexpr (std::is_same_v<T, detail::CmdSetParent>) {
+                if (auto* p = storage.mutParent(c.entity)) *p = c.value;
+                if (auto* m = storage.mutComponentMask(c.entity)) {
+                    if (c.value.parent.valid()) m->add(Component::Parent);
+                    else                        m->remove(Component::Parent);
+                }
+            } else if constexpr (std::is_same_v<T, detail::CmdSetComponentMask>) {
+                if (auto* p = storage.mutComponentMask(c.entity)) *p = c.value;
             }
         }, cmd);
     }
@@ -180,10 +195,11 @@ void EngineImpl::buildRenderFrame() {
     const auto& transforms = storage.transforms();
     const auto& tags = storage.renderTags();
     const auto& uds = storage.userData();
+    const auto& masks = storage.componentMasks();
     dst.reserve(entities.size());
 
     for (std::size_t i = 0; i < entities.size(); ++i) {
-        if (tags[i].meshId < 0) continue;  // not renderable
+        if (!masks[i].has(Component::RenderTag)) continue;
         dst.push_back(RenderInstance{
             entities[i],
             transforms[i],

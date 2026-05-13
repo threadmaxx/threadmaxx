@@ -31,6 +31,9 @@ public:
     const RenderTag*    tryGetRenderTag   (EntityHandle e) const noexcept;
     const UserData*     tryGetUserData    (EntityHandle e) const noexcept;
     const Acceleration* tryGetAcceleration(EntityHandle e) const noexcept;
+    const Parent*       tryGetParent      (EntityHandle e) const noexcept;
+    // Per-entity component-presence bits. Returns nullptr for stale handles.
+    const ComponentSet* tryGetComponentMask(EntityHandle e) const noexcept;
 
     bool alive(EntityHandle e) const noexcept;
 
@@ -42,6 +45,8 @@ public:
     std::span<const RenderTag>    renderTags() const noexcept;
     std::span<const UserData>     userData()   const noexcept;
     std::span<const Acceleration> accelerations() const noexcept;
+    std::span<const Parent>       parents()       const noexcept;
+    std::span<const ComponentSet> componentMasks() const noexcept;
 
     std::size_t size() const noexcept;
 

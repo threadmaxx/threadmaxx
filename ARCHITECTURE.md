@@ -26,14 +26,15 @@ and hands a snapshot of the world to a pluggable renderer each frame.
    │       1. System schedules work via SystemContext::parallelFor(N, grain, fn)
    │       2. Engine splits [0, N) into chunks and submits one Job per chunk
    │
-   │                            │  enqueue
+   │                            │  enqueue (round-robin push)
    │                            ▼
-   │                  ┌──────────────────────┐
-   │                  │     Job queue        │
-   │                  │   (mutex + condvar)  │
-   │                  └─────────┬────────────┘
-   │                            │ workers pop
-   │                            ▼
+   │           ┌────────┐  ┌────────┐  ┌────────┐
+   │           │ deque  │  │ deque  │  │ deque  │   (per-worker, own
+   │           │ + mtx  │  │ + mtx  │  │ + mtx  │    mutex + CV)
+   │           └───┬────┘  └───┬────┘  └───┬────┘
+   │               │ pop own (front, FIFO)│
+   │               │ or steal from sibling (back, LIFO)
+   │               ▼           ▼           ▼
    │           ┌────────┐  ┌────────┐  ┌────────┐
    │           │worker 0│  │worker 1│  │worker N│   (std::thread pool)
    │           └───┬────┘  └───┬────┘  └───┬────┘
@@ -60,6 +61,9 @@ Key invariants:
 
 - Workers never touch live world state. They read it and emit commands.
 - `CommandBuffer` is per-job, never shared. No locks in user gameplay code.
+- `JobSystem` uses per-worker work-stealing deques rather than a single
+  central queue, so submits and pops don't serialize on one hot mutex.
+  Stealers `try_lock` victims so an active producer can't block them.
 - The commit phase is single-threaded and ordered by job index, so the same
   inputs always produce the same world state — that is the basis of the
   optional deterministic mode.
@@ -83,6 +87,10 @@ threadmaxx::EntityHandle
 threadmaxx::Config
 threadmaxx::EngineStats   // per-step instrumentation snapshot
 threadmaxx::SystemStats   // per-system instrumentation snapshot
+threadmaxx::ResourceId<T> // typed handle into ResourceRegistry
+threadmaxx::ResourceRegistry  // engine-owned, thread-safe typed store
+threadmaxx::Parent        // built-in hierarchical-attachment component
+threadmaxx::makeHierarchySystem  // factory for the built-in hierarchy system
 ```
 
 Everything else (entity storage, job system, commit machinery, render-frame
@@ -157,6 +165,23 @@ buffers in registration order on the sim thread. Defaults are
 conflict and degrades cleanly to strict registration-order serial — the
 historical behavior. Tests in `tests/parallel_systems_test.cpp` pin the
 contract.
+
+## Per-entity component presence
+
+Every live entity carries a `ComponentSet` of which built-in components are
+logically attached. `CommandBuffer::spawn()` derives the mask from the
+supplied values (RenderTag bit set iff `meshId >= 0`); `setRenderTag()`
+keeps the bit in sync with the new `meshId`. Game code can override either
+via the explicit-mask `spawn` overload or `CommandBuffer::setComponentMask`.
+The renderer skips entities without `Component::RenderTag` in `buildRenderFrame`
+instead of scanning a sentinel value. `forEachWith<Required...>` in
+`Query.hpp` filters by mask so systems can express "iterate everyone with
+both Transform and RenderTag" without sentinel checks.
+
+`EntityStructural` does not appear in per-entity masks; it's purely a
+scheduling category. The storage layout still keeps every component slot
+filled for every entity (parallel dense arrays); the mask is a filter, not
+an archetype.
 
 ## Extensibility notes
 

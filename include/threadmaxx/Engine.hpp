@@ -13,6 +13,7 @@ class World;
 class ISystem;
 class IRenderer;
 class IGame;
+class ResourceRegistry;
 
 namespace internal { class EngineImpl; }
 
@@ -76,6 +77,13 @@ public:
     // each step(). The span points to engine-owned memory and is invalidated
     // by registerSystem() and shutdown(); copy if you need to retain.
     std::span<const SystemStats> systemStats() const noexcept;
+
+    // Engine-owned, thread-safe typed resource registry. Lifetime matches
+    // the engine; never reseats. Game code stores meshes / textures / audio
+    // clips / etc. here and refers to them by ResourceId<T> from anywhere,
+    // including worker jobs.
+    ResourceRegistry&       resources()       noexcept;
+    const ResourceRegistry& resources() const noexcept;
 
 private:
     std::unique_ptr<internal::EngineImpl> impl_;
