@@ -11,6 +11,15 @@ option(THREADMAXX_BUILD_EXAMPLES "Build the bundled minimal example" ON)
 option(THREADMAXX_BUILD_TESTS "Build and register the test suite" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
+# Default install rules ON when threadmaxx is the top-level project; OFF when
+# pulled in via add_subdirectory so consumers don't accidentally install us.
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(THREADMAXX_INSTALL_DEFAULT ON)
+else()
+    set(THREADMAXX_INSTALL_DEFAULT OFF)
+endif()
+option(THREADMAXX_INSTALL "Generate install rules for threadmaxx" ${THREADMAXX_INSTALL_DEFAULT})
+
 # --------------------------------------------------------------------------
 # Library
 # --------------------------------------------------------------------------
@@ -100,6 +109,53 @@ endif()
 if (THREADMAXX_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# --------------------------------------------------------------------------
+# Install
+# --------------------------------------------------------------------------
+if (THREADMAXX_INSTALL)
+    include(GNUInstallDirs)
+    include(CMakePackageConfigHelpers)
+
+    set(THREADMAXX_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/threadmaxx")
+
+    install(TARGETS threadmaxx
+        EXPORT threadmaxxTargets
+        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+
+    install(DIRECTORY include/threadmaxx
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp"
+    )
+
+    install(EXPORT threadmaxxTargets
+        FILE threadmaxxTargets.cmake
+        NAMESPACE threadmaxx::
+        DESTINATION ${THREADMAXX_INSTALL_CMAKEDIR}
+    )
+
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/threadmaxxConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion
+    )
+
+    configure_package_config_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/threadmaxxConfig.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/threadmaxxConfig.cmake"
+        INSTALL_DESTINATION ${THREADMAXX_INSTALL_CMAKEDIR}
+    )
+
+    install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/threadmaxxConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/threadmaxxConfigVersion.cmake"
+        DESTINATION ${THREADMAXX_INSTALL_CMAKEDIR}
+    )
 endif()
 
 # --------------------------------------------------------------------------
