@@ -5,15 +5,20 @@ early renderer-agnostic backend into a production-ready library suitable
 for a 3D RPG. It is written in a Claude Code–friendly style: practical,
 phased, and implementation-oriented.
 
-The document tracks three things:
+Three things live here:
 
-1. What's recently been built (so the roadmap stays honest).
-2. The concrete next batch — small, additive, achievable.
-3. The longer-term shape of the library and the items deliberately
-   parked or scoped out.
+1. **§1 Target outcome.** What we are aiming at.
+2. **§2 Completed batches.** What recently landed, kept as a brief
+   changelog so the roadmap stays honest. Detailed notes live in the
+   per-feature docs and in `CLAUDE.md`.
+3. **§3 Planned batches.** The forward-looking, multi-batch plan that
+   carries the library through Milestones 2, 3, and 4 — i.e. to the
+   point a proper 3D RPG example can be built on top of it.
 
-Last refreshed: 2026-05-13 (third pass of the day; the §3 batch has
-now also landed — see §2 third batch).
+Sections §4–§11 are unchanged scope/process/principles material.
+
+Last refreshed: 2026-05-13 (Milestone 1 complete; chapter 3 rewritten
+into a forward plan toward Milestones 2–4).
 
 ## 1. Target outcome
 
@@ -30,298 +35,392 @@ now also landed — see §2 third batch).
 
 The current project has the right high-level shape: fixed-step
 simulation, worker pool, command buffering, renderer abstraction, and
-PImpl isolation. The missing work is mostly breadth, scalability, and
-production-level ergonomics.
+PImpl isolation. The remaining work is mostly breadth, scalability, and
+production ergonomics — i.e. turning a good internal backend into a
+fully usable engine library.
 
-## 2. What landed recently (2026-05-13)
+## 2. Completed batches
 
-Two batches landed today. The earlier five-item plan (top of the list)
-and a follow-up five-item plan plus the small-wins set (just below).
+Three batches landed on 2026-05-13, bringing **Milestone 1** to
+completion. All three were pure additions to the public API; the only
+removal was an internal dead field on `CmdSpawn`. Detailed per-feature
+notes live in `doc/` and `CLAUDE.md`.
 
-### First batch
-- **Per-system timing and command stats.** `Stats.hpp` defines
-  `SystemStats`; `Engine::systemStats()` returns one entry per system in
-  registration order. Same 1/16 EWMA as `EngineStats::avgStepSeconds`.
-  Documented in [`doc/stats_and_profiling.md`](doc/stats_and_profiling.md).
-- **Sharded / work-stealing job queue.** `JobSystem` rebuilt around
-  per-worker deques with `try_lock` victim selection. No more single hot
-  mutex. Stress test in `tests/job_system_stress_test.cpp`.
-- **Per-entity `ComponentMask` + presence-aware queries.**
-  `ComponentSet` is both a scheduling-category bitset and a per-entity
-  presence mask. `CommandBuffer::spawn` derives a default mask;
-  `setRenderTag`/`setParent` keep it in sync. `forEachWith<...>` filters
-  by mask without sentinel checks.
-- **`Parent` component + hierarchy system.** Built-in
-  `makeHierarchySystem()` propagates world transforms via DFS-with-
-  memoization in one pass.
-- **Typed `ResourceId<T>` + `ResourceRegistry`.** Type-erased internal
-  store keyed by `std::type_index`; engine owns one registry; safe from
-  any thread.
+### Batch 1 — instrumentation, sharding, presence-aware queries
 
-### Second batch (just landed)
-- **`preStep` / `postStep` hooks.** Virtual on `ISystem`, called in
-  registration order on the sim thread, serially. `preStep` commits
-  before any wave runs (so wave systems see them); `postStep` runs
-  after the last commit (next tick's `preStep` sees them). Documented
-  in [`doc/lifecycle_hooks.md`](doc/lifecycle_hooks.md).
-- **Per-job `ScratchArena`.** Bump allocator paired with `CommandBuffer`
-  on the new three-arg `parallelFor` / `single` overloads. Chained
-  slabs grow on demand; reset between waves keeps storage. Trivially-
-  destructible types only. See
-  [`doc/scratch_arenas.md`](doc/scratch_arenas.md).
-- **Typed `EventChannel<T>`.** Engine-owned channels keyed by
-  `std::type_index`; thread-safe `emit()` under a per-channel mutex,
-  per-tick double-buffer flipped by the engine, `drainTick()` returns
-  the previous tick's events. `Engine::events<T>()` is the lazy
-  factory. See [`doc/events.md`](doc/events.md).
-- **`setTimeScale` / `setPaused`.** Time-scale multiplies `dt` seen by
-  systems; tick and `simulationTime` advance by the fixed step
-  regardless. Pause makes `step()` a no-op while `run()` keeps
-  re-submitting the current render frame. Negative scale clamps to
-  zero. See [`doc/pause_and_time_scale.md`](doc/pause_and_time_scale.md).
-- **Reserved spawn handles.** `Engine::reserveEntityHandle()` and
-  `SystemContext::reserveHandle()` allocate a slot under a fast
-  storage-side mutex; the matching `CommandBuffer::spawn(handle, ...)`
-  overloads materialize the reservation during commit. Unconsumed
-  reservations are reaped at step end. See
-  [`doc/reserved_handles.md`](doc/reserved_handles.md).
-- **Small wins.** `Query.hpp::forEach<Acceleration>` /
-  `forEach<Parent>` now compile (extended `getSpan` / `componentBit`).
-  `EngineStats::commitDurationSeconds` exposes commit-phase wall-clock.
-  `JobSystemStats` (via `Engine::jobSystemStats()`) reports total
-  jobs, own-pops, and steal counts for tuning grain.
+- Per-system timing and command stats (`SystemStats`, `Engine::systemStats()`).
+- Sharded / work-stealing `JobSystem` (per-worker deques, no single hot
+  mutex). Stress test in `tests/job_system_stress_test.cpp`.
+- Per-entity `ComponentMask` + presence-aware queries (`forEachWith<...>`).
+- `Parent` component + `makeHierarchySystem()` (DFS-with-memoization).
+- Typed `ResourceId<T>` + thread-safe `ResourceRegistry`.
 
-All two batches were pure additions: no breaking changes to the public
-API. (`CmdSpawn::outHandle` was dead code internally and was removed in
-the second batch as part of replacing it with the cleaner `reserved`
-field.)
+### Batch 2 — lifecycle, scratch, events, time control, reservations
 
-### Third batch (just landed)
-- **`World::has<T>` / `World::get<T>`.** Header-only sugar in
-  `World.hpp`; consults the per-entity component-presence mask. Pure
-  addition; type dispatch via the same `if constexpr` chain shape as
-  `Query.hpp::detail::componentBit`. See
-  [`doc/world_has_get.md`](doc/world_has_get.md).
-- **`Bundle` + `cb.spawnBundle`.** Variadic `bundle(Cs...)` factory
-  yields a `Bundle` with a compile-time-derived presence mask, fed to
-  `CommandBuffer::spawnBundle`. Named distinctly from `spawn` so
-  `cb.spawn({})` stays unambiguous. See
-  [`doc/bundles.md`](doc/bundles.md).
-- **`registerSystemAt(position, system)`.** Inserts at a specific
-  registration index, clamped to the current count. Used by tests and
-  mod loaders.
-- **`reserveEntityHandles(count, span)` batch form.** Engine-level and
-  `SystemContext`-level; one mutex acquisition, fills the supplied
-  span.
-- **Parent auto-derive in default `spawn`.** The default-mask
-  `spawn(...)` and `spawn(handle, ...)` overloads now also derive the
-  Parent presence bit from `p.parent.valid()` (mirroring the existing
-  RenderTag derive). Both overloads take an optional trailing `Parent`
-  parameter.
-- **`frameSnapshot()` + JSON Lines `writeJsonLines`.** Bundled
-  `FrameSnapshot{EngineStats, std::span<const SystemStats>,
-  JobSystemStats}` and a header-only serializer in `Trace.hpp`. See
-  [`doc/tracing.md`](doc/tracing.md).
-- **`IResourceLoader` contract.** `Engine::addResourceLoader` registers
-  a loader; the engine pumps `update(engine)` once per `step()` on the
-  sim thread, after `postStep` commits and before the reservation
-  reap. Loaders are torn down in reverse-registration order during
-  `shutdown()`. See
-  [`doc/resource_loaders.md`](doc/resource_loaders.md).
-- **`SpatialHash<Payload>` helper.** Header-only uniform-grid index;
-  not thread-safe; engine does not own one. See
-  [`doc/spatial_hash.md`](doc/spatial_hash.md).
+- `preStep` / `postStep` hooks (serial, registration order).
+- Per-job `ScratchArena` (chained-slab bump allocator).
+- Typed `EventChannel<T>` (double-buffered, drained at tick end).
+- `Engine::setTimeScale` / `setPaused`.
+- Reserved spawn handles (`Engine::reserveEntityHandle`,
+  `SystemContext::reserveHandle`).
+- `EngineStats::commitDurationSeconds`; `JobSystemStats` counters.
 
-All three batches are pure additions. The public surface gained
-`Trace.hpp` and `SpatialHash.hpp` headers; everything else extended
-existing headers.
+### Batch 3 — ergonomics, tracing, async-loader contract, spatial hash
 
-## 3. Concrete near-term plan
+- `World::has<T>` / `World::get<T>`.
+- `Bundle` + `cb.spawnBundle` (variadic factory; compile-time mask).
+- `Engine::registerSystemAt` (insert at registration index).
+- `Engine::reserveEntityHandles(count, span)` batch form.
+- Parent auto-derive in default-mask `cb.spawn(...)`.
+- `Engine::frameSnapshot()` + `writeJsonLines` in `Trace.hpp`.
+- `IResourceLoader` contract + per-tick pump in `EngineImpl::step`.
+- `SpatialHash<Payload>` header-only uniform-grid helper.
 
-The §3 batch (3.1 – 3.6) below has fully landed (see §2 third batch).
-The next batch picks up from §4 / §7 — items previously underestimated
-or parked — plus the small wins that the third batch didn't sweep up.
+The public surface gained `Trace.hpp` and `SpatialHash.hpp`; everything
+else extended existing headers. 28 tests pin the documented
+invariants.
 
-### 3.7 Next batch (proposed)
+## 3. Planned batches — the road to Milestones 2–4
 
-Pure-additive items, sized like the previous batches. In priority
-order:
+This is the forward plan. The goal at the end of §3 is "a 3D RPG
+example can be developed on top of threadmaxx without patching engine
+internals." That requires three things the library does not yet have:
+
+- a wider data model (more component slots, archetype-style storage),
+- a richer rendering contract (passes, cameras, lights, skinned poses),
+- a real renderer to prove the contract — Vulkan, per §3.9.
+
+The batches are sized like prior batches (5–9 additive items each),
+sequenced so each one is shippable on its own and the public API
+grows monotonically. The mapping to milestones (§8):
+
+| Batch | Theme                              | Milestone(s)          |
+|-------|------------------------------------|-----------------------|
+| 4     | Observability + small Milestone-1 polish | M1 polish + M3 lead-in |
+| 5     | Data model widening                | M2 prep               |
+| 6     | Archetype/chunk storage            | M2                    |
+| 7     | Resource & event maturity          | M3                    |
+| 8     | Render contract expansion          | M4 prep               |
+| 9     | Vulkan reference renderer (example) | M4                    |
+| 10    | 3D RPG demo example                | M6 lead-in            |
+
+§3.9 covers the Vulkan defaulting strategy across batches 8–10.
+
+### 3.1 Batch 4 — Observability and small wins
+
+Pure-additive, sized like batches 1–3. Closes out Milestone 1 polish
+and seeds the tracing/event maturity that batch 7 builds on.
 
 - **Serialization trait hook (§7.8).** A trait pair
   `serialize(Component&)` / `deserialize(Component&)` per built-in
-  component, plus a `World::snapshot()` that captures the dense arrays.
-  Header-only sugar over the storage that the engine already exposes;
+  component, plus `World::snapshot()` that captures the dense arrays.
+  Header-only sugar on top of the storage the engine already exposes;
   migration support stays game-side.
-- **Per-job-duration histogram in `JobSystemStats`.** Bucketed
-  histogram (8–16 bins, log-spaced) of individual job durations. Use
-  cases: detect grain mis-tuning, see "is one job dominating?". Cheap
-  to maintain (per-worker accumulators, merged on read).
+- **Per-job-duration histogram in `JobSystemStats`.** 8–16 log-spaced
+  bins of individual job durations. Per-worker accumulators merged on
+  read. Detects grain mis-tuning and "is one job dominating?".
 - **Chrome-trace adapter.** A second serializer alongside
-  `writeJsonLines` that emits one `{ph:"X", ...}` record per system per
-  tick. Build on top of `frameSnapshot()` — no new instrumentation
-  surface.
-- **`Engine::events<T>().subscribe(fn)`.** Persistent subscription
-  helper on top of the existing event channels: keep a list of
-  callbacks invoked at drain time. Today users call
-  `events<T>().drainTick()` from a postStep hook themselves; a
-  subscribe shortcut is sugar.
-- **`HierarchySystem` configuration.** Expose a knob for whether scale
-  chains (today: never; some games want it sometimes). Default off
+  `writeJsonLines` (one `{ph:"X", ...}` record per system per tick).
+  Built on `frameSnapshot()`; no new instrumentation surface.
+- **`events<T>().subscribe(fn)`.** Persistent subscription helper on
+  top of the existing channels: keep a callback list, invoked at
+  drain time. Sugar over today's manual `drainTick()`-in-postStep
+  pattern.
+- **HierarchySystem scale-chain knob.** Optional config so the user
+  can choose whether scale propagates (today: never). Default off
   preserves current semantics.
+- **Queue-depth and wait-time fields on `SystemStats`.** Already
+  computable from existing primitives; expose them.
+- **`ILogger` interface.** Tiny `virtual log(level, message)`; engine
+  routes startup/shutdown warnings, system registration messages, and
+  loader errors through it. Default is `std::cerr`. Lets games plug
+  in their own log sink.
 
-§3.1 – §3.6 below are the prior-batch contents, kept for reference.
+### 3.2 Batch 5 — Data-model widening (Milestone 2 prep)
 
-### 3.1 `World::has<T>` and `World::get<T>` ✅ done (third batch)
+The current `Component` enum has 7 values. A 3D RPG needs more (health,
+faction, animation pose, physics body, AI state, …). Widening the
+mask is cheap; it has to happen before §3.3's archetype refactor so
+the storage change only happens once.
 
-Header-only sugar on top of the existing `tryGet*` accessors and the
-component-presence mask:
+- **Widen `ComponentSet` to 64 bits.** Switch `Component` underlying
+  type to `std::uint64_t`; `ComponentSet::all()` mask widens. Pure
+  internal change behind the existing API.
+- **Add engine-known component slots as POD storage** (no engine-side
+  systems — the engine just hosts the dense arrays):
+  - `Health { float current, max; }`
+  - `Faction { std::uint32_t id; }`
+  - `AnimationStateRef { ResourceId<AnimationGraph> graph; std::uint32_t state; float t; }`
+  - `PhysicsBodyRef { std::uint64_t handle; }` (opaque to engine)
+  - `NavAgentRef { std::uint64_t handle; }`
+  - `BoundingVolume { Vec3 min, max; }` (used by visibility culling in batch 8)
+  Each slot follows the same recipe (`CLAUDE.md` §"Adding a new
+  built-in component"). They are *categories*, not implementations:
+  the engine never integrates them; user systems do.
+- **`UserComponent<T>` extension hook.** A header-only `template<class T>`
+  mechanism that lets game code declare additional dense arrays under
+  engine-managed life cycle, parallel to the built-ins, without
+  patching the storage. Trade-off: discoverability vs. lock-in. If
+  this turns out to be too invasive, gate it on the archetype refactor
+  in §3.3.
+- **Tag-only components.** `StaticTag`, `DisabledTag`, `DestroyedTag`
+  — presence-only, no data; renderer/systems skip on `DisabledTag`.
+  Sized like adding any normal component, just without a dense array.
+- **Determinism golden-output test.** `tests/determinism_test.cpp`
+  runs a fixed seed scenario for N ticks, hashes the world state, and
+  compares to a baseline. Cheap regression guard for the archetype
+  refactor (§3.3) and the renderer expansion (§3.4).
+- **`forEachWith` mask cache.** Precompute the matching index span
+  once at preStep when masks are stable, reuse in `update`. Cheap
+  perf win; opt-in flag on the system.
 
-```cpp
-template <typename T> bool      World::has(EntityHandle) const noexcept;
-template <typename T> const T&  World::get(EntityHandle) const;
-```
+### 3.3 Batch 6 — Archetype / chunk storage (Milestone 2)
 
-`has<T>` is a one-liner: check the mask, then check the type. `get<T>`
-returns a reference (asserts on absent) — useful where a `nullptr`
-check is noise. Pure addition; type dispatch via the same `if constexpr`
-chain that lives in `Query.hpp::detail::componentBit`.
+Single big refactor; should not happen before §3.2 widens the mask and
+§3.1 lands the determinism harness. Effort sized at ~3 weeks.
 
-### 3.2 Frame snapshot for tracing ✅ done (third batch)
+- **Chunk-based `EntityStorage`.** Replace the parallel `std::vector`
+  per component with archetype chunks (e.g. 256 entities per chunk,
+  one chunk per unique component-set). Within a chunk, dense arrays
+  live contiguously per component for cache locality.
+- **Preserve the public dense-span surface where possible.** The
+  flattened `transforms()` / `velocities()` accessors stay (returning
+  a view over a temporary stitched span only when callers ask), but
+  add `forEachChunk<T...>(SystemContext&, fn)` for systems that want
+  the fast path. Document the perf delta in
+  `doc/components_and_queries.md`.
+- **Archetype-aware spawn/destroy.** `CommandBuffer::spawn` derives
+  the target archetype from the bundle's mask; `destroy` may swap to
+  a different archetype (for component remove flows).
+- **`addComponent<T>` / `removeComponent<T>`** on `CommandBuffer`
+  — today the only way to "add" a component is to set it during
+  spawn. Archetype storage makes the per-entity transition explicit.
+- **Migrate `forEachWith<...>` to iterate chunks whose mask is a
+  superset.** Drop the per-entity mask test inside the hot loop.
+- **Stress test.** `tests/archetype_storage_stress_test.cpp` —
+  spawn/destroy/component-flip 1M entities; assert no leaks, no
+  determinism drift against §3.2's baseline.
 
-A `Engine::frameSnapshot()` (or a hook on `IRenderer`) that emits the
-current tick's per-system durations and command counts as a tagged
-record. Wire into a Chrome-trace or Tracy consumer with a one-line
-adapter. The instrumentation hooks (`SystemStats`, `EngineStats`,
-`JobSystemStats`) are already there; what's missing is a serializer
-and a sink.
+This is the most disruptive batch in the plan. It is intentionally
+deferred until the renderer-side and resource-side contracts (§3.4,
+§3.5) have stabilized so the API doesn't churn twice.
 
-The right scope is small: emit JSON-lines records with the same field
-names that the snapshots already have, leave aggregation to whatever
-the user pipes them into.
+### 3.4 Batch 7 — Resource & event maturity (Milestone 3)
 
-### 3.3 Async resource loader contract ✅ done (third batch)
+`IResourceLoader` (batch 3) is the contract; this batch adds the
+pipeline shape an actual asset stream needs.
 
-The existing `ResourceRegistry` is the in-memory side; the missing
-piece is the loader. Concretely:
+- **Multi-stage loader pipeline.** Express load → decode → upload as
+  separate stages a loader can advance per tick. The engine still
+  pumps `update()` once; the loader chains internally.
+- **Reference-counted asset handles.** `ResourceHandle<T>` wraps a
+  `ResourceId<T>` with refcount semantics; the registry frees when
+  the last handle drops. Hot reload makes a new id; the handle
+  redirects.
+- **Hot-reload protocol.** `IResourceLoader::markStale(ResourceId)`
+  queues a reload; an internal `AssetReloaded` event channel
+  publishes the swap so user systems can update render data.
+- **Boot-time blocking preload.** `Engine::preloadResources(...)` for
+  the splash-screen case: pumps loaders synchronously until a named
+  set is ready.
+- **`IResourceLoader::onShutdown()`.** Engine calls before destroying
+  the loader so in-flight uploads can cancel gracefully.
+- **Configurable memory budget per loader.** Loaders surface a
+  current/max footprint; the registry reports the aggregate.
+- **Persistent event subscription cleanup.** A
+  `Subscription` handle returned by `subscribe(fn)` that auto-
+  unsubscribes on destruction.
 
-```cpp
-class IResourceLoader {
-public:
-    virtual ~IResourceLoader() = default;
-    virtual void update(Engine&) = 0;   // called once per tick during postStep
-};
+### 3.5 Batch 8 — Render contract expansion (Milestone 4 prep)
 
-void Engine::addResourceLoader(std::unique_ptr<IResourceLoader>);
-```
+Today's `RenderFrame` is a flat instance list. A 3D RPG renderer
+needs structure: cameras, lights, draw bins by pass, skinned poses,
+debug overlay. The shape is engine-owned, the population is
+user-system-owned, the consumption is renderer-owned.
 
-The engine doesn't spawn threads for the loader — it pumps `update()`
-on a designated postStep slot. The loader implementation owns its own
-I/O pool and calls `engine.resources().add(...)` when an asset is
-ready. This keeps the engine renderer-agnostic and asset-format-
-agnostic; it provides the *contract* and the tick-pump hook.
+- **Hierarchical `RenderFrame`.** New types under
+  `include/threadmaxx/render/`: `Camera`, `Light` (directional /
+  point / spot), `DrawItem`, per-pass bins
+  (`opaque` / `transparent` / `shadowCasters` / `overlay`), debug
+  geometry layer (lines, points, text).
+- **New built-in components.** `Camera` (perspective/ortho + view
+  matrix), `Light`, `MeshSkinned` (mesh + skeleton handle),
+  `AnimationPose` (per-bone transforms, ringbuffered),
+  `MaterialOverride` (per-instance params).
+- **Render-prep systems.** A new lifecycle hook
+  `ISystem::buildRenderFrame(RenderFrameBuilder&)` that runs after
+  `postStep` and writes into a per-system slice of the frame.
+  Engine merges slices on the sim thread (deterministic, same shape
+  as commit). Existing flat `RenderInstance` path stays as the
+  default for headless / minimal renderers.
+- **Visibility culling stage.** Built-in system that reads `Camera`
+  + `BoundingVolume` (from §3.2), writes a per-camera visible set
+  used by the renderer.
+- **Stable instance-buffer layout helper.** Header-only struct that
+  any renderer can copy into a GPU buffer — predictable alignment,
+  shader-compatible field order. Lives in
+  `include/threadmaxx/render/`; not Vulkan-specific.
+- **Per-frame upload ring helpers.** Same idea: shared frame-to-frame
+  allocator that any renderer can use without hard-coding a backend.
 
-Hot-reload becomes the same contract with a second method
-(`reload(ResourceId)` / `markStale(ResourceId)`).
+### 3.6 Batch 9 — Vulkan reference renderer (Milestone 4)
 
-### 3.4 Spatial-hash helper ✅ done (third batch)
+The first concrete renderer that exercises the full §3.5 contract.
+**Lives in `examples/vulkan_renderer/`, NOT in the core library** —
+that preserves the renderer-agnostic guarantee. The core lib's only
+Vulkan-aware concession is the optional helpers in §3.5.
 
-Spatial queries (neighbor lookups, broadphase, AOI for streaming)
-recur across every gameplay system. The engine can host a generic
-uniform-grid + small fallback list, parameterized over component
-type:
+- **`examples/vulkan_renderer/`.** Vulkan 1.3 (dynamic rendering,
+  timeline semaphores, sync2), GLFW for window/surface. Treated like
+  `examples/boids` — opt-in via CMake, skipped if Vulkan SDK not found.
+- **Implements `IRenderer`** against the hierarchical `RenderFrame`:
+  multi-camera, per-pass binning, instanced mesh draw, skinned pose
+  upload, depth + shadow pass, simple PBR-ish opaque shader, debug
+  overlay.
+- **Asset loaders.** A `MeshLoader` / `TextureLoader` /
+  `ShaderLoader` (compiled SPIR-V at build time via `glslc`) that
+  exercise the §3.4 multi-stage pipeline and refcounted handles.
+- **Hot reload.** Shader edits trigger SPIR-V rebuild and pipeline
+  rebuild via the `AssetReloaded` channel from §3.4.
+- **Cross-platform CI.** Build on Linux + Windows runners. macOS via
+  MoltenVK marked best-effort.
+- **Smoke scene.** Animated character on a lit terrain plane, third-
+  person camera, 1k crowd of instanced meshes — proves §3.5's
+  contracts under load.
 
-```cpp
-template <typename T>
-SpatialIndex<T> Engine::spatialIndex();  // engine-owned, rebuild per-tick
-```
+### 3.7 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
 
-The implementation is straightforward — what makes this a library
-concern (not a per-game concern) is consistent integration with the
-wave scheduler and the per-job scratch arena. The grid rebuild can
-land in a `preStep` hook on a built-in system, scoped by the
-component the user is indexing.
+Closes the loop. Built on top of the Vulkan renderer; demonstrates
+that a real game can be developed without engine patches.
 
-This unblocks: spatial AI queries, navigation costing, range-based
-combat targeting, distance culling.
+- **`examples/rpg_demo/`.** A small open scene: terrain, day/night
+  cycle, a player, ~50 NPCs with simple behavior trees,
+  inventory pickups, save/load, profiling HUD.
+- **Exercises every milestone.** Archetype storage (M2), multi-stage
+  asset loading + hot reload (M3), pass-aware rendering with skinned
+  characters (M4), serialization (batch 4), spatial-hash AOI for
+  AI (batch 3), event subscriptions (batch 4), Chrome-trace
+  capture (batch 4).
+- **No engine patches.** The success criterion is that everything
+  lives in `examples/rpg_demo/` plus the public threadmaxx headers
+  — if the demo needs an engine change, it goes back through the
+  next batch instead of into the example.
 
-### 3.5 `Bundle` / archetype-lite ✅ done (third batch)
+### 3.8 Items intentionally NOT in §3
 
-Without the full archetype refactor, a smaller win is a `Bundle<...>`
-helper that packages a set of components and their masks for spawning:
+The following are good extensions but belong above the library (or in
+sibling libraries). Calling them out so they don't accidentally creep
+into a batch.
 
-```cpp
-auto enemy = bundle<Transform, Velocity, RenderTag>(t, v, r);
-cb.spawn(enemy);
-```
+- **Animation pipeline math** (blend trees, IK, cloth). The
+  `AnimationStateRef` / `AnimationPose` slots give game code a place
+  to put the math; the engine does not own it.
+- **Physics solver.** The `PhysicsBodyRef` slot is the integration
+  point. A Jolt-backed integration example may ship alongside
+  `examples/rpg_demo/` but is not in the core library.
+- **Networking / replication / rollback.** Deterministic commit and
+  stable entity IDs are the engine's contribution; the wire protocol
+  is a sibling library.
+- **Navmesh / pathfinding.** Sibling library; the engine just
+  provides the scheduling primitives and the `NavAgentRef` slot.
+- **Editor / hot-reload UI.** Out of scope until the public API has
+  stabilized through M4.
 
-The compile-time component list yields a constexpr `initialMask`; the
-runtime cost is zero compared to today's manual `seed.spawn(t, v, r,
-...)`. Bundles are *recording-side* sugar — no engine internals
-change.
+### 3.9 Vulkan as the implicit default for M4+
 
-### 3.6 The unglamorous wins ✅ done (third batch)
+A note on strategy, since the user-facing question came up.
 
-Smaller items that should land alongside the above:
+**Yes — designing toward Vulkan as the default reference renderer
+for M4+ is the right call, and it stays compatible with the
+renderer-agnostic core.** Concretely:
 
-- Tracy / Chrome-trace integration as a header-only adapter on top of
-  the existing stats structs.
-- A `Engine::registerSystemAt(position, ...)` for tests / mod loaders
-  that need to inject a system at a specific point in the registration
-  order.
-- A `tryReserveHandles(count)` batch form to amortize the reservation
-  mutex when a job spawns many entities at once.
-- Promote `Parent` presence to be auto-derived in
-  `CommandBuffer::spawn(...)` like `RenderTag` already is.
+- The `IRenderer` interface and the flat `RenderFrame` are
+  renderer-agnostic by construction; Vulkan slots in cleanly as a
+  consumer. The §3.5 hierarchical `RenderFrame` is still
+  API-agnostic — it speaks in cameras, lights, draw items, and pose
+  buffers, not in `VkCommandBuffer`.
+- The Vulkan renderer lives in `examples/vulkan_renderer/`, NOT in
+  the core library. It is opt-in via CMake and skipped when the
+  Vulkan SDK isn't available — the same pattern `examples/boids` uses
+  for SDL2 today. Core library users who never touch Vulkan pay zero
+  cost.
+- Optional shared helpers (instance buffer layout, frame allocator,
+  upload-ring scaffolding) live in `include/threadmaxx/render/` and
+  are renderer-neutral. Any backend (Vulkan, WebGPU via Dawn, D3D12,
+  Metal via MoltenVK) can use them.
+- Vulkan's style — pre-recorded command buffers, explicit batching,
+  one frame-graph snapshot per submit — matches threadmaxx's existing
+  per-tick `RenderFrame` snapshot model very well. Minimal
+  impedance mismatch.
+- Cross-platform reach is good: Linux + Windows + Android natively,
+  macOS via MoltenVK (best-effort), web via WebGPU through a
+  parallel adapter later.
+- Costs to acknowledge up front:
+  - Vulkan SDK becomes a build dep for the example (not the lib).
+  - Shaders go through `glslc` (or `slang`) at build time; CMake
+    rule under the example only.
+  - Window/surface dep (GLFW preferred over SDL2 here — GLFW has
+    cleaner Vulkan surface helpers, smaller footprint).
+  - Vulkan-specific gotchas (descriptor management, validation
+    layers in debug, swapchain recreation on resize) are
+    confined to the example.
 
-## 4. Items that the previous plan got right but underestimates the cost of
+The strategy that protects the library is: **every renderer-facing
+addition in §3.5 is justified by a non-Vulkan-specific use case
+first.** If a feature only makes sense for Vulkan, it belongs in
+`examples/vulkan_renderer/`, not in the core. That keeps the door
+open for a WebGPU, D3D12, or even a pure-software reference renderer
+later without API churn.
 
-- **Archetype/chunk storage.** Still listed as a milestone. Still a
-  deep refactor of `EntityStorage` that changes the meaning of every
-  dense span the engine hands out. Sequencing: it should not happen
-  until the public surface (queries, events, resources) is settled —
-  otherwise the API churns twice. Today the per-entity `ComponentMask`
-  serves the immediate need (presence filtering); the archetype refactor
-  is a perf play, not a correctness play.
-- **Frame task graph.** A useful Phase 3 win; smaller bang-for-buck
-  than the JobSystem rewrite (now done). Once intra-system parallelism
-  is the bottleneck (currently it isn't), this is the right next move.
+## 4. Items the previous plan got right but underestimates the cost of
+
+- **Archetype/chunk storage.** Now §3.3 batch 6. Still a deep
+  refactor of `EntityStorage`. Sequencing matters: it should not
+  happen until the public surface (queries, events, resources,
+  renderer contract) is settled — otherwise the API churns twice.
+  Today the per-entity `ComponentMask` serves the immediate need
+  (presence filtering); the archetype refactor is a perf play, not a
+  correctness play.
+- **Frame task graph.** A useful Phase-3-of-§6 win; smaller
+  bang-for-buck than the JobSystem rewrite (done). Once intra-system
+  parallelism is the bottleneck (currently it isn't), this becomes
+  the right next move.
 
 ## 5. Out of scope for `threadmaxx` itself
 
 These are good items for a *game* built on `threadmaxx`, but baking
-them into the backend would either (a) tie the library to a specific
-third-party implementation, or (b) bloat the public surface past the
+them into the backend would either tie the library to a specific
+third-party implementation or bloat the public surface past the
 "small, stable contract" principle. The right shape for the engine is
-to provide hooks (component categories, event channels, frame-late
-callbacks) rather than ship the systems themselves:
+to provide hooks (component categories, event channels, render-prep
+slots) rather than ship the systems themselves:
 
-- **Networking, replication, rollback.** Belongs above the engine. The
-  engine should at most provide deterministic commit + stable entity
-  IDs (both already true) so a game can layer its own snapshot/delta
-  logic.
+- **Networking, replication, rollback.** Belongs above the engine.
+  The engine should at most provide deterministic commit + stable
+  entity IDs (both already true) so a game can layer its own
+  snapshot/delta logic.
 - **Animation systems / IK / cloth / blend trees.** A real animation
   pipeline depends on the renderer's skinning model and the asset
-  format. The engine can host these as user systems once a `Skeleton` /
-  `AnimationState` component shape exists, but it should not own the
-  math.
-- **Physics integration (broadphase / narrowphase / rigid body).** Same
-  reasoning — Bullet / Jolt / PhysX each impose a world ownership model
-  incompatible with hardcoding one. A `PhysicsBody` component category
-  and read-only world snapshot pattern is the engine's job; the solver
-  is not.
+  format. The engine can host these as user systems once a
+  `Skeleton` / `AnimationState` component shape exists (§3.2), but it
+  should not own the math.
+- **Physics integration (broadphase / narrowphase / rigid body).**
+  Same reasoning — Bullet / Jolt / PhysX each impose a world
+  ownership model incompatible with hardcoding one. A `PhysicsBodyRef`
+  component slot and read-only world snapshot pattern is the
+  engine's job; the solver is not.
 - **Audio mixing / 3D audio.** Wholly orthogonal to a game backend.
-- **Save/load + migration.** A serialization *hook* on components is in
-  scope (a single trait function pair); a full versioned migration
-  system is not.
+- **Save/load migration.** A serialization *hook* on components is in
+  scope (§3.1); a full versioned migration system is not.
 - **Navmesh / pathfinding.** Belongs in a domain library; the engine
   only needs to allow background work to be scheduled.
-- **Editor/tooling/hot-reload.** Out of scope until the public API has
-  stabilized.
+- **Editor/tooling/hot-reload UI.** Out of scope until the public API
+  has stabilized through Milestone 4.
 
 ## 6. Multithreading and performance roadmap
 
-The previous roadmap's phases still describe the right arc; what
-changed is that Phase 1 is done.
+The previous roadmap's phases still describe the right arc; Phase 1
+is done.
 
 ### Phase 1 — stabilize the current job model  ✅ done
 
@@ -333,163 +432,86 @@ changed is that Phase 1 is done.
 ### Phase 2 — split system work into finer tasks (current)
 
 The wave scheduler buys parallelism *between* systems. The next axis
-is finer slicing *within* a system: per-chunk iteration is already
-expressible via `parallelFor`, but the engine doesn't yet help with:
+is finer slicing *within* a system: per-chunk iteration becomes
+expressible after §3.3, and per-render-pass iteration becomes
+expressible after §3.5.
 
-- per-archetype iteration (waiting on the archetype refactor),
-- per-region iteration (spatial hashing — game-side for now),
-- per-animation-graph iteration (waiting on animation hooks),
-- per-visible-set iteration (waiting on render-frame structure).
+### Phase 3 — frame task graph
 
-The near-term plan's items (scratch arena, event channels) move in this
-direction without committing to a specific axis.
-
-### Phase 3 — add frame task graphs
-
-After Phase 2's primitives are in, layer an explicit DAG on top of the
-wave scheduler: each system optionally declares `depends_on(name)` /
-`provides(name)` so the engine can schedule producer-consumer pairs in
-the same wave when reads/writes alone don't capture the order. Today
-the wave scheduler's R/W rule already handles the common cases; the
-graph is for the corners.
+After Phase 2's primitives are in, layer an explicit DAG on top of
+the wave scheduler: systems optionally declare `depends_on(name)` /
+`provides(name)` so the engine can schedule producer-consumer pairs
+in the same wave when reads/writes alone don't capture the order.
 
 ### Phase 4 — cancellation and budgets
 
 Frame cancellation, streaming cancellation, budget-based task
-scheduling, job prioritization. Example: if a new camera position
-invalidates an old culling job, the engine should drop it early.
-Useful but not blocking anyone today.
+scheduling, job prioritization.
 
 ### Phase 5 — reduce contention in storage
 
-The archetype/chunk refactor. Read-only snapshots. Double/triple
-buffering where useful. Append-only command streams. Per-worker
-scratch arenas (covered above).
+Read-only snapshots, double/triple buffering where useful, append-
+only command streams. The per-worker scratch arena from batch 2 is a
+down payment.
 
 ### Phase 6 — measure everything
 
-Job duration histograms, hot system ranking, cache-friendly batch
-sizes, allocation counters, frame hitches. Most of this is now
-*possible* (the instrumentation hooks exist); what's missing is
-ingestion. A `tracy` hook would be the natural integration once
-`EngineStats` extensions land.
+Job duration histograms (§3.1), Chrome-trace adapter (§3.1), hot
+system ranking, cache-friendly batch sizes, allocation counters,
+frame hitches. Most of this is now *possible*; what's missing is
+ingestion.
 
 ## 7. Public API extensions still on deck
 
-### 7.1 World and entity querying
+This section used to enumerate planned API additions. With §3 now
+listing them by batch, this is the cross-reference index:
 
-The query helpers cover most needs; what's missing is sugar for the
-"has T?" / "get T as optional" pattern:
-
-- `World::has<T>(EntityHandle)` — wraps the `tryGet` / mask-check pair.
-- `World::get<T>(EntityHandle)` — same but asserts on absent.
-
-Both are header-only on top of the existing accessors. Pure addition.
-
-### 7.2 Component and archetype model
-
-Deferred. The per-entity mask covers presence without the refactor cost.
-
-### 7.3 Resource/asset system
-
-`ResourceRegistry` is the minimum useful surface. Future extensions:
-
-- Async loader contract: the engine provides a `IResourceLoader`
-  interface that game code can register against. The engine does not
-  spawn threads for it — the loader uses its own pool and calls `add()`
-  when ready.
-- Hot reload: an `update()` method on the loader that the engine pumps
-  during a designated postStep. Out of scope until 7.1 lands.
-
-### 7.4 Event / message system
-
-Covered in §3.3.
-
-### 7.5 Job and scheduling API
-
-A public task interface beyond `parallelFor` (futures, continuations,
-cancellation tokens). Deferred until intra-system parallelism is the
-proven bottleneck.
-
-### 7.6 Timing and simulation controls
-
-Pause / time-scale covered in §3.4. Substepping deferred.
-
-### 7.7 Render abstraction expansion
-
-A flat `RenderFrame` is fine for the minimal backend; a 3D engine
-usually needs visibility lists, draw-item bins by pass, light lists,
-camera data, post-processing inputs, debug overlay layer. The right
-shape is probably a hierarchical `RenderFrame` with per-pass slots
-that user-side "render prep" systems populate before the renderer is
-called. Design problem more than implementation problem; deferred
-until a real 3D renderer is targeting threadmaxx.
-
-### 7.8 Serialization and save/load
-
-A trait pair `serialize(Component&)` / `deserialize(Component&)` per
-component, plus a `World::snapshot()` that captures the dense arrays.
-Migration support stays game-side. Sized like 7.1 — additive header
-helpers. Now listed as a §3.7 candidate; deferred again only if a
-bigger refactor (archetype storage) ships first.
-
-### 7.9 Networking support
-
-The engine already provides deterministic commit and stable entity
-IDs. The next step is a non-mandatory "publish per-tick delta"
-extension point; deferred until a real networking client is
-targeting threadmaxx.
-
-### 7.10 Debug/profiling API
-
-Scoped profiling markers, job-timing stats, per-system timing stats,
-queue-depth stats, frame breakdowns. Per-system stats are in; queue-
-depth and per-job histograms are §3.6.
+- `World::has<T>` / `World::get<T>` — ✅ batch 3.
+- Async loader contract — ✅ batch 3 (basics); §3.4 batch 7 (pipeline).
+- Hot reload — §3.4 batch 7.
+- Save/load (serialization trait pair) — §3.1 batch 4.
+- Tracing / Chrome-trace adapter — §3.1 batch 4.
+- Persistent event subscribe — §3.1 batch 4.
+- New component slots (Health, Faction, …) — §3.2 batch 5.
+- Archetype storage + `forEachChunk` — §3.3 batch 6.
+- Pass-aware `RenderFrame` — §3.5 batch 8.
+- Job-duration histograms — §3.1 batch 4.
+- Determinism golden tests — §3.2 batch 5.
+- Networking deltas, task graph, cancellation — deferred to Phase 3+
+  of §6.
 
 ## 8. Roadmap milestones
 
 ### Milestone 1 — Hardening the current core  ✅ done
 
-Done:
-
-- Per-system instrumentation + `JobSystemStats`.
-- Sharded job queue.
-- Per-entity component-presence mask.
-- Hierarchy system.
-- Typed resource registry.
-- Lifecycle hooks (`preStep` / `postStep`).
-- Scratch arenas.
-- Typed event channels.
-- Pause / time-scale.
-- Reserved spawn handles + batch reserve.
-- Commit-phase timing in `EngineStats`.
-- `World::has<T>` / `World::get<T>`.
-- `Bundle` + `cb.spawnBundle`.
-- `Engine::registerSystemAt`.
-- `frameSnapshot` + JSON-Lines tracing.
-- `IResourceLoader` contract + per-tick pump.
-- `SpatialHash<Payload>` helper.
-- Parent auto-derive in default `spawn`.
+Per-system instrumentation, sharded job queue, presence mask,
+hierarchy, resource registry, lifecycle hooks, scratch arenas, event
+channels, pause/time-scale, reserved handles, commit timing,
+`has`/`get`, `Bundle`, `registerSystemAt`, `frameSnapshot`,
+`IResourceLoader` contract, `SpatialHash`, Parent auto-derive.
 
 Exit criteria met: a small game can ship against the current public
-API without patching the engine. The next milestone is data-model
-upgrades (archetypes) and the §3.7 next-batch items (serialization
-hook, job-duration histograms, Chrome-trace adapter, event
-subscriptions).
+API without patching the engine.
 
 ### Milestone 2 — Data model upgrade
 
-Archetype/chunk storage, presence-typed queries, improved cache
-locality. Deferred until Milestone 1 ships.
+Widened `ComponentSet`, additional engine-known component slots,
+archetype/chunk storage, `forEachChunk`, determinism golden tests.
+Covered by §3.2 batch 5 and §3.3 batch 6.
 
 ### Milestone 3 — Resource and event layers
 
-Async loader contract, hot-reload, persistent event subscriptions.
-Once Milestone 1's event channels exist, this is incremental.
+Multi-stage async loader pipeline, refcounted asset handles, hot
+reload, boot-time preload, persistent event subscriptions, loader
+shutdown contract. Covered by §3.4 batch 7.
 
-### Milestone 4 — Rendering contract expansion
+### Milestone 4 — Rendering contract expansion + reference renderer
 
-Pass-aware `RenderFrame`. Deferred; depends on a concrete renderer.
+Hierarchical `RenderFrame`, new render-side components (Camera,
+Light, MeshSkinned, AnimationPose, MaterialOverride), render-prep
+hooks, visibility culling, shared instance/pose buffer helpers.
+Vulkan reference renderer as `examples/vulkan_renderer/`. Covered by
+§3.5 batch 8 and §3.6 batch 9.
 
 ### Milestone 5 — Task graph and deep parallelism
 
@@ -498,8 +520,9 @@ Phase 3 of the perf roadmap.
 
 ### Milestone 6 — RPG feature readiness
 
-Serialization, navigation, animation, physics, networking. The
-"endgame" — each is a sub-project on its own.
+Serialization (already in M2-era), navigation, animation, physics,
+networking. The "endgame" — each is a sibling sub-project on its
+own. `examples/rpg_demo/` (§3.7 batch 10) is the integration proof.
 
 ## 9. Engineering priorities
 
@@ -529,17 +552,21 @@ When implementing future work, prioritize in this order:
 - and it scales across multiple CPU cores in common gameplay and
   render-prep workloads.
 
-Today: items 5 and 7 are in; the rest are ahead. Milestone 1
-completion gets us to "good enough for a 2D-or-light-3D game". The
-heavier 3D RPG bar is Milestone 4+.
+Today: items "stable serialization" and "deterministic mode
+declared" are in (or in batch 4); the rest depends on §3 batches 5–10.
 
 ## 11. Final note
 
-The current architecture is a solid foundation, and the recent additions
-(component masks, hierarchy, resources, work-stealing queue, per-system
-stats) confirm that the layering is sound — each landed as a pure
-addition without churning the public API. The future work is mostly
-about turning a good internal backend into a fully usable engine
-library: richer APIs, more scalable tasking, better world
-representation, and support for the systems a real 3D RPG actually
-needs.
+The current architecture is a solid foundation, and the Milestone 1
+additions (component masks, hierarchy, resources, work-stealing
+queue, per-system stats, lifecycle hooks, events, scratch, time
+control, tracing, async-loader contract, spatial hash) confirm that
+the layering is sound — every one landed as a pure addition without
+churning the public API.
+
+The §3 plan deliberately defers the most disruptive refactor
+(archetype storage) until the renderer-side and resource-side
+contracts have settled, and treats the Vulkan reference renderer as
+an example, not a library dependency. That keeps the
+renderer-agnostic guarantee intact while still letting M4+ work
+target a real, modern API.
