@@ -1,3 +1,20 @@
+/// @file HierarchySystem.cpp
+/// Built-in hierarchy propagation system. Reads `Transform + Parent`;
+/// writes `Transform`.
+///
+/// Algorithm: build a handle→dense-index map once per tick, then
+/// resolve each parented entity by walking its chain to a root,
+/// memoizing computed world transforms along the way. Multi-level
+/// chains converge in one pass.
+///
+/// World pose composition:
+///   - position    = parent.position + rotate(parent.orientation, local.position)
+///   - orientation = parent.orientation * local.orientation  (Hamilton product)
+///   - scale       = local.scale  (NOT chained; see doc/hierarchy.md)
+///
+/// Runs single-threaded under `ctx.single()` because the DFS read-write
+/// pattern is incompatible with parallel iteration (a child reads its
+/// own parent's already-resolved world transform).
 #include "threadmaxx/System.hpp"
 #include "threadmaxx/World.hpp"
 

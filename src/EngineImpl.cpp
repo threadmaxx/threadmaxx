@@ -1,3 +1,23 @@
+/// @file EngineImpl.cpp
+/// Heart of the engine. Owns the lifecycle (`initialize` / `step` / `run` /
+/// `shutdown`), the wave scheduler, the commit phase, and the double-
+/// buffered render-frame publication.
+///
+/// Maintainer reading order:
+///   - `step()` is the canonical tick: reset per-system stats, run waves
+///      (each wave fans out across helper threads, with the tail running
+///      on the sim thread to avoid a wasted join), commit each system's
+///      buffers in registration order, advance tick, build + publish
+///      render frame.
+///   - `commitBuffer()` is the only path that mutates `EntityStorage`.
+///      Every new built-in component or command variant must extend the
+///      `std::visit` lambda here.
+///   - `rebuildWaves()` is the greedy first-fit packer; it is recomputed
+///      every `registerSystem` so wave shape stays consistent with the
+///      currently-registered set.
+///   - `buildRenderFrame()` is the only path that fills
+///      `renderInstanceBuffers_`; publish is via
+///      `frontIndex_.store(back, release)`.
 #include "EngineImpl.hpp"
 
 #include "threadmaxx/Engine.hpp"

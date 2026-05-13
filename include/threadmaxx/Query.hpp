@@ -14,18 +14,22 @@
 
 namespace threadmaxx {
 
-// Helpers that turn the "grab dense spans, write parallelFor by hand" pattern
-// into a one-liner. Every live entity has every built-in component (the
-// engine stores them in parallel arrays), so a query over a subset of
-// component types is really "iterate all entities, hand me these refs".
-//
-//     forEach<Transform, Velocity>(ctx,
-//         [dt](EntityHandle e, const Transform& t, const Velocity& v,
-//              CommandBuffer& cb) {
-//             Transform next = t;
-//             next.position = t.position + v.linear * dt;
-//             cb.setTransform(e, next);
-//         });
+/// @file Query.hpp
+/// Helpers that turn the "grab dense spans, write parallelFor by hand"
+/// pattern into a one-liner. Every live entity has every built-in
+/// component (parallel dense arrays), so a query over a subset is
+/// really "iterate all entities, hand me these refs".
+///
+/// Example:
+/// @code
+/// forEach<Transform, Velocity>(ctx,
+///     [dt](EntityHandle e, const Transform& t, const Velocity& v,
+///          CommandBuffer& cb) {
+///         Transform next = t;
+///         next.position = t.position + v.linear * dt;
+///         cb.setTransform(e, next);
+///     });
+/// @endcode
 
 namespace detail {
 
@@ -67,10 +71,20 @@ void invokeAt(F& fn, EntityHandle e, const Spans& spans,
 
 } // namespace detail
 
-// Parallel over all live entities. The callable is invoked as
-//   fn(EntityHandle, const C0&, const C1&, ..., CommandBuffer&)
-// with one CommandBuffer per worker chunk; the engine commits the buffers
-// in submission order after the call returns.
+/// Parallel iteration over all live entities.
+///
+/// The callable is invoked as
+/// `fn(EntityHandle, const C0&, const C1&, ..., CommandBuffer&)` with
+/// one CommandBuffer per worker chunk; the engine commits the buffers
+/// in submission order after the call returns.
+///
+/// @tparam Components Built-in component types to project as dense
+///                    references. Today: Transform, Velocity, RenderTag,
+///                    UserData.
+/// @param ctx   System context (provides world, dt, tick, and the worker
+///              pool).
+/// @param fn    Per-entity callable.
+/// @param grain Job size hint; 0 lets the engine pick.
 template <typename... Components, typename F>
 void forEach(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
     const auto& world = ctx.world();
@@ -90,11 +104,12 @@ void forEach(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
         });
 }
 
-// Presence-filtered variant. Same callable shape as forEach, but only invokes
-// it for entities whose component mask has all of the requested component
-// bits set. The mask is checked once per entity inside each chunk; the
-// dispatch is still over `count` entities so jobs are sized identically to
-// forEach. Use this in place of sentinel checks like `meshId < 0`.
+/// Presence-filtered variant of @ref forEach.
+///
+/// Same callable shape, but only invokes it for entities whose mask
+/// has all of the requested component bits set. The mask is checked
+/// once per entity inside each chunk; job sizing is identical to
+/// `forEach`. Use this in place of sentinel checks like `meshId < 0`.
 template <typename... Components, typename F>
 void forEachWith(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
     static_assert(sizeof...(Components) > 0,
@@ -119,8 +134,10 @@ void forEachWith(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
         });
 }
 
-// Single-threaded equivalent. Useful when the per-entity work is too small
-// to parallelize, or when the body needs to observe state across entities.
+/// Single-threaded equivalent of @ref forEach.
+///
+/// Useful when the per-entity work is too small to parallelize, or
+/// when the body needs to observe state across entities.
 template <typename... Components, typename F>
 void forEachSerial(SystemContext& ctx, F&& fn) {
     const auto& world = ctx.world();

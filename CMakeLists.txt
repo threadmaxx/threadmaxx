@@ -98,3 +98,20 @@ if (THREADMAXX_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# --------------------------------------------------------------------------
+# Documentation
+# --------------------------------------------------------------------------
+# Optional `doc` target. Only registered when Doxygen is installed — the
+# library itself never needs it. Run with:
+#     cmake --build build --target doc
+# Output lands in <source>/doc/generated/html (path set in Doxyfile so
+# editor previewing works whether or not CMake is involved).
+find_package(Doxygen QUIET)
+if (DOXYGEN_FOUND)
+    add_custom_target(doc
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating threadmaxx API documentation with Doxygen"
+        VERBATIM)
+endif()

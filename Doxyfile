@@ -1,0 +1,86 @@
+# Doxyfile for threadmaxx — kept minimal on purpose. Only knobs that diverge
+# from Doxygen defaults are set; everything else inherits Doxygen 1.9+'s
+# defaults. Build via `cmake --build build --target doc` (the target is
+# defined in CMakeLists.txt and only registered when Doxygen is found).
+
+PROJECT_NAME           = "threadmaxx"
+PROJECT_NUMBER         = 0.1.0
+PROJECT_BRIEF          = "Renderer-agnostic C++20 game backend with a worker-thread job system."
+OUTPUT_DIRECTORY       = doc/generated
+
+# Sources
+INPUT                  = include/threadmaxx \
+                         src \
+                         doc \
+                         README.md \
+                         ARCHITECTURE.md \
+                         FUTURE_WORK.md
+FILE_PATTERNS          = *.hpp *.cpp *.md
+RECURSIVE              = YES
+EXAMPLE_PATH           = examples
+EXAMPLE_PATTERNS       = *.cpp *.hpp
+EXAMPLE_RECURSIVE      = YES
+
+# Render Markdown as first-class pages and let README.md be the landing page.
+USE_MDFILE_AS_MAINPAGE = README.md
+MARKDOWN_SUPPORT       = YES
+TOC_INCLUDE_HEADINGS   = 3
+
+# Extract everything that's documented; do NOT scrape undocumented internals.
+# The public API headers are exhaustively annotated, so they show up. The
+# private src/ files have file-level briefs and inline notes — those become
+# "File Documentation" pages, which is what maintainers want.
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_LOCAL_CLASSES  = NO
+
+# Don't dump everything in the standard library on us.
+BUILTIN_STL_SUPPORT    = YES
+
+# Cross-referencing
+SOURCE_BROWSER         = YES
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+REFERENCES_LINK_SOURCE = YES
+
+# Custom command aliases. `@thread_safety` and `@pre` are used throughout
+# the public headers; defining them here makes Doxygen render them in the
+# standard "Custom command" style instead of warning.
+ALIASES                = "thread_safety=@par Thread-safety^^" \
+                         "pre=@par Precondition^^"
+
+# Quiet output for CI logs.
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+# Doxygen emits "unable to resolve reference" for cross-document Markdown
+# links of the form `[label](other_page.md)` because it tries to look up
+# the page by the absolute path that the link resolves to. The links
+# work correctly in the generated HTML (every page in `doc/` ends up as
+# its own .html anchor), so we silence the noise rather than rewrite
+# the guide in Doxygen-only `\ref` syntax (which would break GitHub
+# rendering). Set this back to YES when chasing real doc errors.
+WARN_IF_DOC_ERROR      = NO
+WARN_NO_PARAMDOC       = NO
+
+# Output formats. HTML for browsing; LaTeX off (we don't ship a PDF).
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_OUTPUT            = html
+HTML_DYNAMIC_SECTIONS  = YES
+HTML_COLORSTYLE        = AUTO_LIGHT
+
+# Diagrams. Doxygen's built-in include/collaboration graphs are fine; don't
+# require Graphviz so a docs build doesn't fail on a developer machine
+# without it installed. If you have dot installed, set HAVE_DOT = YES to get
+# class hierarchy and collaboration diagrams.
+HAVE_DOT               = NO
+
+# Project-specific predefines. Same set the library compiles under so
+# Doxygen sees the same code path.
+PREDEFINED             = __cplusplus=202002L
+
+# Treat these C++20 isms as expected so Doxygen doesn't warn.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES

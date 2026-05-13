@@ -1,10 +1,11 @@
 #pragma once
 
-// Umbrella header — pulls in the full public API. Game code can simply do
-//
-//     #include <threadmaxx/threadmaxx.hpp>
-//
-// or include the individual headers it actually uses.
+/// @file threadmaxx.hpp
+/// Umbrella header — pulls in the full public API. Game code can simply do
+/// @code
+///     #include <threadmaxx/threadmaxx.hpp>
+/// @endcode
+/// or include the individual headers it actually uses.
 
 #include "CommandBuffer.hpp"
 #include "Components.hpp"

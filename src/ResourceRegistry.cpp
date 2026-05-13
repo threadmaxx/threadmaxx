@@ -1,3 +1,11 @@
+/// @file ResourceRegistry.cpp
+/// Type-erased implementation of the public @ref threadmaxx::ResourceRegistry.
+///
+/// Each `std::type_index` gets its own bucket of slots. Slots are reused
+/// after `remove()`; generations bump so stale handles never alias new
+/// values. All operations take a single internal mutex — that's fine
+/// for setup-time registration and per-frame lookups but not for high-
+/// throughput concurrent inserts.
 #include "threadmaxx/Resource.hpp"
 
 #include <mutex>

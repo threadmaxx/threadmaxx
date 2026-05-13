@@ -9,8 +9,8 @@
 
 namespace threadmaxx {
 
-// One renderable entity, flattened to a POD the renderer can consume without
-// touching engine internals.
+/// One renderable entity, flattened to a POD the renderer can consume
+/// without touching engine internals.
 struct RenderInstance {
     EntityHandle entity;
     Transform transform;
@@ -20,15 +20,17 @@ struct RenderInstance {
     std::uint64_t userData = 0;
 };
 
-// Snapshot the renderer sees for a given tick. Owned by the engine; the
-// renderer borrows it via std::span and must not retain pointers across
-// submitFrame() calls.
-//
-// Interpolation alpha: when `alpha == 0` the frame is the state at the end
-// of `tick`. When `0 < alpha < 1` the frame represents wall-clock time
-// `alpha * deltaTime` past that tick — i.e. between `tick` and `tick+1`.
-// Renderers that want smooth motion should cache the previous frame's
-// transforms (keyed by entity) and lerp `prev -> current` by `alpha`.
+/// Snapshot the renderer sees for a given tick.
+///
+/// Owned by the engine; the renderer borrows it via `std::span` and
+/// must not retain pointers across `submitFrame()` calls.
+///
+/// Interpolation alpha: when `alpha == 0` the frame is the state at the
+/// end of `tick`. When `0 < alpha < 1` the frame represents wall-clock
+/// time `alpha * deltaTime` past that tick — i.e. between `tick` and
+/// `tick+1`. Renderers that want smooth motion should cache the
+/// previous frame's transforms (keyed by entity) and lerp
+/// `prev -> current` by `alpha`.
 struct RenderFrame {
     std::uint64_t tick = 0;
     double simulationTime = 0.0;

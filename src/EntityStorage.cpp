@@ -1,3 +1,13 @@
+/// @file EntityStorage.cpp
+/// Dense parallel-array storage for entities + the swap-and-pop destroy
+/// path.
+///
+/// Invariant: every component vector has exactly `entities_.size()`
+/// elements. The `denseToSlot_` array is the inverse mapping: dense row
+/// `i` corresponds to slot `denseToSlot_[i]`. On `destroy(handle)` we
+/// pop the back of every parallel array and re-point the moved row's
+/// slot at the new dense index; if you add a new built-in component,
+/// you MUST add a swap-and-pop branch here or the arrays go out of sync.
 #include "EntityStorage.hpp"
 
 #include <limits>

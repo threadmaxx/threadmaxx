@@ -1,9 +1,10 @@
 # threadmaxx — Architecture Overview
 
-`threadmaxx` is a renderer-agnostic C++20 game backend. Game code links against
-it and registers systems (gameplay, physics, AI, ...). The engine drives a
-fixed-step simulation loop, parallelizes per-system work across a worker pool,
-and hands a snapshot of the world to a pluggable renderer each frame.
+`threadmaxx` is a renderer-agnostic C++20 game backend. Game code links
+against it and registers systems (gameplay, physics, AI, ...). The engine
+drives a fixed-step simulation loop, parallelizes per-system work across a
+worker pool, and hands a snapshot of the world to a pluggable renderer
+each frame.
 
 ## Goals
 
@@ -75,67 +76,101 @@ Key invariants:
 ## Public surface
 
 ```
-threadmaxx::Engine        // top-level: init / step / run / shutdown
-threadmaxx::World         // read-only handle-based view of state
-threadmaxx::ISystem       // user-implemented gameplay/physics/AI
-threadmaxx::IRenderer     // user-implemented backend (Vulkan/SDL/...)
-threadmaxx::IGame         // bundle: registers systems + renderer at startup
-threadmaxx::CommandBuffer // record mutations from worker jobs
-threadmaxx::RenderFrame   // flat data the renderer consumes
+threadmaxx::Engine             // top-level: init / step / run / shutdown
+threadmaxx::World              // read-only handle-based view of state
+threadmaxx::ISystem            // user-implemented gameplay/physics/AI
+threadmaxx::SystemContext      // parallelFor / single / world / dt / tick
+threadmaxx::IRenderer          // user-implemented backend (Vulkan/SDL/...)
+threadmaxx::IGame              // bundle: registers systems + renderer at startup
+threadmaxx::CommandBuffer      // record mutations from worker jobs
+threadmaxx::RenderFrame        // flat data the renderer consumes
 threadmaxx::RenderInstance
 threadmaxx::EntityHandle
 threadmaxx::Config
-threadmaxx::EngineStats   // per-step instrumentation snapshot
-threadmaxx::SystemStats   // per-system instrumentation snapshot
-threadmaxx::ResourceId<T> // typed handle into ResourceRegistry
-threadmaxx::ResourceRegistry  // engine-owned, thread-safe typed store
-threadmaxx::Parent        // built-in hierarchical-attachment component
-threadmaxx::makeHierarchySystem  // factory for the built-in hierarchy system
+threadmaxx::EngineStats        // per-tick instrumentation
+threadmaxx::SystemStats        // per-system instrumentation
+threadmaxx::ResourceId<T>      // typed handle into ResourceRegistry
+threadmaxx::ResourceRegistry   // engine-owned, thread-safe typed store
+threadmaxx::Component          // scheduling category + per-entity presence bit
+threadmaxx::ComponentSet       // 32-bit bitset over Component
+threadmaxx::Transform          // position / orientation / scale
+threadmaxx::Velocity           // linear / angular
+threadmaxx::Acceleration       // linear / angular rate-of-change
+threadmaxx::RenderTag          // mesh / material / flags
+threadmaxx::UserData           // 64 user bits per entity
+threadmaxx::Parent             // hierarchical-attachment component
+threadmaxx::makeHierarchySystem // factory for the built-in hierarchy system
+threadmaxx::forEach            // parallel query over chosen components
+threadmaxx::forEachWith        // parallel query, filtered by component-presence mask
+threadmaxx::forEachSerial      // single-threaded equivalent
 ```
 
 Everything else (entity storage, job system, commit machinery, render-frame
-construction) lives in `src/` behind PImpl. The header set above is what game
-code includes.
+construction) lives in `src/` behind PImpl. The header set above is what
+game code includes.
 
 ## Layout
 
 ```
 threadmaxx/
 ├── CMakeLists.txt
-├── ARCHITECTURE.md
-├── include/threadmaxx/         ← public, stable
-│   ├── threadmaxx.hpp          ← umbrella header
+├── Doxyfile                       ← optional `doc` CMake target
+├── ARCHITECTURE.md                ← this file
+├── README.md
+├── FUTURE_WORK.md
+├── CLAUDE.md
+├── include/threadmaxx/            ← public, stable
+│   ├── threadmaxx.hpp             ← umbrella header
 │   ├── Config.hpp
 │   ├── Handles.hpp
-│   ├── Components.hpp
+│   ├── Components.hpp             ← built-in components + Component / ComponentSet
 │   ├── CommandBuffer.hpp
+│   ├── Query.hpp                  ← forEach / forEachWith / forEachSerial
 │   ├── RenderFrame.hpp
-│   ├── System.hpp
 │   ├── Renderer.hpp
+│   ├── Resource.hpp               ← ResourceId<T> + ResourceRegistry
+│   ├── Stats.hpp                  ← EngineStats / SystemStats
+│   ├── System.hpp                 ← ISystem + SystemContext + makeHierarchySystem
 │   ├── Game.hpp
 │   ├── World.hpp
 │   └── Engine.hpp
-├── src/                        ← private, may change freely
+├── src/                           ← private, may change freely
 │   ├── EntityStorage.hpp / .cpp
-│   ├── JobSystem.hpp / .cpp
-│   ├── WorldImpl.hpp / .cpp
+│   ├── JobSystem.hpp / .cpp       ← per-worker work-stealing deques
+│   ├── ResourceRegistry.cpp       ← typed-store PImpl impl
+│   ├── HierarchySystem.cpp        ← built-in hierarchy system
+│   ├── WorldImpl.hpp
 │   ├── EngineImpl.hpp / .cpp
-│   ├── World.cpp               ← PImpl forwarding
-│   ├── Engine.cpp              ← PImpl forwarding
+│   ├── World.cpp                  ← PImpl forwarding
+│   ├── Engine.cpp                 ← PImpl forwarding
 │   └── CommandBuffer.cpp
-├── examples/minimal/           ← runnable headless example
+├── tests/                         ← 14 no-dependency tests
+├── doc/                           ← user guide (Markdown, also Doxygen-ingested)
+│   ├── index.md
+│   ├── getting_started.md
+│   ├── concepts.md
+│   ├── components_and_queries.md
+│   ├── systems_and_scheduling.md
+│   ├── command_buffers.md
+│   ├── hierarchy.md
+│   ├── resources.md
+│   ├── renderer_integration.md
+│   ├── configuration.md
+│   └── stats_and_profiling.md
+├── examples/minimal/              ← runnable headless example
 │   ├── CMakeLists.txt
 │   ├── main.cpp
 │   ├── MyGame.hpp / .cpp
 │   ├── MovementSystem.hpp / .cpp
+│   ├── SpawnerSystem.hpp / .cpp
 │   └── ConsoleRenderer.hpp / .cpp
-└── examples/boids/             ← non-headless example (SDL2)
+└── examples/boids/                ← non-headless example (SDL2)
     ├── CMakeLists.txt
     ├── main.cpp
     ├── BoidsGame.hpp / .cpp
-    ├── BoidsSystem.hpp / .cpp   ← steer (R: T,V → W: V)
-    ├── MoveSystem.hpp / .cpp    ← integrate + wrap (R: V,T → W: T)
-    └── SDLRenderer.hpp / .cpp   ← IRenderer over SDL2
+    ├── BoidsSystem.hpp / .cpp     ← steer (R: T,V → W: V)
+    ├── MoveSystem.hpp / .cpp      ← integrate + wrap (R: V,T → W: T)
+    └── SDLRenderer.hpp / .cpp     ← IRenderer over SDL2
 ```
 
 The boids example is built only when `find_package(SDL2)` succeeds — it
@@ -148,9 +183,9 @@ backend.
 
 `ISystem` exposes `reads()` and `writes()` returning `ComponentSet` (a
 bitset over `Component::{Transform, Velocity, Acceleration, RenderTag,
-UserData, EntityStructural}`). At `registerSystem` time the engine greedy-packs
-systems into waves: within a wave every pair of systems is non-conflicting
-under the rule
+UserData, EntityStructural, Parent}` — bits 0..6). At `registerSystem`
+time the engine greedy-packs systems into waves: within a wave every
+pair of systems is non-conflicting under the rule
 
 ```
 conflict(A, B) ⇔ (A.writes ∩ B.writes) ∪
@@ -170,28 +205,104 @@ contract.
 
 Every live entity carries a `ComponentSet` of which built-in components are
 logically attached. `CommandBuffer::spawn()` derives the mask from the
-supplied values (RenderTag bit set iff `meshId >= 0`); `setRenderTag()`
-keeps the bit in sync with the new `meshId`. Game code can override either
-via the explicit-mask `spawn` overload or `CommandBuffer::setComponentMask`.
-The renderer skips entities without `Component::RenderTag` in `buildRenderFrame`
-instead of scanning a sentinel value. `forEachWith<Required...>` in
-`Query.hpp` filters by mask so systems can express "iterate everyone with
-both Transform and RenderTag" without sentinel checks.
+supplied values (RenderTag bit set iff `meshId >= 0`; Parent bit iff
+`parent.parent.valid()`); `setRenderTag()` keeps the bit in sync with the
+new `meshId`, and `setParent()` keeps the Parent bit in sync. Game code
+can override either via the explicit-mask `spawn` overload or
+`CommandBuffer::setComponentMask`. The renderer skips entities without
+`Component::RenderTag` in `buildRenderFrame` instead of scanning a sentinel
+value. `forEachWith<Required...>` in `Query.hpp` filters by mask so systems
+can express "iterate everyone with both Transform and RenderTag" without
+sentinel checks.
 
 `EntityStructural` does not appear in per-entity masks; it's purely a
-scheduling category. The storage layout still keeps every component slot
-filled for every entity (parallel dense arrays); the mask is a filter, not
-an archetype.
+scheduling category for systems that spawn/destroy entities. The storage
+layout still keeps every component slot filled for every entity (parallel
+dense arrays); the mask is a filter, not an archetype.
+
+## Resource registry
+
+`ResourceRegistry` is engine-owned (one per `Engine`, lifetime matches
+the engine, never reseats). It stores resources type-erased via
+`std::shared_ptr<void>` keyed by `std::type_index`, behind a single
+internal mutex. `ResourceId<T>` is a 64-bit (index, generation) handle;
+generation bumps on `remove()` so stale handles never alias new ones.
+
+The registry is safe to touch from any thread, including worker jobs.
+The single mutex is sized for setup-time registration and per-frame
+lookups, not for thousands of concurrent inserts — async loaders should
+do their I/O off-thread and call `add()` once each resource is ready.
+
+The library does not load anything itself; the registry is the storage
+contract between the game and its renderer / audio / animation pipeline.
+
+## Hierarchy
+
+The built-in `HierarchySystem` (factory: `makeHierarchySystem()`) reads
+`Transform + Parent` and writes `Transform`. It runs single-threaded
+inside `ctx.single()` and resolves multi-level parent chains in one pass
+via DFS-with-memoization. World pose composition:
+
+- `position = parent.position + rotate(parent.orientation, local.position)`
+- `orientation = parent.orientation * local.orientation` (Hamilton product)
+- `scale = local.scale` (scale does **not** chain — see `doc/hierarchy.md`)
+
+Register the hierarchy system *after* any system that writes `Transform`
+so it observes their commits in a later wave.
+
+## Render frame lifetime
+
+`EngineImpl::buildRenderFrame()` writes into the back of a double-
+buffered pair (`renderInstanceBuffers_[0/1]` and `renderFrames_[0/1]`)
+and publishes via `frontIndex_.store(back, release)`. The
+`RenderFrame::instances` span points into the engine-owned vector —
+renderers must finish using it before `submitFrame` returns or copy what
+they need. Today `submitFrame` is called synchronously from the sim
+thread immediately after the swap, so single-threaded renderers don't
+need to worry; if a future renderer reads from another thread, the
+atomic swap is the synchronization point.
+
+`RenderFrame::alpha` is the wall-clock fraction (0..1) past the last
+committed tick. `step()` always submits the post-tick frame with
+`alpha=0`. In `run()`, after the inner step loop, the engine
+additionally calls `submitInterpolatedFrame(alpha)` which mutates
+`alpha` on the current front frame and re-submits — there's no rebuild,
+since world state is unchanged between ticks. Bypassing this and re-
+running `buildRenderFrame()` per interp submit would be wasted work;
+just don't.
+
+## Instrumentation
+
+`EngineStats` (one struct) and `SystemStats` (one per registered system)
+are refreshed at the end of every `step()`. Both are POD snapshots —
+`engine.stats()` returns a copy, `engine.systemStats()` returns an
+engine-owned `std::span` valid until the next `registerSystem()` or
+`shutdown()`. Measured fields are documented in
+[`doc/stats_and_profiling.md`](doc/stats_and_profiling.md); the
+instrumentation has no opt-in cost and the EWMA decay is fixed at 1/16
+(~16-step horizon).
 
 ## Extensibility notes
 
-- More built-in components: extend `EntityStorage` and `World`'s read accessors,
-  and add a corresponding `Component::Foo` enum value (plus update
-  `ComponentSet::all()`'s mask) so the scheduler can distinguish it. The
-  built-in `Acceleration` component shows the full recipe end-to-end.
+- More built-in components: extend `EntityStorage` and `World`'s read
+  accessors, and add a corresponding `Component::Foo` enum value (plus
+  update `ComponentSet::all()`'s mask) so the scheduler can distinguish
+  it. See [`CLAUDE.md`](CLAUDE.md)'s "Adding a new built-in component"
+  recipe for the full cross-layer checklist; `Parent` and
+  `Acceleration` show the full recipe end-to-end.
 - Custom renderers: implement `IRenderer` — no engine changes required.
 - Finer-grained system scheduling: today the wave grouping is based on
-  declared component sets. A future DAG with explicit `depends_on(name)`
-  edges would slot in beside `reads()`/`writes()` — the per-job contract
-  (read world, write to own command buffer) already supports any topology.
-- Replacing the job system: `JobSystem` is private; only `EngineImpl` calls it.
+  declared component sets. A future DAG with explicit
+  `depends_on(name)` edges would slot in beside `reads()`/`writes()` —
+  the per-job contract (read world, write to own command buffer)
+  already supports any topology.
+- Replacing the job system: `JobSystem` is private; only `EngineImpl`
+  calls it.
+
+## Where to read next
+
+- [User guide](doc/index.md) — full walkthrough of public concepts.
+- [Future work](FUTURE_WORK.md) — what's done, what's next, what's out
+  of scope.
+- [Claude Code playbook](CLAUDE.md) — invariants, recipes, gotchas for
+  contributors.

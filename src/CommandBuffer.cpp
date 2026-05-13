@@ -1,3 +1,11 @@
+/// @file CommandBuffer.cpp
+/// Recorder-side implementation of the public CommandBuffer API.
+///
+/// Every method here appends a `detail::Command` variant to the
+/// per-job command vector — no locks, no allocation contention. The
+/// commit phase in `EngineImpl::commitBuffer` is the consumer: each
+/// new variant added here must get a corresponding case in the
+/// `std::visit` lambda there, or it'll silently drop on commit.
 #include "threadmaxx/CommandBuffer.hpp"
 
 namespace threadmaxx {
