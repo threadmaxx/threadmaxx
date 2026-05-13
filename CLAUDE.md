@@ -110,3 +110,29 @@ Determinism is preserved because commits are submission-ordered (worker executio
 ## Reserved handles
 
 `Engine::reserveEntityHandle()` and `SystemContext::reserveHandle()` allocate a slot via `EntityStorage::reserveHandle()` under `reservationMtx_`. The handle's `EntityHandle::valid()` is true immediately but `world.alive(handle)` is false until `materializeReserved` runs during commit (triggered by `cb.spawn(handle, ...)`). Any reservation not matched by a spawn is reaped in `discardAllReservations` at step end (bumps generation, returns slot to free list).
+
+Batch form: `Engine::reserveEntityHandles(count, span)` / `SystemContext::reserveHandles(count, span)` (and `EntityStorage::reserveHandles`) acquire `reservationMtx_` once and fill the span. Returns the number of slots actually written (`min(count, span.size())`). Use when a job knows up front it needs many slots.
+
+## Resource loaders
+
+`IResourceLoader` (in `Resource.hpp`) is the engine's per-tick pump for asset I/O. Registered via `Engine::addResourceLoader`; the engine owns the loader and calls `loader->update(engine)` once per `step()` on the sim thread, immediately after the last `postStep` hook commits and before the reservation reap / event drain. Loaders are torn down in reverse-registration order during `shutdown()`. The engine never spawns threads for a loader — it owns its own pool (if any) and calls `engine.resources().add(...)` when an asset is ready.
+
+## SpatialHash
+
+`SpatialHash<Payload>` (header-only, `SpatialHash.hpp`) is a uniform-grid index keyed by 3D cell coordinate. Not thread-safe: insert from a single thread (usually a `preStep` hook running on the sim thread); queries are safe from worker jobs once built. `clear()` keeps the bucket allocation, so steady-state per-tick rebuilds pay zero allocations after the first tick. Engine does NOT own one — the user composes it.
+
+## FrameSnapshot / Trace
+
+`Engine::frameSnapshot()` returns a bundled `FrameSnapshot{EngineStats, std::span<const SystemStats>, JobSystemStats}` — same field values as `stats()` / `systemStats()` / `jobSystemStats()`, just guaranteed consistent. `writeJsonLines(os, snap)` in `Trace.hpp` serializes one snapshot as a single `'\n'`-terminated JSON object; field names match the stats structs. The systems span shares the lifetime caveat of `systemStats()` (invalidated by `registerSystem` / `registerSystemAt` / `shutdown`).
+
+## registerSystemAt
+
+`Engine::registerSystemAt(position, system)` inserts at a specific index in registration order (clamped to `[0, registeredSystemCount()]`). Calls `onRegister(world)` and `rebuildWaves()` like `registerSystem`. Returns the actual insertion index. Used by tests / mod loaders that need to inject a system at a known point.
+
+## Bundle / spawnBundle
+
+`bundle(Cs...)` (in `CommandBuffer.hpp`) is a variadic factory that returns a `Bundle` struct containing default-constructed values for every built-in component slot plus the supplied values, with `initialMask` = union of bits for the listed `Cs`. Feed to `CommandBuffer::spawnBundle(...)` (or the reserved-handle overload). Named distinctly from `spawn` so `cb.spawn({})` stays unambiguous. The default-mask `spawn` overloads now also auto-derive the Parent presence bit from `p.parent.valid()` (mirrors the existing RenderTag auto-derive on `r.meshId >= 0`); both `spawn(...)` and `spawn(handle, ...)` take an optional trailing `Parent` parameter.
+
+## World::has / World::get
+
+Header-only sugar on `World` for the built-in component types: `world.has<T>(handle)` returns true iff `alive(handle)` AND the per-entity mask has the bit for `T`. `world.get<T>(handle)` returns a `const T&` and asserts presence. Type dispatch via `if constexpr` chains in `detail::worldComponentBit` / `detail::worldTryGetSpanElement` — extend both alongside `Query.hpp::detail::componentBit` when adding a new built-in component.

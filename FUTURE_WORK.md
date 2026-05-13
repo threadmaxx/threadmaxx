@@ -12,8 +12,8 @@ The document tracks three things:
 3. The longer-term shape of the library and the items deliberately
    parked or scoped out.
 
-Last refreshed: 2026-05-13 (second pass of the day; previous near-term
-plan has fully landed).
+Last refreshed: 2026-05-13 (third pass of the day; the §3 batch has
+now also landed — see §2 third batch).
 
 ## 1. Target outcome
 
@@ -96,17 +96,82 @@ API. (`CmdSpawn::outHandle` was dead code internally and was removed in
 the second batch as part of replacing it with the cleaner `reserved`
 field.)
 
+### Third batch (just landed)
+- **`World::has<T>` / `World::get<T>`.** Header-only sugar in
+  `World.hpp`; consults the per-entity component-presence mask. Pure
+  addition; type dispatch via the same `if constexpr` chain shape as
+  `Query.hpp::detail::componentBit`. See
+  [`doc/world_has_get.md`](doc/world_has_get.md).
+- **`Bundle` + `cb.spawnBundle`.** Variadic `bundle(Cs...)` factory
+  yields a `Bundle` with a compile-time-derived presence mask, fed to
+  `CommandBuffer::spawnBundle`. Named distinctly from `spawn` so
+  `cb.spawn({})` stays unambiguous. See
+  [`doc/bundles.md`](doc/bundles.md).
+- **`registerSystemAt(position, system)`.** Inserts at a specific
+  registration index, clamped to the current count. Used by tests and
+  mod loaders.
+- **`reserveEntityHandles(count, span)` batch form.** Engine-level and
+  `SystemContext`-level; one mutex acquisition, fills the supplied
+  span.
+- **Parent auto-derive in default `spawn`.** The default-mask
+  `spawn(...)` and `spawn(handle, ...)` overloads now also derive the
+  Parent presence bit from `p.parent.valid()` (mirroring the existing
+  RenderTag derive). Both overloads take an optional trailing `Parent`
+  parameter.
+- **`frameSnapshot()` + JSON Lines `writeJsonLines`.** Bundled
+  `FrameSnapshot{EngineStats, std::span<const SystemStats>,
+  JobSystemStats}` and a header-only serializer in `Trace.hpp`. See
+  [`doc/tracing.md`](doc/tracing.md).
+- **`IResourceLoader` contract.** `Engine::addResourceLoader` registers
+  a loader; the engine pumps `update(engine)` once per `step()` on the
+  sim thread, after `postStep` commits and before the reservation
+  reap. Loaders are torn down in reverse-registration order during
+  `shutdown()`. See
+  [`doc/resource_loaders.md`](doc/resource_loaders.md).
+- **`SpatialHash<Payload>` helper.** Header-only uniform-grid index;
+  not thread-safe; engine does not own one. See
+  [`doc/spatial_hash.md`](doc/spatial_hash.md).
+
+All three batches are pure additions. The public surface gained
+`Trace.hpp` and `SpatialHash.hpp` headers; everything else extended
+existing headers.
+
 ## 3. Concrete near-term plan
 
-The previous near-term batch has fully landed (see §2). The next batch
-below picks up where it left off: ergonomic additions, performance
-levers, and the smaller public-API extensions that previous planning
-had parked. As before, each item is achievable as a pure addition;
-nothing here requires breaking the existing public contract.
+The §3 batch (3.1 – 3.6) below has fully landed (see §2 third batch).
+The next batch picks up from §4 / §7 — items previously underestimated
+or parked — plus the small wins that the third batch didn't sweep up.
 
-In priority order, smallest and most useful first.
+### 3.7 Next batch (proposed)
 
-### 3.1 `World::has<T>` and `World::get<T>`
+Pure-additive items, sized like the previous batches. In priority
+order:
+
+- **Serialization trait hook (§7.8).** A trait pair
+  `serialize(Component&)` / `deserialize(Component&)` per built-in
+  component, plus a `World::snapshot()` that captures the dense arrays.
+  Header-only sugar over the storage that the engine already exposes;
+  migration support stays game-side.
+- **Per-job-duration histogram in `JobSystemStats`.** Bucketed
+  histogram (8–16 bins, log-spaced) of individual job durations. Use
+  cases: detect grain mis-tuning, see "is one job dominating?". Cheap
+  to maintain (per-worker accumulators, merged on read).
+- **Chrome-trace adapter.** A second serializer alongside
+  `writeJsonLines` that emits one `{ph:"X", ...}` record per system per
+  tick. Build on top of `frameSnapshot()` — no new instrumentation
+  surface.
+- **`Engine::events<T>().subscribe(fn)`.** Persistent subscription
+  helper on top of the existing event channels: keep a list of
+  callbacks invoked at drain time. Today users call
+  `events<T>().drainTick()` from a postStep hook themselves; a
+  subscribe shortcut is sugar.
+- **`HierarchySystem` configuration.** Expose a knob for whether scale
+  chains (today: never; some games want it sometimes). Default off
+  preserves current semantics.
+
+§3.1 – §3.6 below are the prior-batch contents, kept for reference.
+
+### 3.1 `World::has<T>` and `World::get<T>` ✅ done (third batch)
 
 Header-only sugar on top of the existing `tryGet*` accessors and the
 component-presence mask:
@@ -121,7 +186,7 @@ returns a reference (asserts on absent) — useful where a `nullptr`
 check is noise. Pure addition; type dispatch via the same `if constexpr`
 chain that lives in `Query.hpp::detail::componentBit`.
 
-### 3.2 Frame snapshot for tracing
+### 3.2 Frame snapshot for tracing ✅ done (third batch)
 
 A `Engine::frameSnapshot()` (or a hook on `IRenderer`) that emits the
 current tick's per-system durations and command counts as a tagged
@@ -134,7 +199,7 @@ The right scope is small: emit JSON-lines records with the same field
 names that the snapshots already have, leave aggregation to whatever
 the user pipes them into.
 
-### 3.3 Async resource loader contract
+### 3.3 Async resource loader contract ✅ done (third batch)
 
 The existing `ResourceRegistry` is the in-memory side; the missing
 piece is the loader. Concretely:
@@ -158,7 +223,7 @@ agnostic; it provides the *contract* and the tick-pump hook.
 Hot-reload becomes the same contract with a second method
 (`reload(ResourceId)` / `markStale(ResourceId)`).
 
-### 3.4 Spatial-hash helper
+### 3.4 Spatial-hash helper ✅ done (third batch)
 
 Spatial queries (neighbor lookups, broadphase, AOI for streaming)
 recur across every gameplay system. The engine can host a generic
@@ -179,7 +244,7 @@ component the user is indexing.
 This unblocks: spatial AI queries, navigation costing, range-based
 combat targeting, distance culling.
 
-### 3.5 `Bundle` / archetype-lite
+### 3.5 `Bundle` / archetype-lite ✅ done (third batch)
 
 Without the full archetype refactor, a smaller win is a `Bundle<...>`
 helper that packages a set of components and their masks for spawning:
@@ -194,7 +259,7 @@ runtime cost is zero compared to today's manual `seed.spawn(t, v, r,
 ...)`. Bundles are *recording-side* sugar — no engine internals
 change.
 
-### 3.6 The unglamorous wins
+### 3.6 The unglamorous wins ✅ done (third batch)
 
 Smaller items that should land alongside the above:
 
@@ -365,7 +430,8 @@ until a real 3D renderer is targeting threadmaxx.
 A trait pair `serialize(Component&)` / `deserialize(Component&)` per
 component, plus a `World::snapshot()` that captures the dense arrays.
 Migration support stays game-side. Sized like 7.1 — additive header
-helpers. Deferred until the public API has settled.
+helpers. Now listed as a §3.7 candidate; deferred again only if a
+bigger refactor (archetype storage) ships first.
 
 ### 7.9 Networking support
 
@@ -395,13 +461,21 @@ Done:
 - Scratch arenas.
 - Typed event channels.
 - Pause / time-scale.
-- Reserved spawn handles.
+- Reserved spawn handles + batch reserve.
 - Commit-phase timing in `EngineStats`.
+- `World::has<T>` / `World::get<T>`.
+- `Bundle` + `cb.spawnBundle`.
+- `Engine::registerSystemAt`.
+- `frameSnapshot` + JSON-Lines tracing.
+- `IResourceLoader` contract + per-tick pump.
+- `SpatialHash<Payload>` helper.
+- Parent auto-derive in default `spawn`.
 
 Exit criteria met: a small game can ship against the current public
 API without patching the engine. The next milestone is data-model
-upgrades (archetypes) and the public sugar in §3 (Bundles,
-`has<T>`/`get<T>`, async loader contract).
+upgrades (archetypes) and the §3.7 next-batch items (serialization
+hook, job-duration histograms, Chrome-trace adapter, event
+subscriptions).
 
 ### Milestone 2 — Data model upgrade
 

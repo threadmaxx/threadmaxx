@@ -22,6 +22,14 @@ set(THREADMAXX_TESTS
     pause_timescale_test
     reserved_handle_test
     small_wins_test
+    world_has_get_test
+    bundle_test
+    parent_autoderive_test
+    register_system_at_test
+    reserve_handles_batch_test
+    frame_snapshot_test
+    resource_loader_test
+    spatial_hash_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

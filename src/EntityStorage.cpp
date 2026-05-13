@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <span>
 
 namespace threadmaxx::internal {
 
@@ -99,6 +100,32 @@ EntityHandle EntityStorage::reserveHandle() {
     const EntityHandle h{slotIdx, slot.generation};
     reservedHandles_.push_back(h);
     return h;
+}
+
+void EntityStorage::reserveHandles(std::uint32_t count,
+                                   std::span<EntityHandle> out) {
+    if (count == 0) return;
+    std::lock_guard<std::mutex> lk(reservationMtx_);
+    const std::uint32_t limit = std::min(
+        count, static_cast<std::uint32_t>(out.size()));
+    for (std::uint32_t i = 0; i < limit; ++i) {
+        std::uint32_t slotIdx;
+        if (!freeSlots_.empty()) {
+            slotIdx = freeSlots_.back();
+            freeSlots_.pop_back();
+        } else {
+            slotIdx = static_cast<std::uint32_t>(slots_.size());
+            slots_.emplace_back();
+        }
+        Slot& slot = slots_[slotIdx];
+        slot.generation = (slot.generation == 0) ? 1u : slot.generation + 1u;
+        slot.reserved   = true;
+        slot.alive      = false;
+        slot.denseIndex = std::numeric_limits<std::uint32_t>::max();
+        const EntityHandle h{slotIdx, slot.generation};
+        reservedHandles_.push_back(h);
+        out[i] = h;
+    }
 }
 
 bool EntityStorage::materializeReserved(EntityHandle h,

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <span>
 #include <vector>
 
 namespace threadmaxx::internal {
@@ -36,6 +37,14 @@ public:
     // EntityStorage methods (spawn/destroy/mut*) must NOT be called
     // concurrently — they assume single-threaded sim-thread access.
     EntityHandle reserveHandle();
+
+    // Batch form: reserve `count` slots under a single acquisition of
+    // reservationMtx_. The returned handles are independent (different
+    // slot indices, fresh generations) and may be materialized in any
+    // order via materializeReserved. Amortizes the per-call mutex cost
+    // when a job spawns many entities at once.
+    void reserveHandles(std::uint32_t count,
+                        std::span<EntityHandle> out);
 
     // Materialize a previously-reserved slot into a live entity. Returns
     // false if the handle is not a current reservation (e.g. it was

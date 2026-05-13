@@ -3,6 +3,9 @@
 #include "EngineImpl.hpp"
 #include "WorldImpl.hpp"
 #include "EntityStorage.hpp"
+#include "threadmaxx/Trace.hpp"
+
+#include <algorithm>
 
 namespace threadmaxx {
 
@@ -19,6 +22,13 @@ bool Engine::quitRequested() const noexcept { return impl_->quitRequested(); }
 
 void Engine::registerSystem(std::unique_ptr<ISystem> system) {
     impl_->registerSystem(std::move(system));
+}
+std::size_t Engine::registerSystemAt(std::size_t position,
+                                     std::unique_ptr<ISystem> system) {
+    return impl_->registerSystemAt(position, std::move(system));
+}
+std::size_t Engine::registeredSystemCount() const noexcept {
+    return impl_->registeredSystemCount();
 }
 void Engine::setRenderer(IRenderer* r) noexcept { impl_->setRenderer(r); }
 
@@ -37,10 +47,29 @@ std::span<const SystemStats> Engine::systemStats() const noexcept {
 ResourceRegistry&       Engine::resources()       noexcept { return impl_->resources(); }
 const ResourceRegistry& Engine::resources() const noexcept { return impl_->resources(); }
 
+IResourceLoader* Engine::addResourceLoader(std::unique_ptr<IResourceLoader> loader) {
+    return impl_->addResourceLoader(std::move(loader));
+}
+
 JobSystemStats Engine::jobSystemStats() const noexcept { return impl_->jobSystemStats(); }
+
+FrameSnapshot Engine::frameSnapshot() const noexcept {
+    return FrameSnapshot{
+        impl_->stats(),
+        impl_->systemStats(),
+        impl_->jobSystemStats(),
+    };
+}
 
 EntityHandle Engine::reserveEntityHandle() {
     return impl_->world().impl_().storage.reserveHandle();
+}
+std::uint32_t Engine::reserveEntityHandles(std::uint32_t count,
+                                           std::span<EntityHandle> out) {
+    const std::uint32_t n = std::min(count,
+        static_cast<std::uint32_t>(out.size()));
+    impl_->world().impl_().storage.reserveHandles(n, out);
+    return n;
 }
 
 void Engine::setTimeScale(double s) noexcept { impl_->setTimeScale(s); }

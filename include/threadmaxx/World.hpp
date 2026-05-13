@@ -3,9 +3,11 @@
 #include "Components.hpp"
 #include "Handles.hpp"
 
+#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <type_traits>
 
 namespace threadmaxx {
 
@@ -50,6 +52,23 @@ public:
 
     bool alive(EntityHandle e) const noexcept;
 
+    /// Header-only sugar: true iff @p e is alive AND the entity's
+    /// per-entity component-presence mask has the bit for component `T`.
+    ///
+    /// `T` must be one of the built-in component types: Transform,
+    /// Velocity, RenderTag, UserData, Acceleration, Parent. Cheaper than
+    /// `tryGet<T>() != nullptr` because it consults the mask instead of
+    /// returning a pointer the caller is expected to discard.
+    template <typename T>
+    bool has(EntityHandle e) const noexcept;
+
+    /// Header-only sugar: returns a const reference to the entity's
+    /// component `T`. Asserts that the handle is alive and the mask has
+    /// the bit; use @ref has or @ref tryGetTransform et al. when absence
+    /// is a legal state.
+    template <typename T>
+    const T& get(EntityHandle e) const noexcept;
+
     /// @name Dense iteration
     /// Parallel jobs index into these contiguous arrays. The i-th element
     /// of every span corresponds to the i-th live entity.
@@ -75,5 +94,47 @@ public:
 private:
     std::unique_ptr<internal::WorldImpl> impl_ptr_;
 };
+
+namespace detail {
+
+template <typename T>
+constexpr Component worldComponentBit() noexcept {
+    if constexpr (std::is_same_v<T, Transform>)         return Component::Transform;
+    else if constexpr (std::is_same_v<T, Velocity>)     return Component::Velocity;
+    else if constexpr (std::is_same_v<T, RenderTag>)    return Component::RenderTag;
+    else if constexpr (std::is_same_v<T, UserData>)     return Component::UserData;
+    else if constexpr (std::is_same_v<T, Acceleration>) return Component::Acceleration;
+    else if constexpr (std::is_same_v<T, Parent>)       return Component::Parent;
+    else static_assert(sizeof(T) == 0,
+        "World::has/get: T must be one of Transform, Velocity, RenderTag, "
+        "UserData, Acceleration, Parent");
+}
+
+template <typename T>
+const T* worldTryGetSpanElement(const World& w, EntityHandle e) noexcept {
+    if constexpr (std::is_same_v<T, Transform>)         return w.tryGetTransform(e);
+    else if constexpr (std::is_same_v<T, Velocity>)     return w.tryGetVelocity(e);
+    else if constexpr (std::is_same_v<T, RenderTag>)    return w.tryGetRenderTag(e);
+    else if constexpr (std::is_same_v<T, UserData>)     return w.tryGetUserData(e);
+    else if constexpr (std::is_same_v<T, Acceleration>) return w.tryGetAcceleration(e);
+    else if constexpr (std::is_same_v<T, Parent>)       return w.tryGetParent(e);
+    else static_assert(sizeof(T) == 0,
+        "World::get: T must be one of Transform, Velocity, RenderTag, "
+        "UserData, Acceleration, Parent");
+}
+
+} // namespace detail
+
+template <typename T>
+inline bool World::has(EntityHandle e) const noexcept {
+    const auto* mask = tryGetComponentMask(e);
+    return mask != nullptr && mask->has(detail::worldComponentBit<T>());
+}
+
+template <typename T>
+inline const T& World::get(EntityHandle e) const noexcept {
+    assert(has<T>(e) && "World::get<T>: entity is not alive or does not carry T");
+    return *detail::worldTryGetSpanElement<T>(*this, e);
+}
 
 } // namespace threadmaxx

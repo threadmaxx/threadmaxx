@@ -128,6 +128,14 @@ EntityHandle SystemContextImpl::reserveHandle() {
     return engine_.world().impl_().storage.reserveHandle();
 }
 
+std::uint32_t SystemContextImpl::reserveHandles(std::uint32_t count,
+                                                std::span<EntityHandle> out) {
+    const std::uint32_t n = std::min(count,
+        static_cast<std::uint32_t>(out.size()));
+    engine_.world().impl_().storage.reserveHandles(n, out);
+    return n;
+}
+
 // ---- EngineImpl ---------------------------------------------------------
 
 EngineImpl::EngineImpl(const Config& cfg) : cfg_(cfg) {
@@ -186,6 +194,30 @@ void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
     systemStats_.push_back(ss);
     systems_.push_back(std::move(system));
     rebuildWaves();
+}
+
+IResourceLoader* EngineImpl::addResourceLoader(
+        std::unique_ptr<IResourceLoader> loader) {
+    if (!loader) return nullptr;
+    IResourceLoader* raw = loader.get();
+    resourceLoaders_.push_back(std::move(loader));
+    return raw;
+}
+
+std::size_t EngineImpl::registerSystemAt(std::size_t position,
+                                         std::unique_ptr<ISystem> system) {
+    if (!system) return systems_.size();
+    if (position > systems_.size()) position = systems_.size();
+    system->onRegister(world_);
+    SystemStats ss;
+    ss.name = system->name();
+    systemStats_.insert(systemStats_.begin() +
+                        static_cast<std::ptrdiff_t>(position), ss);
+    systems_.insert(systems_.begin() +
+                    static_cast<std::ptrdiff_t>(position),
+                    std::move(system));
+    rebuildWaves();
+    return position;
 }
 
 void EngineImpl::rebuildWaves() {
@@ -447,6 +479,17 @@ void EngineImpl::step() {
             std::chrono::steady_clock::now() - commitStart).count();
     }
 
+    // §3.3 resource loaders pump after the last postStep commit and
+    // before the tick boundary. Loaders are sim-thread-only and own
+    // any I/O threads themselves; we just give them their per-tick
+    // poll opportunity. Iterating in registration order keeps
+    // teardown order well-defined.
+    if (publicEngine_) {
+        for (auto& loader : resourceLoaders_) {
+            if (loader) loader->update(*publicEngine_);
+        }
+    }
+
     // §3.5 reaping: any handle that was reserveHandle()-ed but never
     // matched a cb.spawn(handle, ...) is dropped here. Bumps generation
     // so the user's handle stops validating.
@@ -579,6 +622,13 @@ void EngineImpl::shutdown() {
         (*it)->onUnregister(world_);
     }
     systems_.clear();
+
+    // §3.3 release resource loaders in reverse-registration order, so
+    // a loader that depends on an earlier-registered one tears down
+    // first.
+    while (!resourceLoaders_.empty()) {
+        resourceLoaders_.pop_back();
+    }
 }
 
 } // namespace threadmaxx::internal

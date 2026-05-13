@@ -13,15 +13,17 @@ namespace threadmaxx {
 namespace {
 
 // Derive the default per-entity component mask from spawn values. Every
-// built-in component except RenderTag and Parent is unconditionally present;
-// RenderTag is present iff the caller supplied a renderable mesh; Parent is
-// off by default (the no-parent spawn overload never attaches one).
-ComponentSet defaultSpawnMask(const RenderTag& r) noexcept {
+// built-in component except RenderTag and Parent is unconditionally
+// present; RenderTag is set iff the caller supplied a renderable mesh,
+// Parent is set iff the caller supplied a valid parent handle. The
+// explicit-mask overloads bypass this entirely.
+ComponentSet defaultSpawnMask(const RenderTag& r, const Parent& p) noexcept {
     ComponentSet m{Component::Transform};
     m |= ComponentSet{Component::Velocity};
     m |= ComponentSet{Component::UserData};
     m |= ComponentSet{Component::Acceleration};
-    if (r.meshId >= 0) m |= ComponentSet{Component::RenderTag};
+    if (r.meshId >= 0)    m |= ComponentSet{Component::RenderTag};
+    if (p.parent.valid()) m |= ComponentSet{Component::Parent};
     return m;
 }
 
@@ -29,9 +31,9 @@ ComponentSet defaultSpawnMask(const RenderTag& r) noexcept {
 
 void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
-                          const Acceleration& a) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, Parent{},
-                                            defaultSpawnMask(r),
+                          const Acceleration& a, const Parent& p) {
+    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p,
+                                            defaultSpawnMask(r, p),
                                             kInvalidEntity});
 }
 void CommandBuffer::spawn(const Transform& t, const Velocity& v,
@@ -44,9 +46,10 @@ void CommandBuffer::spawn(const Transform& t, const Velocity& v,
 void CommandBuffer::spawn(EntityHandle reserved,
                           const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
-                          const Acceleration& a) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, Parent{},
-                                            defaultSpawnMask(r), reserved});
+                          const Acceleration& a, const Parent& p) {
+    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p,
+                                            defaultSpawnMask(r, p),
+                                            reserved});
 }
 void CommandBuffer::spawn(EntityHandle reserved,
                           const Transform& t, const Velocity& v,
@@ -55,6 +58,16 @@ void CommandBuffer::spawn(EntityHandle reserved,
                           const Parent& p, ComponentSet initialMask) {
     commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p, initialMask,
                                             reserved});
+}
+void CommandBuffer::spawnBundle(const Bundle& b) {
+    commands_.emplace_back(detail::CmdSpawn{
+        b.transform, b.velocity, b.renderTag, b.userData,
+        b.acceleration, b.parent, b.initialMask, kInvalidEntity});
+}
+void CommandBuffer::spawnBundle(EntityHandle reserved, const Bundle& b) {
+    commands_.emplace_back(detail::CmdSpawn{
+        b.transform, b.velocity, b.renderTag, b.userData,
+        b.acceleration, b.parent, b.initialMask, reserved});
 }
 void CommandBuffer::destroy(EntityHandle e) {
     commands_.emplace_back(detail::CmdDestroy{e});

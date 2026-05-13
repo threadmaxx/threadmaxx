@@ -3,10 +3,80 @@
 #include "Components.hpp"
 #include "Handles.hpp"
 
+#include <type_traits>
 #include <variant>
 #include <vector>
 
 namespace threadmaxx {
+
+/// Recording-side sugar that packages a set of component values together
+/// with a compile-time-derived component-presence mask. Build one with
+/// the variadic @ref bundle factory and feed it to
+/// @ref CommandBuffer::spawn — zero runtime cost compared with calling
+/// the 7-arg `spawn()` overload by hand.
+///
+/// Unlike the default-mask overloads of `CommandBuffer::spawn`, a
+/// `Bundle` only sets the presence bits for components the caller
+/// explicitly listed: `bundle(Transform{}, Velocity{})` produces an
+/// entity with just Transform+Velocity bits, not Transform+Velocity+
+/// UserData+Acceleration.
+struct Bundle {
+    Transform    transform    = {};
+    Velocity     velocity     = {};
+    RenderTag    renderTag    = {};
+    UserData     userData     = {};
+    Acceleration acceleration = {};
+    Parent       parent       = {};
+    /// Set of component-presence bits derived from the parameter pack
+    /// passed to @ref bundle. The engine writes this verbatim into the
+    /// new entity's per-entity mask.
+    ComponentSet initialMask  = {};
+};
+
+namespace detail {
+
+template <typename T>
+constexpr Component bundleComponentBit() noexcept {
+    if constexpr (std::is_same_v<T, Transform>)         return Component::Transform;
+    else if constexpr (std::is_same_v<T, Velocity>)     return Component::Velocity;
+    else if constexpr (std::is_same_v<T, RenderTag>)    return Component::RenderTag;
+    else if constexpr (std::is_same_v<T, UserData>)     return Component::UserData;
+    else if constexpr (std::is_same_v<T, Acceleration>) return Component::Acceleration;
+    else if constexpr (std::is_same_v<T, Parent>)       return Component::Parent;
+    else static_assert(sizeof(T) == 0,
+        "bundle(): argument type must be one of Transform, Velocity, "
+        "RenderTag, UserData, Acceleration, Parent");
+}
+
+template <typename T>
+constexpr void bundleStore(Bundle& b, const T& v) noexcept {
+    if constexpr (std::is_same_v<T, Transform>)         b.transform    = v;
+    else if constexpr (std::is_same_v<T, Velocity>)     b.velocity     = v;
+    else if constexpr (std::is_same_v<T, RenderTag>)    b.renderTag    = v;
+    else if constexpr (std::is_same_v<T, UserData>)     b.userData     = v;
+    else if constexpr (std::is_same_v<T, Acceleration>) b.acceleration = v;
+    else if constexpr (std::is_same_v<T, Parent>)       b.parent       = v;
+}
+
+} // namespace detail
+
+/// Build a @ref Bundle from a parameter pack of distinct component
+/// values. The resulting `initialMask` is the union of the bits for
+/// each `Cs` — duplicate types are allowed but pointless (later values
+/// overwrite earlier ones).
+///
+/// @code
+/// auto enemy = bundle(Transform{}, Velocity{}, RenderTag{1});
+/// cb.spawnBundle(enemy);                 // fresh slot
+/// cb.spawnBundle(reservedHandle, enemy); // pre-reserved slot
+/// @endcode
+template <typename... Cs>
+constexpr Bundle bundle(const Cs&... values) noexcept {
+    Bundle b;
+    ((b.initialMask |= ComponentSet{detail::bundleComponentBit<Cs>()}), ...);
+    (detail::bundleStore(b, values), ...);
+    return b;
+}
 
 namespace detail {
 
@@ -73,12 +143,13 @@ public:
 
     /// Spawn with an automatically-derived component mask: Transform,
     /// Velocity, UserData and Acceleration are always set; RenderTag is
-    /// set iff `r.meshId >= 0`; Parent is unset.
-    /// Use the explicit-mask overload (below) for finer control,
-    /// including attaching a parent at spawn time.
+    /// set iff `r.meshId >= 0`; Parent is set iff `p.parent.valid()`.
+    /// Use the explicit-mask overload (below) when you need full control
+    /// over which bits are present (e.g. spawning an entity that lacks
+    /// Velocity).
     void spawn(const Transform& t, const Velocity& v = {},
                const RenderTag& r = {}, const UserData& u = {},
-               const Acceleration& a = {});
+               const Acceleration& a = {}, const Parent& p = {});
 
     /// Spawn with an explicit initial component mask and an optional
     /// parent.
@@ -95,13 +166,25 @@ public:
     ///      in this same step's recording phase.
     void spawn(EntityHandle reserved, const Transform& t,
                const Velocity& v = {}, const RenderTag& r = {},
-               const UserData& u = {}, const Acceleration& a = {});
+               const UserData& u = {}, const Acceleration& a = {},
+               const Parent& p = {});
 
     /// As above with an explicit initial component mask and an optional
     /// parent.
     void spawn(EntityHandle reserved, const Transform& t, const Velocity& v,
                const RenderTag& r, const UserData& u, const Acceleration& a,
                const Parent& p, ComponentSet initialMask);
+
+    /// Spawn a @ref Bundle (§3.5). The bundle carries its own
+    /// component-presence mask derived at the @ref bundle call site.
+    /// Named distinctly from `spawn` so a braced-init call like
+    /// `cb.spawn({})` stays unambiguous against the Transform-first
+    /// overload.
+    void spawnBundle(const Bundle& b);
+
+    /// Spawn a @ref Bundle into a pre-reserved handle taken via
+    /// `SystemContext::reserveHandle()`.
+    void spawnBundle(EntityHandle reserved, const Bundle& b);
 
     void destroy(EntityHandle entity);
     void setTransform   (EntityHandle entity, const Transform&    t);

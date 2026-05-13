@@ -100,4 +100,31 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+class Engine;
+
+/// Optional sim-thread pump for asset I/O (§3.3).
+///
+/// The engine never spawns threads for a loader; it pumps @ref update
+/// once per tick at the end of `postStep`, on the simulation thread.
+/// The implementation owns whatever async pool / file system / network
+/// stack it needs and calls @ref ResourceRegistry::add when an asset
+/// finishes loading. Cancelling, hot-reloading, prioritization, and
+/// progress reporting are all loader-side concerns — keeping them off
+/// the public surface keeps the engine renderer- and asset-format-
+/// agnostic.
+///
+/// Register via `Engine::addResourceLoader`. The engine takes ownership;
+/// loaders are torn down in reverse-registration order during
+/// `Engine::shutdown`.
+class IResourceLoader {
+public:
+    virtual ~IResourceLoader() = default;
+
+    /// Called once per `Engine::step()`, after the last `postStep` hook
+    /// commits, on the simulation thread. Cheap to call; the loader is
+    /// expected to poll its own queues and call
+    /// `engine.resources().add(...)` for any completed work.
+    virtual void update(Engine& engine) = 0;
+};
+
 } // namespace threadmaxx

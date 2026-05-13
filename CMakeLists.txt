@@ -38,6 +38,8 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/System.hpp
     include/threadmaxx/Renderer.hpp
     include/threadmaxx/Game.hpp
+    include/threadmaxx/SpatialHash.hpp
+    include/threadmaxx/Trace.hpp
     include/threadmaxx/World.hpp
     include/threadmaxx/Engine.hpp
 )
@@ -52,6 +54,7 @@ set(THREADMAXX_SOURCES
     src/HierarchySystem.cpp
     src/ResourceRegistry.cpp
     src/ScratchArena.cpp
+    src/Trace.cpp
 )
 
 add_library(threadmaxx STATIC ${THREADMAXX_SOURCES} ${THREADMAXX_PUBLIC_HEADERS})

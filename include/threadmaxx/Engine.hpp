@@ -15,7 +15,9 @@ class World;
 class ISystem;
 class IRenderer;
 class IGame;
+class IResourceLoader;
 class ResourceRegistry;
+struct FrameSnapshot;
 template <typename Ev> class EventChannel;
 
 namespace internal { class EngineImpl; }
@@ -80,6 +82,19 @@ public:
     /// schedule. Call from `IGame::onSetup`.
     void registerSystem(std::unique_ptr<ISystem> system);
 
+    /// Register a system at a specific registration-order index. Useful
+    /// for tests and mod loaders that need to inject a system at a
+    /// known point in the pipeline (e.g. immediately before the
+    /// hierarchy system). Clamped to `[0, registeredSystemCount()]`;
+    /// passing `registeredSystemCount()` is equivalent to
+    /// `registerSystem`. Recomputes the wave schedule.
+    /// @return The actual registration index used.
+    std::size_t registerSystemAt(std::size_t position,
+                                 std::unique_ptr<ISystem> system);
+
+    /// Number of currently-registered systems.
+    std::size_t registeredSystemCount() const noexcept;
+
     /// Set the renderer (optional). `nullptr` is allowed (headless mode);
     /// the engine simply skips `submitFrame()` calls.
     /// @warning The engine does NOT take ownership: the renderer must
@@ -109,11 +124,29 @@ public:
     ///          if you need to retain.
     std::span<const SystemStats> systemStats() const noexcept;
 
+    /// Bundled snapshot of `stats()`, `systemStats()` and
+    /// `jobSystemStats()` (§3.2). Combine with
+    /// `threadmaxx::writeJsonLines(os, snap)` from
+    /// `<threadmaxx/Trace.hpp>` to spool one JSON-Lines record per tick.
+    /// @warning The `systems` span shares the lifetime caveat of
+    ///          @ref systemStats.
+    FrameSnapshot frameSnapshot() const noexcept;
+
     /// Engine-owned, thread-safe typed resource registry. Lifetime
     /// matches the engine and the registry never reseats.
     /// @thread_safety Safe from any thread, including worker jobs.
     ResourceRegistry&       resources()       noexcept;
     const ResourceRegistry& resources() const noexcept;
+
+    /// Register an asset loader (§3.3). The engine takes ownership and
+    /// pumps `loader->update(*this)` once per tick, on the simulation
+    /// thread, after every `postStep` hook commits. The engine does
+    /// not spawn worker threads for the loader; its own pool (if any)
+    /// is its concern.
+    /// @return A non-owning pointer to the loader, for tests / inspection.
+    ///         Loaders are torn down in reverse-registration order
+    ///         during `shutdown()`.
+    IResourceLoader* addResourceLoader(std::unique_ptr<IResourceLoader> loader);
 
     /// Aggregate worker-pool counters (jobs submitted, own-pops, steals).
     /// Cheap to call; safe from any thread.
@@ -128,6 +161,14 @@ public:
     /// commit are reaped at the end of the next `step()`.
     /// @thread_safety Safe from any thread, including worker jobs.
     EntityHandle reserveEntityHandle();
+
+    /// Batch form of @ref reserveEntityHandle: takes one acquisition of
+    /// the reservation mutex and fills the provided span with up to
+    /// `out.size()` fresh handles. Returns the number of handles
+    /// actually written (always `min(count, out.size())`).
+    /// @thread_safety Safe from any thread, including worker jobs.
+    std::uint32_t reserveEntityHandles(std::uint32_t count,
+                                       std::span<EntityHandle> out);
 
     /// Multiply the `dt` seen by systems by `scale`. Negative values are
     /// clamped to zero. The engine's wall-clock pacing (and the

@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 20 tests pin the
+minimal; the internals are PImpl'd so they can change. 28 tests pin the
 documented invariants.
 
 ## Highlights
@@ -33,7 +33,18 @@ documented invariants.
   `dt` while leaving `tick()` an integer.
 - **Reserved spawn handles.** `reserveHandle()` lets a single job
   spawn a parent and a child with the parent's handle wired into the
-  child's `Parent` field.
+  child's `Parent` field. `reserveHandles(count, span)` is the
+  one-mutex batch form.
+- **`Bundle` + `spawnBundle`.** Variadic `bundle(Cs...)` factory yields
+  a `Bundle` with a compile-time-derived presence mask; feed to
+  `cb.spawnBundle`.
+- **`World::has<T>` / `World::get<T>`.** Header-only presence-aware
+  accessors over the existing component-presence mask.
+- **Async resource loader contract.** `IResourceLoader` pumped once
+  per tick on the sim thread; the engine never spawns I/O threads
+  itself.
+- **Spatial hash helper.** `SpatialHash<Payload>` uniform-grid index
+  for neighbor lookups, broadphase, AOI streaming.
 - **Deterministic commit phase.** Workers emit commands into per-job
   buffers; the engine applies them on the sim thread in submission
   order. Same inputs → same world.
@@ -45,6 +56,8 @@ documented invariants.
   `ResourceRegistry` for meshes, textures, audio clips, anything.
 - **Per-tick instrumentation.** `EngineStats`, `SystemStats`, and
   `JobSystemStats` are populated every step — no opt-in cost.
+  `Engine::frameSnapshot()` bundles them; `writeJsonLines` spools one
+  newline-terminated JSON object per tick.
 - **Pluggable renderer.** Implement `IRenderer::submitFrame` against a
   flat `RenderFrame`. Null renderer = headless.
 
@@ -208,11 +221,11 @@ Roadmap and intentional gaps: [`FUTURE_WORK.md`](FUTURE_WORK.md).
 ## Repository layout
 
 ```
-include/threadmaxx/    public API (16 headers)
+include/threadmaxx/    public API (18 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 20 no-dependency tests under CTest
+tests/                 28 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

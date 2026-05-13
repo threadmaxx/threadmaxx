@@ -19,6 +19,8 @@
 #include "Renderer.hpp"
 #include "Resource.hpp"
 #include "ScratchArena.hpp"
+#include "SpatialHash.hpp"
 #include "Stats.hpp"
 #include "System.hpp"
+#include "Trace.hpp"
 #include "World.hpp"

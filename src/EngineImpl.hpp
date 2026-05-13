@@ -47,6 +47,8 @@ public:
     void single(JobFn fn) override;
     void single(JobFnArena fn) override;
     EntityHandle reserveHandle() override;
+    std::uint32_t reserveHandles(std::uint32_t count,
+                                 std::span<EntityHandle> out) override;
 
     // Per-system list of command buffers, in submission order. The
     // matching ScratchArena (if any) lives in `arenas_[i]` — they grow
@@ -84,10 +86,18 @@ public:
     bool quitRequested() const noexcept { return quit_.load(std::memory_order_acquire); }
 
     void registerSystem(std::unique_ptr<ISystem> system);
+    std::size_t registerSystemAt(std::size_t position,
+                                 std::unique_ptr<ISystem> system);
+    std::size_t registeredSystemCount() const noexcept { return systems_.size(); }
     void setRenderer(IRenderer* renderer) noexcept { renderer_ = renderer; }
 
     World&        world()        noexcept { return world_; }
     const World&  world() const  noexcept { return world_; }
+
+    // §3.3 resource loaders. The engine pumps update() once per tick
+    // after the postStep hooks commit. addLoader returns a non-owning
+    // pointer for inspection / tests.
+    IResourceLoader* addResourceLoader(std::unique_ptr<IResourceLoader> loader);
     const Config& config() const noexcept { return cfg_; }
     std::uint64_t tick()   const noexcept { return tick_; }
     double simulationTime() const noexcept { return simulationTime_; }
@@ -200,6 +210,10 @@ private:
     // Engine-owned, thread-safe registry for game-side resources (meshes,
     // textures, audio clips, ...). Lifetime matches the engine.
     ResourceRegistry resources_;
+
+    // §3.3 registered resource loaders. Pumped after the postStep hook
+    // commits. Torn down in reverse-registration order during shutdown.
+    std::vector<std::unique_ptr<IResourceLoader>> resourceLoaders_;
 };
 
 } // namespace threadmaxx::internal

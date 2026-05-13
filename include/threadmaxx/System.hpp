@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 
 namespace threadmaxx {
 
@@ -86,6 +87,14 @@ public:
     ///
     /// @thread_safety Safe to call from any worker job under this `update()`.
     virtual EntityHandle reserveHandle() = 0;
+
+    /// Batch reservation form. Reserves up to `out.size()` handles under
+    /// a single acquisition of the storage-side mutex. Returns the
+    /// number of handles written. Use when a single job knows up front
+    /// it needs many slots (e.g. spawning N children of a parent).
+    /// @thread_safety Safe to call from any worker job under this `update()`.
+    virtual std::uint32_t reserveHandles(std::uint32_t count,
+                                         std::span<EntityHandle> out) = 0;
 };
 
 /// User-implemented unit of gameplay/physics/AI.
