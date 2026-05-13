@@ -58,9 +58,12 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     const std::uint32_t chunkCount = (count + grain - 1) / grain;
 
     // Reserve command buffers up front so emplace_back does not invalidate
-    // pointers while jobs are running.
+    // pointers while jobs are running. arenas_ grows in lockstep; the
+    // legacy JobFn variant leaves each entry default-constructed (no
+    // allocation paid).
     const std::size_t firstIdx = buffers_.size();
     buffers_.resize(firstIdx + chunkCount);
+    arenas_.resize(firstIdx + chunkCount);
 
     std::latch done(chunkCount);
     for (std::uint32_t c = 0; c < chunkCount; ++c) {
@@ -77,10 +80,52 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     done.wait();
 }
 
+void SystemContextImpl::parallelFor(std::uint32_t count,
+                                    std::uint32_t grain,
+                                    JobFnArena fn) {
+    if (count == 0 || !fn) return;
+
+    const std::uint32_t workers = engine_.jobs().workerCount();
+    if (grain == 0) grain = pickGrain(count, workers);
+
+    const std::uint32_t chunkCount = (count + grain - 1) / grain;
+
+    const std::size_t firstIdx = buffers_.size();
+    buffers_.resize(firstIdx + chunkCount);
+    arenas_.resize(firstIdx + chunkCount);
+
+    std::latch done(chunkCount);
+    for (std::uint32_t c = 0; c < chunkCount; ++c) {
+        const std::uint32_t begin = c * grain;
+        const std::uint32_t end   = std::min(begin + grain, count);
+        CommandBuffer*  cb    = &buffers_[firstIdx + c];
+        ScratchArena*   arena = &arenas_[firstIdx + c];
+        auto userFn = fn;
+        engine_.jobs().submit([userFn, begin, end, cb, arena, &done] {
+            userFn(Range{begin, end}, *cb, *arena);
+            done.count_down();
+        });
+    }
+    jobsSubmitted_ += chunkCount;
+    done.wait();
+}
+
 void SystemContextImpl::single(JobFn fn) {
     if (!fn) return;
     buffers_.emplace_back();
+    arenas_.emplace_back();
     fn(Range{0, 0}, buffers_.back());
+}
+
+void SystemContextImpl::single(JobFnArena fn) {
+    if (!fn) return;
+    buffers_.emplace_back();
+    arenas_.emplace_back();
+    fn(Range{0, 0}, buffers_.back(), arenas_.back());
+}
+
+EntityHandle SystemContextImpl::reserveHandle() {
+    return engine_.world().impl_().storage.reserveHandle();
 }
 
 // ---- EngineImpl ---------------------------------------------------------
@@ -91,6 +136,12 @@ EngineImpl::EngineImpl(const Config& cfg) : cfg_(cfg) {
 
 EngineImpl::~EngineImpl() {
     shutdown();
+    // §3.3 channels outlive shutdown so postStep hooks can still pump
+    // events. They're owned in raw form (factory/deleter pair); release
+    // here, after the worker pool has been torn down.
+    for (auto& [type, entry] : eventChannels_) {
+        if (entry.deleter && entry.ptr) entry.deleter(entry.ptr);
+    }
 }
 
 bool EngineImpl::initialize(IGame& game, Engine& publicEngine) {
@@ -168,11 +219,25 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
         std::visit([&](auto& c) {
             using T = std::decay_t<decltype(c)>;
             if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
-                const auto h = storage.spawn(c.transform, c.velocity,
-                                             c.render, c.userData,
-                                             c.acceleration, c.parent,
-                                             c.initialMask);
-                if (c.outHandle) *c.outHandle = h;
+                if (c.reserved.valid()) {
+                    // §3.5: spawn into a slot previously taken via
+                    // SystemContext::reserveHandle(). Falls back to a
+                    // fresh allocation if the reservation was discarded
+                    // (e.g. by a competing path that consumed it first).
+                    if (!storage.materializeReserved(c.reserved,
+                            c.transform, c.velocity, c.render, c.userData,
+                            c.acceleration, c.parent, c.initialMask)) {
+                        storage.spawn(c.transform, c.velocity,
+                                      c.render, c.userData,
+                                      c.acceleration, c.parent,
+                                      c.initialMask);
+                    }
+                } else {
+                    storage.spawn(c.transform, c.velocity,
+                                  c.render, c.userData,
+                                  c.acceleration, c.parent,
+                                  c.initialMask);
+                }
             } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
                 storage.destroy(c.entity);
             } else if constexpr (std::is_same_v<T, detail::CmdSetTransform>) {
@@ -253,10 +318,27 @@ void EngineImpl::submitInterpolatedFrame(float alpha) {
 void EngineImpl::step() {
     if (!initialized_) return;
 
-    const double dt = cfg_.fixedStepSeconds;
+    // Pause skips the entire simulation: tick does not advance, systems
+    // are not run, no commits. Stats are reset to "this step did nothing"
+    // so the HUD doesn't show stale numbers from before the pause.
+    if (paused_.load(std::memory_order_acquire)) {
+        for (auto& ss : systemStats_) {
+            ss.lastUpdateSeconds = 0.0;
+            ss.jobsSubmittedLastStep = 0;
+            ss.commandsCommittedLastStep = 0;
+        }
+        stats_.lastStepSeconds = 0.0;
+        stats_.jobsSubmittedLastStep = 0;
+        stats_.commandsCommittedLastStep = 0;
+        stats_.commitDurationSeconds = 0.0;
+        return;
+    }
+
+    const double dt = cfg_.fixedStepSeconds * timeScale_;
     const auto stepStart = std::chrono::steady_clock::now();
 
     commandsThisStep_ = 0;
+    commitSecondsThisStep_ = 0.0;
     std::uint64_t jobsThisStep = 0;
 
     // Reset per-system "last step" counters; lifetime totals are preserved.
@@ -264,6 +346,19 @@ void EngineImpl::step() {
         ss.lastUpdateSeconds = 0.0;
         ss.jobsSubmittedLastStep = 0;
         ss.commandsCommittedLastStep = 0;
+    }
+
+    // §3.1 preStep: serial, registration order, on the sim thread. Hooks
+    // run before any wave starts so they can pump per-tick input queues
+    // or reset scratch state. Commands emitted via ctx.single() are
+    // committed immediately so wave systems observe them.
+    for (std::size_t i = 0; i < systems_.size(); ++i) {
+        SystemContextImpl ctx(*this, world_, dt, tick_);
+        systems_[i]->preStep(ctx);
+        const auto commitStart = std::chrono::steady_clock::now();
+        for (auto& cb : ctx.buffers()) commitBuffer(cb);
+        commitSecondsThisStep_ += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - commitStart).count();
     }
 
     // Run systems wave by wave. Within a wave, all systems have pairwise
@@ -311,9 +406,12 @@ void EngineImpl::step() {
         // so per-system command counts come out of the same accumulator.
         for (std::size_t k = 0; k < wave.size(); ++k) {
             const std::uint64_t commandsBefore = commandsThisStep_;
+            const auto commitStart = std::chrono::steady_clock::now();
             for (auto& cb : ctxs[k]->buffers()) {
                 commitBuffer(cb);
             }
+            commitSecondsThisStep_ += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - commitStart).count();
             const std::uint64_t cmds = commandsThisStep_ - commandsBefore;
             const std::uint64_t jobs = ctxs[k]->jobsSubmitted();
             jobsThisStep += jobs;
@@ -336,8 +434,35 @@ void EngineImpl::step() {
         }
     }
 
+    // §3.1 postStep: serial, registration order, after every wave's
+    // commit. Use it to publish per-tick events or finalize accumulators.
+    // Commands emitted here are visible to the next tick's preStep, not
+    // to this tick's wave systems.
+    for (std::size_t i = 0; i < systems_.size(); ++i) {
+        SystemContextImpl ctx(*this, world_, dt, tick_);
+        systems_[i]->postStep(ctx);
+        const auto commitStart = std::chrono::steady_clock::now();
+        for (auto& cb : ctx.buffers()) commitBuffer(cb);
+        commitSecondsThisStep_ += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - commitStart).count();
+    }
+
+    // §3.5 reaping: any handle that was reserveHandle()-ed but never
+    // matched a cb.spawn(handle, ...) is dropped here. Bumps generation
+    // so the user's handle stops validating.
+    world_.impl_().storage.discardAllReservations();
+
+    // §3.3 drain event channels: writes from this tick flip into the
+    // next tick's read buffer so drainTick() sees this tick's events.
+    for (auto& [type, entry] : eventChannels_) {
+        if (entry.drain) entry.drain(entry.ptr);
+    }
+
     tick_++;
-    simulationTime_ += dt;
+    // Wall-clock advances by one fixed step regardless of time scale —
+    // only `dt` seen by systems is scaled. Keeps tick_ ↔ simulationTime_
+    // a clean integer relationship.
+    simulationTime_ += cfg_.fixedStepSeconds;
 
     buildRenderFrame();
     if (renderer_) {
@@ -350,6 +475,7 @@ void EngineImpl::step() {
 
     stats_.tick = tick_;
     stats_.lastStepSeconds = stepSeconds;
+    stats_.commitDurationSeconds = commitSecondsThisStep_;
     // EWMA with alpha = 1/16. First sample initializes the average.
     if (stats_.totalTicks == 0) {
         stats_.avgStepSeconds = stepSeconds;
@@ -411,6 +537,27 @@ void EngineImpl::run() {
             }
         }
     }
+}
+
+void EngineImpl::setTimeScale(double scale) noexcept {
+    // Clamp to non-negative — a negative scale would mean "go backwards"
+    // which is nonsense for a forward-only fixed-step loop.
+    timeScale_ = scale < 0.0 ? 0.0 : scale;
+}
+
+void* EngineImpl::getEventChannelRaw(std::type_index type,
+                                     void* (*factory)(),
+                                     void (*deleter)(void*),
+                                     void (*drainFn)(void*)) {
+    auto it = eventChannels_.find(type);
+    if (it != eventChannels_.end()) return it->second.ptr;
+    EventChannelEntry entry;
+    entry.ptr     = factory();
+    entry.deleter = deleter;
+    entry.drain   = drainFn;
+    void* raw = entry.ptr;
+    eventChannels_.emplace(type, entry);
+    return raw;
 }
 
 void EngineImpl::shutdown() {

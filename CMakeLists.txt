@@ -20,9 +20,11 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/Handles.hpp
     include/threadmaxx/Components.hpp
     include/threadmaxx/CommandBuffer.hpp
+    include/threadmaxx/EventChannel.hpp
     include/threadmaxx/Query.hpp
     include/threadmaxx/RenderFrame.hpp
     include/threadmaxx/Resource.hpp
+    include/threadmaxx/ScratchArena.hpp
     include/threadmaxx/Stats.hpp
     include/threadmaxx/System.hpp
     include/threadmaxx/Renderer.hpp
@@ -40,6 +42,7 @@ set(THREADMAXX_SOURCES
     src/EngineImpl.cpp
     src/HierarchySystem.cpp
     src/ResourceRegistry.cpp
+    src/ScratchArena.cpp
 )
 
 add_library(threadmaxx STATIC ${THREADMAXX_SOURCES} ${THREADMAXX_PUBLIC_HEADERS})

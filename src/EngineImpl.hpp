@@ -7,6 +7,7 @@
 #include "threadmaxx/Config.hpp"
 #include "threadmaxx/RenderFrame.hpp"
 #include "threadmaxx/Resource.hpp"
+#include "threadmaxx/ScratchArena.hpp"
 #include "threadmaxx/Stats.hpp"
 #include "threadmaxx/System.hpp"
 #include "threadmaxx/World.hpp"
@@ -17,6 +18,8 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <typeindex>
+#include <unordered_map>
 #include <vector>
 
 namespace threadmaxx {
@@ -40,10 +43,17 @@ public:
     std::uint64_t tick() const noexcept override { return tick_; }
 
     void parallelFor(std::uint32_t count, std::uint32_t grain, JobFn fn) override;
+    void parallelFor(std::uint32_t count, std::uint32_t grain, JobFnArena fn) override;
     void single(JobFn fn) override;
+    void single(JobFnArena fn) override;
+    EntityHandle reserveHandle() override;
 
-    // Per-system list of command buffers, in submission order.
-    std::vector<CommandBuffer>& buffers() noexcept { return buffers_; }
+    // Per-system list of command buffers, in submission order. The
+    // matching ScratchArena (if any) lives in `arenas_[i]` — they grow
+    // in lockstep; arenas_[i] is default-constructed (empty) for chunks
+    // submitted without arena support.
+    std::vector<CommandBuffer>&  buffers() noexcept { return buffers_; }
+    std::vector<ScratchArena>&   arenas()  noexcept { return arenas_; }
 
     // Number of jobs handed to JobSystem from this context. parallelFor
     // chunks count; single() does not (it runs inline).
@@ -55,6 +65,7 @@ private:
     double            dt_;
     std::uint64_t     tick_;
     std::vector<CommandBuffer> buffers_;
+    std::vector<ScratchArena>  arenas_;   // parallel to buffers_; same length
     std::uint64_t     jobsSubmitted_ = 0;
 };
 
@@ -82,6 +93,7 @@ public:
     double simulationTime() const noexcept { return simulationTime_; }
 
     EngineStats stats() const noexcept { return stats_; }
+    JobSystemStats jobSystemStats() const noexcept { return jobs_->stats(); }
     std::span<const SystemStats> systemStats() const noexcept {
         return std::span<const SystemStats>(systemStats_.data(),
                                             systemStats_.size());
@@ -91,6 +103,26 @@ public:
     const ResourceRegistry& resources() const noexcept { return resources_; }
 
     JobSystem& jobs() noexcept { return *jobs_; }
+
+    // Pause / time-scale (§3.4). Time scale multiplies the dt seen by
+    // systems; the engine still ticks at fixedStepSeconds wall-clock.
+    // Pause makes step()/run() skip the simulation phase entirely.
+    void setTimeScale(double scale) noexcept;
+    double timeScale() const noexcept { return timeScale_; }
+    void setPaused(bool paused) noexcept { paused_.store(paused, std::memory_order_release); }
+    bool paused() const noexcept { return paused_.load(std::memory_order_acquire); }
+
+    // Event-channel access (§3.3). Channels are created on first request,
+    // keyed by std::type_index. The returned void* points at a stable
+    // EventChannel<T>; callers cast back to the same type.
+    //
+    // factory: heap-allocates a fresh channel of the matching type.
+    // deleter: tears it down at engine destruction.
+    // drainFn: called at tick-boundary to swap the front/back buffers.
+    void* getEventChannelRaw(std::type_index type,
+                             void* (*factory)(),
+                             void (*deleter)(void*),
+                             void (*drainFn)(void*));
 
 private:
     // Applies a command buffer's commands to the world. Single-threaded.
@@ -130,6 +162,23 @@ private:
     std::atomic<bool> quit_{false};
     bool initialized_ = false;
 
+    // Pause / time-scale state (§3.4). timeScale_ is only mutated on the
+    // sim thread; paused_ is atomic so any thread can flip it (parallels
+    // requestQuit()).
+    double            timeScale_ = 1.0;
+    std::atomic<bool> paused_{false};
+
+    // Type-erased event channel store (§3.3). Owned vector of unique_ptrs
+    // gives stable addresses; the type_index map is a lookup index.
+    // Drained between steps (preStep → emits stay live, drain happens on
+    // tick boundary after postStep).
+    struct EventChannelEntry {
+        void* ptr               = nullptr;
+        void  (*deleter)(void*) = nullptr;
+        void  (*drain)(void*)   = nullptr;
+    };
+    std::unordered_map<std::type_index, EventChannelEntry> eventChannels_;
+
     // Double-buffered render-frame storage. We build into back_, then
     // atomically publish the pointer; the renderer reads through front_.
     std::array<std::vector<RenderInstance>, 2> renderInstanceBuffers_;
@@ -142,6 +191,7 @@ private:
 
     EngineStats stats_;
     std::uint64_t commandsThisStep_ = 0;  // accumulated across commitBuffer calls
+    double        commitSecondsThisStep_ = 0.0;  // accumulated in step() across waves
 
     // Per-system snapshot, one entry per registered system in registration
     // order. Grown by registerSystem; updated at the end of each step().

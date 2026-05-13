@@ -27,18 +27,28 @@ documents the invariants this guide relies on; the
 4. [Systems & scheduling](systems_and_scheduling.md) — implementing
    `ISystem`, declaring read/write sets, and how the engine groups
    non-conflicting systems into concurrent waves.
-5. [Command buffers](command_buffers.md) — recording mutations from worker
+5. [Lifecycle hooks](lifecycle_hooks.md) — `preStep` / `update` /
+   `postStep`, when each fires, and what to put in which.
+6. [Command buffers](command_buffers.md) — recording mutations from worker
    jobs and the deterministic commit phase.
-6. [Hierarchy](hierarchy.md) — the built-in `Parent` component and the
+7. [Reserved handles](reserved_handles.md) — spawning a parent and a
+   child in a single recording via `ctx.reserveHandle()`.
+8. [Scratch arenas](scratch_arenas.md) — per-job bump allocator for
+   short-lived POD scratch memory.
+9. [Hierarchy](hierarchy.md) — the built-in `Parent` component and the
    `HierarchySystem` factory.
-7. [Resources](resources.md) — `ResourceId<T>` and `ResourceRegistry` for
-   meshes, textures, audio clips, anything the engine doesn't own.
-8. [Renderer integration](renderer_integration.md) — implementing
-   `IRenderer`, the double-buffered render frame, and the interpolation
-   alpha.
-9. [Configuration & lifecycle](configuration.md) — `Config` fields, the
-   engine lifecycle, deterministic mode, fixed timestep, pacing.
-10. [Stats & profiling](stats_and_profiling.md) — `EngineStats` and per-
+10. [Event channels](events.md) — typed double-buffered cross-system
+    messaging.
+11. [Resources](resources.md) — `ResourceId<T>` and `ResourceRegistry` for
+    meshes, textures, audio clips, anything the engine doesn't own.
+12. [Renderer integration](renderer_integration.md) — implementing
+    `IRenderer`, the double-buffered render frame, and the interpolation
+    alpha.
+13. [Configuration & lifecycle](configuration.md) — `Config` fields, the
+    engine lifecycle, deterministic mode, fixed timestep, pacing.
+14. [Pause and time scale](pause_and_time_scale.md) — slow-mo,
+    pause-menu semantics, deterministic-tick interaction.
+15. [Stats & profiling](stats_and_profiling.md) — `EngineStats` and per-
     `SystemStats`, what they measure and how to wire them into a HUD.
 
 ## What this guide does not cover

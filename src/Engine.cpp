@@ -1,6 +1,8 @@
 #include "threadmaxx/Engine.hpp"
 
 #include "EngineImpl.hpp"
+#include "WorldImpl.hpp"
+#include "EntityStorage.hpp"
 
 namespace threadmaxx {
 
@@ -34,5 +36,23 @@ std::span<const SystemStats> Engine::systemStats() const noexcept {
 
 ResourceRegistry&       Engine::resources()       noexcept { return impl_->resources(); }
 const ResourceRegistry& Engine::resources() const noexcept { return impl_->resources(); }
+
+JobSystemStats Engine::jobSystemStats() const noexcept { return impl_->jobSystemStats(); }
+
+EntityHandle Engine::reserveEntityHandle() {
+    return impl_->world().impl_().storage.reserveHandle();
+}
+
+void Engine::setTimeScale(double s) noexcept { impl_->setTimeScale(s); }
+double Engine::timeScale() const noexcept     { return impl_->timeScale(); }
+void Engine::setPaused(bool p) noexcept       { impl_->setPaused(p); }
+bool Engine::paused() const noexcept          { return impl_->paused(); }
+
+void* Engine::getEventChannelRaw(std::type_index type,
+                                 void* (*factory)(),
+                                 void (*deleter)(void*),
+                                 void (*drainFn)(void*)) {
+    return impl_->getEventChannelRaw(type, factory, deleter, drainFn);
+}
 
 } // namespace threadmaxx

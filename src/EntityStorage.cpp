@@ -8,10 +8,15 @@
 /// pop the back of every parallel array and re-point the moved row's
 /// slot at the new dense index; if you add a new built-in component,
 /// you MUST add a swap-and-pop branch here or the arrays go out of sync.
+///
+/// Reservation lifecycle (§3.5):
+///   reserveHandle    [workers, locked]    slot.reserved = true
+///   materializeReserved [sim thread]      slot.alive    = true, dense_grows
+///   discardAllReservations [sim thread]   slot.gen++, slot reused
 #include "EntityStorage.hpp"
 
+#include <algorithm>
 #include <limits>
-#include <utility>
 
 namespace threadmaxx::internal {
 
@@ -74,6 +79,76 @@ EntityHandle EntityStorage::spawn(const Transform& t,
     parents_.push_back(p);
     masks_.push_back(initialMask);
     return h;
+}
+
+EntityHandle EntityStorage::reserveHandle() {
+    std::lock_guard<std::mutex> lk(reservationMtx_);
+    std::uint32_t slotIdx;
+    if (!freeSlots_.empty()) {
+        slotIdx = freeSlots_.back();
+        freeSlots_.pop_back();
+    } else {
+        slotIdx = static_cast<std::uint32_t>(slots_.size());
+        slots_.emplace_back();
+    }
+    Slot& slot = slots_[slotIdx];
+    slot.generation = (slot.generation == 0) ? 1u : slot.generation + 1u;
+    slot.reserved   = true;
+    slot.alive      = false;
+    slot.denseIndex = std::numeric_limits<std::uint32_t>::max();
+    const EntityHandle h{slotIdx, slot.generation};
+    reservedHandles_.push_back(h);
+    return h;
+}
+
+bool EntityStorage::materializeReserved(EntityHandle h,
+                                        const Transform& t,
+                                        const Velocity& v,
+                                        const RenderTag& r,
+                                        const UserData& u,
+                                        const Acceleration& a,
+                                        const Parent& p,
+                                        ComponentSet initialMask) {
+    if (h.index >= slots_.size()) return false;
+    Slot& slot = slots_[h.index];
+    if (!slot.reserved || slot.generation != h.generation || h.generation == 0) {
+        return false;
+    }
+
+    slot.reserved   = false;
+    slot.alive      = true;
+    slot.denseIndex = static_cast<std::uint32_t>(entities_.size());
+
+    denseToSlot_.push_back(h.index);
+    entities_.push_back(h);
+    transforms_.push_back(t);
+    velocities_.push_back(v);
+    renderTags_.push_back(r);
+    userData_.push_back(u);
+    accelerations_.push_back(a);
+    parents_.push_back(p);
+    masks_.push_back(initialMask);
+
+    // Remove the consumed reservation from the tracking list. The list
+    // is small (handful of items per tick), so linear scan is fine.
+    auto& tracked = reservedHandles_;
+    tracked.erase(std::remove(tracked.begin(), tracked.end(), h), tracked.end());
+    return true;
+}
+
+void EntityStorage::discardAllReservations() noexcept {
+    std::lock_guard<std::mutex> lk(reservationMtx_);
+    for (auto h : reservedHandles_) {
+        // Bump generation so the user's handle stops validating, then
+        // return the slot to the free list for reuse next tick.
+        Slot& slot = slots_[h.index];
+        slot.generation++;
+        slot.reserved   = false;
+        slot.alive      = false;
+        slot.denseIndex = std::numeric_limits<std::uint32_t>::max();
+        freeSlots_.push_back(h.index);
+    }
+    reservedHandles_.clear();
 }
 
 bool EntityStorage::destroy(EntityHandle h) noexcept {

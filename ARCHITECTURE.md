@@ -21,6 +21,9 @@ each frame.
                           ─────────────────────────
    ┌─ tick begins
    │
+   │   preStep:  every registered ISystem.preStep() runs serially,
+   │             in registration order. Commits flush immediately.
+   │
    │   for each wave (group of systems with non-conflicting read/write sets):
    │       sibling systems in the wave run concurrently on helper threads;
    │       within each system:
@@ -44,16 +47,27 @@ each frame.
    │               │   • const World&   (read-only)
    │               │   • Range          (index slice)
    │               │   • CommandBuffer& (its own — no sharing)
+   │               │   • optionally: ScratchArena& (per-job bump alloc)
    │               │
    │       3. Engine waits on a per-batch counter (latch-style)
    │       4. Engine commits command buffers in deterministic job order
    │          (mutations applied here, on the sim thread, single-threaded)
    │
-   ├─ all systems done
+   ├─ all waves done
    │
-   │   5. Engine builds a RenderFrame from the current world state
-   │   6. RenderFrame swapped into the back render buffer
-   │   7. Renderer::submitFrame(front) — caller-controlled
+   │   postStep: every registered ISystem.postStep() runs serially,
+   │             in registration order. Commits flush immediately.
+   │
+   │   Reservation reap: any reserveHandle() not consumed by a
+   │     cb.spawn(handle, ...) is dropped here.
+   │
+   │   Event drain: each EventChannel<T> swaps front<->back so emits
+   │     from this tick become visible on the next.
+   │
+   │   tick++; simulationTime += fixedStepSeconds
+   │   Engine builds a RenderFrame from the current world state
+   │   RenderFrame swapped into the back render buffer
+   │   Renderer::submitFrame(front) — caller-controlled
    │
    └─ tick ends
 ```
@@ -79,16 +93,19 @@ Key invariants:
 threadmaxx::Engine             // top-level: init / step / run / shutdown
 threadmaxx::World              // read-only handle-based view of state
 threadmaxx::ISystem            // user-implemented gameplay/physics/AI
-threadmaxx::SystemContext      // parallelFor / single / world / dt / tick
+threadmaxx::SystemContext      // parallelFor / single / reserveHandle / world / dt / tick
 threadmaxx::IRenderer          // user-implemented backend (Vulkan/SDL/...)
 threadmaxx::IGame              // bundle: registers systems + renderer at startup
 threadmaxx::CommandBuffer      // record mutations from worker jobs
+threadmaxx::ScratchArena       // per-job bump allocator
+threadmaxx::EventChannel<T>    // typed double-buffered cross-system queue
 threadmaxx::RenderFrame        // flat data the renderer consumes
 threadmaxx::RenderInstance
 threadmaxx::EntityHandle
 threadmaxx::Config
 threadmaxx::EngineStats        // per-tick instrumentation
 threadmaxx::SystemStats        // per-system instrumentation
+threadmaxx::JobSystemStats     // per-worker steal/own-pop totals
 threadmaxx::ResourceId<T>      // typed handle into ResourceRegistry
 threadmaxx::ResourceRegistry   // engine-owned, thread-safe typed store
 threadmaxx::Component          // scheduling category + per-entity presence bit
@@ -125,11 +142,13 @@ threadmaxx/
 │   ├── Handles.hpp
 │   ├── Components.hpp             ← built-in components + Component / ComponentSet
 │   ├── CommandBuffer.hpp
+│   ├── EventChannel.hpp           ← typed double-buffered queue
 │   ├── Query.hpp                  ← forEach / forEachWith / forEachSerial
 │   ├── RenderFrame.hpp
 │   ├── Renderer.hpp
 │   ├── Resource.hpp               ← ResourceId<T> + ResourceRegistry
-│   ├── Stats.hpp                  ← EngineStats / SystemStats
+│   ├── ScratchArena.hpp           ← per-job bump allocator
+│   ├── Stats.hpp                  ← EngineStats / SystemStats / JobSystemStats
 │   ├── System.hpp                 ← ISystem + SystemContext + makeHierarchySystem
 │   ├── Game.hpp
 │   ├── World.hpp
@@ -139,23 +158,29 @@ threadmaxx/
 │   ├── JobSystem.hpp / .cpp       ← per-worker work-stealing deques
 │   ├── ResourceRegistry.cpp       ← typed-store PImpl impl
 │   ├── HierarchySystem.cpp        ← built-in hierarchy system
+│   ├── ScratchArena.cpp           ← chained-slab bump allocator
 │   ├── WorldImpl.hpp
 │   ├── EngineImpl.hpp / .cpp
 │   ├── World.cpp                  ← PImpl forwarding
 │   ├── Engine.cpp                 ← PImpl forwarding
 │   └── CommandBuffer.cpp
-├── tests/                         ← 14 no-dependency tests
+├── tests/                         ← 20 no-dependency tests
 ├── doc/                           ← user guide (Markdown, also Doxygen-ingested)
 │   ├── index.md
 │   ├── getting_started.md
 │   ├── concepts.md
 │   ├── components_and_queries.md
 │   ├── systems_and_scheduling.md
+│   ├── lifecycle_hooks.md
 │   ├── command_buffers.md
+│   ├── reserved_handles.md
+│   ├── scratch_arenas.md
 │   ├── hierarchy.md
+│   ├── events.md
 │   ├── resources.md
 │   ├── renderer_integration.md
 │   ├── configuration.md
+│   ├── pause_and_time_scale.md
 │   └── stats_and_profiling.md
 ├── examples/minimal/              ← runnable headless example
 │   ├── CMakeLists.txt
@@ -200,6 +225,68 @@ buffers in registration order on the sim thread. Defaults are
 conflict and degrades cleanly to strict registration-order serial — the
 historical behavior. Tests in `tests/parallel_systems_test.cpp` pin the
 contract.
+
+## Lifecycle hooks
+
+`ISystem` has three call points per tick: `preStep`, `update`, and
+`postStep`. `preStep` and `postStep` are serial (sim thread,
+registration order, single-threaded); they default to no-ops. `update`
+is the wave-scheduled hook described above. Commands recorded in
+`preStep` flush immediately so wave-phase systems observe them;
+commands recorded in `postStep` are visible to the next tick's
+`preStep` and wave systems. This three-phase layout gives game code a
+deterministic pre/post serial slot without sacrificing parallel update
+execution — see `tests/lifecycle_hooks_test.cpp` for the contract.
+
+## Scratch arenas
+
+Per-job bump allocator paired with `CommandBuffer` in the new
+three-arg `parallelFor` / `single` overloads. Chained-slab storage
+(see `src/ScratchArena.cpp`): allocations never invalidate prior
+pointers within the same epoch — only `reset()` does. The engine
+allocates one arena per chunk in `SystemContextImpl::arenas_`,
+parallel to `buffers_`; arenas are destroyed when the wave ends. For
+steady-state usage the first-tick allocation is amortized away;
+subsequent ticks reuse the slabs. `allocate<T>` static-asserts that
+`T` is trivially destructible.
+
+## Reserved spawn handles
+
+`Engine::reserveEntityHandle()` and `SystemContext::reserveHandle()`
+take a slot from `EntityStorage` under an internal mutex
+(`reservationMtx_`), bump its generation, and mark it `reserved=true`.
+The handle is valid for use in `CommandBuffer::spawn(handle, ...)`
+overloads and as the target of a `Parent{handle, ...}`. During commit
+`materializeReserved` finishes the spawn by populating dense arrays
+and flipping `reserved → alive`. Reservations not consumed by any
+spawn are reaped in `discardAllReservations` at step end (generation
+bumped again so the user's handle stops validating).
+
+This is the one explicit exception to the "workers don't mutate state"
+invariant: reservation manipulates the slot allocator only, not dense
+data — and it does so under its own mutex. Dense arrays still grow
+single-threaded during commit. `tests/reserved_handle_test.cpp` pins
+the contract.
+
+## Event channels
+
+`EventChannel<T>` (`include/threadmaxx/EventChannel.hpp`) is the
+typed double-buffered queue surfaced via `Engine::events<T>()`.
+Storage is type-erased on `EngineImpl::eventChannels_`
+(`std::unordered_map<std::type_index, EventChannelEntry>`), with
+function-pointer hooks for the deleter and the drainer. Per-channel
+state is a `std::mutex`-guarded back buffer plus a stable front
+buffer; `drain()` swaps them at tick boundary. `emit` is mutex-
+protected so worker jobs can produce safely; `drainTick` returns a
+span into the front buffer.
+
+## Pause and time-scale
+
+`Engine::setTimeScale(s)` scales the `dt` value seen by systems
+(negative clamped to zero); `tick()` and `simulationTime()` still
+advance by exactly one fixed step per `step()`. `setPaused(true)`
+makes `step()` an early-return (per-tick stats zeroed); `run()` keeps
+re-submitting the current front frame so the renderer doesn't freeze.
 
 ## Per-entity component presence
 

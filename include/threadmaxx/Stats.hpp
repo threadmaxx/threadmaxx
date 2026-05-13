@@ -23,6 +23,11 @@ struct EngineStats {
     /// factor is fixed at `1/16`.
     double avgStepSeconds = 0.0;
 
+    /// Wall-clock seconds spent in the commit phase across all waves
+    /// during the most recent step. Subtract from `lastStepSeconds` to
+    /// see how much of the step was actual wave execution.
+    double commitDurationSeconds = 0.0;
+
     /// Jobs handed to JobSystem during the most recent `step()`. Each
     /// `parallelFor` chunk counts as one; `single()` does not submit.
     std::uint64_t jobsSubmittedLastStep = 0;
@@ -38,6 +43,32 @@ struct EngineStats {
     std::uint64_t totalTicks = 0;
     std::uint64_t totalJobsSubmitted = 0;
     std::uint64_t totalCommandsCommitted = 0;
+};
+
+/// Aggregate worker-pool counters. Read via `Engine::jobSystemStats()`.
+/// All fields are lifetime totals since the engine was constructed.
+///
+/// Use these to tune `parallelFor` grain: a high `stolenJobs /
+/// totalJobs` ratio means workers were starving and stealing a lot —
+/// either the grain is too coarse (one big chunk monopolized a worker)
+/// or there isn't enough total work to keep the pool busy.
+struct JobSystemStats {
+    /// Number of jobs ever submitted to the worker pool. Mirrors
+    /// `EngineStats::totalJobsSubmitted` for engine-driven work but
+    /// also counts jobs submitted via `JobSystem` directly.
+    std::uint64_t totalJobs = 0;
+
+    /// Jobs a worker popped from its own queue. The common-case happy
+    /// path.
+    std::uint64_t ownPops = 0;
+
+    /// Jobs a worker stole from a sibling's queue. Indicates load
+    /// imbalance recovery.
+    std::uint64_t stolenJobs = 0;
+
+    /// Number of worker threads (mirrors `Config::workerCount` after
+    /// the default has been resolved).
+    std::uint32_t workerCount = 0;
 };
 
 /// Per-system snapshot. One entry per registered system in

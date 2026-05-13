@@ -31,13 +31,30 @@ void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
                           const Acceleration& a) {
     commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, Parent{},
-                                            defaultSpawnMask(r), nullptr});
+                                            defaultSpawnMask(r),
+                                            kInvalidEntity});
 }
 void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
                           const Acceleration& a,
                           const Parent& p, ComponentSet initialMask) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p, initialMask, nullptr});
+    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p, initialMask,
+                                            kInvalidEntity});
+}
+void CommandBuffer::spawn(EntityHandle reserved,
+                          const Transform& t, const Velocity& v,
+                          const RenderTag& r, const UserData& u,
+                          const Acceleration& a) {
+    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, Parent{},
+                                            defaultSpawnMask(r), reserved});
+}
+void CommandBuffer::spawn(EntityHandle reserved,
+                          const Transform& t, const Velocity& v,
+                          const RenderTag& r, const UserData& u,
+                          const Acceleration& a,
+                          const Parent& p, ComponentSet initialMask) {
+    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p, initialMask,
+                                            reserved});
 }
 void CommandBuffer::destroy(EntityHandle e) {
     commands_.emplace_back(detail::CmdDestroy{e});

@@ -41,7 +41,7 @@ When adding a public symbol, include a Doxygen-flavored comment on it (`///` or 
 
 `ARCHITECTURE.md` has the design overview and threading diagram — read it before structural changes. The invariants below are load-bearing; violating them silently corrupts state under load.
 
-**Worker jobs never mutate live world state.** They receive `const World&` and a private `CommandBuffer`. All mutation flows through `EngineImpl::commitBuffer()` which runs single-threaded on the simulation thread, after a batch's `std::latch` has fired. If you add a new path that writes to `EntityStorage` outside of `commitBuffer`, you've broken determinism and introduced a data race.
+**Worker jobs never mutate live world state.** They receive `const World&` and a private `CommandBuffer`. All mutation flows through `EngineImpl::commitBuffer()` which runs single-threaded on the simulation thread, after a batch's `std::latch` has fired. If you add a new path that writes to `EntityStorage` outside of `commitBuffer`, you've broken determinism and introduced a data race. The one explicit exception is `EntityStorage::reserveHandle()` (§3.5), which is guarded by its own internal mutex and only manipulates slot allocation — it never grows the dense arrays or touches per-entity data; that still happens single-threaded during commit via `materializeReserved`.
 
 **Commit order is submission order, not execution order.** `JobSystem` workers race freely; the per-system `std::vector<CommandBuffer>` in `SystemContextImpl` is what's authoritative. `parallelFor` resizes that vector up front so pointers into it stay valid while jobs run — don't switch it to `emplace_back` inside the submit loop.
 
@@ -58,8 +58,8 @@ This is the one operation that crosses every layer. To add component `Foo`:
 1. Define the POD in `include/threadmaxx/Components.hpp`.
 2. Add a `Component::Foo` enum value and extend `ComponentSet::all()`'s mask to cover its bit.
 3. Add a parallel `std::vector<Foo>` to `EntityStorage` (storage, dense view accessor, `mutFoo`, and the swap-and-pop branch in `destroy()` and the push in `spawn()`). `EntityStorage::spawn` now also takes a `ComponentSet initialMask` — pass it through.
-4. Extend `CmdSpawn` (add a `Foo foo` field), add `CmdSetFoo`, both `spawn` overloads, and the matching method in `CommandBuffer.cpp`. Update `defaultSpawnMask` if presence should auto-derive from values (`RenderTag` does this from `meshId >= 0`).
-5. Handle the new variant alternatives in `EngineImpl::commitBuffer` (the `std::visit` lambda). For setters that change presence (`RenderTag`, `Parent`), also call `mutComponentMask` to add/remove the bit.
+4. Extend `CmdSpawn` (add a `Foo foo` field), add `CmdSetFoo`, all four `spawn` overloads (two with auto-derived mask, two with `EntityHandle reserved` for §3.5), and the matching method in `CommandBuffer.cpp`. Update `defaultSpawnMask` if presence should auto-derive from values (`RenderTag` does this from `meshId >= 0`).
+5. Handle the new variant alternatives in `EngineImpl::commitBuffer` (the `std::visit` lambda). For setters that change presence (`RenderTag`, `Parent`), also call `mutComponentMask` to add/remove the bit. Also pass the new field through `EntityStorage::materializeReserved` so reserved-handle spawns get it.
 6. Add the read accessor + dense span on `World` (`tryGetFoo`, `foos()`).
 7. If it affects rendering, populate `RenderInstance` from it in `EngineImpl::buildRenderFrame` (and gate on the new presence bit instead of a sentinel).
 8. Optionally extend `Query.hpp::detail::getSpan` and `componentBit` so `forEach<Foo>` and `forEachWith<Foo>` work.
@@ -87,4 +87,26 @@ Register `makeHierarchySystem()` *after* any user system that writes `Transform`
 
 `src/JobSystem.{hpp,cpp}` uses per-worker work-stealing deques. Submits round-robin via an atomic counter; idle workers `try_lock`-steal from siblings (LIFO from victim's back). `waitIdle` synchronizes on a separate mutex/CV so worker queues never contend with sim-thread waits. The `outstanding_` counter uses `acq_rel` for cross-thread visibility and a `notify_all` on doneCv when it decrements to zero.
 
+Per-worker `ownPops` / `stolenJobs` counters and a global `totalJobs` counter feed `JobSystemStats` (read via `Engine::jobSystemStats()`). The own-pop / steal counters are touched only by their owning worker, so no synchronization is needed; `totalJobs` is atomic for cross-thread visibility.
+
 Determinism is preserved because commits are submission-ordered (worker execution order doesn't matter). The stress test is `tests/job_system_stress_test.cpp`.
+
+## Lifecycle hooks
+
+`ISystem` exposes three hooks: `preStep` (serial, registration order, before any wave), `update` (parallel within a wave), and `postStep` (serial, registration order, after every wave). `preStep`/`postStep` default to no-ops; their commits flush immediately on the sim thread.
+
+## ScratchArena
+
+`include/threadmaxx/ScratchArena.hpp` is a chained-slab bump allocator. Pass it via the three-arg `parallelFor` / `single` overloads alongside the `CommandBuffer`. Slabs survive across waves so steady-state usage pays zero allocations after the first tick; reset rewinds the bump pointer. `allocate<T>` static_asserts that `T` is trivially destructible.
+
+## EventChannel
+
+`include/threadmaxx/EventChannel.hpp` is the typed double-buffered queue. `Engine::events<T>()` is the factory; the underlying channel is owned in `EngineImpl::eventChannels_` keyed by `std::type_index`. The engine's tick-end drain (in `EngineImpl::step`) swaps front/back; `EventChannel<T>::emit` is mutex-protected, `drainTick` returns a span into the front buffer. Channels are torn down in `~EngineImpl` after worker shutdown.
+
+## Pause & time scale
+
+`Engine::setTimeScale(s)` clamps negative `s` to zero; `dt` in `SystemContext::dt()` becomes `fixedStepSeconds * s`. `tick()` and `simulationTime()` advance independently of the time scale. `setPaused(true)` makes `step()` a no-op (zeros per-tick stats); `run()` keeps re-submitting the current front frame, so the renderer doesn't freeze.
+
+## Reserved handles
+
+`Engine::reserveEntityHandle()` and `SystemContext::reserveHandle()` allocate a slot via `EntityStorage::reserveHandle()` under `reservationMtx_`. The handle's `EntityHandle::valid()` is true immediately but `world.alive(handle)` is false until `materializeReserved` runs during commit (triggered by `cb.spawn(handle, ...)`). Any reservation not matched by a spawn is reaped in `discardAllReservations` at step end (bumps generation, returns slot to free list).

@@ -1,11 +1,13 @@
 #pragma once
 
 #include "Config.hpp"
+#include "Handles.hpp"
 #include "Stats.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <typeindex>
 
 namespace threadmaxx {
 
@@ -14,6 +16,7 @@ class ISystem;
 class IRenderer;
 class IGame;
 class ResourceRegistry;
+template <typename Ev> class EventChannel;
 
 namespace internal { class EngineImpl; }
 
@@ -111,6 +114,50 @@ public:
     /// @thread_safety Safe from any thread, including worker jobs.
     ResourceRegistry&       resources()       noexcept;
     const ResourceRegistry& resources() const noexcept;
+
+    /// Aggregate worker-pool counters (jobs submitted, own-pops, steals).
+    /// Cheap to call; safe from any thread.
+    JobSystemStats jobSystemStats() const noexcept;
+
+    /// Reserve an entity handle ahead of any spawn command (§3.5). Use
+    /// during `IGame::onSetup` to seed entities whose handles are needed
+    /// before commit; inside a system body, prefer
+    /// `SystemContext::reserveHandle()`.
+    ///
+    /// Reservations not consumed by a `CommandBuffer::spawn(handle, ...)`
+    /// commit are reaped at the end of the next `step()`.
+    /// @thread_safety Safe from any thread, including worker jobs.
+    EntityHandle reserveEntityHandle();
+
+    /// Multiply the `dt` seen by systems by `scale`. Negative values are
+    /// clamped to zero. The engine's wall-clock pacing (and the
+    /// integer `tick()`) is unaffected — only what game logic computes
+    /// from `dt` changes. See `Engine::setPaused` for stopping
+    /// simulation entirely.
+    void setTimeScale(double scale) noexcept;
+    /// Current time scale; default `1.0`.
+    double timeScale() const noexcept;
+
+    /// When `true`, `step()` is a no-op and `run()` keeps rendering the
+    /// current world without advancing it. Default `false`.
+    /// @thread_safety Safe from any thread.
+    void setPaused(bool paused) noexcept;
+    bool paused() const noexcept;
+
+    /// @internal Engine-internal access. Used by `EventChannel<T>` to
+    /// install or recover the channel for type `T`. Not part of the
+    /// stable public surface.
+    void* getEventChannelRaw(std::type_index type,
+                             void* (*factory)(),
+                             void (*deleter)(void*),
+                             void (*drainFn)(void*));
+
+    /// Get (or lazily create) the engine-owned event channel for type
+    /// `Ev`. Same instance is returned across calls and across threads.
+    /// Definition lives in `EventChannel.hpp` — include that header to
+    /// instantiate.
+    template <typename Ev>
+    EventChannel<Ev>& events();
 
 private:
     std::unique_ptr<internal::EngineImpl> impl_;

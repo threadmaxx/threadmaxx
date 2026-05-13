@@ -39,9 +39,11 @@ auto getSpan(const World& w) noexcept {
     else if constexpr (std::is_same_v<C, Velocity>) return w.velocities();
     else if constexpr (std::is_same_v<C, RenderTag>) return w.renderTags();
     else if constexpr (std::is_same_v<C, UserData>)  return w.userData();
+    else if constexpr (std::is_same_v<C, Acceleration>) return w.accelerations();
+    else if constexpr (std::is_same_v<C, Parent>)    return w.parents();
     else static_assert(sizeof(C) == 0,
         "forEach: component type must be one of Transform, Velocity, "
-        "RenderTag, UserData");
+        "RenderTag, UserData, Acceleration, Parent");
 }
 
 template <typename C>
@@ -50,9 +52,11 @@ constexpr Component componentBit() noexcept {
     else if constexpr (std::is_same_v<C, Velocity>) return Component::Velocity;
     else if constexpr (std::is_same_v<C, RenderTag>) return Component::RenderTag;
     else if constexpr (std::is_same_v<C, UserData>) return Component::UserData;
+    else if constexpr (std::is_same_v<C, Acceleration>) return Component::Acceleration;
+    else if constexpr (std::is_same_v<C, Parent>)    return Component::Parent;
     else static_assert(sizeof(C) == 0,
         "forEachWith: component type must be one of Transform, Velocity, "
-        "RenderTag, UserData");
+        "RenderTag, UserData, Acceleration, Parent");
 }
 
 template <typename... Cs>

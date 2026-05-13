@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CommandBuffer.hpp"
+#include "ScratchArena.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -28,13 +29,18 @@ struct Range {
 /// @ref CommandBuffer.
 class SystemContext {
 public:
-    using JobFn = std::function<void(Range, CommandBuffer&)>;
+    using JobFn       = std::function<void(Range, CommandBuffer&)>;
+    using JobFnArena  = std::function<void(Range, CommandBuffer&, ScratchArena&)>;
 
     virtual ~SystemContext() = default;
 
     virtual const World& world() const noexcept = 0;
 
-    /// Fixed-step delta in seconds (`Config::fixedStepSeconds`).
+    /// Fixed-step delta in seconds. Equal to `Config::fixedStepSeconds`
+    /// multiplied by the engine's current time scale (see
+    /// `Engine::setTimeScale`). The engine still advances `tick()` by
+    /// exactly one and `simulationTime()` by `fixedStepSeconds` per
+    /// step; only the `dt` game logic sees changes.
     virtual double       dt()    const noexcept = 0;
 
     /// Tick this step is computing (post-increment compared to
@@ -50,11 +56,36 @@ public:
                              std::uint32_t grain,
                              JobFn fn) = 0;
 
+    /// As above, but each job additionally receives a private
+    /// @ref ScratchArena for short-lived bump-allocated scratch memory.
+    /// The arena is reset at wave end; allocations do not survive
+    /// across ticks.
+    virtual void parallelFor(std::uint32_t count,
+                             std::uint32_t grain,
+                             JobFnArena fn) = 0;
+
     /// Run on the simulation thread, single-threaded. Useful for setup
     /// work or systems that fundamentally cannot be parallelized.
     /// The callable receives a zero-length @ref Range and a single
     /// @ref CommandBuffer.
     virtual void single(JobFn fn) = 0;
+
+    /// As above, with a @ref ScratchArena alongside the command buffer.
+    virtual void single(JobFnArena fn) = 0;
+
+    /// Reserve an entity handle up front, before any spawn command is
+    /// recorded. The reserved handle is usable in a same-recording
+    /// `cb.spawn(handle, ...)` overload and as the target of a
+    /// `Parent{handle, ...}` so a single job can spawn a parent and its
+    /// children atomically.
+    ///
+    /// Reservations get reaped at the end of the commit phase if no
+    /// matching `cb.spawn(handle, ...)` materialized them — a job that
+    /// bails does not leak slots. The reservation is taken under a
+    /// single fast mutex on storage; cheap to call.
+    ///
+    /// @thread_safety Safe to call from any worker job under this `update()`.
+    virtual EntityHandle reserveHandle() = 0;
 };
 
 /// User-implemented unit of gameplay/physics/AI.
@@ -82,6 +113,28 @@ public:
     /// Called every fixed step. Use `ctx.parallelFor` / `ctx.single`
     /// to do work.
     virtual void update(SystemContext& ctx) = 0;
+
+    /// Optional hook invoked once per `Engine::step()` BEFORE any wave
+    /// starts, on the simulation thread, single-threaded. Called in
+    /// registration order across all systems. Use it to pump per-tick
+    /// input queues, snapshot state for a trace consumer, or reset
+    /// per-tick scratch state that `update` will fill.
+    ///
+    /// Commands emitted through `ctx.single()` here are committed in
+    /// registration order before any wave runs, so wave systems observe
+    /// them. `ctx.parallelFor` works too but typically isn't useful at
+    /// this stage.
+    virtual void preStep(SystemContext& /*ctx*/)  {}
+
+    /// Optional hook invoked once per `Engine::step()` AFTER the last
+    /// wave's commit phase has finished, on the simulation thread,
+    /// single-threaded. Called in registration order. Use it to publish
+    /// per-tick events, refresh a HUD, or finalize accumulators.
+    ///
+    /// Commands emitted here are committed after every wave; they are
+    /// visible to the next tick's preStep hooks but not to this tick's
+    /// systems.
+    virtual void postStep(SystemContext& /*ctx*/) {}
 
     /// Read set the engine consults when deciding which systems can run
     /// concurrently within a wave. Default: `ComponentSet::all()` —

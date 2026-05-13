@@ -75,25 +75,27 @@ int main() {
         void onSetup(threadmaxx::Engine& e, threadmaxx::World&,
                      threadmaxx::CommandBuffer& seed) override {
             e.registerSystem(std::unique_ptr<RecorderSystem>(rec));
-            // Capture the handles assigned at commit time.
-            auto& spawnRenderable = seed.commands().emplace_back(
-                threadmaxx::detail::CmdSpawn{{}, {},
-                    threadmaxx::RenderTag{1}, {}, {}, threadmaxx::Parent{},
-                    ComponentSet{Component::Transform}
-                        | ComponentSet{Component::Velocity}
-                        | ComponentSet{Component::UserData}
-                        | ComponentSet{Component::Acceleration}
-                        | ComponentSet{Component::RenderTag},
-                    &renderable});
-            (void)spawnRenderable;
-            auto& spawnNon = seed.commands().emplace_back(
-                threadmaxx::detail::CmdSpawn{{}, {}, {}, {}, {}, threadmaxx::Parent{},
-                    ComponentSet{Component::Transform}
-                        | ComponentSet{Component::Velocity}
-                        | ComponentSet{Component::UserData}
-                        | ComponentSet{Component::Acceleration},
-                    &nonRenderable});
-            (void)spawnNon;
+            // Reserve handles so we can talk about the spawned entities
+            // before commit runs.
+            renderable    = e.reserveEntityHandle();
+            nonRenderable = e.reserveEntityHandle();
+            seed.spawn(renderable,
+                       threadmaxx::Transform{}, threadmaxx::Velocity{},
+                       threadmaxx::RenderTag{1}, threadmaxx::UserData{},
+                       threadmaxx::Acceleration{}, threadmaxx::Parent{},
+                       ComponentSet{Component::Transform}
+                           | ComponentSet{Component::Velocity}
+                           | ComponentSet{Component::UserData}
+                           | ComponentSet{Component::Acceleration}
+                           | ComponentSet{Component::RenderTag});
+            seed.spawn(nonRenderable,
+                       threadmaxx::Transform{}, threadmaxx::Velocity{},
+                       threadmaxx::RenderTag{}, threadmaxx::UserData{},
+                       threadmaxx::Acceleration{}, threadmaxx::Parent{},
+                       ComponentSet{Component::Transform}
+                           | ComponentSet{Component::Velocity}
+                           | ComponentSet{Component::UserData}
+                           | ComponentSet{Component::Acceleration});
         }
     };
     GameWithRecorder game(recorder);

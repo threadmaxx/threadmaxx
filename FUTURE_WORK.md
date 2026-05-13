@@ -12,7 +12,8 @@ The document tracks three things:
 3. The longer-term shape of the library and the items deliberately
    parked or scoped out.
 
-Last refreshed: 2026-05-13.
+Last refreshed: 2026-05-13 (second pass of the day; previous near-term
+plan has fully landed).
 
 ## 1. Target outcome
 
@@ -34,9 +35,10 @@ production-level ergonomics.
 
 ## 2. What landed recently (2026-05-13)
 
-The five-item near-term plan from the previous revision is complete.
-Brief notes here so the next plan doesn't re-propose them:
+Two batches landed today. The earlier five-item plan (top of the list)
+and a follow-up five-item plan plus the small-wins set (just below).
 
+### First batch
 - **Per-system timing and command stats.** `Stats.hpp` defines
   `SystemStats`; `Engine::systemStats()` returns one entry per system in
   registration order. Same 1/16 EWMA as `EngineStats::avgStepSeconds`.
@@ -56,132 +58,155 @@ Brief notes here so the next plan doesn't re-propose them:
   store keyed by `std::type_index`; engine owns one registry; safe from
   any thread.
 
-These were pure additions: no breaking changes to the public API.
+### Second batch (just landed)
+- **`preStep` / `postStep` hooks.** Virtual on `ISystem`, called in
+  registration order on the sim thread, serially. `preStep` commits
+  before any wave runs (so wave systems see them); `postStep` runs
+  after the last commit (next tick's `preStep` sees them). Documented
+  in [`doc/lifecycle_hooks.md`](doc/lifecycle_hooks.md).
+- **Per-job `ScratchArena`.** Bump allocator paired with `CommandBuffer`
+  on the new three-arg `parallelFor` / `single` overloads. Chained
+  slabs grow on demand; reset between waves keeps storage. Trivially-
+  destructible types only. See
+  [`doc/scratch_arenas.md`](doc/scratch_arenas.md).
+- **Typed `EventChannel<T>`.** Engine-owned channels keyed by
+  `std::type_index`; thread-safe `emit()` under a per-channel mutex,
+  per-tick double-buffer flipped by the engine, `drainTick()` returns
+  the previous tick's events. `Engine::events<T>()` is the lazy
+  factory. See [`doc/events.md`](doc/events.md).
+- **`setTimeScale` / `setPaused`.** Time-scale multiplies `dt` seen by
+  systems; tick and `simulationTime` advance by the fixed step
+  regardless. Pause makes `step()` a no-op while `run()` keeps
+  re-submitting the current render frame. Negative scale clamps to
+  zero. See [`doc/pause_and_time_scale.md`](doc/pause_and_time_scale.md).
+- **Reserved spawn handles.** `Engine::reserveEntityHandle()` and
+  `SystemContext::reserveHandle()` allocate a slot under a fast
+  storage-side mutex; the matching `CommandBuffer::spawn(handle, ...)`
+  overloads materialize the reservation during commit. Unconsumed
+  reservations are reaped at step end. See
+  [`doc/reserved_handles.md`](doc/reserved_handles.md).
+- **Small wins.** `Query.hpp::forEach<Acceleration>` /
+  `forEach<Parent>` now compile (extended `getSpan` / `componentBit`).
+  `EngineStats::commitDurationSeconds` exposes commit-phase wall-clock.
+  `JobSystemStats` (via `Engine::jobSystemStats()`) reports total
+  jobs, own-pops, and steal counts for tuning grain.
+
+All two batches were pure additions: no breaking changes to the public
+API. (`CmdSpawn::outHandle` was dead code internally and was removed in
+the second batch as part of replacing it with the cleaner `reserved`
+field.)
 
 ## 3. Concrete near-term plan
 
-In priority order, smallest and most useful first. As before, these are
-achievable without breaking the existing public contract.
+The previous near-term batch has fully landed (see §2). The next batch
+below picks up where it left off: ergonomic additions, performance
+levers, and the smaller public-API extensions that previous planning
+had parked. As before, each item is achievable as a pure addition;
+nothing here requires breaking the existing public contract.
 
-### 3.1 System lifecycle: `preStep` / `postStep` hooks
+In priority order, smallest and most useful first.
 
-Today `ISystem` has `onRegister` / `onUnregister` (one-shots) and
-`update` (per-tick parallel). Several legitimate uses fall in the gap:
+### 3.1 `World::has<T>` and `World::get<T>`
 
-- Pumping a system's own input queue before the wave kicks off.
-- Snapshotting per-tick state for a HUD or trace consumer.
-- Resetting per-tick scratch state that `update` will fill.
-
-Add two non-parallel hooks, both called on the simulation thread, both
-optional with empty defaults:
+Header-only sugar on top of the existing `tryGet*` accessors and the
+component-presence mask:
 
 ```cpp
-class ISystem {
-    virtual void preStep(SystemContext&)  {}   // runs before any wave starts
-    virtual void postStep(SystemContext&) {}   // runs after the last commit
-    // ...
-};
+template <typename T> bool      World::has(EntityHandle) const noexcept;
+template <typename T> const T&  World::get(EntityHandle) const;
 ```
 
-Order: all `preStep` in registration order, then waves, then all
-`postStep` in registration order. No scheduling — these run serially.
-The cost is one function-pointer call per system per hook per tick; for
-systems that don't override, it's a no-op.
+`has<T>` is a one-liner: check the mask, then check the type. `get<T>`
+returns a reference (asserts on absent) — useful where a `nullptr`
+check is noise. Pure addition; type dispatch via the same `if constexpr`
+chain that lives in `Query.hpp::detail::componentBit`.
 
-### 3.2 Per-job scratch arena
+### 3.2 Frame snapshot for tracing
 
-Today every parallel job that needs temporary memory allocates with
-`std::vector` and friends — paid every tick. Add a thread-local bump
-arena that the engine resets between waves and hands to each job
-alongside the `CommandBuffer`:
+A `Engine::frameSnapshot()` (or a hook on `IRenderer`) that emits the
+current tick's per-system durations and command counts as a tagged
+record. Wire into a Chrome-trace or Tracy consumer with a one-line
+adapter. The instrumentation hooks (`SystemStats`, `EngineStats`,
+`JobSystemStats`) are already there; what's missing is a serializer
+and a sink.
 
-```cpp
-ctx.parallelFor(N, 0, [=](Range r, CommandBuffer& cb, ScratchArena& arena) {
-    auto* tmp = arena.allocate<NeighborList>(r.size());
-    // ... use tmp, no destructor needed: arena reclaims at wave end ...
-});
-```
+The right scope is small: emit JSON-lines records with the same field
+names that the snapshots already have, leave aggregation to whatever
+the user pipes them into.
 
-Sizing: a few KiB per worker by default, growable via `Config` if a
-system asks for more. The arena resets at wave boundaries so jobs in
-later waves get a fresh slate; the same allocations don't survive across
-ticks. This is small, isolated, and a real win for query-style systems
-(neighbor lists, sort buffers).
+### 3.3 Async resource loader contract
 
-### 3.3 Typed event channels
-
-A small `EventChannel<T>` API for cross-system messaging that's
-discoverable and lock-free for the common case. Shape:
+The existing `ResourceRegistry` is the in-memory side; the missing
+piece is the loader. Concretely:
 
 ```cpp
-template <typename Ev>
-class EventChannel {
+class IResourceLoader {
 public:
-    void emit(const Ev&);                     // safe from worker jobs
-    std::span<const Ev> drainTick() const;    // visible to systems next tick
+    virtual ~IResourceLoader() = default;
+    virtual void update(Engine&) = 0;   // called once per tick during postStep
 };
+
+void Engine::addResourceLoader(std::unique_ptr<IResourceLoader>);
 ```
 
-Engine owns the channels (`engine.events<DamageEvent>()`). Per-tick
-double-buffer: writers append to the back buffer during this tick,
-readers see the previous tick's front buffer. Drain happens on tick
-boundary. Lock-free producer via per-worker append-buffers that the
-engine concatenates during commit. Sized like `ResourceRegistry`: small
-public surface, internal complexity hidden.
+The engine doesn't spawn threads for the loader — it pumps `update()`
+on a designated postStep slot. The loader implementation owns its own
+I/O pool and calls `engine.resources().add(...)` when an asset is
+ready. This keeps the engine renderer-agnostic and asset-format-
+agnostic; it provides the *contract* and the tick-pump hook.
 
-This unblocks combat hits, quest triggers, animation events, audio
-cues, UI updates — without each game inventing the same wheel.
+Hot-reload becomes the same contract with a second method
+(`reload(ResourceId)` / `markStale(ResourceId)`).
 
-### 3.4 Pause + time-scale
+### 3.4 Spatial-hash helper
 
-A trivial-looking knob that's surprisingly load-bearing for pause
-menus, slow motion, and replay. Two additions:
-
-- `Engine::setTimeScale(double)` — multiplies the fixed-step delta that
-  systems see via `SystemContext::dt()`. Default `1.0`. The engine still
-  advances by exactly `fixedStepSeconds` of wall-clock per `step()`;
-  what changes is what game logic computes from `dt`. `tick()` always
-  increments by 1.
-- `Engine::setPaused(bool)` — when paused, `run()` still pumps but no
-  `step()` is executed; `submitFrame` is called once per outer iteration
-  with the current world so the renderer keeps drawing.
-
-Substepping (multiple fixed steps per render frame for physics) is a
-separate, larger lift — parked.
-
-### 3.5 Reserved spawn handles
-
-Today `cb.spawn(...)` doesn't tell the recording job what handle was
-assigned — it's allocated during commit. So a system that wants to
-spawn a parent and a child in the same job has to do it in two ticks or
-inside one `ctx.single()` block.
-
-Fix: a "reserve handle" call that allocates a generation-tagged slot up
-front (under a single fast mutex on the storage), with commit later
-materializing the spawn:
+Spatial queries (neighbor lookups, broadphase, AOI for streaming)
+recur across every gameplay system. The engine can host a generic
+uniform-grid + small fallback list, parameterized over component
+type:
 
 ```cpp
-EntityHandle parent = ctx.reserveHandle();
-EntityHandle child  = ctx.reserveHandle();
-cb.spawn(parent, Transform{}, ...);
-cb.spawn(child,  Transform{}, ..., Parent{ parent, ... });
+template <typename T>
+SpatialIndex<T> Engine::spatialIndex();  // engine-owned, rebuild per-tick
 ```
 
-Reserved-but-not-spawned handles must be reapable so a job that bails
-doesn't leak slots. The simplest implementation: reservations get
-cleaned up at the end of commit if no `CmdSpawn` matched.
+The implementation is straightforward — what makes this a library
+concern (not a per-game concern) is consistent integration with the
+wave scheduler and the per-job scratch arena. The grid rebuild can
+land in a `preStep` hook on a built-in system, scoped by the
+component the user is indexing.
+
+This unblocks: spatial AI queries, navigation costing, range-based
+combat targeting, distance culling.
+
+### 3.5 `Bundle` / archetype-lite
+
+Without the full archetype refactor, a smaller win is a `Bundle<...>`
+helper that packages a set of components and their masks for spawning:
+
+```cpp
+auto enemy = bundle<Transform, Velocity, RenderTag>(t, v, r);
+cb.spawn(enemy);
+```
+
+The compile-time component list yields a constexpr `initialMask`; the
+runtime cost is zero compared to today's manual `seed.spawn(t, v, r,
+...)`. Bundles are *recording-side* sugar — no engine internals
+change.
 
 ### 3.6 The unglamorous wins
 
 Smaller items that should land alongside the above:
 
-- Extend `Query.hpp::detail::getSpan` and `componentBit` to cover
-  `Acceleration` and `Parent` (currently `forEach<Acceleration>` doesn't
-  compile). One-liner each.
-- A `commitDurationSeconds` field on `EngineStats` so users can see how
-  much of the tick is wave-execution vs. commit.
-- Per-worker steal/own-pop counters on `EngineStats` (or a dedicated
-  `JobSystemStats`) — useful for tuning grain.
+- Tracy / Chrome-trace integration as a header-only adapter on top of
+  the existing stats structs.
+- A `Engine::registerSystemAt(position, ...)` for tests / mod loaders
+  that need to inject a system at a specific point in the registration
+  order.
+- A `tryReserveHandles(count)` batch form to amortize the reservation
+  mutex when a job spawns many entities at once.
+- Promote `Parent` presence to be auto-derived in
+  `CommandBuffer::spawn(...)` like `RenderTag` already is.
 
 ## 4. Items that the previous plan got right but underestimates the cost of
 
@@ -357,27 +382,26 @@ depth and per-job histograms are §3.6.
 
 ## 8. Roadmap milestones
 
-### Milestone 1 — Hardening the current core  (in progress)
+### Milestone 1 — Hardening the current core  ✅ done
 
 Done:
 
-- Per-system instrumentation.
+- Per-system instrumentation + `JobSystemStats`.
 - Sharded job queue.
 - Per-entity component-presence mask.
 - Hierarchy system.
 - Typed resource registry.
-
-Remaining:
-
-- Lifecycle hooks (preStep / postStep).
+- Lifecycle hooks (`preStep` / `postStep`).
 - Scratch arenas.
-- Event channels.
+- Typed event channels.
 - Pause / time-scale.
 - Reserved spawn handles.
+- Commit-phase timing in `EngineStats`.
 
-Exit criteria: every item in §3 above lands with tests; public API
-stable enough that a small game can ship against it without patching
-the engine.
+Exit criteria met: a small game can ship against the current public
+API without patching the engine. The next milestone is data-model
+upgrades (archetypes) and the public sugar in §3 (Bundles,
+`has<T>`/`get<T>`, async loader contract).
 
 ### Milestone 2 — Data model upgrade
 

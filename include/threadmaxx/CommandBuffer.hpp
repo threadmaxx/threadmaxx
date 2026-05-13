@@ -26,9 +26,11 @@ struct CmdSpawn {
     /// bit iff `parent.parent.valid()`; the other built-ins are always
     /// considered present).
     ComponentSet initialMask;
-    /// Set by the engine during commit so callers (if needed) can be
-    /// told what handle was assigned. Not used during recording.
-    EntityHandle* outHandle = nullptr;
+    /// If valid, materialize a slot previously obtained via
+    /// `SystemContext::reserveHandle()` instead of allocating a fresh
+    /// one. Falls back to a fresh allocation if the reservation has
+    /// already been consumed or discarded.
+    EntityHandle reserved = kInvalidEntity;
 };
 struct CmdDestroy         { EntityHandle entity; };
 struct CmdSetTransform    { EntityHandle entity; Transform    value; };
@@ -82,6 +84,23 @@ public:
     /// parent.
     void spawn(const Transform& t, const Velocity& v, const RenderTag& r,
                const UserData& u, const Acceleration& a,
+               const Parent& p, ComponentSet initialMask);
+
+    /// Spawn into a pre-reserved slot taken via
+    /// `SystemContext::reserveHandle()`. Use this when a single job needs
+    /// to know the handle in advance (e.g. to spawn a parent and a child
+    /// in the same recording). The reservation is consumed on commit;
+    /// any reservation not consumed by step end is reaped.
+    /// @pre `reserved` was returned by `SystemContext::reserveHandle()`
+    ///      in this same step's recording phase.
+    void spawn(EntityHandle reserved, const Transform& t,
+               const Velocity& v = {}, const RenderTag& r = {},
+               const UserData& u = {}, const Acceleration& a = {});
+
+    /// As above with an explicit initial component mask and an optional
+    /// parent.
+    void spawn(EntityHandle reserved, const Transform& t, const Velocity& v,
+               const RenderTag& r, const UserData& u, const Acceleration& a,
                const Parent& p, ComponentSet initialMask);
 
     void destroy(EntityHandle entity);

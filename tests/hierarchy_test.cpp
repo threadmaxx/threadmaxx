@@ -48,33 +48,32 @@ struct HierGame : threadmaxx::IGame {
                  threadmaxx::CommandBuffer& seed) override {
         engine.registerSystem(threadmaxx::makeHierarchySystem());
 
-        // root at (10, 0, 0), no parent
-        seed.commands().emplace_back(threadmaxx::detail::CmdSpawn{
-            Transform{Vec3{10, 0, 0}, {}, {1, 1, 1}}, {}, {}, {}, {},
-            Parent{},
-            maskRoot(),
-            &root});
+        // Reserve all four handles up front so we can wire parent
+        // pointers directly into Parent{} at spawn time.
+        root    = engine.reserveEntityHandle();
+        mid     = engine.reserveEntityHandle();
+        leaf    = engine.reserveEntityHandle();
+        floater = engine.reserveEntityHandle();
 
-        // mid: child of root, local offset (1, 0, 0) → world (11, 0, 0)
-        seed.commands().emplace_back(threadmaxx::detail::CmdSpawn{
-            Transform{}, {}, {}, {}, {},
-            Parent{/*parent*/ {0, 0}, Transform{Vec3{1, 0, 0}, {}, {1, 1, 1}}},
-            maskWithParent(),
-            &mid});
+        // root at (10, 0, 0), no parent.
+        seed.spawn(root,
+                   Transform{Vec3{10, 0, 0}, {}, {1, 1, 1}}, {}, {}, {}, {},
+                   Parent{}, maskRoot());
 
-        // leaf: child of mid, local offset (0, 2, 0) → world (11, 2, 0)
-        seed.commands().emplace_back(threadmaxx::detail::CmdSpawn{
-            Transform{}, {}, {}, {}, {},
-            Parent{/*parent*/ {0, 0}, Transform{Vec3{0, 2, 0}, {}, {1, 1, 1}}},
-            maskWithParent(),
-            &leaf});
+        // mid: child of root, local offset (1, 0, 0) → world (11, 0, 0).
+        seed.spawn(mid, Transform{}, {}, {}, {}, {},
+                   Parent{root, Transform{Vec3{1, 0, 0}, {}, {1, 1, 1}}},
+                   maskWithParent());
 
-        // floater: no parent yet
-        seed.commands().emplace_back(threadmaxx::detail::CmdSpawn{
-            Transform{Vec3{100, 100, 100}, {}, {1, 1, 1}}, {}, {}, {}, {},
-            Parent{},
-            maskRoot(),
-            &floater});
+        // leaf: child of mid, local offset (0, 2, 0) → world (11, 2, 0).
+        seed.spawn(leaf, Transform{}, {}, {}, {}, {},
+                   Parent{mid,  Transform{Vec3{0, 2, 0}, {}, {1, 1, 1}}},
+                   maskWithParent());
+
+        // floater: no parent yet.
+        seed.spawn(floater,
+                   Transform{Vec3{100, 100, 100}, {}, {1, 1, 1}}, {}, {}, {}, {},
+                   Parent{}, maskRoot());
     }
 };
 

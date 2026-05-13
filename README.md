@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 14 tests pin the
+minimal; the internals are PImpl'd so they can change. 20 tests pin the
 documented invariants.
 
 ## Highlights
@@ -17,8 +17,23 @@ documented invariants.
 - **Wave scheduler** — systems declare their read/write component sets;
   the engine packs non-conflicting systems into the same wave and runs
   them concurrently.
+- **Three-phase tick** — `preStep` (serial), `update` (parallel waves),
+  `postStep` (serial). Pump input queues, snapshot for HUD, finalize
+  per-tick aggregates.
 - **Per-worker work-stealing job queue.** No single hot mutex, no
   central producer-consumer queue.
+- **Per-job scratch arena.** Bump allocator paired with the command
+  buffer in the new three-arg `parallelFor` / `single` overloads —
+  zero-allocation steady-state scratch.
+- **Typed event channels.** `Engine::events<T>()` returns a
+  double-buffered queue; safe to emit from worker jobs, drained on
+  tick boundary.
+- **Pause + time-scale.** `setPaused(true)` freezes the simulation
+  without freezing render-frame submission; `setTimeScale(s)` scales
+  `dt` while leaving `tick()` an integer.
+- **Reserved spawn handles.** `reserveHandle()` lets a single job
+  spawn a parent and a child with the parent's handle wired into the
+  child's `Parent` field.
 - **Deterministic commit phase.** Workers emit commands into per-job
   buffers; the engine applies them on the sim thread in submission
   order. Same inputs → same world.
@@ -28,8 +43,8 @@ documented invariants.
   factory that propagates world transforms in one DFS pass.
 - **Typed resource registry.** `ResourceId<T>` + a thread-safe
   `ResourceRegistry` for meshes, textures, audio clips, anything.
-- **Per-tick instrumentation.** `EngineStats` and per-system
-  `SystemStats` are populated every step — no opt-in cost.
+- **Per-tick instrumentation.** `EngineStats`, `SystemStats`, and
+  `JobSystemStats` are populated every step — no opt-in cost.
 - **Pluggable renderer.** Implement `IRenderer::submitFrame` against a
   flat `RenderFrame`. Null renderer = headless.
 
@@ -193,11 +208,11 @@ Roadmap and intentional gaps: [`FUTURE_WORK.md`](FUTURE_WORK.md).
 ## Repository layout
 
 ```
-include/threadmaxx/    public API (14 headers)
+include/threadmaxx/    public API (16 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 14 no-dependency tests under CTest
+tests/                 20 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

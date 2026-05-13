@@ -4,6 +4,7 @@
 #include "threadmaxx/Handles.hpp"
 
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace threadmaxx::internal {
@@ -26,6 +27,34 @@ public:
                        const Acceleration& a,
                        const Parent& p,
                        ComponentSet initialMask);
+
+    // §3.5 reserveHandle: allocate a slot ahead of materialization.
+    //
+    // Thread-safe under reservationMtx_: workers can call from inside
+    // ISystem::update jobs. The returned handle reads as alive()==false
+    // until it is fed to materializeReserved (or discarded). Other
+    // EntityStorage methods (spawn/destroy/mut*) must NOT be called
+    // concurrently — they assume single-threaded sim-thread access.
+    EntityHandle reserveHandle();
+
+    // Materialize a previously-reserved slot into a live entity. Returns
+    // false if the handle is not a current reservation (e.g. it was
+    // already materialized, or referred to a stale generation). Caller
+    // is the commit phase, single-threaded.
+    bool materializeReserved(EntityHandle h,
+                             const Transform& t,
+                             const Velocity& v,
+                             const RenderTag& r,
+                             const UserData& u,
+                             const Acceleration& a,
+                             const Parent& p,
+                             ComponentSet initialMask);
+
+    // Drop every reservation that survived the commit phase. Each
+    // dropped reservation has its generation bumped (so the outstanding
+    // handle stops validating) and its slot returned to the free list.
+    // Single-threaded; called at step end.
+    void discardAllReservations() noexcept;
 
     // Returns true if the handle was valid and the entity was destroyed.
     bool destroy(EntityHandle h) noexcept;
@@ -60,15 +89,25 @@ public:
 
 private:
     // Per-slot record. Slots are reused after destroy(); generation is
-    // bumped so old handles stop validating.
+    // bumped so old handles stop validating. `reserved` means
+    // reserveHandle() handed out a handle for this slot but
+    // materializeReserved() has not yet run (alive==false in that state).
     struct Slot {
         std::uint32_t denseIndex = 0;   // index into the parallel arrays
         std::uint32_t generation = 0;   // 0 means "never used"
         bool          alive      = false;
+        bool          reserved   = false;  // see §3.5
     };
 
     std::vector<Slot>         slots_;        // sparse, indexed by handle.index
     std::vector<std::uint32_t> freeSlots_;   // recycled slot indices
+
+    // §3.5 reservation tracking. Touched by reserveHandle (workers) and
+    // by materializeReserved/discardAllReservations (sim thread); the
+    // mutex covers all three so worker pushes don't race with sim-thread
+    // drains.
+    std::mutex                reservationMtx_;
+    std::vector<EntityHandle> reservedHandles_;
 
     // Parallel dense arrays. denseToSlot_[i] gives the slot index that owns
     // dense row i — used when we swap-and-pop during destroy().

@@ -11,7 +11,8 @@ The engine exposes two snapshot structs refreshed at the end of every
 struct EngineStats {
     std::uint64_t tick;
     double        lastStepSeconds;
-    double        avgStepSeconds;          // EWMA, 1/16 decay (~16-step horizon)
+    double        avgStepSeconds;           // EWMA, 1/16 decay (~16-step horizon)
+    double        commitDurationSeconds;    // wall-clock spent in commit, summed across waves
     std::uint64_t jobsSubmittedLastStep;
     std::uint64_t commandsCommittedLastStep;
     std::size_t   aliveEntities;
@@ -29,9 +30,33 @@ Read it with `engine.stats()`.
 - `avgStepSeconds` is the EWMA with a fixed `1/16` weight. It converges
   about three time constants in 50 ticks — fast enough to react to load
   changes, slow enough that one expensive tick doesn't spike the average.
+- `commitDurationSeconds` accumulates wall-clock spent applying command
+  buffers (across pre/post hooks and all waves). Subtract from
+  `lastStepSeconds` to see how much of the tick was actual wave
+  execution.
 - `jobsSubmittedLastStep` counts each `parallelFor` chunk as one job.
   `single()` does not submit and is not counted.
 - `aliveEntities` is the live count after the most recent commit.
+
+## `JobSystemStats`
+
+```cpp
+struct JobSystemStats {
+    std::uint64_t totalJobs;     // jobs ever submitted to the worker pool
+    std::uint64_t ownPops;       // jobs a worker pulled from its own queue
+    std::uint64_t stolenJobs;    // jobs a worker stole from a sibling
+    std::uint32_t workerCount;   // resolved Config::workerCount
+};
+```
+
+Read with `engine.jobSystemStats()`. Lifetime totals — never reset.
+
+- `ownPops + stolenJobs ≈ totalJobs` (subject to in-flight jobs at
+  read time).
+- A high `stolenJobs / totalJobs` ratio indicates load imbalance —
+  workers ran out of own-queue work and had to steal. Either chunk
+  grain is too coarse (one chunk monopolized a worker) or total work
+  is too thin to fan out cleanly.
 
 ## `SystemStats`
 
@@ -109,14 +134,11 @@ lines.
 These would be useful additions and are tracked in
 [FUTURE_WORK.md](../FUTURE_WORK.md):
 
-- Per-job durations (would let us histogram chunk variance).
-- Steal-vs-own-queue ratio in the job system (would tell you when
-  workers are stalling).
-- Commit-phase duration broken out from `lastStepSeconds`.
+- Per-job duration histograms (would let us see chunk variance).
 - Memory: peak live entities, capacity vs. used in dense arrays.
 
-For now, `EngineStats` + per-`SystemStats` is enough to find the system
-that's slow and the grain that's wrong.
+`EngineStats` + per-`SystemStats` + `JobSystemStats` cover the
+"what's slow, where's the imbalance, how big is the commit" question.
 
 ## Trace-style profiling
 

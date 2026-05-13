@@ -140,7 +140,6 @@ int main() {
         threadmaxx::Engine engine(cfg);
 
         struct SetterGame : public threadmaxx::IGame {
-            threadmaxx::EntityHandle* outHandle;
             void onSetup(threadmaxx::Engine& engine, threadmaxx::World&,
                          threadmaxx::CommandBuffer& seed) override {
                 auto sys = std::make_unique<SetterSystem>();
@@ -149,7 +148,6 @@ int main() {
                 seed.spawn(threadmaxx::Transform{}, threadmaxx::Velocity{},
                            threadmaxx::RenderTag{}, threadmaxx::UserData{},
                            threadmaxx::Acceleration{});
-                (void)outHandle;
             }
             SetterSystem* sysPtr = nullptr;
         };

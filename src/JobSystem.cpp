@@ -38,6 +38,7 @@ JobSystem::~JobSystem() {
 
 void JobSystem::submit(JobFn fn) {
     outstanding_.fetch_add(1, std::memory_order_acq_rel);
+    totalJobs_.fetch_add(1, std::memory_order_relaxed);
     const std::uint32_t n = static_cast<std::uint32_t>(workers_.size());
     const std::uint32_t idx = pushCounter_.fetch_add(1, std::memory_order_relaxed) % n;
     auto& w = *workers_[idx];
@@ -46,6 +47,20 @@ void JobSystem::submit(JobFn fn) {
         w.queue.emplace_back(std::move(fn));
     }
     w.cv.notify_one();
+}
+
+JobSystemStats JobSystem::stats() const noexcept {
+    JobSystemStats s;
+    s.totalJobs = totalJobs_.load(std::memory_order_relaxed);
+    s.workerCount = static_cast<std::uint32_t>(workers_.size());
+    // Each Worker mutates its own ownPops/stolenJobs only from its own
+    // thread. Reads from elsewhere see a recent value (a relaxed view
+    // is sufficient for a stats counter).
+    for (const auto& w : workers_) {
+        s.ownPops    += w->ownPops;
+        s.stolenJobs += w->stolenJobs;
+    }
+    return s;
 }
 
 void JobSystem::waitIdle() {
@@ -70,6 +85,7 @@ JobSystem::JobFn JobSystem::trySteal(std::uint32_t selfIdx) noexcept {
             // than with the victim's own pop path.
             JobFn job = std::move(victim.queue.back());
             victim.queue.pop_back();
+            workers_[selfIdx]->stolenJobs++;
             return job;
         }
     }
@@ -81,12 +97,14 @@ void JobSystem::workerLoop(std::uint32_t selfIdx) {
     for (;;) {
         JobFn job;
 
+        bool fromOwn = false;
         // 1) Drain own queue first (FIFO from producer's perspective).
         {
             std::lock_guard<std::mutex> lk(self.mtx);
             if (!self.queue.empty()) {
                 job = std::move(self.queue.front());
                 self.queue.pop_front();
+                fromOwn = true;
             }
         }
 
@@ -107,8 +125,11 @@ void JobSystem::workerLoop(std::uint32_t selfIdx) {
             if (!self.queue.empty()) {
                 job = std::move(self.queue.front());
                 self.queue.pop_front();
+                fromOwn = true;
             }
         }
+
+        if (fromOwn) self.ownPops++;
 
         if (job) {
             job();

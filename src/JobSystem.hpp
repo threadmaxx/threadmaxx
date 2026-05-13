@@ -1,5 +1,7 @@
 #pragma once
 
+#include "threadmaxx/Stats.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -45,12 +47,18 @@ public:
         return static_cast<std::uint32_t>(workers_.size());
     }
 
+    /// Aggregate worker-pool counters. Cheap to call (atomic loads only)
+    /// — safe from any thread.
+    JobSystemStats stats() const noexcept;
+
 private:
     struct Worker {
         std::deque<JobFn>       queue;
         std::mutex              mtx;
         std::condition_variable cv;
         std::thread             thread;
+        std::uint64_t           ownPops    = 0;  // touched only by self
+        std::uint64_t           stolenJobs = 0;  // touched only by self
     };
 
     void workerLoop(std::uint32_t selfIdx);
@@ -67,6 +75,10 @@ private:
 
     std::atomic<std::uint32_t> outstanding_{0};  // queued + in-flight
     std::atomic<bool>          stopping_{false};
+
+    // Lifetime job-submission count. Mirrors what callers see on
+    // EngineStats::totalJobsSubmitted but covers raw submit() too.
+    std::atomic<std::uint64_t> totalJobs_{0};
 
     // waitIdle synchronization. Decoupled from per-worker queues so that
     // worker pushes and pops don't contend with sim-thread waitIdle.

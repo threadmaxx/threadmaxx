@@ -16,6 +16,12 @@ set(THREADMAXX_TESTS
     component_mask_test
     hierarchy_test
     job_system_stress_test
+    lifecycle_hooks_test
+    scratch_arena_test
+    event_channel_test
+    pause_timescale_test
+    reserved_handle_test
+    small_wins_test
 )
 
 foreach(test ${THREADMAXX_TESTS})
