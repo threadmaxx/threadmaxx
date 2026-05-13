@@ -110,6 +110,9 @@ bool EngineImpl::initialize(IGame& game, Engine& publicEngine) {
 void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
     if (!system) return;
     system->onRegister(world_);
+    SystemStats ss;
+    ss.name = system->name();
+    systemStats_.push_back(ss);
     systems_.push_back(std::move(system));
     rebuildWaves();
 }
@@ -220,6 +223,13 @@ void EngineImpl::step() {
     commandsThisStep_ = 0;
     std::uint64_t jobsThisStep = 0;
 
+    // Reset per-system "last step" counters; lifetime totals are preserved.
+    for (auto& ss : systemStats_) {
+        ss.lastUpdateSeconds = 0.0;
+        ss.jobsSubmittedLastStep = 0;
+        ss.commandsCommittedLastStep = 0;
+    }
+
     // Run systems wave by wave. Within a wave, all systems have pairwise
     // non-conflicting declared read/write sets, so they're safe to drive
     // concurrently — each writes into its own SystemContext's buffer list
@@ -233,19 +243,27 @@ void EngineImpl::step() {
                 *this, world_, dt, tick_));
         }
 
+        // Per-system update durations, captured by whichever thread runs
+        // the system. Slot k corresponds to wave[k].
+        std::vector<double> updateSeconds(wave.size(), 0.0);
+        auto runIndex = [&](std::size_t k) {
+            const auto t0 = std::chrono::steady_clock::now();
+            systems_[wave[k]]->update(*ctxs[k]);
+            updateSeconds[k] = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - t0).count();
+        };
+
         if (wave.size() == 1) {
-            systems_[wave[0]]->update(*ctxs[0]);
+            runIndex(0);
         } else {
             // Spawn helper threads for all but the last system in the wave;
             // run the tail on this thread to avoid a wasted join.
             std::vector<std::thread> helpers;
             helpers.reserve(wave.size() - 1);
             for (std::size_t k = 0; k + 1 < wave.size(); ++k) {
-                helpers.emplace_back([this, idx = wave[k], ctx = ctxs[k].get()] {
-                    systems_[idx]->update(*ctx);
-                });
+                helpers.emplace_back([&runIndex, k] { runIndex(k); });
             }
-            systems_[wave.back()]->update(*ctxs.back());
+            runIndex(wave.size() - 1);
             for (auto& t : helpers) t.join();
         }
 
@@ -253,11 +271,32 @@ void EngineImpl::step() {
         // registration order). Sibling systems wrote to disjoint component
         // categories, so commit order among them is observationally a no-op,
         // but we keep it deterministic to make stats and side-effects stable.
+        // We bracket each system's commit with a snapshot of commandsThisStep_
+        // so per-system command counts come out of the same accumulator.
         for (std::size_t k = 0; k < wave.size(); ++k) {
+            const std::uint64_t commandsBefore = commandsThisStep_;
             for (auto& cb : ctxs[k]->buffers()) {
                 commitBuffer(cb);
             }
-            jobsThisStep += ctxs[k]->jobsSubmitted();
+            const std::uint64_t cmds = commandsThisStep_ - commandsBefore;
+            const std::uint64_t jobs = ctxs[k]->jobsSubmitted();
+            jobsThisStep += jobs;
+
+            auto& ss = systemStats_[wave[k]];
+            ss.lastUpdateSeconds = updateSeconds[k];
+            ss.jobsSubmittedLastStep = jobs;
+            ss.commandsCommittedLastStep = cmds;
+            ss.totalJobsSubmitted += jobs;
+            ss.totalCommandsCommitted += cmds;
+            // EWMA with alpha = 1/16, matching EngineStats::avgStepSeconds.
+            // First sample initializes the average.
+            if (stats_.totalTicks == 0) {
+                ss.avgUpdateSeconds = ss.lastUpdateSeconds;
+            } else {
+                constexpr double kEwmaAlpha = 1.0 / 16.0;
+                ss.avgUpdateSeconds = ss.avgUpdateSeconds * (1.0 - kEwmaAlpha)
+                                    + ss.lastUpdateSeconds * kEwmaAlpha;
+            }
         }
     }
 

@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace threadmaxx {
@@ -80,6 +81,10 @@ public:
     double simulationTime() const noexcept { return simulationTime_; }
 
     EngineStats stats() const noexcept { return stats_; }
+    std::span<const SystemStats> systemStats() const noexcept {
+        return std::span<const SystemStats>(systemStats_.data(),
+                                            systemStats_.size());
+    }
 
     JobSystem& jobs() noexcept { return *jobs_; }
 
@@ -133,6 +138,10 @@ private:
 
     EngineStats stats_;
     std::uint64_t commandsThisStep_ = 0;  // accumulated across commitBuffer calls
+
+    // Per-system snapshot, one entry per registered system in registration
+    // order. Grown by registerSystem; updated at the end of each step().
+    std::vector<SystemStats> systemStats_;
 };
 
 } // namespace threadmaxx::internal

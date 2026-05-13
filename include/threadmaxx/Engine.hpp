@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 
 namespace threadmaxx {
 
@@ -70,6 +71,11 @@ public:
 
     // Per-tick instrumentation. Refreshed at the end of each step().
     EngineStats stats() const noexcept;
+
+    // Per-system snapshots in registration order. Refreshed at the end of
+    // each step(). The span points to engine-owned memory and is invalidated
+    // by registerSystem() and shutdown(); copy if you need to retain.
+    std::span<const SystemStats> systemStats() const noexcept;
 
 private:
     std::unique_ptr<internal::EngineImpl> impl_;

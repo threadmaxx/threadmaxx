@@ -7,6 +7,7 @@ set(THREADMAXX_TESTS
     job_system_test
     determinism_test
     stats_test
+    system_stats_test
     query_test
     alpha_test
     parallel_systems_test

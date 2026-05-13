@@ -81,6 +81,8 @@ threadmaxx::RenderFrame   // flat data the renderer consumes
 threadmaxx::RenderInstance
 threadmaxx::EntityHandle
 threadmaxx::Config
+threadmaxx::EngineStats   // per-step instrumentation snapshot
+threadmaxx::SystemStats   // per-system instrumentation snapshot
 ```
 
 Everything else (entity storage, job system, commit machinery, render-frame
