@@ -26,3 +26,13 @@
 #include "System.hpp"
 #include "Trace.hpp"
 #include "World.hpp"
+
+#include "render/Camera.hpp"
+#include "render/DebugGeometry.hpp"
+#include "render/DrawItem.hpp"
+#include "render/InstanceBufferLayout.hpp"
+#include "render/Light.hpp"
+#include "render/RenderFrameBuilder.hpp"
+#include "render/RenderPasses.hpp"
+#include "render/UploadRing.hpp"
+#include "render/Visibility.hpp"

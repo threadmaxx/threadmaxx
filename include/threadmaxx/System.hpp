@@ -2,6 +2,7 @@
 
 #include "CommandBuffer.hpp"
 #include "ScratchArena.hpp"
+#include "render/RenderFrameBuilder.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -144,6 +145,19 @@ public:
     /// visible to the next tick's preStep hooks but not to this tick's
     /// systems.
     virtual void postStep(SystemContext& /*ctx*/) {}
+
+    /// §3.2 render-prep hook invoked once per `Engine::step()` AFTER
+    /// every @ref postStep has run, on the simulation thread, single-
+    /// threaded. Called in registration order with a per-system
+    /// @ref RenderFrameBuilder; the engine merges each system's
+    /// contribution into the next published @ref RenderFrame in
+    /// registration order. This is the natural place for view-
+    /// dependent passes: camera setup, light gathering, visibility
+    /// culling, debug-overlay emission, skinned-pose upload.
+    ///
+    /// The builder is exclusive to this system for the duration of
+    /// the call; do not retain pointers into it past return.
+    virtual void buildRenderFrame(RenderFrameBuilder& /*builder*/) {}
 
     /// Read set the engine consults when deciding which systems can run
     /// concurrently within a wave. Default: `ComponentSet::all()` —

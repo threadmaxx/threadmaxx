@@ -17,13 +17,18 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-14 (Batches 5 and 6 landed back-to-back;
-batch 7 shipped resource & event maturity per the prior §3.2
-— refcounted handles, hot-reload protocol, blocking preload, RAII
-event subscriptions, loader stats and shutdown hook. The archetype
-refactor is now the only Milestone 2 item still in flight; with the
-resource/event surface settled, doing it next won't churn the public
-API twice).
+Last refreshed: 2026-05-14 (Batches 5, 7, and 8 have landed; batch 6
+— the archetype refactor — is the only remaining Milestone 2 item.
+Batch 5 widened the data model; batch 7 shipped resource & event
+maturity for Milestone 3 — refcounted handles, hot-reload protocol,
+blocking preload, RAII event subscriptions, loader stats and
+shutdown hook; batch 8 (2026-05-14) shipped the hierarchical
+render contract for Milestone 4 prep — cameras, lights, per-pass
+draw bins, debug geometry, `buildRenderFrame` lifecycle hook,
+visibility culling helpers, instance buffer layout helper, per-
+frame upload ring. With both the resource/event and render-contract
+surfaces settled, the archetype refactor can land next without
+churning the public API a third time.).
 
 ## 1. Target outcome
 
@@ -46,7 +51,7 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Six batches have landed. Batches 1–3 brought **Milestone 1** to
+Seven batches have landed. Batches 1–3 brought **Milestone 1** to
 completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
 polish and seeded the tracing maturity batches 5+ build on; batch 5
 (2026-05-14) widened the data model for Milestone 2 — six new POD
@@ -54,17 +59,22 @@ components, three tag-only categories, a 64-bit `ComponentSet`, and
 the `MaskCache` opt-in fast path; batch 7 (2026-05-14) shipped
 resource & event maturity for Milestone 3 — refcounted handles,
 hot-reload protocol, loader shutdown hook + stats, blocking
-preload, and an RAII event subscription handle. All six were pure
-additions to the public API; the only removal was an internal dead
-field on `CmdSpawn` (batch 3). Detailed per-feature notes live in
-`doc/` and `CLAUDE.md`.
+preload, and an RAII event subscription handle; batch 8
+(2026-05-14) shipped the hierarchical render contract for
+Milestone 4 prep — cameras, lights, per-pass draw bins, debug
+geometry, the `buildRenderFrame` lifecycle hook, visibility-
+culling helpers, an instance-buffer layout helper, and a per-frame
+upload ring. All seven were pure additions to the public API; the
+only removal was an internal dead field on `CmdSpawn` (batch 3).
+Detailed per-feature notes live in `doc/` and `CLAUDE.md`.
 
 Note on numbering: batch 6 (archetype storage) is still planned in
-§3.1. Batch 7 landed first because §3.1's own deferral guidance
-("intentionally deferred until the renderer-side and resource-side
-contracts have stabilized") pointed at doing the resource batch
-before the archetype refactor. The batch numbers reflect the
-*planned* sequence, not the order they shipped.
+§3.1. Batches 7 and 8 landed first because §3.1's own deferral
+guidance ("intentionally deferred until the renderer-side and
+resource-side contracts have stabilized") pointed at doing the
+resource and render batches before the archetype refactor. The
+batch numbers reflect the *planned* sequence, not the order they
+shipped.
 
 ### Batch 1 — instrumentation, sharding, presence-aware queries
 
@@ -155,14 +165,69 @@ else extended existing headers.
 - **N-tick determinism golden test** — `tests/determinism_golden_test.cpp`
   runs a 64-tick seeded scenario twice, FNV-1a-hashes the
   `WorldSnapshot` byte streams, and asserts the hashes agree. Cheap
-  regression guard for the §3.1 archetype refactor and the §3.2
-  render expansion.
+  regression guard for the §3.1 archetype refactor (and was already
+  in place when batch 8 — render expansion — landed in §2).
 
 `UserComponent<T>` (the user-extensible dense-array hook) is
 explicitly deferred to §3.1 batch 6's archetype refactor — patching
 the parallel-vector storage to hold type-erased extra arrays is
 invasive enough that doing it twice (once here, once in batch 6)
 is the wrong shape. The §3 plan reflects this deferral.
+
+### Batch 8 — Render contract expansion (Milestone 4 prep)
+
+Shipped 2026-05-14, ahead of batch 6 per §3.1's deferral guidance.
+All public-API additions are pure extensions / new headers under
+`include/threadmaxx/render/`; `EntityStorage` and the per-entity
+component-mask shape are unchanged.
+
+- **Hierarchical `RenderFrame`.** New fields alongside the legacy
+  flat `instances` span: `cameras`, `lights`, `drawItems[Opaque |
+  Transparent | ShadowCasters | Overlay]`, `debugLines`,
+  `debugPoints`, `debugText`. All renderer-neutral PODs.
+- **`ISystem::buildRenderFrame(RenderFrameBuilder&)` lifecycle
+  hook.** Invoked after every `postStep` has committed and the
+  event channels have drained, on the simulation thread, single-
+  threaded, in registration order. Each registered system gets its
+  own builder (persisted across ticks for steady-state zero-alloc
+  use); the engine merges every system's builder into the back
+  render frame in registration order, then publishes.
+- **Render-side POD types under `include/threadmaxx/render/`** —
+  `Camera`, `Light`, `DrawItem` (carrying `MeshSkinnedRef`,
+  `AnimationPoseRef`, `MaterialOverride`, `cameraMask`), `DebugLine`
+  / `DebugPoint` / `DebugText`. The decision to keep these as
+  builder-pushed PODs rather than wedge them into `EntityStorage`
+  as built-in components (which the prior-revision §3.2 spec called for)
+  is documented in `doc/render_contract.md`: cameras and lights are
+  few in number, `AnimationPose` ringbuffered doesn't fit dense
+  parallel-array storage, and the hook gives game code more
+  flexibility about where camera/light state lives.
+- **Visibility-culling helpers.** `extractFrustum(camera) ->
+  Frustum`, `intersectsFrustum(Frustum, min, max)` (AABB p-vertex
+  test), `cullByFrustum(items, bounds, cameras)` (batched mask
+  population). Up to 32 cameras supported simultaneously via
+  `DrawItem::cameraMask`.
+- **Instance-buffer layout helper.** `alignas(16) struct
+  InstanceLayoutEntry` — 128 bytes, std140-friendly, predictable
+  field order. `packInstance(item)` / `packInstances(items, dst)`
+  project DrawItems into the layout. Any GPU backend can upload it
+  directly.
+- **Per-frame upload ring.** `UploadRing(frameCount, bytesPerFrame)`
+  — header-only frame-to-frame bump allocator with optional grow-on-
+  overflow. Backend-neutral; Vulkan / D3D12 / WebGPU / software all
+  map a slab and use `head()` / `bytesPerFrame()` to record flush
+  ranges.
+
+The visibility-culling system originally specced in the prior
+§3.2 revision ("built-in
+system that reads `Camera` + `BoundingVolume`") shipped as the
+`cullByFrustum` free function instead. The factory-style
+`makeFrustumCullingSystem(...)` shape only makes sense when
+cameras live in `EntityStorage`; with cameras living in the
+builder, a one-call helper inside game code's own
+`buildRenderFrame` is the cleaner fit.
+
+52 tests pin the documented invariants.
 
 ### Batch 7 — Resource & event maturity (Milestone 3)
 
@@ -209,7 +274,7 @@ internals." That requires three things the library does not yet have:
 
 - a wider data model (more component slots, archetype-style storage),
 - a richer rendering contract (passes, cameras, lights, skinned poses),
-- a real renderer to prove the contract — Vulkan, per §3.6.
+- a real renderer to prove the contract — Vulkan, per §3.5.
 
 The batches are sized like prior batches (5–9 additive items each),
 sequenced so each one is shippable on its own and the public API
@@ -221,19 +286,20 @@ grows monotonically. The mapping to milestones (§8):
 | ~~5~~ | ~~Data model widening~~            | ✅ landed 2026-05-14 — see §2 |
 | 6     | Archetype/chunk storage            | M2                    |
 | ~~7~~ | ~~Resource & event maturity~~      | ✅ landed 2026-05-14 — see §2 |
-| 8     | Render contract expansion          | M4 prep               |
+| ~~8~~ | ~~Render contract expansion~~      | ✅ landed 2026-05-14 — see §2 |
 | 9     | Vulkan reference renderer (example) | M4                    |
 | 10    | 3D RPG demo example                | M6 lead-in            |
 
-§3.6 covers the Vulkan defaulting strategy across batches 8–10.
+§3.5 covers the Vulkan defaulting strategy across batches 8–10.
 
 ### 3.1 Batch 6 — Archetype / chunk storage (Milestone 2)
 
 Single big refactor; previously gated on batch 5's mask widening + the
-N-tick determinism harness (both landed 2026-05-14) and on the public
-resource/event surface being stable (batch 7 landed 2026-05-14). With
-those clear, the archetype refactor is now unblocked. Effort sized at
-~3 weeks.
+N-tick determinism harness (both landed 2026-05-14), on the public
+resource/event surface being stable (batch 7 landed 2026-05-14), and
+on the render-contract surface being stable (batch 8 landed
+2026-05-14). With all three clear, the archetype refactor is now
+fully unblocked. Effort sized at ~3 weeks.
 
 - **Chunk-based `EntityStorage`.** Replace the parallel `std::vector`
   per component with archetype chunks (e.g. 256 entities per chunk,
@@ -266,50 +332,22 @@ those clear, the archetype refactor is now unblocked. Effort sized at
   registry the chunks key into. Trade-off: discoverability vs.
   lock-in.
 
-This is the most disruptive batch in the plan. It was previously
-deferred until the renderer-side and resource-side contracts had
-stabilized; batch 7 (✅ §2) cleared the resource/event side, so the
-remaining open question is whether to interleave §3.2 (render contract)
-before doing this — see the note at the head of §3.2.
+This is the most disruptive batch in the plan. The interleaving
+question that was open in the prior revision — whether to do the
+render-contract expansion first — was answered "yes": batch 8
+shipped 2026-05-14 (see §2), settling the public render surface
+ahead of this refactor. With both the resource/event and render
+contracts stable, the archetype refactor is the only remaining
+Milestone 2 work and can land without churning the public API
+again.
 
-### 3.2 Batch 8 — Render contract expansion (Milestone 4 prep)
+### 3.2 Batch 9 — Vulkan reference renderer (Milestone 4)
 
-Today's `RenderFrame` is a flat instance list. A 3D RPG renderer
-needs structure: cameras, lights, draw bins by pass, skinned poses,
-debug overlay. The shape is engine-owned, the population is
-user-system-owned, the consumption is renderer-owned.
-
-- **Hierarchical `RenderFrame`.** New types under
-  `include/threadmaxx/render/`: `Camera`, `Light` (directional /
-  point / spot), `DrawItem`, per-pass bins
-  (`opaque` / `transparent` / `shadowCasters` / `overlay`), debug
-  geometry layer (lines, points, text).
-- **New built-in components.** `Camera` (perspective/ortho + view
-  matrix), `Light`, `MeshSkinned` (mesh + skeleton handle),
-  `AnimationPose` (per-bone transforms, ringbuffered),
-  `MaterialOverride` (per-instance params).
-- **Render-prep systems.** A new lifecycle hook
-  `ISystem::buildRenderFrame(RenderFrameBuilder&)` that runs after
-  `postStep` and writes into a per-system slice of the frame.
-  Engine merges slices on the sim thread (deterministic, same shape
-  as commit). Existing flat `RenderInstance` path stays as the
-  default for headless / minimal renderers.
-- **Visibility culling stage.** Built-in system that reads `Camera`
-  + `BoundingVolume` (from batch 5, see §2), writes a per-camera
-  visible set used by the renderer.
-- **Stable instance-buffer layout helper.** Header-only struct that
-  any renderer can copy into a GPU buffer — predictable alignment,
-  shader-compatible field order. Lives in
-  `include/threadmaxx/render/`; not Vulkan-specific.
-- **Per-frame upload ring helpers.** Same idea: shared frame-to-frame
-  allocator that any renderer can use without hard-coding a backend.
-
-### 3.3 Batch 9 — Vulkan reference renderer (Milestone 4)
-
-The first concrete renderer that exercises the full §3.2 contract.
-**Lives in `examples/vulkan_renderer/`, NOT in the core library** —
-that preserves the renderer-agnostic guarantee. The core lib's only
-Vulkan-aware concession is the optional helpers in §3.2.
+The first concrete renderer that exercises the full §2 batch-8
+contract. **Lives in `examples/vulkan_renderer/`, NOT in the core
+library** — that preserves the renderer-agnostic guarantee. The core
+lib's only Vulkan-aware concession is the optional helpers shipped
+in batch 8.
 
 - **`examples/vulkan_renderer/`.** Vulkan 1.3 (dynamic rendering,
   timeline semaphores, sync2), GLFW for window/surface. Treated like
@@ -326,10 +364,10 @@ Vulkan-aware concession is the optional helpers in §3.2.
 - **Cross-platform CI.** Build on Linux + Windows runners. macOS via
   MoltenVK marked best-effort.
 - **Smoke scene.** Animated character on a lit terrain plane, third-
-  person camera, 1k crowd of instanced meshes — proves §3.2's
+  person camera, 1k crowd of instanced meshes — proves batch 8's
   contracts under load.
 
-### 3.4 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
+### 3.3 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
 
 Closes the loop. Built on top of the Vulkan renderer; demonstrates
 that a real game can be developed without engine patches.
@@ -348,7 +386,7 @@ that a real game can be developed without engine patches.
   — if the demo needs an engine change, it goes back through the
   next batch instead of into the example.
 
-### 3.5 Items intentionally NOT in §3
+### 3.4 Items intentionally NOT in §3
 
 The following are good extensions but belong above the library (or in
 sibling libraries). Calling them out so they don't accidentally creep
@@ -368,7 +406,7 @@ into a batch.
 - **Editor / hot-reload UI.** Out of scope until the public API has
   stabilized through M4.
 
-### 3.6 Vulkan as the implicit default for M4+
+### 3.5 Vulkan as the implicit default for M4+
 
 A note on strategy, since the user-facing question came up.
 
@@ -378,7 +416,7 @@ renderer-agnostic core.** Concretely:
 
 - The `IRenderer` interface and the flat `RenderFrame` are
   renderer-agnostic by construction; Vulkan slots in cleanly as a
-  consumer. The §3.2 hierarchical `RenderFrame` is still
+  consumer. The batch-8 hierarchical `RenderFrame` (✅ §2) is still
   API-agnostic — it speaks in cameras, lights, draw items, and pose
   buffers, not in `VkCommandBuffer`.
 - The Vulkan renderer lives in `examples/vulkan_renderer/`, NOT in
@@ -388,7 +426,7 @@ renderer-agnostic core.** Concretely:
   cost.
 - Optional shared helpers (instance buffer layout, frame allocator,
   upload-ring scaffolding) live in `include/threadmaxx/render/` and
-  are renderer-neutral (see §3.2). Any backend (Vulkan, WebGPU via
+  are renderer-neutral (see batch 8 in §2). Any backend (Vulkan, WebGPU via
   Dawn, D3D12, Metal via MoltenVK) can use them.
 - Vulkan's style — pre-recorded command buffers, explicit batching,
   one frame-graph snapshot per submit — matches threadmaxx's existing
@@ -408,8 +446,8 @@ renderer-agnostic core.** Concretely:
     confined to the example.
 
 The strategy that protects the library is: **every renderer-facing
-addition in §3.2 is justified by a non-Vulkan-specific use case
-first.** If a feature only makes sense for Vulkan, it belongs in
+addition in batch 8 (✅ §2) was justified by a non-Vulkan-specific use case
+first, and any future render-side addition will hold to the same rule.** If a feature only makes sense for Vulkan, it belongs in
 `examples/vulkan_renderer/`, not in the core. That keeps the door
 open for a WebGPU, D3D12, or even a pure-software reference renderer
 later without API churn.
@@ -475,8 +513,8 @@ is done.
 
 The wave scheduler buys parallelism *between* systems. The next axis
 is finer slicing *within* a system: per-chunk iteration becomes
-expressible after §3.1, and per-render-pass iteration becomes
-expressible after §3.2.
+expressible after §3.1, and per-render-pass iteration is now
+expressible (batch 8 landed in §2).
 
 ### Phase 3 — frame task graph
 
@@ -532,7 +570,9 @@ listing them by batch, this is the cross-reference index:
 - Determinism N-tick golden test — ✅ batch 5.
 - Archetype storage + `forEachChunk` + `UserComponent<T>` —
   §3.1 batch 6.
-- Pass-aware `RenderFrame` — §3.2 batch 8.
+- Pass-aware `RenderFrame` + `buildRenderFrame` hook + render
+  helpers (Camera, Light, DrawItem, Visibility, InstanceBufferLayout,
+  UploadRing) — ✅ batch 8.
 - Networking deltas, task graph, cancellation — deferred to Phase 3+
   of §6.
 
@@ -569,11 +609,12 @@ shutdown contract. Shipped 2026-05-14 in batch 7.
 
 ### Milestone 4 — Rendering contract expansion + reference renderer
 
-Hierarchical `RenderFrame`, new render-side components (Camera,
-Light, MeshSkinned, AnimationPose, MaterialOverride), render-prep
-hooks, visibility culling, shared instance/pose buffer helpers.
-Vulkan reference renderer as `examples/vulkan_renderer/`. Covered by
-§3.2 batch 8 and §3.3 batch 9.
+Hierarchical `RenderFrame`, render-side POD types (Camera, Light,
+DrawItem with MeshSkinnedRef / AnimationPoseRef / MaterialOverride),
+`buildRenderFrame` lifecycle hook, visibility-culling helpers,
+shared instance/pose buffer helpers — all shipped in batch 8
+(✅ §2). The Vulkan reference renderer as
+`examples/vulkan_renderer/` (§3.2 batch 9) is the remaining piece.
 
 ### Milestone 5 — Task graph and deep parallelism
 
@@ -584,7 +625,7 @@ Phase 3 of the perf roadmap.
 
 Serialization (✅ batch 4), navigation, animation, physics,
 networking. The "endgame" — each is a sibling sub-project on its
-own. `examples/rpg_demo/` (§3.4 batch 10) is the integration proof.
+own. `examples/rpg_demo/` (§3.3 batch 10) is the integration proof.
 
 ## 9. Engineering priorities
 
@@ -619,7 +660,11 @@ Today: "stable serialization", "expose profiling data", and
 widening that the §3.1 archetype refactor depends on is in
 (batch 5); "stream assets asynchronously" is in (batch 7 —
 multi-stage loader pipeline, hot reload, refcounted handles,
-blocking preload); the rest depends on §3 batches 6, 8–10.
+blocking preload); the hierarchical render contract that
+`examples/vulkan_renderer/` will consume is in (batch 8 — cameras,
+lights, per-pass bins, debug overlay, `buildRenderFrame` hook,
+visibility helpers, instance/upload helpers); the rest depends on
+§3 batches 6, 9–10.
 
 ## 11. Final note
 
@@ -631,15 +676,18 @@ contract, spatial hash, serialization, logger, job histograms,
 queue/wait timing, scale-chain knob, persistent event subscribe)
 plus the batch-5 data-model widening (64-bit mask, six new POD
 components, three tag-only categories, MaskCache, N-tick determinism
-golden test) and the batch-7 resource/event maturity (refcounted
+golden test), the batch-7 resource/event maturity (refcounted
 handles, hot reload, loader stats / onShutdown, blocking preload,
-RAII event subscriptions) confirm that the layering is sound —
+RAII event subscriptions), and the batch-8 render contract
+(hierarchical `RenderFrame`, `buildRenderFrame` hook, Camera /
+Light / DrawItem / debug PODs, visibility helpers, instance
+buffer layout, upload ring) confirm that the layering is sound —
 every one landed as a pure addition without churning the public
 API.
 
-With the resource/event surface now stable, the most disruptive
-remaining refactor (archetype storage, §3.1 batch 6) is unblocked.
-The §3 plan continues to treat the Vulkan reference renderer as an
-example, not a library dependency. That keeps the renderer-agnostic
-guarantee intact while still letting M4+ work target a real, modern
-API.
+With the resource/event and render-contract surfaces now stable, the
+most disruptive remaining refactor (archetype storage, §3.1 batch 6)
+is unblocked. The §3 plan continues to treat the Vulkan reference
+renderer as an example, not a library dependency. That keeps the
+renderer-agnostic guarantee intact while still letting M4+ work
+target a real, modern API.

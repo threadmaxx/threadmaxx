@@ -48,6 +48,12 @@ set(THREADMAXX_TESTS
     loader_shutdown_test
     loader_stats_test
     subscription_raii_test
+    render_frame_builder_test
+    visibility_culling_test
+    instance_buffer_layout_test
+    upload_ring_test
+    render_passes_test
+    build_render_frame_timing_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

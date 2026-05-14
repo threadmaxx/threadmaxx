@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 46 tests pin the
+minimal; the internals are PImpl'd so they can change. 52 tests pin the
 documented invariants.
 
 ## Highlights
@@ -91,6 +91,19 @@ documented invariants.
   install your own to route to spdlog / a HUD / a file.
 - **Pluggable renderer.** Implement `IRenderer::submitFrame` against a
   flat `RenderFrame`. Null renderer = headless.
+- **Hierarchical render contract.** `RenderFrame` exposes cameras,
+  lights, per-pass draw-item bins (Opaque / Transparent / ShadowCasters
+  / Overlay), and debug geometry alongside the legacy flat instances
+  list. User systems populate it via `ISystem::buildRenderFrame`; the
+  engine merges every system's slice in registration order on the sim
+  thread.
+- **Render-side helpers.** `include/threadmaxx/render/` ships
+  renderer-neutral POD types (Camera, Light, DrawItem, MeshSkinnedRef,
+  AnimationPoseRef, MaterialOverride) plus frustum extraction +
+  AABB-vs-frustum + `cullByFrustum` for visibility, a 128-byte
+  std140-friendly `InstanceLayoutEntry` for GPU upload, and an
+  `UploadRing` per-frame staging arena. Vulkan/D3D12/WebGPU/software
+  backends consume the same surface without translation.
 
 ## Requirements
 
@@ -256,7 +269,7 @@ include/threadmaxx/    public API (20 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 46 no-dependency tests under CTest
+tests/                 52 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

@@ -52,6 +52,10 @@ documents the invariants this guide relies on; the
 16. [Renderer integration](renderer_integration.md) — implementing
     `IRenderer`, the double-buffered render frame, and the interpolation
     alpha.
+16b. [Render contract](render_contract.md) — hierarchical `RenderFrame`,
+    `buildRenderFrame` hook, cameras / lights / per-pass draw items,
+    visibility culling, instance buffer layout, upload ring (§3.2
+    batch 8).
 17. [Configuration & lifecycle](configuration.md) — `Config` fields, the
     engine lifecycle, deterministic mode, fixed timestep, pacing.
 18. [Pause and time scale](pause_and_time_scale.md) — slow-mo,

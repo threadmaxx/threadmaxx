@@ -215,6 +215,7 @@ void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
     systemStats_.push_back(ss);
     const char* sysName = system->name();
     systems_.push_back(std::move(system));
+    systemRenderBuilders_.emplace_back();
     rebuildWaves();
     std::ostringstream os;
     os << "registered system '" << (sysName ? sysName : "(unnamed)")
@@ -287,6 +288,8 @@ std::size_t EngineImpl::registerSystemAt(std::size_t position,
     systems_.insert(systems_.begin() +
                     static_cast<std::ptrdiff_t>(position),
                     std::move(system));
+    systemRenderBuilders_.emplace(systemRenderBuilders_.begin() +
+                                  static_cast<std::ptrdiff_t>(position));
     rebuildWaves();
     return position;
 }
@@ -436,12 +439,51 @@ void EngineImpl::buildRenderFrame() {
         });
     }
 
+    // §3.2 batch 8: merge per-system RenderFrameBuilder slices into the
+    // back storage in registration order. The published RenderFrame
+    // exposes spans pointing into this storage.
+    auto& hier = renderFrameStorage_[back];
+    hier.clear();
+    for (const auto& builder : systemRenderBuilders_) {
+        const auto cams = builder.cameras();
+        hier.cameras.insert(hier.cameras.end(), cams.begin(), cams.end());
+        const auto lts = builder.lights();
+        hier.lights.insert(hier.lights.end(), lts.begin(), lts.end());
+        for (std::size_t p = 0; p < kRenderPassCount; ++p) {
+            const auto items = builder.drawItems(
+                static_cast<RenderPass>(p));
+            hier.drawItems[p].insert(hier.drawItems[p].end(),
+                                     items.begin(), items.end());
+        }
+        const auto dl = builder.debugLines();
+        hier.debugLines.insert(hier.debugLines.end(), dl.begin(), dl.end());
+        const auto dp = builder.debugPoints();
+        hier.debugPoints.insert(hier.debugPoints.end(),
+                                dp.begin(), dp.end());
+        const auto dt = builder.debugText();
+        hier.debugText.insert(hier.debugText.end(), dt.begin(), dt.end());
+    }
+
     auto& frame = renderFrames_[back];
     frame.tick = tick_;
     frame.simulationTime = simulationTime_;
     frame.deltaTime = cfg_.fixedStepSeconds;
     frame.alpha = 0.0f;
     frame.instances = std::span<const RenderInstance>(dst.data(), dst.size());
+    frame.cameras = std::span<const Camera>(hier.cameras.data(),
+                                            hier.cameras.size());
+    frame.lights  = std::span<const Light>(hier.lights.data(),
+                                           hier.lights.size());
+    for (std::size_t p = 0; p < kRenderPassCount; ++p) {
+        frame.drawItems[p] = std::span<const DrawItem>(
+            hier.drawItems[p].data(), hier.drawItems[p].size());
+    }
+    frame.debugLines  = std::span<const DebugLine>(
+        hier.debugLines.data(), hier.debugLines.size());
+    frame.debugPoints = std::span<const DebugPoint>(
+        hier.debugPoints.data(), hier.debugPoints.size());
+    frame.debugText   = std::span<const DebugText>(
+        hier.debugText.data(), hier.debugText.size());
 
     frontIndex_.store(back, std::memory_order_release);
 }
@@ -612,6 +654,16 @@ void EngineImpl::step() {
     // next tick's read buffer so drainTick() sees this tick's events.
     for (auto& [type, entry] : eventChannels_) {
         if (entry.drain) entry.drain(entry.ptr);
+    }
+
+    // §3.2 batch 8: render-prep hook. Each system writes its slice into
+    // a private RenderFrameBuilder; the engine merges them in
+    // registration order during buildRenderFrame() below. Hooks run on
+    // the sim thread, single-threaded — every gameplay change has
+    // settled by this point.
+    for (std::size_t i = 0; i < systems_.size(); ++i) {
+        systemRenderBuilders_[i].reset();
+        systems_[i]->buildRenderFrame(systemRenderBuilders_[i]);
     }
 
     tick_++;

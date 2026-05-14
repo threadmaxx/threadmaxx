@@ -201,3 +201,29 @@ Header-only sugar on `World` for the built-in component types: `world.has<T>(han
 ## MaskCache and forEachWithCached
 
 `Query.hpp` ships `MaskCache` (user-owned vector of dense indices matching a `ComponentSet`) and `forEachWithCached<...>` (iterates the cache, skips out-of-range entries, no per-entity mask test in the hot loop). Rebuild discipline is on the caller: call `cache.rebuild(world, required<T...>())` in `preStep` when the required set may match a new or removed entity since last tick. The bounds check protects against a destroy between rebuilds, but cannot detect an entry whose mask flipped to no longer match. The base `forEachWith<...>` path is unchanged — `MaskCache` is purely additive, opt-in via call site.
+
+## §3.2 batch-8 render contract
+
+`include/threadmaxx/render/` is the new home for the hierarchical render-contract surface (added 2026-05-14). Every type here is a renderer-neutral POD; the engine never positions Camera/Light/etc. as per-entity dense storage.
+
+- `Camera.hpp` — POD camera with `ProjectionMode`, view + projection matrices (column-major), and informational position/forward/up.
+- `Light.hpp` — POD `Light` with `LightType` (Directional/Point/Spot), color/intensity, range, inner/outer cones, `castsShadow` hint.
+- `DrawItem.hpp` — POD `DrawItem` plus the auxiliary PODs `MeshSkinnedRef`, `AnimationPoseRef`, `MaterialOverride`. `DrawItem::cameraMask` is a 32-bit bitset over `RenderFrame::cameras`. Phantom tags `Skeleton` / `PoseBuffer` brand the `ResourceId<T>` parameters; the engine never instantiates them.
+- `DebugGeometry.hpp` — `DebugLine`, `DebugPoint`, `DebugText` (text is a borrowed `std::string_view`; producer owns lifetime to the next frame swap).
+- `RenderPasses.hpp` — `enum class RenderPass { Opaque, Transparent, ShadowCasters, Overlay }` and `kRenderPassCount = 4`. `passIndex(p)` is the canonical dense-array index.
+- `RenderFrameBuilder.hpp` — per-system slice. Move-only; engine owns one per registered system, reset before each tick, merged after every postStep + event drain.
+- `Visibility.hpp` — `extractFrustum(camera) -> Frustum`, `intersectsFrustum(...)` AABB p-vertex test, `cullByFrustum(items, bounds, cameras)` writes `DrawItem::cameraMask` in place. Up to 32 cameras at once (one bit each).
+- `InstanceBufferLayout.hpp` — `alignas(16) struct InstanceLayoutEntry` (128 bytes, std140-friendly). `packInstance(item)` / `packInstances(items, dst)` project DrawItems into the layout.
+- `UploadRing.hpp` — header-only frame-to-frame bump allocator. `nextFrame()` advances slabs, `allocate(bytes, alignment)` bumps, `pushBytes(...)` copies + returns offset. `setGrowOnOverflow(true)` allows oversize allocations to grow the active slab.
+
+The decision to NOT expose Camera/Light/MeshSkinned/AnimationPose/MaterialOverride as built-in components (despite the original §3.2 spec calling them that) is documented in `doc/render_contract.md` — the short version is: cameras/lights are few in number, AnimationPose ringbuffered doesn't fit dense parallel-array storage, and the `RenderFrameBuilder` path is a strictly better fit than putting them into `EntityStorage`. If a future game needs entity-attached cameras as built-in components, the §3.1 archetype refactor (batch 6) is the right moment to revisit.
+
+## ISystem::buildRenderFrame hook
+
+`ISystem::buildRenderFrame(RenderFrameBuilder&)` is the §3.2 batch-8 render-prep hook. Default: empty. Invocation: after every `postStep` has committed and after `eventChannels_` have drained, on the simulation thread, single-threaded, in registration order. Each registered system gets its own builder (engine-owned, persisted across ticks for zero-alloc steady state). The engine merges every system's builder into `renderFrameStorage_[back]` in registration order during `buildRenderFrame()` (the engine's private method that publishes the back frame); the published `RenderFrame::cameras` / `lights` / `drawItems[]` / `debugLines` / `debugPoints` / `debugText` spans point into that storage.
+
+Adding a registered system also pushes an empty `RenderFrameBuilder` onto `systemRenderBuilders_` (in `EngineImpl`); `registerSystemAt` inserts at the matching position. Removal is not implemented (systems are append-only past Milestone 1).
+
+## RenderFrame: flat instances + hierarchical fields
+
+The published `RenderFrame` exposes both paths simultaneously: `instances` (auto-populated from RenderTag+!DisabledTag entities, same as Milestone 1) AND the hierarchical fields (populated by user systems via the hook). Headless / minimal renderers consume just `instances`; richer renderers consume the hierarchical fields. The two coexist with no overlap — entities with RenderTag still appear in `instances`, draw items pushed via the hook appear in `drawItems[pass]`. Game code chooses which.

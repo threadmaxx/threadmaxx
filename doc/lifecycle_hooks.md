@@ -2,7 +2,7 @@
 
 @page lifecycle_hooks Lifecycle hooks
 
-A `Engine::step()` call walks three serial phases plus the wave loop in
+A `Engine::step()` call walks four serial phases plus the wave loop in
 between:
 
 ```
@@ -11,13 +11,15 @@ preStep (registration order)
   → wave 1 (parallel) → commit
   → ...
 postStep (registration order)
+  → resource loaders pump, event drain
+buildRenderFrame (registration order)     ← §3.2 batch 8
   → tick++, render frame published
 ```
 
 `update()` is the wave-scheduled hook you've already met — it runs
 concurrently with sibling systems whose declared reads/writes don't
-conflict, with work fanned out via `parallelFor`. The other two hooks
-on `ISystem` run **single-threaded on the simulation thread** and
+conflict, with work fanned out via `parallelFor`. The other hooks on
+`ISystem` run **single-threaded on the simulation thread** and
 **serially across systems** in registration order.
 
 ## When to use which hook
@@ -27,11 +29,21 @@ on `ISystem` run **single-threaded on the simulation thread** and
 | `preStep`    | before any wave runs     | serial, sim thread | drain input queue, snapshot last tick's state, reset per-tick accumulators |
 | `update`     | wave (potentially parallel) | parallel jobs     | the meat of the system — read state, record `CommandBuffer` mutations |
 | `postStep`   | after the last commit    | serial, sim thread | publish events, refresh a HUD, finalize aggregates |
+| `buildRenderFrame` | after postStep + event drain | serial, sim thread | push cameras, lights, draw items, debug overlay into the next `RenderFrame` |
 | `onRegister` | once at registration     | sim thread         | one-shot setup; cache a resource handle |
 | `onUnregister` | once at shutdown       | sim thread         | one-shot teardown |
 
-`preStep` and `postStep` are virtual with empty defaults — systems that
-don't override them pay one virtual call per tick (negligible). They
+`buildRenderFrame(RenderFrameBuilder&)` is invoked after every
+`postStep` has committed and after the event channel drain, on the
+simulation thread, single-threaded, in registration order. The builder
+is exclusive to the calling system; allocations inside its `add*`
+methods are amortized across ticks (the engine retains storage between
+calls). See `doc/renderer_integration.md` for the full surface
+(cameras, lights, per-pass draw items, debug geometry).
+
+`preStep`, `postStep`, and `buildRenderFrame` are virtual with empty
+defaults — systems that don't override them pay one virtual call per
+tick (negligible). They
 both receive a `SystemContext&` so you can record commands via
 `ctx.single([&](Range, CommandBuffer& cb){ ... })`; those commands are
 committed in registration order, immediately for `preStep` (so the

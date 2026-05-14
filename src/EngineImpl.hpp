@@ -227,8 +227,37 @@ private:
     // Double-buffered render-frame storage. We build into back_, then
     // atomically publish the pointer; the renderer reads through front_.
     std::array<std::vector<RenderInstance>, 2> renderInstanceBuffers_;
+    // §3.2 batch 8: per-frame merged storage backing the hierarchical
+    // RenderFrame spans (cameras, lights, per-pass draw items, debug
+    // geometry). Double-buffered alongside renderInstanceBuffers_; the
+    // RenderFrame::* spans point into renderFrameStorage_[back] during
+    // build, and are read by the renderer through renderFrames_[front].
+    struct HierarchicalRenderStorage {
+        std::vector<Camera>      cameras;
+        std::vector<Light>       lights;
+        std::array<std::vector<DrawItem>, kRenderPassCount> drawItems;
+        std::vector<DebugLine>   debugLines;
+        std::vector<DebugPoint>  debugPoints;
+        std::vector<DebugText>   debugText;
+        void clear() noexcept {
+            cameras.clear();
+            lights.clear();
+            for (auto& bin : drawItems) bin.clear();
+            debugLines.clear();
+            debugPoints.clear();
+            debugText.clear();
+        }
+    };
+    std::array<HierarchicalRenderStorage, 2> renderFrameStorage_;
     std::array<RenderFrame, 2> renderFrames_;
     std::atomic<unsigned> frontIndex_{0};
+
+    // §3.2 batch 8: per-system RenderFrameBuilder, parallel to systems_.
+    // Persisted across ticks so the inner std::vector allocations are
+    // reused — steady-state usage pays zero allocations after the first
+    // tick. Cleared at the start of each tick before invoking each
+    // system's buildRenderFrame hook.
+    std::vector<RenderFrameBuilder> systemRenderBuilders_;
 
     // Wall-clock pacing.
     std::chrono::steady_clock::time_point lastIterationTime_{};
