@@ -4,12 +4,14 @@
 #include "Handles.hpp"
 #include "Resource.hpp"
 #include "Stats.hpp"
+#include "UserComponent.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
+#include <type_traits>
 #include <typeindex>
 
 namespace threadmaxx {
@@ -262,10 +264,42 @@ public:
     template <typename Ev>
     EventChannel<Ev>& events();
 
+    /// §3.1 batch 6b: register a user-side POD component type and
+    /// receive a @ref UserComponentId for use with
+    /// @ref addUserComponent / @ref user::has / @ref user::tryGet /
+    /// @ref user::chunkSpan.
+    ///
+    /// Idempotent: re-registering the same `typeid(T)` returns the same
+    /// token. Bit assignment is registration-order stable across runs
+    /// of the same binary; the engine never persists it across
+    /// processes.
+    ///
+    /// @tparam T  Must be trivially copyable. The engine memcpys the
+    ///            value into chunked storage and never invokes
+    ///            constructors or destructors on user values.
+    /// @return A valid @ref UserComponentId. Returns an invalid id if
+    ///         the registry has exhausted user-bit space (48 bits
+    ///         available between built-ins and the 64-bit ComponentSet
+    ///         width).
+    /// @thread_safety Safe to call from any thread before the first
+    ///                spawn that uses the bit — register at setup time
+    ///                to keep bit assignment fully deterministic.
+    template <typename T>
+    UserComponentId registerUserComponent() {
+        static_assert(std::is_trivially_copyable_v<T>,
+            "registerUserComponent<T>: T must be trivially copyable.");
+        return registerUserComponentRaw_(
+            std::type_index(typeid(T)),
+            static_cast<std::uint32_t>(sizeof(T)));
+    }
+
 private:
     void markResourceStaleRaw_(std::uint32_t index,
                                std::uint32_t generation,
                                std::type_index type);
+
+    UserComponentId registerUserComponentRaw_(std::type_index type,
+                                              std::uint32_t stride);
 
     std::unique_ptr<internal::EngineImpl> impl_;
 };

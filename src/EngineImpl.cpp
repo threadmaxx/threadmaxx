@@ -24,6 +24,8 @@
 #include "threadmaxx/Game.hpp"
 #include "threadmaxx/Renderer.hpp"
 
+#include <cstring>
+
 #include <algorithm>
 #include <latch>
 #include <sstream>
@@ -183,6 +185,10 @@ bool EngineImpl::initialize(IGame& game, Engine& publicEngine) {
     if (cfg_.initialEntityCapacity > 0) {
         world_.impl_().storage.reserve(cfg_.initialEntityCapacity);
     }
+    // §3.1 batch 6b: hand the archetype table a pointer to the
+    // engine-owned user-component registry. New chunks consult it when
+    // materializing per-bit user columns.
+    world_.impl_().storage.archetypes().setUserComponentRegistry(&userRegistry_);
 
     // Let the game register systems / renderer and seed entities.
     CommandBuffer seed;
@@ -437,6 +443,29 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
                     newMask.remove(c.tag);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
+            } else if constexpr (std::is_same_v<T, detail::CmdAddUserComponent>) {
+                // §3.1 batch 6b: migrate the entity into the
+                // destination archetype (which gets a UserComponentColumn
+                // for this bit during getOrCreateArchetype) and write
+                // the user-supplied blob into the new row. No-op for
+                // stale handles.
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(static_cast<Component>(1ull << c.bit));
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                    const auto loc = storage.locate(c.entity);
+                    auto& chunk = storage.archetypes().chunks()[loc.archetype];
+                    if (auto* col = chunk.findUserColumn(c.bit)) {
+                        std::memcpy(col->rowPtr(loc.row), c.data(), col->stride);
+                    }
+                }
+            } else if constexpr (std::is_same_v<T, detail::CmdRemoveUserComponent>) {
+                // Idempotent: bit absent → migrate is a no-op fast path.
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.remove(static_cast<Component>(1ull << c.bit));
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
             }

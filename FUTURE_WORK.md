@@ -17,25 +17,21 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-14 (Batches 5, 6, 6a, 7, and 8 have all
-landed. Milestone 2 is closed except for the user-extension hook
-`UserComponent<T>`, now tracked as batch 6b. Batch 5 widened the
-data model; batch 6a shipped the public-API half of the chunked-
-storage refactor; batch 6 (this refresh) landed the chunked archetype
-storage itself — `EntityStorage` is now backed by `ArchetypeChunk`s
-keyed by `ComponentSet` mask; mask edits physically migrate entities
-between chunks; legacy flat dense spans (`World::transforms()` etc.)
-are reconstructed lazily via a stitched cache; `tryGetT(e)` returns
-`nullptr` after `removeComponent<T>` (mask is the source of truth);
-`forEachChunk<Required...>` is the new public chunk-iteration helper;
-`buildRenderFrame()` was migrated to chunk-level filtering. Batch 7
-shipped resource & event maturity for Milestone 3 — refcounted
-handles, hot-reload protocol, blocking preload, RAII event
-subscriptions, loader stats and shutdown hook. Batch 8 shipped the
-hierarchical render contract for Milestone 4 prep — cameras, lights,
-per-pass draw bins, debug geometry, `buildRenderFrame` lifecycle
-hook, visibility culling helpers, instance buffer layout helper,
-per-frame upload ring.).
+Last refreshed: 2026-05-14 (Milestone 2 closed: batches 5, 6, 6a, 6b
+all landed. Batch 6b is the user-extensible dense-component hook —
+`Engine::registerUserComponent<T>()` returns a `UserComponentId`
+token, game code drives the same migration semantics as built-ins
+via `addUserComponent<T>` / `removeUserComponent` and reads with
+`user::has` / `user::tryGet` / `user::chunkSpan`. Storage is via a
+per-chunk `std::vector<UserComponentColumn>` whose strides come from
+the engine's `UserComponentRegistry`; migrations memcpy bytes for
+bits in both source and destination masks. Batches 5, 6, 6a, 7, 8
+remain ✅ (see prior refresh notes below). With Milestone 2 fully
+closed, the §3 plan reorients around batches 9 (Vulkan reference
+renderer) and 10 (RPG demo) for Milestones 4 and 6, plus a new run
+of perf batches 11–14 that lift §6 phases 3–6 (frame task graph,
+cancellation/budgets, storage contention, instrumentation ingestion)
+into shippable slices — see §3.4–§3.7.).
 
 ## 1. Target outcome
 
@@ -58,29 +54,35 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Eight batches plus a prep slice have landed. Batches 1–3 brought
-**Milestone 1** to completion on 2026-05-13; batch 4 (2026-05-14)
-closed out the M1 polish and seeded the tracing maturity batches 5+
-build on; batch 5 (2026-05-14) widened the data model for Milestone
-2 — six new POD components, three tag-only categories, a 64-bit
-`ComponentSet`, and the `MaskCache` opt-in fast path; batch 6a
-(2026-05-14) shipped the non-storage half of batch 6 — generic
-per-component transition API, archetype signatures helper, and the
-storage-churn determinism stress test; batch 6 (2026-05-14)
-shipped the chunked archetype storage itself, migrating
-`EntityStorage` to `ArchetypeChunk`-keyed dense arrays while
-preserving the public API via a lazy stitched view; batch 7
-(2026-05-14) shipped resource & event maturity for Milestone 3 —
-refcounted handles, hot-reload protocol, loader shutdown hook +
-stats, blocking preload, and an RAII event subscription handle;
-batch 8 (2026-05-14) shipped the hierarchical render contract for
-Milestone 4 prep — cameras, lights, per-pass draw bins, debug
-geometry, the `buildRenderFrame` lifecycle hook, visibility-
-culling helpers, an instance-buffer layout helper, and a per-frame
-upload ring. All shipped items were pure additions to the public
-API or behavior-preserving internal refactors; the only removal was
-an internal dead field on `CmdSpawn` (batch 3). Detailed per-feature
-notes live in `doc/` and `CLAUDE.md`.
+Nine batches plus a prep slice have landed, closing Milestones 1, 2,
+and 3 and the M4 contract. Batches 1–3 brought **Milestone 1** to
+completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
+polish and seeded the tracing maturity batches 5+ build on; batch 5
+(2026-05-14) widened the data model for Milestone 2 — six new POD
+components, three tag-only categories, a 64-bit `ComponentSet`, and
+the `MaskCache` opt-in fast path; batch 6a (2026-05-14) shipped the
+non-storage half of batch 6 — generic per-component transition API,
+archetype signatures helper, and the storage-churn determinism
+stress test; batch 6 (2026-05-14) shipped the chunked archetype
+storage itself, migrating `EntityStorage` to `ArchetypeChunk`-keyed
+dense arrays while preserving the public API via a lazy stitched
+view; batch 6b (2026-05-14) shipped the user-extensible dense
+component hook — `Engine::registerUserComponent<T>()`,
+`UserComponentId`, `addUserComponent` / `removeUserComponent` free
+functions, the `user::has` / `tryGet` / `chunkSpan` read helpers,
+and the per-chunk `UserComponentColumn` storage that migrates
+correctly across mask edits; batch 7 (2026-05-14) shipped resource
+& event maturity for Milestone 3 — refcounted handles, hot-reload
+protocol, loader shutdown hook + stats, blocking preload, and an
+RAII event subscription handle; batch 8 (2026-05-14) shipped the
+hierarchical render contract for Milestone 4 prep — cameras,
+lights, per-pass draw bins, debug geometry, the `buildRenderFrame`
+lifecycle hook, visibility-culling helpers, an instance-buffer
+layout helper, and a per-frame upload ring. All shipped items were
+pure additions to the public API or behavior-preserving internal
+refactors; the only removal was an internal dead field on
+`CmdSpawn` (batch 3). Detailed per-feature notes live in `doc/` and
+`CLAUDE.md`.
 
 Note on numbering: batches 7 and 8 landed before batch 6 because
 §3.1's own deferral guidance ("intentionally deferred until the
@@ -406,7 +408,7 @@ internals." That requires three things the library does not yet have:
 
 - a wider data model (more component slots, archetype-style storage),
 - a richer rendering contract (passes, cameras, lights, skinned poses),
-- a real renderer to prove the contract — Vulkan, per §3.5.
+- a real renderer to prove the contract — Vulkan, per §3.8.
 
 The batches are sized like prior batches (5–9 additive items each),
 sequenced so each one is shippable on its own and the public API
@@ -418,85 +420,29 @@ grows monotonically. The mapping to milestones (§8):
 | ~~5~~ | ~~Data model widening~~            | ✅ landed 2026-05-14 — see §2 |
 | ~~6a~~ | ~~Archetype prep (non-storage half of 6)~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~6~~ | ~~Chunked archetype storage~~      | ✅ landed 2026-05-14 — see §2 |
-| 6b    | `UserComponent<T>` extension hook  | M2                    |
+| ~~6b~~ | ~~`UserComponent<T>` extension hook~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~7~~ | ~~Resource & event maturity~~      | ✅ landed 2026-05-14 — see §2 |
 | ~~8~~ | ~~Render contract expansion~~      | ✅ landed 2026-05-14 — see §2 |
-| 9     | Vulkan reference renderer (example) | M4                    |
-| 10    | 3D RPG demo example                | M6 lead-in            |
+| 9     | Vulkan reference renderer (example) | M4 — example, not library |
+| 10    | 3D RPG demo example                | M6 lead-in — example, not library |
+| 11    | Frame task graph (§6 phase 3)      | M5                    |
+| 12    | Cancellation, budgets, priorities (§6 phase 4) | M5      |
+| 13    | Storage contention reduction (§6 phase 5) | M5             |
+| 14    | Telemetry ingestion (§6 phase 6 close-out) | M5            |
 
-§3.5 covers the Vulkan defaulting strategy across batches 8–10.
+§3.8 covers the Vulkan defaulting strategy across batches 8–10.
 
-### 3.1 Batch 6b — `UserComponent<T>` extension hook (Milestone 2)
+Batches 9 and 10 are **example projects**, not library batches —
+they consume the existing public surface and prove a real game can
+be built on top. The library-side perf batches 11–14 can ship
+independently of the examples; in practice the natural ordering is
+**11 → 9 → 12 → 13 → 10 → 14**, but the dependencies are loose
+enough that 11/12/13 can land before either example, and 14 can
+land alongside 10 because telemetry quality is best measured under
+a real game's workload. See §3.4–§3.7 for the per-batch scopes and
+the cross-batch sequencing rationale.
 
-Batch 6 (✅ §2) shipped the chunked archetype storage refactor in
-one go. The only piece of the original §3.1 plan that did NOT land
-in that pass is the user-extensible dense-array hook —
-`UserComponent<T>` — which needs more invasive cross-cutting work
-(type-erased per-component storage in `ArchetypeChunk`, runtime bit
-allocation, and a compile-time→runtime template dispatch bridge for
-the user-side `addComponent<T>` API). It's deliberately scoped as a
-follow-on batch so the chunked-storage refactor itself could land
-clean.
-
-Gating: cleared. The chunked-storage substrate is in. Effort sized
-at ~1 week.
-
-#### Deliverables
-
-- **Type-erased per-chunk storage.** Extend `ArchetypeChunk` with a
-  parallel `std::vector<UserComponentStorage>`, where each entry
-  holds a `std::vector<std::byte>` plus stride and copy/destroy
-  hooks (or `std::unique_ptr<IUserComponentArray>` with virtual
-  overrides — both shapes work). Indexed by user-component index,
-  not bit, since user types are runtime-keyed.
-- **`Engine::registerUserComponent<T>() -> UserComponentId`.**
-  Allocates a unique bit (≥16, mapped against the spare 48 bits in
-  `ComponentSet`), associates it with `typeid(T)`, and remembers
-  the value's stride + copy/destroy hooks. The returned token is
-  what the user passes to commands that need runtime dispatch.
-- **`CommandBuffer::addComponent<T>(e, value)` /
-  `removeComponent<T>(e)` extended.** The template specializations
-  for user-registered types take an indirect path: at call time,
-  look up the bit via the engine's registry (or a TLS-cached copy
-  of it) and emit a `CmdAddUserComponent` / `CmdRemoveUserComponent`
-  carrying the type-erased value and `UserComponentId`. Tag-only
-  semantics stay as-is.
-- **`World::has<T>(e)` / `tryGet<T>(e)` / `forEachChunk<T...>`
-  extended** to recognize user-registered types via the same
-  registry lookup.
-- **Migration handles user components.** `ArchetypeTable::migrate`
-  walks both the built-in component bits AND the user-component
-  bits when projecting the moved entity's values; storage for
-  user components is allocated lazily in each chunk that carries
-  the bit (no per-chunk cost when the user-component bit is
-  absent).
-- **`tests/user_component_test.cpp`** — game code declares a custom
-  POD, adds it via `cb.addComponent<MyType>`, asserts presence and
-  value round-trips through migration.
-
-#### Risks and mitigations
-
-- **Template dispatch from compile-time to runtime.** `addComponent<T>`
-  is currently a header-only inline that dispatches via
-  `if constexpr` on `T`. For user types, we can't pick the bit at
-  compile time. Mitigation: add a `requires
-  std::is_same_v<T, ...> || engine::IsUserComponent<T>` constraint
-  and fall through to a runtime lookup path that emits a
-  type-erased command. The compile-time path for built-ins is
-  unchanged.
-- **Serialization of user components.** Out of scope for batch 6b;
-  user code that wants to round-trip `UserComponent<T>` values
-  through `WorldSnapshot` plugs in a side-channel
-  `serialize(ostream, span<const T>)` overload. The engine doesn't
-  need to know about it. Documented in `doc/serialization.md`.
-- **Stable bit assignment across runs.** Registration order
-  determines bit assignment, so the same code path produces the
-  same bits in two runs of the same binary — deterministic enough
-  for the stress-test pattern. Cross-process or cross-version stability
-  requires the game to remember its own user-component → bit map;
-  the engine does not persist it.
-
-### 3.2 Batch 9 — Vulkan reference renderer (Milestone 4)
+### 3.1 Batch 9 — Vulkan reference renderer (Milestone 4)
 
 The first concrete renderer that exercises the full §2 batch-8
 contract. **Lives in `examples/vulkan_renderer/`, NOT in the core
@@ -522,7 +468,7 @@ in batch 8.
   person camera, 1k crowd of instanced meshes — proves batch 8's
   contracts under load.
 
-### 3.3 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
+### 3.2 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
 
 Closes the loop. Built on top of the Vulkan renderer; demonstrates
 that a real game can be developed without engine patches.
@@ -541,7 +487,7 @@ that a real game can be developed without engine patches.
   — if the demo needs an engine change, it goes back through the
   next batch instead of into the example.
 
-### 3.4 Items intentionally NOT in §3
+### 3.3 Items intentionally NOT in §3
 
 The following are good extensions but belong above the library (or in
 sibling libraries). Calling them out so they don't accidentally creep
@@ -561,7 +507,199 @@ into a batch.
 - **Editor / hot-reload UI.** Out of scope until the public API has
   stabilized through M4.
 
-### 3.5 Vulkan as the implicit default for M4+
+### 3.4 Batch 11 — Frame task graph (Milestone 5, §6 phase 3)
+
+The current scheduler packs systems into waves based on declared
+read/write masks. That's correct but coarse: two systems with
+disjoint masks can race in the same wave, but two systems with
+overlapping masks always serialize to the next wave, even when the
+real dependency is only a single producer → single consumer pair.
+A frame task graph lets game code express finer-grain ordering
+without splitting systems.
+
+Gating: independent of batches 9–10 — neither needs the task graph,
+and neither blocks it. Library-only batch; effort sized at ~1.5
+weeks.
+
+#### Deliverables
+
+- **`ISystem::dependencies()`** — optional override returning a
+  `std::span<const TaskTag>`. `TaskTag` is a strongly-typed
+  `std::string_view` (or `std::uint64_t` FNV-1a hash of a literal,
+  for zero-allocation declarations). Default: empty.
+- **`ISystem::provides()`** — optional override returning the tags
+  this system makes valid for later systems to consume. Default:
+  empty.
+- **DAG construction in `rebuildWaves`.** The existing first-fit
+  packer becomes a topological sort with `reads/writes` as the
+  primary edge source AND `dependencies/provides` as additional
+  edges. Cycles trigger an error at registration time (logged via
+  `ILogger`, not a crash).
+- **Per-system queue-depth hint.** A system that emits many
+  `parallelFor` chunks can declare a target inner-grain count via
+  `ISystem::preferredGrain()`. The engine threads it through to the
+  default `pickGrain` heuristic.
+- **`Engine::taskGraphSnapshot()`** — debug accessor returning a
+  serializable description (nodes, edges, wave assignments) for
+  visualization. Plays nicely with the Chrome trace adapter.
+- **`tests/task_graph_test.cpp`** — declare a producer-consumer
+  pair across waves; verify the consumer never runs before the
+  producer's commit. Also: cycle detection produces a deterministic
+  error, not a hang.
+
+#### Risks and mitigations
+
+- **Wave determinism.** Adding a tag-based edge mustn't shift
+  existing waves unless the tag is actually declared. Mitigation:
+  default `dependencies()`/`provides()` to empty; the topological
+  sort falls back to registration order when no tag edges exist.
+  Existing test suite re-runs with no behavior change.
+- **Hash collisions on `TaskTag`.** If we use FNV-1a u64 hashes,
+  collisions are astronomically rare but possible. Mitigation:
+  the engine keeps a `std::unordered_map<hash, std::string_view>`
+  and reports a collision diagnostic via the logger.
+
+### 3.5 Batch 12 — Cancellation, budgets, priorities (Milestone 5, §6 phase 4)
+
+Phase 3 unlocks finer-grain dependencies; phase 4 unlocks
+controlled work *removal*. Two motivating cases: a frame is
+budgeted (16.66ms @ 60fps), the streaming loader is mid-upload
+when the player teleports across the map and the uploads are
+suddenly dead weight; or a long-running per-tick analytics system
+needs to bail when the frame is close to its budget.
+
+Gating: builds on the task graph from batch 11 — cancellation is
+edge-aware (a cancelled system's `provides` tags propagate as
+"unavailable" to consumers). Effort sized at ~1 week.
+
+#### Deliverables
+
+- **`SystemContext::shouldYield()`** — cooperative cancellation
+  hint. Returns true when the engine's current-tick budget is
+  exhausted; user systems polling this in long loops can break out
+  and emit a "deferred to next tick" command instead.
+- **`Engine::setTickBudget(seconds)`** — caps wall-clock spend per
+  tick. The engine still completes any wave currently in flight
+  (no torn commits), but skips subsequent waves whose systems are
+  marked `Skippable`. `ISystem::skippable()` defaults to false.
+- **Per-job priority.** `parallelFor` gains an optional
+  `JobPriority` parameter (`High` / `Normal` / `Low`). The work-
+  stealing scheduler prefers higher-priority jobs in its local
+  deque. Default `Normal` keeps every existing call site unchanged.
+- **Loader cancellation.** `IResourceLoader::cancel(predicate)` —
+  the engine pumps it before each `update()` so the loader can drop
+  pending requests. `LoaderStats` gains a `cancelled` counter.
+- **`tests/cancellation_test.cpp`** — verify `shouldYield` fires
+  under budget pressure, skippable systems are skipped without
+  desync, loader cancel paths drop the right pending requests.
+
+#### Risks and mitigations
+
+- **Determinism vs. budget.** Budget-based skipping is inherently
+  non-deterministic across machines. Mitigation: budget is OFF by
+  default; turning it on is explicitly opting out of bit-exact
+  reproducibility. Determinism tests run with budget disabled.
+- **Priority inversion.** A high-priority job could be stuck
+  waiting for a low-priority dependency. Mitigation: priorities
+  are advisory only — the topological sort from batch 11 is still
+  the hard constraint. Within a wave, priorities just bias the
+  steal target.
+
+### 3.6 Batch 13 — Storage contention reduction (Milestone 5, §6 phase 5)
+
+The commit phase currently runs single-threaded on the simulation
+thread by design (it's what makes the engine deterministic).
+That's fine when commits are short; under heavy spawn/destroy
+churn, it becomes the bottleneck a profiler flags first. Batch 13
+attacks the contention without giving up determinism.
+
+Gating: independent of 11/12. Builds on the chunked storage from
+batch 6 (parallel commit needs per-chunk locks). Effort ~2 weeks.
+
+#### Deliverables
+
+- **Sharded commit phase.** Group commands by destination chunk;
+  commit each group on its own helper thread. Spawn/destroy on
+  disjoint chunks no longer serializes. The single-threaded path
+  remains for tests / debugging via
+  `Config::singleThreadedCommit = true`.
+- **Per-chunk command buffers.** During wave execution, workers
+  emit commands into a "by destination chunk" thread-local bucket
+  (using the entity's current archetype as the routing key) rather
+  than one global buffer per system. Cross-chunk commands (the
+  rare case: a mask-change that migrates an entity) fall back to
+  the global lane.
+- **Read-only world snapshot per wave.** Systems read through an
+  immutable snapshot pointer rather than the live world reference;
+  the snapshot pointer is rebound between waves. Allows worker
+  jobs to take stable references to chunk data without worrying
+  about concurrent reallocation from another worker spawning.
+- **Append-only event channels.** Replace the existing mutex-
+  protected `emit` with a lock-free MPSC queue per channel. Drain
+  is still on the sim thread at tick boundary.
+- **`tests/sharded_commit_test.cpp`** — large-scale spawn/destroy
+  churn with the sharded path on, hash-compared against the
+  single-threaded reference path. Both must produce the same world
+  state.
+
+#### Risks and mitigations
+
+- **Determinism preservation.** Per-chunk parallel commits must
+  produce a state byte-identical to the single-threaded reference.
+  Mitigation: commands within a chunk still apply in submission
+  order; the cross-chunk commands fall back to deterministic
+  registration-order serial commit. The test pins this.
+- **False sharing.** Per-chunk buffers risk cache-line contention.
+  Mitigation: pad the buffer headers to 64 bytes; standard
+  alignas-based fix.
+
+### 3.7 Batch 14 — Telemetry ingestion close-out (Milestone 5, §6 phase 6)
+
+§6 phase 6 says "measure everything." Batch 4 shipped the
+*primitives* — job-duration histograms, Chrome-trace writer,
+`writeJsonLines`, system stats, frame snapshot. What's still
+missing is the **ingestion side**: a way for game code to feed
+this data into a HUD, an external monitor, or a CI gate without
+re-implementing the IO pipeline.
+
+Gating: this is the natural close-out batch for §6. Best landed
+alongside batch 10 (the RPG demo) because the demo is what
+actually exercises the telemetry end-to-end. Effort ~1 week.
+
+#### Deliverables
+
+- **`Engine::traceSink(ITraceSink&)`** — install a sink that the
+  engine streams `FrameSnapshot` + per-system trace events to,
+  once per tick, on the sim thread. The sink is responsible for
+  buffering and I/O off-thread. Default sink is null (no cost).
+- **`FileTraceSink`** — built-in implementation that writes a
+  rolling Chrome-trace JSON to disk with automatic file rotation
+  every N MB. Header-only.
+- **`HudTraceSink`** — built-in implementation that exposes a
+  read-only `LatestTelemetry` struct game code polls each frame
+  for HUD rendering. Lock-free single-writer/single-reader.
+- **`FrameBudgetWatcher`** — a built-in `ISystem` that watches
+  `EngineStats::lastStepSeconds` against a target and emits
+  `BudgetExceeded` events when the frame goes over. Pairs nicely
+  with batch 12's budget hint.
+- **`Engine::setStallTimeout(seconds)`** — install a watchdog that
+  fires `EngineStall` events when a tick takes longer than the
+  threshold. The watchdog runs on its own thread; the events
+  drain like any other on the sim thread.
+- **`tests/telemetry_sink_test.cpp`** — verify the file sink
+  rotates, the HUD sink hands the latest snapshot to the reader
+  without tearing, and the watchdog fires on a deliberately
+  stalled tick.
+
+#### Risks and mitigations
+
+- **Sink ownership.** A user-installed sink must outlive the
+  engine. Mitigation: sinks are pointer-based (engine doesn't take
+  ownership), mirroring `setRenderer` / `setLogger`.
+- **HUD-sink staleness.** A slow reader might see a stale
+  snapshot. That's fine for a HUD; documented as the contract.
+
+### 3.8 Vulkan as the implicit default for M4+
 
 A note on strategy, since the user-facing question came up.
 
@@ -609,17 +747,15 @@ later without API churn.
 
 ## 4. Items the previous plan got right but underestimates the cost of
 
-- **Archetype/chunk storage.** Now §3.1 batch 6. Still a deep
-  refactor of `EntityStorage`. Sequencing matters: it should not
-  happen until the public surface (queries, events, resources,
-  renderer contract) is settled — otherwise the API churns twice.
-  Today the per-entity `ComponentMask` (16 bits allocated, 48 spare
-  after batch 5) serves the immediate need (presence filtering);
-  the archetype refactor is a perf play, not a correctness play.
-- **Frame task graph.** A useful Phase-3-of-§6 win; smaller
-  bang-for-buck than the JobSystem rewrite (done). Once intra-system
-  parallelism is the bottleneck (currently it isn't), this becomes
-  the right next move.
+- **Archetype/chunk storage.** Shipped in batch 6 (✅ §2), with the
+  user-extensible follow-on in batch 6b (✅ §2). Sequencing
+  mattered: it didn't happen until the public surface (queries,
+  events, resources, renderer contract) was settled. The lazy
+  stitched view kept the public API stable across the refactor.
+- **Frame task graph.** Now §3.4 batch 11. A useful Phase-3-of-§6
+  win; smaller bang-for-buck than the JobSystem rewrite (done).
+  Once intra-system parallelism is the bottleneck (currently it
+  isn't), this becomes the right next move.
 
 ## 5. Out of scope for `threadmaxx` itself
 
@@ -671,30 +807,41 @@ is finer slicing *within* a system: per-chunk iteration becomes
 expressible after §3.1, and per-render-pass iteration is now
 expressible (batch 8 landed in §2).
 
-### Phase 3 — frame task graph
+### Phase 3 — frame task graph — §3.4 batch 11
 
 After Phase 2's primitives are in, layer an explicit DAG on top of
-the wave scheduler: systems optionally declare `depends_on(name)` /
-`provides(name)` so the engine can schedule producer-consumer pairs
-in the same wave when reads/writes alone don't capture the order.
+the wave scheduler: systems optionally declare
+`dependencies()` / `provides()` so the engine can schedule
+producer-consumer pairs in the same wave when reads/writes alone
+don't capture the order. Tracked as **batch 11** in §3.4 with
+deliverables, risks, and gating.
 
-### Phase 4 — cancellation and budgets
+### Phase 4 — cancellation and budgets — §3.5 batch 12
 
-Frame cancellation, streaming cancellation, budget-based task
-scheduling, job prioritization.
+Frame cancellation (`SystemContext::shouldYield`), streaming
+cancellation (`IResourceLoader::cancel`), budget-based task
+scheduling (`Engine::setTickBudget` + `ISystem::skippable`), job
+prioritization (`JobPriority` on `parallelFor`). Tracked as
+**batch 12** in §3.5. Builds on batch 11 (cancellation must
+propagate along the DAG).
 
-### Phase 5 — reduce contention in storage
+### Phase 5 — reduce contention in storage — §3.6 batch 13
 
-Read-only snapshots, double/triple buffering where useful, append-
-only command streams. The per-worker scratch arena from batch 2 is a
-down payment.
+Read-only snapshots per wave, sharded commit phase keyed on
+destination chunk, append-only event channels, double/triple
+buffering where useful. The per-worker scratch arena from batch 2
+is a down payment. Tracked as **batch 13** in §3.6. Builds on
+batch 6's chunked storage; independent of 11/12.
 
-### Phase 6 — measure everything
+### Phase 6 — measure everything — §3.7 batch 14
 
 Job duration histograms (✅ batch 4), Chrome-trace adapter
-(✅ batch 4), hot system ranking, cache-friendly batch sizes,
-allocation counters, frame hitches. The core instrumentation primitives
-are now all in place; what's missing is in-game ingestion.
+(✅ batch 4) — the *primitives* are all in. **Batch 14** in §3.7
+closes the phase by shipping the *ingestion* side: a pluggable
+`ITraceSink` with a `FileTraceSink` and `HudTraceSink`, a
+`FrameBudgetWatcher` built-in system, an
+`Engine::setStallTimeout` watchdog. Best landed alongside batch
+10 (the RPG demo) for an end-to-end shakedown.
 
 ## 7. Public API extensions still on deck
 
@@ -728,12 +875,25 @@ listing them by batch, this is the cross-reference index:
 - Chunked archetype storage + `forEachChunk` +
   `World::archetypeChunkCount()` / `archetypeChunk(i)` + lazy
   stitched view + chunk-level render-frame builder — ✅ batch 6.
-- `UserComponent<T>` extension hook — §3.1 batch 6b.
+- `UserComponent<T>` extension hook
+  (`Engine::registerUserComponent<T>`, `UserComponentId`,
+  `addUserComponent` / `removeUserComponent`, `user::has` /
+  `tryGet` / `chunkSpan`, `World::locate`) — ✅ batch 6b.
 - Pass-aware `RenderFrame` + `buildRenderFrame` hook + render
   helpers (Camera, Light, DrawItem, Visibility, InstanceBufferLayout,
   UploadRing) — ✅ batch 8.
-- Networking deltas, task graph, cancellation — deferred to Phase 3+
-  of §6.
+- Frame task graph (`ISystem::dependencies` / `provides`,
+  `taskGraphSnapshot`) — §3.4 batch 11.
+- Cancellation + budgets (`shouldYield`, `setTickBudget`,
+  `JobPriority`, `IResourceLoader::cancel`) — §3.5 batch 12.
+- Storage contention reduction (sharded commit phase, per-chunk
+  command buffers, read-only world snapshot per wave, lock-free
+  event channels) — §3.6 batch 13.
+- Telemetry ingestion (`ITraceSink`, `FileTraceSink`,
+  `HudTraceSink`, `FrameBudgetWatcher`, stall watchdog) — §3.7
+  batch 14.
+- Networking deltas — out of scope; belongs above the engine
+  (see §5).
 
 ## 8. Roadmap milestones
 
@@ -751,7 +911,7 @@ serialization + `World::snapshot`, `ILogger`.
 Exit criteria met: a small game can ship against the current public
 API without patching the engine.
 
-### Milestone 2 — Data model upgrade
+### Milestone 2 — Data model upgrade  ✅ done
 
 Widened `ComponentSet`, additional engine-known component slots,
 archetype/chunk storage, `forEachChunk`, determinism golden tests.
@@ -763,8 +923,10 @@ archetype signatures, and the determinism stress baseline.
 Batch 6 (✅) shipped the chunked archetype storage —
 `ArchetypeChunk` / `ArchetypeTable`, physical mask-change
 migration, `forEachChunk<Required...>`, and chunk-level filtering
-in `buildRenderFrame`. The only remaining piece is §3.1 batch 6b
-(`UserComponent<T>`), which closes the milestone.
+in `buildRenderFrame`. Batch 6b (✅) shipped the
+user-extensible dense-component hook — `registerUserComponent<T>`,
+`UserComponentId`, `addUserComponent` / `removeUserComponent`,
+`user::has` / `tryGet` / `chunkSpan`. Milestone closed 2026-05-14.
 
 ### Milestone 3 — Resource and event layers  ✅ done
 
@@ -779,18 +941,24 @@ DrawItem with MeshSkinnedRef / AnimationPoseRef / MaterialOverride),
 `buildRenderFrame` lifecycle hook, visibility-culling helpers,
 shared instance/pose buffer helpers — all shipped in batch 8
 (✅ §2). The Vulkan reference renderer as
-`examples/vulkan_renderer/` (§3.2 batch 9) is the remaining piece.
+`examples/vulkan_renderer/` (§3.1 batch 9) is the remaining piece.
 
 ### Milestone 5 — Task graph and deep parallelism
 
-Explicit DAG, intra-system cancellation, priorities. Deferred to
-Phase 3 of the perf roadmap.
+Explicit DAG, intra-system cancellation, priorities, sharded
+commit phase, telemetry ingestion. Spread across four batches:
+**batch 11** (§3.4, task graph), **batch 12** (§3.5, cancellation
+and budgets), **batch 13** (§3.6, storage contention), **batch
+14** (§3.7, telemetry sink). Batches 11–13 are independent of the
+Vulkan renderer and the RPG demo — they can ship in any order
+that doesn't violate their stated gating. Batch 14 is best landed
+alongside batch 10 so the RPG demo exercises the telemetry path.
 
 ### Milestone 6 — RPG feature readiness
 
 Serialization (✅ batch 4), navigation, animation, physics,
 networking. The "endgame" — each is a sibling sub-project on its
-own. `examples/rpg_demo/` (§3.3 batch 10) is the integration proof.
+own. `examples/rpg_demo/` (§3.2 batch 10) is the integration proof.
 
 ## 9. Engineering priorities
 
@@ -824,13 +992,18 @@ Today: "stable serialization", "expose profiling data", and
 "deterministic mode declared" are in (batch 4); the data-model
 widening that the archetype refactor depended on is in (batch 5);
 the chunked archetype storage itself plus `forEachChunk` are in
-(batch 6, with `UserComponent<T>` as the §3.1 batch 6b follow-on);
-"stream assets asynchronously" is in (batch 7 — multi-stage loader
-pipeline, hot reload, refcounted handles, blocking preload); the
-hierarchical render contract that `examples/vulkan_renderer/` will
-consume is in (batch 8 — cameras, lights, per-pass bins, debug
-overlay, `buildRenderFrame` hook, visibility helpers,
-instance/upload helpers); the rest depends on §3 batches 6b, 9–10.
+(batch 6); the user-extensible dense-component hook closing
+Milestone 2 is in (batch 6b — `Engine::registerUserComponent<T>`,
+`UserComponentId`, the `addUserComponent` / `removeUserComponent`
+free functions, and the `user::has` / `tryGet` / `chunkSpan` read
+helpers); "stream assets asynchronously" is in (batch 7 —
+multi-stage loader pipeline, hot reload, refcounted handles,
+blocking preload); the hierarchical render contract that
+`examples/vulkan_renderer/` will consume is in (batch 8 —
+cameras, lights, per-pass bins, debug overlay, `buildRenderFrame`
+hook, visibility helpers, instance/upload helpers); the rest
+depends on §3 batches 9–14 (Vulkan example, RPG demo, task graph,
+cancellation/budgets, storage contention, telemetry ingestion).
 
 ## 11. Final note
 
@@ -849,18 +1022,30 @@ RAII event subscriptions), the batch-8 render contract (hierarchical
 debug PODs, visibility helpers, instance buffer layout, upload ring),
 the batch-6a archetype prep (generic `addComponent` /
 `removeComponent`, archetype signatures, determinism stress baseline),
-and the batch-6 chunked archetype storage itself (`ArchetypeChunk` +
+the batch-6 chunked archetype storage itself (`ArchetypeChunk` +
 `ArchetypeTable`, physical mask-change migration, `forEachChunk`,
-chunk-filtered render-frame builder, lazy stitched view) confirm
-that the layering is sound — every one landed without churning the
-public API, even the deep batch-6 internal refactor.
+chunk-filtered render-frame builder, lazy stitched view), and the
+batch-6b user-extensible dense-component hook
+(`Engine::registerUserComponent<T>`, `UserComponentId`,
+`addUserComponent` / `removeUserComponent`, `user::has` / `tryGet` /
+`chunkSpan`, per-chunk `UserComponentColumn` storage) confirm that
+the layering is sound — every one landed without churning the
+public API, including the deep batch-6 internal refactor and its
+batch-6b runtime-type-erased extension hook.
 
-The only remaining Milestone 2 work is `UserComponent<T>` (§3.1
-batch 6b). With the resource/event, render-contract, AND archetype
-storage all stable, the public API is now wide enough that a real
-game project can be built on top without engine patches — `UserComponent<T>`
-just lets that game add custom dense-array components without
-forking the engine. The §3 plan continues to treat the Vulkan
+Milestone 2 is now closed. With the resource/event, render-
+contract, archetype storage, AND user-extensible component hook
+all stable, the public API is wide enough that a real game project
+can be built on top without engine patches. The §3 plan splits the
+remaining work into two streams: the **example projects** (batch
+9 Vulkan renderer, batch 10 RPG demo — both `examples/...`, neither
+in the core library) and the **Milestone-5 perf batches** (batch
+11 task graph, batch 12 cancellation/budgets, batch 13 storage
+contention, batch 14 telemetry ingestion — all library-side, all
+optional opt-ins). The two streams are loosely coupled: batches
+11–13 can ship before either example, and batch 14 is best landed
+alongside batch 10 so the RPG demo exercises the telemetry path
+under real load. The §3 plan continues to treat the Vulkan
 reference renderer as an example, not a library dependency. That
 keeps the renderer-agnostic guarantee intact while still letting
 M4+ work target a real, modern API.

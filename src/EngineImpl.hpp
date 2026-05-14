@@ -1,6 +1,7 @@
 #pragma once
 
 #include "JobSystem.hpp"
+#include "UserComponentRegistry.hpp"
 #include "WorldImpl.hpp"
 
 #include "threadmaxx/CommandBuffer.hpp"
@@ -140,6 +141,13 @@ public:
     ResourceRegistry&       resources()       noexcept { return resources_; }
     const ResourceRegistry& resources() const noexcept { return resources_; }
 
+    // §3.1 batch 6b: engine-side mapping of registered user-component
+    // POD types to per-type @ref UserComponentId tokens. The
+    // @ref ArchetypeTable consults this registry when materializing a
+    // chunk's user columns.
+    UserComponentRegistry&       userComponents()       noexcept { return userRegistry_; }
+    const UserComponentRegistry& userComponents() const noexcept { return userRegistry_; }
+
     JobSystem& jobs() noexcept { return *jobs_; }
 
     // Pause / time-scale (§3.4). Time scale multiplies the dt seen by
@@ -278,6 +286,11 @@ private:
     // §3.3 registered resource loaders. Pumped after the postStep hook
     // commits. Torn down in reverse-registration order during shutdown.
     std::vector<std::unique_ptr<IResourceLoader>> resourceLoaders_;
+
+    // §3.1 batch 6b: user-component type registry. Lifetime matches the
+    // engine. World's ArchetypeTable holds a non-owning pointer to it
+    // (wired in `initialize`) so new chunks can look up strides.
+    UserComponentRegistry userRegistry_;
 };
 
 } // namespace threadmaxx::internal

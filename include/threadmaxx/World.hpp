@@ -30,6 +30,18 @@ struct ArchetypeSignature {
 
 namespace internal { class WorldImpl; }
 
+/// Result of @ref World::locate. Pinpoints an entity's
+/// (archetype-chunk-index, row) in the storage. `archetype ==
+/// UINT32_MAX` indicates a stale handle.
+struct ArchetypeLocation {
+    std::uint32_t archetype = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t row       = std::numeric_limits<std::uint32_t>::max();
+
+    bool valid() const noexcept {
+        return archetype != std::numeric_limits<std::uint32_t>::max();
+    }
+};
+
 /// Read-only view of the authoritative simulation state.
 ///
 /// Worker jobs receive a `const World&` and may read freely but must not
@@ -159,6 +171,13 @@ public:
     std::size_t archetypeChunkCount() const noexcept;
     const internal::ArchetypeChunk& archetypeChunk(std::size_t i) const noexcept;
     /// @}
+
+    /// Locate an entity in chunked storage. Returns `(UINT32_MAX,
+    /// UINT32_MAX)` for stale handles. Used by per-handle accessors and
+    /// the §3.1 batch-6b user-component helpers (@ref user::tryGet) to
+    /// jump straight to the entity's chunk row without touching the
+    /// stitched view.
+    ArchetypeLocation locate(EntityHandle e) const noexcept;
 
     /// @internal Engine-internal access; do not call from game code.
     internal::WorldImpl& impl_() noexcept { return *impl_ptr_; }

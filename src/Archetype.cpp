@@ -14,7 +14,9 @@
 ///      archetype first (so a self-mask change is well-defined), then
 ///      pop it out of the source.
 #include "threadmaxx/internal/Archetype.hpp"
+#include "UserComponentRegistry.hpp"
 
+#include <cstring>
 #include <limits>
 
 namespace threadmaxx::internal {
@@ -43,8 +45,24 @@ std::uint32_t ArchetypeTable::getOrCreateArchetype(ComponentSet mask) {
     if (const auto idx = findArchetype(mask); idx != kInvalidIndex) return idx;
     const auto idx = static_cast<std::uint32_t>(chunks_.size());
     chunks_.emplace_back();
-    chunks_.back().mask = mask;
+    auto& chunk = chunks_.back();
+    chunk.mask = mask;
     maskToIndex_.emplace(mask.bits(), idx);
+    // §3.1 batch 6b: any user-component bit in the mask (bits ≥ 16)
+    // gets a UserComponentColumn instantiated up front, so insert/
+    // removeSwapPop/migrate can blindly walk the columns without
+    // checking registry every time. Strides come from the registry —
+    // unregistered bits are dropped (column omitted).
+    if (registry_) {
+        for (std::uint32_t bit = 16; bit < 64; ++bit) {
+            const std::uint64_t bitMask = 1ull << bit;
+            if ((mask.bits() & bitMask) == 0) continue;
+            const std::uint32_t stride = registry_->strideFor(bit);
+            if (stride == 0) continue;
+            chunk.userColumns.push_back(
+                UserComponentColumn{bit, stride, {}});
+        }
+    }
     return idx;
 }
 
@@ -100,6 +118,14 @@ std::uint32_t ArchetypeTable::insert(std::uint32_t archetypeIndex,
     if (c.mask.has(Component::PhysicsBodyRef))    c.physicsBodies.push_back(phys);
     if (c.mask.has(Component::NavAgentRef))       c.navAgents.push_back(nav);
     if (c.mask.has(Component::BoundingVolume))    c.boundingVolumes.push_back(bv);
+    // §3.1 batch 6b: each user column grows by `stride` zero-filled
+    // bytes. The actual value (if any) is written separately — either
+    // by migrate() copying the src bytes, or by the commit handler for
+    // CmdAddUserComponent writing the user-supplied blob.
+    for (auto& col : c.userColumns) {
+        const std::size_t old = col.bytes.size();
+        col.bytes.resize(old + col.stride, std::byte{0});
+    }
     return row;
 }
 
@@ -124,6 +150,10 @@ std::uint32_t ArchetypeTable::removeSwapPop(std::uint32_t archetypeIndex,
         if (c.mask.has(Component::PhysicsBodyRef))    c.physicsBodies  [row] = c.physicsBodies  [last];
         if (c.mask.has(Component::NavAgentRef))       c.navAgents      [row] = c.navAgents      [last];
         if (c.mask.has(Component::BoundingVolume))    c.boundingVolumes[row] = c.boundingVolumes[last];
+        // §3.1 batch 6b: same swap-and-pop for every user column.
+        for (auto& col : c.userColumns) {
+            std::memcpy(col.rowPtr(row), col.rowPtr(last), col.stride);
+        }
         swappedSlot = c.denseToSlot[row];
     }
     c.entities.pop_back();
@@ -141,6 +171,9 @@ std::uint32_t ArchetypeTable::removeSwapPop(std::uint32_t archetypeIndex,
     if (c.mask.has(Component::PhysicsBodyRef))    c.physicsBodies.pop_back();
     if (c.mask.has(Component::NavAgentRef))       c.navAgents.pop_back();
     if (c.mask.has(Component::BoundingVolume))    c.boundingVolumes.pop_back();
+    for (auto& col : c.userColumns) {
+        col.bytes.resize(col.bytes.size() - col.stride);
+    }
     return swappedSlot;
 }
 
@@ -172,8 +205,36 @@ ArchetypeTable::MigrationResult ArchetypeTable::migrate(
     NavAgentRef       nv  = src.mask.has(Component::NavAgentRef)       ? src.navAgents      [srcRow] : NavAgentRef{};
     BoundingVolume    bv  = src.mask.has(Component::BoundingVolume)    ? src.boundingVolumes[srcRow] : BoundingVolume{};
 
+    // §3.1 batch 6b: snapshot any user-column rows whose bit is also in
+    // newMask. Bits the destination does not carry are dropped on the
+    // ground (their values vanish); bits the source did not carry will
+    // arrive as zero bytes courtesy of insert().
+    struct UserCarry {
+        std::uint32_t              bit;
+        std::vector<std::byte>     blob;
+    };
+    std::vector<UserCarry> carries;
+    for (const auto& col : src.userColumns) {
+        const auto bitMask = 1ull << col.bit;
+        if ((newMask.bits() & bitMask) == 0) continue;
+        UserCarry uc;
+        uc.bit = col.bit;
+        uc.blob.assign(col.rowPtr(srcRow), col.rowPtr(srcRow) + col.stride);
+        carries.push_back(std::move(uc));
+    }
+
     const std::uint32_t dstRow = insert(dstArch, handle, slotIdx,
         t, v, r, u, a, p, hp, fac, anim, phy, nv, bv);
+    // Now write the carried user-column blobs into dst's new row.
+    // chunks_[dstArch] is re-fetched because insert appended.
+    {
+        auto& dst = chunks_[dstArch];
+        for (const auto& uc : carries) {
+            if (auto* col = dst.findUserColumn(uc.bit)) {
+                std::memcpy(col->rowPtr(dstRow), uc.blob.data(), col->stride);
+            }
+        }
+    }
     // Re-fetch src reference after `insert` may have grown chunks_[dstArch]
     // (which is the same vector when src==dst); the src reference is
     // potentially invalid if src==dst and capacity changed.

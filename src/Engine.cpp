@@ -67,6 +67,11 @@ void Engine::markResourceStaleRaw_(std::uint32_t index,
     impl_->markResourceStale(index, generation, type);
 }
 
+UserComponentId Engine::registerUserComponentRaw_(std::type_index type,
+                                                  std::uint32_t stride) {
+    return impl_->userComponents().reg(type, stride);
+}
+
 bool Engine::preloadUntil(std::function<bool()> done,
                           std::chrono::milliseconds timeout) {
     return impl_->preloadUntil(std::move(done), timeout);

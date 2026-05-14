@@ -29,6 +29,7 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/Handles.hpp
     include/threadmaxx/Components.hpp
     include/threadmaxx/CommandBuffer.hpp
+    include/threadmaxx/UserComponent.hpp
     include/threadmaxx/EventChannel.hpp
     include/threadmaxx/Logger.hpp
     include/threadmaxx/Query.hpp
@@ -58,6 +59,7 @@ set(THREADMAXX_SOURCES
     src/ResourceRegistry.cpp
     src/ScratchArena.cpp
     src/Trace.cpp
+    src/UserComponentRegistry.cpp
 )
 
 add_library(threadmaxx STATIC ${THREADMAXX_SOURCES} ${THREADMAXX_PUBLIC_HEADERS})

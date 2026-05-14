@@ -198,6 +198,76 @@ cannot appear in the `Required...` pack — they have no dense span
 to project. Use `forEachWith` plus `world.hasTag` if you need to
 filter on a tag.
 
+## User-extensible dense components — `UserComponent<T>` (§3.1 batch 6b)
+
+Built-in components occupy bits 0..15 of the 64-bit `ComponentSet`.
+Bits 16..63 are reserved for **game-side POD types** the engine has
+no built-in knowledge of. Use the runtime registration hook when the
+game needs an extra dense column without forking the engine.
+
+```cpp
+// At setup (or anywhere before the first spawn that uses the bit):
+struct AIBlackboard { int32_t stateId; float cooldown; uint32_t target; };
+const auto bbId = engine.registerUserComponent<AIBlackboard>();
+
+// In a system:
+ctx.single([e, bbId](Range, CommandBuffer& cb) {
+    threadmaxx::addUserComponent<AIBlackboard>(cb, bbId, e,
+        AIBlackboard{42, 1.5f, 7u});
+});
+
+// Reading:
+if (threadmaxx::user::has(world, bbId, e)) {
+    const auto* bb = threadmaxx::user::tryGet<AIBlackboard>(world, bbId, e);
+    // bb->stateId / bb->cooldown / bb->target
+}
+
+// Removing (idempotent — clearing an absent bit is a no-op):
+ctx.single([e, bbId](Range, CommandBuffer& cb) {
+    threadmaxx::removeUserComponent(cb, bbId, e);
+});
+```
+
+What the engine does:
+
+- `Engine::registerUserComponent<T>()` allocates the next free bit
+  (starting at 16) and remembers the type's `sizeof(T)`. Idempotent
+  on `typeid(T)` — repeated registration returns the same token.
+- `T` must be **trivially copyable** — migrations and swap-and-pop
+  use raw `memcpy`. The engine never invokes user constructors or
+  destructors on user values.
+- `addUserComponent<T>` is the user-side analogue of `cb.addComponent<T>`
+  for built-ins: it migrates the entity into the destination
+  archetype chunk (which gets a `UserComponentColumn` for the bit
+  during `getOrCreateArchetype`), then writes the supplied value
+  into the entity's new row.
+- Same migration semantics as built-ins: bit toggling moves the
+  entity between chunks; values for bits in both source and
+  destination masks are preserved across the migration; bits the
+  destination doesn't carry are dropped.
+- `user::chunkSpan<T>(chunk, id)` returns a typed
+  `std::span<const T>` over the chunk's storage for custom chunk
+  walks; pair it with `World::archetypeChunkCount()` /
+  `archetypeChunk(i)` if you need a hand-rolled iteration.
+
+What the engine deliberately does NOT do:
+
+- **Serialization** of user components. `WorldSnapshot` and
+  `serialize` / `deserialize` only handle built-in slots. Game
+  code that wants to round-trip a user component supplies its own
+  side-channel `serialize(ostream, span<const T>)` overload and
+  invokes it after the built-in snapshot.
+- **Cross-process bit stability.** Registration-order within a
+  process determines bit assignment, so the same code path gives
+  the same bits in two runs of the same binary; if registration
+  order changes (e.g. a mod loads), bits shift. Game code that
+  cares about cross-version stability must remember its own
+  type→bit map and re-validate after registration.
+
+The token is plain-old-data — `UserComponentId{ bit, stride, type }`
+— so it's cheap to copy into systems, pass through capture lists,
+or store in a registry of "kinds of NPC."
+
 ## The `Component` enum
 
 ```cpp

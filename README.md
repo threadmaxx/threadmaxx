@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 56 tests pin the
+minimal; the internals are PImpl'd so they can change. 57 tests pin the
 documented invariants.
 
 ## Highlights
@@ -85,6 +85,12 @@ documented invariants.
   contiguous-span access without per-row mask tests, or keeps using
   the legacy flat dense spans (`world.transforms()` etc.) — they're
   reconstructed lazily across chunks.
+- **User-extensible dense components.**
+  `Engine::registerUserComponent<T>()` returns an opaque
+  `UserComponentId` token; game code drives the same migration
+  semantics as built-ins via `addUserComponent<T>(cb, id, e, v)` and
+  reads with `user::has` / `user::tryGet<T>` / `user::chunkSpan<T>`.
+  No engine patches required; trivially-copyable POD types only.
 - **Archetype signatures.** `World::archetypeSignatures()` returns
   every distinct per-entity `ComponentSet` currently live, with
   counts. O(num archetypes) — straight from the table.

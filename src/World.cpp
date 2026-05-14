@@ -166,6 +166,11 @@ const internal::ArchetypeChunk& World::archetypeChunk(std::size_t i) const noexc
     return impl_ptr_->storage.archetypes().chunks()[i];
 }
 
+ArchetypeLocation World::locate(EntityHandle e) const noexcept {
+    const auto loc = impl_ptr_->storage.locate(e);
+    return ArchetypeLocation{loc.archetype, loc.row};
+}
+
 WorldSnapshot World::snapshot() const {
     const auto& s = impl_ptr_->storage;
     auto copySpan = [](auto& dst, auto src) {

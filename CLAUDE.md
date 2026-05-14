@@ -72,6 +72,8 @@ Missing any one of these will compile but corrupt state at runtime (chunks go ou
 
 Tag-only components (no dense data; presence-bit only) skip steps 3, 6 (no `tryGetFoo`), 8, 9 (no dense vec), 10, and 12. Add the enum bit, extend `ComponentSet::all()`, mention it in the `ComponentSet` deserialize fallthrough, and game code drives it via `cb.addTag` / `cb.removeTag` / `World::hasTag`.
 
+User-extensible components (`UserComponent<T>` per batch 6b) skip ALL twelve steps — they're game-side types the engine never names. The engine instead carries them in a parallel `std::vector<UserComponentColumn>` per chunk, allocated at chunk creation time by consulting the registry. If you find yourself extending the recipe above for an engine-internal feature when the §3.1 batch-5 setter pattern would work, consider whether the new symbol genuinely belongs in the public ABI or whether it can live as a `UserComponent` registered by game code instead.
+
 ## Render frame lifetime
 
 `EngineImpl::buildRenderFrame()` writes into the back of a double-buffered pair (`renderInstanceBuffers_[0/1]` and `renderFrames_[0/1]`) and publishes via `frontIndex_.store(back, release)`. The `RenderFrame::instances` span points into the engine-owned vector — renderers must finish using it before `submitFrame` returns or copy what they need. Today `submitFrame` is called synchronously from the sim thread immediately after the swap, so single-threaded renderers don't need to worry; if a future renderer reads from another thread, the atomic swap is the synchronization point.
@@ -243,8 +245,22 @@ Legacy "one flat vector per component" public API (`World::transforms()`, `veloc
 
 `EngineImpl::buildRenderFrame()` was migrated to chunk iteration — it skips entire chunks for archetypes lacking `RenderTag` or carrying `DisabledTag`, then iterates rows within each matching chunk to populate `RenderInstance`. This is the canonical example of a system using chunk-level filtering instead of per-entity mask tests.
 
-Deferred to batch 6b: `UserComponent<T>` (user-extensible dense arrays in chunks). The five other §3.1 batch-6 deliverables — chunk-based storage, `forEachChunk`, internal migration of `forEachWith` (the lazy stitched view handles this transparently), physical migration on add/remove, and snapshot stitching — all shipped in batch 6.
-
 Determinism: `tests/archetype_storage_stress_test.cpp` (8192 entities × 24 ticks of spawn / Health-flip / StaticTag-flip / transform integration, FNV-1a-hashed twice) and `tests/determinism_golden_test.cpp` (32 entities × 64 ticks) both pass — the archetype refactor preserves run-to-run determinism. The exact hash values diverged from the pre-refactor parallel-vector storage (because chunked iteration order differs from spawn order once multiple archetypes exist), but both tests use the run-vs-run pattern, so this is invisible.
 
 `tests/foreach_chunk_test.cpp` is the chunk-iteration contract test — spawn across three archetype shapes, verify per-query chunk visits + entity coverage + empty-result behavior.
+
+## §3.1 batch 6b — `UserComponent<T>` extension hook
+
+Closes Milestone 2. Game code registers arbitrary trivially-copyable POD types at runtime via `Engine::registerUserComponent<T>()` and gets a `UserComponentId{ bit, stride, type }` token back. The engine assigns bits from 16 upward (built-ins occupy 0..15); registration is idempotent on `typeid(T)` and stable within a process.
+
+Storage: `ArchetypeChunk` gained a `std::vector<UserComponentColumn> userColumns`. Each `UserComponentColumn` holds `{ bit, stride, std::vector<std::byte> bytes }` with `bytes.size() == row_count * stride`. When `ArchetypeTable::getOrCreateArchetype(mask)` creates a chunk, it scans bits ≥ 16 in `mask` and consults the engine's `UserComponentRegistry` for each bit's stride; matching bits get a column up front. Bits in the mask the registry doesn't know about are silently dropped (a column is never instantiated for them) — that's the path for tests that never call `registerUserComponent`. `insert` / `removeSwapPop` / `migrate` walk `userColumns` in lockstep with the built-in component vectors: push `stride` zero bytes / memcpy-swap-and-pop / snapshot-on-migrate. Migration carries blobs only for bits in both source and destination masks; bits the destination doesn't carry vanish.
+
+Commit path: two new variant arms in `detail::Command` — `CmdAddUserComponent { entity, bit, stride, blob }` and `CmdRemoveUserComponent { entity, bit }`. The add path uses an inline 64-byte buffer for small types (`std::array<std::byte, 64>`) plus a heap fallback for larger ones; the heap path keeps the variant size in check. `EngineImpl::commitBuffer` handles both: add calls `setMaskAndMigrate` then memcpys the blob into the new row's user column; remove just clears the bit (migration drops the column row).
+
+Public surface (`include/threadmaxx/UserComponent.hpp`): `UserComponentId` POD, `addUserComponent<T>(cb, id, e, v)`, `removeUserComponent(cb, id, e)`, `user::has(world, id, e)`, `user::tryGet<T>(world, id, e)`, `user::chunkSpan<T>(chunk, id)`. The pattern is deliberately free-function-shaped (instead of templated `World::has<T>` extension) because user types don't have a static `Component` enum value — the id must travel with the call. The four built-in symbols stay in their existing `if constexpr` chains, untouched.
+
+`World::locate(EntityHandle) -> ArchetypeLocation` (also new) lets the `user::tryGet` path jump from a handle straight to `(archetype, row)` without rebuilding the stitched cache. It's also useful for any custom chunk-walking code that needs to ask "which chunk does this handle live in?".
+
+Out of scope for batch 6b: serialization of user components, cross-process bit stability, non-trivially-copyable user types. All three are documented as "game code's responsibility" in `doc/components_and_queries.md`.
+
+Test: `tests/user_component_test.cpp` exercises register / addUserComponent / migration / removeUserComponent / round-trip / multi-type / second-entity spawn after the registry has been touched.

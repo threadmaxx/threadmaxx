@@ -25,6 +25,7 @@
 #include "Stats.hpp"
 #include "System.hpp"
 #include "Trace.hpp"
+#include "UserComponent.hpp"
 #include "World.hpp"
 
 #include "render/Camera.hpp"

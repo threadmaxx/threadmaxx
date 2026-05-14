@@ -3,11 +3,37 @@
 #include "Components.hpp"
 #include "Handles.hpp"
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <variant>
 #include <vector>
 
 namespace threadmaxx {
+
+namespace detail {
+
+/// @internal Forward-declared in CommandBuffer.hpp so the variant can
+/// include it; the body lives in @ref UserComponent.hpp.
+struct CmdAddUserComponent {
+    EntityHandle               entity;
+    std::uint32_t              bit    = 0;
+    std::uint32_t              stride = 0;
+    std::array<std::byte, 64>  inline_;
+    std::uint32_t              size   = 0;
+    std::vector<std::byte>     heap;
+
+    const std::byte* data() const noexcept {
+        return size > 0 ? inline_.data() : heap.data();
+    }
+};
+struct CmdRemoveUserComponent {
+    EntityHandle  entity;
+    std::uint32_t bit = 0;
+};
+
+} // namespace detail
 
 /// Recording-side sugar that packages a set of component values together
 /// with a compile-time-derived component-presence mask. Build one with
@@ -163,7 +189,9 @@ using Command = std::variant<
     CmdSetBoundingVolume,
     CmdSetComponentMask,
     CmdAddTag,
-    CmdRemoveTag>;
+    CmdRemoveTag,
+    CmdAddUserComponent,
+    CmdRemoveUserComponent>;
 
 } // namespace detail
 
