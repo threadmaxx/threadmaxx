@@ -46,6 +46,8 @@ struct JobSystemStats {
     std::uint64_t ownPops;       // jobs a worker pulled from its own queue
     std::uint64_t stolenJobs;    // jobs a worker stole from a sibling
     std::uint32_t workerCount;   // resolved Config::workerCount
+    std::array<std::uint64_t, kJobDurationHistogramBins>
+                  jobDurationHistogram;  // lifetime per-job-duration histogram
 };
 ```
 
@@ -57,6 +59,10 @@ Read with `engine.jobSystemStats()`. Lifetime totals — never reset.
   workers ran out of own-queue work and had to steal. Either chunk
   grain is too coarse (one chunk monopolized a worker) or total work
   is too thin to fan out cleanly.
+- `jobDurationHistogram` is 16 log2-microsecond bins: bin `i` covers
+  `[2^i µs, 2^(i+1) µs)` for `i < 15`, and bin 15 catches everything
+  `≥ 32 ms`. A healthy wave clusters in a narrow band; a long tail in
+  bins 12+ means a few jobs are dominating the tick.
 
 ## `SystemStats`
 
@@ -69,6 +75,8 @@ struct SystemStats {
     std::uint64_t commandsCommittedLastStep;
     std::uint64_t totalJobsSubmitted;
     std::uint64_t totalCommandsCommitted;
+    double        waitSeconds;             // time spent in parallelFor's latch wait
+    std::uint32_t peakQueueDepth;          // max JobSystem outstanding seen by this system
 };
 ```
 
@@ -83,6 +91,16 @@ order**.
   including the time it spends waiting on its `parallelFor` jobs.
 - `jobsSubmittedLastStep` / `commandsCommittedLastStep` attribute jobs
   and commits to the system that issued them.
+- `waitSeconds` is how much of `lastUpdateSeconds` the system's thread
+  sat blocked in `parallelFor`'s latch wait. `lastUpdateSeconds -
+  waitSeconds` is a rough estimate of how much the calling thread did
+  itself (orchestration / `single()` work). Always
+  `≤ lastUpdateSeconds`.
+- `peakQueueDepth` is the highest value of the JobSystem's
+  outstanding-jobs counter observed immediately after each
+  `parallelFor` submit during this system. Compare to
+  `JobSystemStats::workerCount`: a peak ≪ workers means the wave is
+  starving the pool; ≫ workers means the wave is queue-bound.
 
 The span is engine-owned and invalidated by `registerSystem()` and
 `shutdown()`. Copy if you need to retain.
@@ -134,15 +152,25 @@ lines.
 These would be useful additions and are tracked in
 [FUTURE_WORK.md](../FUTURE_WORK.md):
 
-- Per-job duration histograms (would let us see chunk variance).
 - Memory: peak live entities, capacity vs. used in dense arrays.
+- Per-system per-wave wall-clock attribution (today: per-system update
+  duration only).
 
 `EngineStats` + per-`SystemStats` + `JobSystemStats` cover the
 "what's slow, where's the imbalance, how big is the commit" question.
 
 ## Trace-style profiling
 
-There is no built-in Tracy / Chrome-trace integration yet. The structs
-above are designed to be cheap enough to read every tick and emit to
-whatever sink you want (CSV, JSON lines, an in-memory ring buffer for a
-debug overlay). If you wire it up to a trace consumer, share the patch.
+Two serializers live in `<threadmaxx/Trace.hpp>` on top of
+`engine.frameSnapshot()`:
+
+- `writeJsonLines(os, snapshot)` — one JSON object per tick, newline-
+  terminated. Best for offline ingest, replay, custom dashboards.
+- `ChromeTraceWriter w(os); w.emit(snapshot);` — a streaming Chrome
+  Trace Event Format writer. Construct on a stream once, call `emit`
+  every tick; the destructor closes the JSON array. The resulting
+  file loads directly in `chrome://tracing` / Perfetto. One `"step"`
+  record per tick frames the wave; one record per system shows
+  per-system update duration on a stable per-system row.
+
+See [Tracing](tracing.md) for the full surface and examples.

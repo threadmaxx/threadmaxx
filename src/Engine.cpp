@@ -31,6 +31,8 @@ std::size_t Engine::registeredSystemCount() const noexcept {
     return impl_->registeredSystemCount();
 }
 void Engine::setRenderer(IRenderer* r) noexcept { impl_->setRenderer(r); }
+void Engine::setLogger(ILogger* l) noexcept     { impl_->setLogger(l); }
+ILogger& Engine::logger() const noexcept        { return impl_->logger(); }
 
 World&       Engine::world()       noexcept { return impl_->world(); }
 const World& Engine::world() const noexcept { return impl_->world(); }

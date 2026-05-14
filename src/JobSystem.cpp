@@ -1,6 +1,7 @@
 #include "JobSystem.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace threadmaxx::internal {
@@ -53,14 +54,32 @@ JobSystemStats JobSystem::stats() const noexcept {
     JobSystemStats s;
     s.totalJobs = totalJobs_.load(std::memory_order_relaxed);
     s.workerCount = static_cast<std::uint32_t>(workers_.size());
-    // Each Worker mutates its own ownPops/stolenJobs only from its own
-    // thread. Reads from elsewhere see a recent value (a relaxed view
-    // is sufficient for a stats counter).
+    // Each Worker mutates its own ownPops/stolenJobs/histogram only
+    // from its own thread. Reads from elsewhere see a recent value (a
+    // relaxed view is sufficient for stats counters).
     for (const auto& w : workers_) {
         s.ownPops    += w->ownPops;
         s.stolenJobs += w->stolenJobs;
+        for (std::size_t i = 0; i < kJobDurationHistogramBins; ++i) {
+            s.jobDurationHistogram[i] += w->histogram[i];
+        }
     }
     return s;
+}
+
+std::size_t JobSystem::binFor(std::chrono::nanoseconds duration) noexcept {
+    // Convert to microseconds, floor-divided. Bins are log2-spaced:
+    //   bin i covers [2^i, 2^(i+1)) µs for i < (N-1); the last bin
+    //   catches everything beyond. Sub-microsecond jobs land in bin 0.
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        duration).count();
+    if (us < 2) return 0;
+    // Find the highest set bit of `us` — i.e. floor(log2(us)).
+    std::uint64_t v = static_cast<std::uint64_t>(us);
+    std::size_t bin = 0;
+    while (v > 1) { v >>= 1; ++bin; }
+    if (bin >= kJobDurationHistogramBins) bin = kJobDurationHistogramBins - 1;
+    return bin;
 }
 
 void JobSystem::waitIdle() {
@@ -132,7 +151,10 @@ void JobSystem::workerLoop(std::uint32_t selfIdx) {
         if (fromOwn) self.ownPops++;
 
         if (job) {
+            const auto t0 = std::chrono::steady_clock::now();
             job();
+            const auto t1 = std::chrono::steady_clock::now();
+            self.histogram[binFor(t1 - t0)]++;
             if (outstanding_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 // Last in-flight job for the batch. Acquiring doneMtx_
                 // here synchronizes with waitIdle's predicate check.

@@ -1,9 +1,21 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
 namespace threadmaxx {
+
+/// Number of bins in the per-job-duration histogram exposed on
+/// @ref JobSystemStats. The bins are log2-spaced in microseconds:
+///
+///   bin i covers durations in `[2^i, 2^(i+1))` µs for `i < 15`,
+///   and bin 15 catches anything `≥ 32 ms`.
+///
+/// So bin 0 = `[1µs, 2µs)`, bin 9 = `[512µs, 1024µs)`, bin 14 =
+/// `[16ms, 32ms)`, bin 15 = `[32ms, ∞)`. Jobs that complete in under
+/// 1 µs fall into bin 0.
+inline constexpr std::size_t kJobDurationHistogramBins = 16;
 
 /// Snapshot of engine instrumentation, refreshed at the end of each
 /// `Engine::step()`. Cheap to copy; read via `Engine::stats()`.
@@ -69,6 +81,14 @@ struct JobSystemStats {
     /// Number of worker threads (mirrors `Config::workerCount` after
     /// the default has been resolved).
     std::uint32_t workerCount = 0;
+
+    /// Lifetime per-job-duration histogram. Bucket layout is described
+    /// at @ref kJobDurationHistogramBins. Useful for spotting "one job
+    /// is dominating the wave" — a healthy distribution clusters in a
+    /// narrow band; a long tail in bins 12+ means a few jobs are eating
+    /// the budget.
+    std::array<std::uint64_t, kJobDurationHistogramBins>
+        jobDurationHistogram = {};
 };
 
 /// Per-system snapshot. One entry per registered system in
@@ -103,6 +123,20 @@ struct SystemStats {
     /// Lifetime totals since the system was registered.
     std::uint64_t totalJobsSubmitted = 0;
     std::uint64_t totalCommandsCommitted = 0;
+
+    /// Seconds the system's thread spent inside `parallelFor`'s
+    /// completion wait during the most recent step. Subtracted from
+    /// @ref lastUpdateSeconds it gives a rough estimate of how much of
+    /// `update()` was the calling thread *itself* doing work (vs.
+    /// orchestrating workers). Always `<= lastUpdateSeconds`.
+    double waitSeconds = 0.0;
+
+    /// Peak number of in-flight jobs visible in the worker pool during
+    /// this system's `update()`, sampled immediately after each
+    /// `parallelFor` submit. Useful for spotting wave congestion: a
+    /// peak ≪ `JobSystemStats::workerCount` means the wave is starving
+    /// the pool; ≫ workers means the wave is queue-bound.
+    std::uint32_t peakQueueDepth = 0;
 };
 
 } // namespace threadmaxx

@@ -158,17 +158,30 @@ public:
     virtual ComponentSet writes() const noexcept { return ComponentSet::all(); }
 };
 
+/// Configuration knobs for the built-in hierarchy system. Pass to
+/// @ref makeHierarchySystem; defaults match the historical behavior.
+struct HierarchyConfig {
+    /// When true, the child's world `scale` is the component-wise
+    /// product of its parent's world `scale` and `localOffset.scale`,
+    /// chaining through arbitrarily deep trees. When false (the
+    /// default), the child's world `scale` is just `localOffset.scale`
+    /// and the parent's scale is ignored. See `doc/hierarchy.md` for
+    /// the rationale behind the default.
+    bool propagateScale = false;
+};
+
 /// Built-in hierarchy system factory.
 ///
 /// Returns a system that propagates `Parent`-attached entities' world
 /// `Transform` from their parent's world `Transform` composed with
 /// `Parent::localOffset`. Resolves multi-level chains in one pass via
-/// DFS with memoization. Scale does NOT chain — see @ref Parent.
+/// DFS with memoization. Scale does NOT chain by default — see
+/// @ref Parent and @ref HierarchyConfig::propagateScale to opt in.
 ///
 /// @note Register this *after* movement systems that write `Transform`
 ///       so it runs in a later wave and observes their commits.
 /// @par Reads / Writes
 ///      `reads = {Transform, Parent}`, `writes = {Transform}`.
-std::unique_ptr<class ISystem> makeHierarchySystem();
+std::unique_ptr<class ISystem> makeHierarchySystem(HierarchyConfig cfg = {});
 
 } // namespace threadmaxx

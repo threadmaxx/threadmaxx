@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/lifecycle_hooks_test.dir/link.d CMakeFiles/lifecycle_hooks_test.dir/lifecycle_hooks_test.cpp.o -o lifecycle_hooks_test  ../libthreadmaxx.a

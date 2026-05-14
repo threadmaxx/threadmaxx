@@ -59,6 +59,8 @@ bool transformsEqual(const Transform& a, const Transform& b) noexcept {
 
 class HierarchySystem : public ISystem {
 public:
+    explicit HierarchySystem(HierarchyConfig cfg) noexcept : cfg_(cfg) {}
+
     const char* name() const noexcept override { return "hierarchy"; }
 
     ComponentSet reads() const noexcept override {
@@ -71,7 +73,8 @@ public:
 
     void update(SystemContext& ctx) override {
         const World& world = ctx.world();
-        ctx.single([&world](Range, CommandBuffer& out) {
+        const bool propagateScale = cfg_.propagateScale;
+        ctx.single([&world, propagateScale](Range, CommandBuffer& out) {
             const auto entities   = world.entities();
             const auto transforms = world.transforms();
             const auto parents    = world.parents();
@@ -136,7 +139,16 @@ public:
                     w.position    = parentWorld.position
                                   + rotate(parentWorld.orientation, local.position);
                     w.orientation = mul(parentWorld.orientation, local.orientation);
-                    w.scale       = local.scale;  // not chained — see Parent doc
+                    if (propagateScale) {
+                        // Opt-in component-wise scale chain. Useful for
+                        // attached props/sockets that should inherit the
+                        // parent's scaling factor.
+                        w.scale.x = parentWorld.scale.x * local.scale.x;
+                        w.scale.y = parentWorld.scale.y * local.scale.y;
+                        w.scale.z = parentWorld.scale.z * local.scale.z;
+                    } else {
+                        w.scale = local.scale;  // not chained — see Parent doc
+                    }
                     worldT[child] = w;
                     done[child] = 1;
 
@@ -147,12 +159,15 @@ public:
             }
         });
     }
+
+private:
+    HierarchyConfig cfg_;
 };
 
 } // namespace
 
-std::unique_ptr<ISystem> makeHierarchySystem() {
-    return std::make_unique<HierarchySystem>();
+std::unique_ptr<ISystem> makeHierarchySystem(HierarchyConfig cfg) {
+    return std::make_unique<HierarchySystem>(cfg);
 }
 
 } // namespace threadmaxx

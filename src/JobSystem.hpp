@@ -2,7 +2,9 @@
 
 #include "threadmaxx/Stats.hpp"
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -47,6 +49,14 @@ public:
         return static_cast<std::uint32_t>(workers_.size());
     }
 
+    /// Number of jobs queued + in-flight right now. Snapshot reading
+    /// is intentionally cheap (single atomic load); a system can
+    /// sample this immediately after a `parallelFor` submit to track
+    /// peak wave congestion.
+    std::uint32_t outstanding() const noexcept {
+        return outstanding_.load(std::memory_order_relaxed);
+    }
+
     /// Aggregate worker-pool counters. Cheap to call (atomic loads only)
     /// — safe from any thread.
     JobSystemStats stats() const noexcept;
@@ -59,7 +69,16 @@ private:
         std::thread             thread;
         std::uint64_t           ownPops    = 0;  // touched only by self
         std::uint64_t           stolenJobs = 0;  // touched only by self
+        // Per-worker job-duration histogram. Bumped by the worker after
+        // each job() returns; no synchronization needed (own thread).
+        // Aggregated at read time in stats().
+        std::array<std::uint64_t, kJobDurationHistogramBins> histogram = {};
     };
+
+    /// Compute the histogram bin for a job duration. Log2-spaced in
+    /// microseconds; saturating at `kJobDurationHistogramBins - 1` for
+    /// very long jobs. Public for test coverage.
+    static std::size_t binFor(std::chrono::nanoseconds duration) noexcept;
 
     void workerLoop(std::uint32_t selfIdx);
     // Tries to take a job from one of the other workers' queues. Uses

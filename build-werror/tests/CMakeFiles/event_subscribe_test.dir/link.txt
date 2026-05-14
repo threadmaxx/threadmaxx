@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/event_subscribe_test.dir/link.d CMakeFiles/event_subscribe_test.dir/event_subscribe_test.cpp.o -o event_subscribe_test  ../libthreadmaxx.a

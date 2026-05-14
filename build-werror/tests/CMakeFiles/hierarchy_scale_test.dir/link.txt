@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/hierarchy_scale_test.dir/link.d CMakeFiles/hierarchy_scale_test.dir/hierarchy_scale_test.cpp.o -o hierarchy_scale_test  ../libthreadmaxx.a

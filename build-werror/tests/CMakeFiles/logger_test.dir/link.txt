@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/logger_test.dir/link.d CMakeFiles/logger_test.dir/logger_test.cpp.o -o logger_test  ../libthreadmaxx.a

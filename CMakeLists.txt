@@ -30,10 +30,12 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/Components.hpp
     include/threadmaxx/CommandBuffer.hpp
     include/threadmaxx/EventChannel.hpp
+    include/threadmaxx/Logger.hpp
     include/threadmaxx/Query.hpp
     include/threadmaxx/RenderFrame.hpp
     include/threadmaxx/Resource.hpp
     include/threadmaxx/ScratchArena.hpp
+    include/threadmaxx/Serialization.hpp
     include/threadmaxx/Stats.hpp
     include/threadmaxx/System.hpp
     include/threadmaxx/Renderer.hpp

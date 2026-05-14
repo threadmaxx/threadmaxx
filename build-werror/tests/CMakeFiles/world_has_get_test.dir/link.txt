@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/world_has_get_test.dir/link.d CMakeFiles/world_has_get_test.dir/world_has_get_test.cpp.o -o world_has_get_test  ../libthreadmaxx.a

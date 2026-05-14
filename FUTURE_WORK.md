@@ -17,8 +17,8 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-13 (Milestone 1 complete; chapter 3 rewritten
-into a forward plan toward Milestones 2–4).
+Last refreshed: 2026-05-14 (Batch 4 landed; Milestone 1 polish closed
+out, observability + small wins shipped).
 
 ## 1. Target outcome
 
@@ -41,9 +41,11 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Three batches landed on 2026-05-13, bringing **Milestone 1** to
-completion. All three were pure additions to the public API; the only
-removal was an internal dead field on `CmdSpawn`. Detailed per-feature
+Four batches have landed. Batches 1–3 brought **Milestone 1** to
+completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
+polish and seeded the tracing maturity batches 5+ build on. All four
+were pure additions to the public API; the only removal was an
+internal dead field on `CmdSpawn` (batch 3). Detailed per-feature
 notes live in `doc/` and `CLAUDE.md`.
 
 ### Batch 1 — instrumentation, sharding, presence-aware queries
@@ -77,8 +79,32 @@ notes live in `doc/` and `CLAUDE.md`.
 - `SpatialHash<Payload>` header-only uniform-grid helper.
 
 The public surface gained `Trace.hpp` and `SpatialHash.hpp`; everything
-else extended existing headers. 28 tests pin the documented
-invariants.
+else extended existing headers.
+
+### Batch 4 — observability + Milestone-1 polish
+
+- `Serialization.hpp` — per-component `serialize` / `deserialize`
+  trait pair plus `World::snapshot()` and a `WorldSnapshot` POD;
+  binary format with magic+version header. Game-side restoration
+  flows through `cb.spawn`.
+- `JobSystemStats::jobDurationHistogram` — 16 log2-µs bins populated
+  by per-worker accumulators, merged on read. `JobSystem::outstanding()`
+  exposed for queue-depth sampling.
+- `ChromeTraceWriter` — streaming Chrome Trace Event Format serializer
+  alongside `writeJsonLines`. Built on `frameSnapshot()`.
+- `EventChannel<T>::subscribe(fn)` / `unsubscribe(id)` — persistent
+  per-channel callback list, invoked at drain time before the
+  front/back swap.
+- `HierarchyConfig::propagateScale` — opt-in scale chaining knob on
+  the hierarchy system. Default off preserves prior behavior.
+- `SystemStats::waitSeconds` / `peakQueueDepth` — already-computable
+  primitives surfaced on the stats struct.
+- `ILogger` / `Engine::setLogger` — tiny `log(level, message)`
+  virtual; default sink writes to `std::cerr` at `Warn+`. Engine
+  routes init / shutdown / registration / loader-error messages
+  through it.
+
+35 tests pin the documented invariants.
 
 ## 3. Planned batches — the road to Milestones 2–4
 
@@ -88,7 +114,7 @@ internals." That requires three things the library does not yet have:
 
 - a wider data model (more component slots, archetype-style storage),
 - a richer rendering contract (passes, cameras, lights, skinned poses),
-- a real renderer to prove the contract — Vulkan, per §3.9.
+- a real renderer to prove the contract — Vulkan, per §3.8.
 
 The batches are sized like prior batches (5–9 additive items each),
 sequenced so each one is shippable on its own and the public API
@@ -96,7 +122,7 @@ grows monotonically. The mapping to milestones (§8):
 
 | Batch | Theme                              | Milestone(s)          |
 |-------|------------------------------------|-----------------------|
-| 4     | Observability + small Milestone-1 polish | M1 polish + M3 lead-in |
+| ~~4~~ | ~~Observability + small Milestone-1 polish~~ | ✅ landed 2026-05-14 — see §2 |
 | 5     | Data model widening                | M2 prep               |
 | 6     | Archetype/chunk storage            | M2                    |
 | 7     | Resource & event maturity          | M3                    |
@@ -104,43 +130,13 @@ grows monotonically. The mapping to milestones (§8):
 | 9     | Vulkan reference renderer (example) | M4                    |
 | 10    | 3D RPG demo example                | M6 lead-in            |
 
-§3.9 covers the Vulkan defaulting strategy across batches 8–10.
+§3.8 covers the Vulkan defaulting strategy across batches 8–10.
 
-### 3.1 Batch 4 — Observability and small wins
-
-Pure-additive, sized like batches 1–3. Closes out Milestone 1 polish
-and seeds the tracing/event maturity that batch 7 builds on.
-
-- **Serialization trait hook (§7.8).** A trait pair
-  `serialize(Component&)` / `deserialize(Component&)` per built-in
-  component, plus `World::snapshot()` that captures the dense arrays.
-  Header-only sugar on top of the storage the engine already exposes;
-  migration support stays game-side.
-- **Per-job-duration histogram in `JobSystemStats`.** 8–16 log-spaced
-  bins of individual job durations. Per-worker accumulators merged on
-  read. Detects grain mis-tuning and "is one job dominating?".
-- **Chrome-trace adapter.** A second serializer alongside
-  `writeJsonLines` (one `{ph:"X", ...}` record per system per tick).
-  Built on `frameSnapshot()`; no new instrumentation surface.
-- **`events<T>().subscribe(fn)`.** Persistent subscription helper on
-  top of the existing channels: keep a callback list, invoked at
-  drain time. Sugar over today's manual `drainTick()`-in-postStep
-  pattern.
-- **HierarchySystem scale-chain knob.** Optional config so the user
-  can choose whether scale propagates (today: never). Default off
-  preserves current semantics.
-- **Queue-depth and wait-time fields on `SystemStats`.** Already
-  computable from existing primitives; expose them.
-- **`ILogger` interface.** Tiny `virtual log(level, message)`; engine
-  routes startup/shutdown warnings, system registration messages, and
-  loader errors through it. Default is `std::cerr`. Lets games plug
-  in their own log sink.
-
-### 3.2 Batch 5 — Data-model widening (Milestone 2 prep)
+### 3.1 Batch 5 — Data-model widening (Milestone 2 prep)
 
 The current `Component` enum has 7 values. A 3D RPG needs more (health,
 faction, animation pose, physics body, AI state, …). Widening the
-mask is cheap; it has to happen before §3.3's archetype refactor so
+mask is cheap; it has to happen before §3.2's archetype refactor so
 the storage change only happens once.
 
 - **Widen `ComponentSet` to 64 bits.** Switch `Component` underlying
@@ -162,22 +158,23 @@ the storage change only happens once.
   engine-managed life cycle, parallel to the built-ins, without
   patching the storage. Trade-off: discoverability vs. lock-in. If
   this turns out to be too invasive, gate it on the archetype refactor
-  in §3.3.
+  in §3.2.
 - **Tag-only components.** `StaticTag`, `DisabledTag`, `DestroyedTag`
   — presence-only, no data; renderer/systems skip on `DisabledTag`.
   Sized like adding any normal component, just without a dense array.
-- **Determinism golden-output test.** `tests/determinism_test.cpp`
-  runs a fixed seed scenario for N ticks, hashes the world state, and
+- **N-tick determinism golden-output test.** Extend
+  `tests/determinism_test.cpp` (today: 1-tick) with a fixed-seed
+  scenario that runs for N ticks, hashes the world state, and
   compares to a baseline. Cheap regression guard for the archetype
-  refactor (§3.3) and the renderer expansion (§3.4).
+  refactor (§3.2) and the renderer expansion (§3.4).
 - **`forEachWith` mask cache.** Precompute the matching index span
   once at preStep when masks are stable, reuse in `update`. Cheap
   perf win; opt-in flag on the system.
 
-### 3.3 Batch 6 — Archetype / chunk storage (Milestone 2)
+### 3.2 Batch 6 — Archetype / chunk storage (Milestone 2)
 
-Single big refactor; should not happen before §3.2 widens the mask and
-§3.1 lands the determinism harness. Effort sized at ~3 weeks.
+Single big refactor; should not happen before §3.1 widens the mask and
+lands the N-tick determinism harness. Effort sized at ~3 weeks.
 
 - **Chunk-based `EntityStorage`.** Replace the parallel `std::vector`
   per component with archetype chunks (e.g. 256 entities per chunk,
@@ -199,13 +196,13 @@ Single big refactor; should not happen before §3.2 widens the mask and
   superset.** Drop the per-entity mask test inside the hot loop.
 - **Stress test.** `tests/archetype_storage_stress_test.cpp` —
   spawn/destroy/component-flip 1M entities; assert no leaks, no
-  determinism drift against §3.2's baseline.
+  determinism drift against §3.1's baseline.
 
 This is the most disruptive batch in the plan. It is intentionally
-deferred until the renderer-side and resource-side contracts (§3.4,
-§3.5) have stabilized so the API doesn't churn twice.
+deferred until the renderer-side and resource-side contracts (§3.3,
+§3.4) have stabilized so the API doesn't churn twice.
 
-### 3.4 Batch 7 — Resource & event maturity (Milestone 3)
+### 3.3 Batch 7 — Resource & event maturity (Milestone 3)
 
 `IResourceLoader` (batch 3) is the contract; this batch adds the
 pipeline shape an actual asset stream needs.
@@ -229,9 +226,10 @@ pipeline shape an actual asset stream needs.
   current/max footprint; the registry reports the aggregate.
 - **Persistent event subscription cleanup.** A
   `Subscription` handle returned by `subscribe(fn)` that auto-
-  unsubscribes on destruction.
+  unsubscribes on destruction. (Batch 4 shipped manual
+  `subscribe`/`unsubscribe`; this is the RAII wrapper on top.)
 
-### 3.5 Batch 8 — Render contract expansion (Milestone 4 prep)
+### 3.4 Batch 8 — Render contract expansion (Milestone 4 prep)
 
 Today's `RenderFrame` is a flat instance list. A 3D RPG renderer
 needs structure: cameras, lights, draw bins by pass, skinned poses,
@@ -254,7 +252,7 @@ user-system-owned, the consumption is renderer-owned.
   as commit). Existing flat `RenderInstance` path stays as the
   default for headless / minimal renderers.
 - **Visibility culling stage.** Built-in system that reads `Camera`
-  + `BoundingVolume` (from §3.2), writes a per-camera visible set
+  + `BoundingVolume` (from §3.1), writes a per-camera visible set
   used by the renderer.
 - **Stable instance-buffer layout helper.** Header-only struct that
   any renderer can copy into a GPU buffer — predictable alignment,
@@ -263,12 +261,12 @@ user-system-owned, the consumption is renderer-owned.
 - **Per-frame upload ring helpers.** Same idea: shared frame-to-frame
   allocator that any renderer can use without hard-coding a backend.
 
-### 3.6 Batch 9 — Vulkan reference renderer (Milestone 4)
+### 3.5 Batch 9 — Vulkan reference renderer (Milestone 4)
 
-The first concrete renderer that exercises the full §3.5 contract.
+The first concrete renderer that exercises the full §3.4 contract.
 **Lives in `examples/vulkan_renderer/`, NOT in the core library** —
 that preserves the renderer-agnostic guarantee. The core lib's only
-Vulkan-aware concession is the optional helpers in §3.5.
+Vulkan-aware concession is the optional helpers in §3.4.
 
 - **`examples/vulkan_renderer/`.** Vulkan 1.3 (dynamic rendering,
   timeline semaphores, sync2), GLFW for window/surface. Treated like
@@ -279,16 +277,16 @@ Vulkan-aware concession is the optional helpers in §3.5.
   overlay.
 - **Asset loaders.** A `MeshLoader` / `TextureLoader` /
   `ShaderLoader` (compiled SPIR-V at build time via `glslc`) that
-  exercise the §3.4 multi-stage pipeline and refcounted handles.
+  exercise the §3.3 multi-stage pipeline and refcounted handles.
 - **Hot reload.** Shader edits trigger SPIR-V rebuild and pipeline
-  rebuild via the `AssetReloaded` channel from §3.4.
+  rebuild via the `AssetReloaded` channel from §3.3.
 - **Cross-platform CI.** Build on Linux + Windows runners. macOS via
   MoltenVK marked best-effort.
 - **Smoke scene.** Animated character on a lit terrain plane, third-
-  person camera, 1k crowd of instanced meshes — proves §3.5's
+  person camera, 1k crowd of instanced meshes — proves §3.4's
   contracts under load.
 
-### 3.7 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
+### 3.6 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
 
 Closes the loop. Built on top of the Vulkan renderer; demonstrates
 that a real game can be developed without engine patches.
@@ -306,7 +304,7 @@ that a real game can be developed without engine patches.
   — if the demo needs an engine change, it goes back through the
   next batch instead of into the example.
 
-### 3.8 Items intentionally NOT in §3
+### 3.7 Items intentionally NOT in §3
 
 The following are good extensions but belong above the library (or in
 sibling libraries). Calling them out so they don't accidentally creep
@@ -326,7 +324,7 @@ into a batch.
 - **Editor / hot-reload UI.** Out of scope until the public API has
   stabilized through M4.
 
-### 3.9 Vulkan as the implicit default for M4+
+### 3.8 Vulkan as the implicit default for M4+
 
 A note on strategy, since the user-facing question came up.
 
@@ -336,7 +334,7 @@ renderer-agnostic core.** Concretely:
 
 - The `IRenderer` interface and the flat `RenderFrame` are
   renderer-agnostic by construction; Vulkan slots in cleanly as a
-  consumer. The §3.5 hierarchical `RenderFrame` is still
+  consumer. The §3.4 hierarchical `RenderFrame` is still
   API-agnostic — it speaks in cameras, lights, draw items, and pose
   buffers, not in `VkCommandBuffer`.
 - The Vulkan renderer lives in `examples/vulkan_renderer/`, NOT in
@@ -346,8 +344,8 @@ renderer-agnostic core.** Concretely:
   cost.
 - Optional shared helpers (instance buffer layout, frame allocator,
   upload-ring scaffolding) live in `include/threadmaxx/render/` and
-  are renderer-neutral. Any backend (Vulkan, WebGPU via Dawn, D3D12,
-  Metal via MoltenVK) can use them.
+  are renderer-neutral (see §3.4). Any backend (Vulkan, WebGPU via
+  Dawn, D3D12, Metal via MoltenVK) can use them.
 - Vulkan's style — pre-recorded command buffers, explicit batching,
   one frame-graph snapshot per submit — matches threadmaxx's existing
   per-tick `RenderFrame` snapshot model very well. Minimal
@@ -366,7 +364,7 @@ renderer-agnostic core.** Concretely:
     confined to the example.
 
 The strategy that protects the library is: **every renderer-facing
-addition in §3.5 is justified by a non-Vulkan-specific use case
+addition in §3.4 is justified by a non-Vulkan-specific use case
 first.** If a feature only makes sense for Vulkan, it belongs in
 `examples/vulkan_renderer/`, not in the core. That keeps the door
 open for a WebGPU, D3D12, or even a pure-software reference renderer
@@ -374,7 +372,7 @@ later without API churn.
 
 ## 4. Items the previous plan got right but underestimates the cost of
 
-- **Archetype/chunk storage.** Now §3.3 batch 6. Still a deep
+- **Archetype/chunk storage.** Now §3.2 batch 6. Still a deep
   refactor of `EntityStorage`. Sequencing matters: it should not
   happen until the public surface (queries, events, resources,
   renderer contract) is settled — otherwise the API churns twice.
@@ -402,7 +400,7 @@ slots) rather than ship the systems themselves:
 - **Animation systems / IK / cloth / blend trees.** A real animation
   pipeline depends on the renderer's skinning model and the asset
   format. The engine can host these as user systems once a
-  `Skeleton` / `AnimationState` component shape exists (§3.2), but it
+  `Skeleton` / `AnimationState` component shape exists (§3.1), but it
   should not own the math.
 - **Physics integration (broadphase / narrowphase / rigid body).**
   Same reasoning — Bullet / Jolt / PhysX each impose a world
@@ -411,7 +409,7 @@ slots) rather than ship the systems themselves:
   engine's job; the solver is not.
 - **Audio mixing / 3D audio.** Wholly orthogonal to a game backend.
 - **Save/load migration.** A serialization *hook* on components is in
-  scope (§3.1); a full versioned migration system is not.
+  the engine (✅ batch 4); a full versioned migration system is not.
 - **Navmesh / pathfinding.** Belongs in a domain library; the engine
   only needs to allow background work to be scheduled.
 - **Editor/tooling/hot-reload UI.** Out of scope until the public API
@@ -433,8 +431,8 @@ is done.
 
 The wave scheduler buys parallelism *between* systems. The next axis
 is finer slicing *within* a system: per-chunk iteration becomes
-expressible after §3.3, and per-render-pass iteration becomes
-expressible after §3.5.
+expressible after §3.2, and per-render-pass iteration becomes
+expressible after §3.4.
 
 ### Phase 3 — frame task graph
 
@@ -456,10 +454,10 @@ down payment.
 
 ### Phase 6 — measure everything
 
-Job duration histograms (§3.1), Chrome-trace adapter (§3.1), hot
-system ranking, cache-friendly batch sizes, allocation counters,
-frame hitches. Most of this is now *possible*; what's missing is
-ingestion.
+Job duration histograms (✅ batch 4), Chrome-trace adapter
+(✅ batch 4), hot system ranking, cache-friendly batch sizes,
+allocation counters, frame hitches. The core instrumentation primitives
+are now all in place; what's missing is in-game ingestion.
 
 ## 7. Public API extensions still on deck
 
@@ -467,16 +465,20 @@ This section used to enumerate planned API additions. With §3 now
 listing them by batch, this is the cross-reference index:
 
 - `World::has<T>` / `World::get<T>` — ✅ batch 3.
-- Async loader contract — ✅ batch 3 (basics); §3.4 batch 7 (pipeline).
-- Hot reload — §3.4 batch 7.
-- Save/load (serialization trait pair) — §3.1 batch 4.
-- Tracing / Chrome-trace adapter — §3.1 batch 4.
-- Persistent event subscribe — §3.1 batch 4.
-- New component slots (Health, Faction, …) — §3.2 batch 5.
-- Archetype storage + `forEachChunk` — §3.3 batch 6.
-- Pass-aware `RenderFrame` — §3.5 batch 8.
-- Job-duration histograms — §3.1 batch 4.
-- Determinism golden tests — §3.2 batch 5.
+- Async loader contract — ✅ batch 3 (basics); §3.3 batch 7 (pipeline).
+- Hot reload — §3.3 batch 7.
+- Save/load (serialization trait pair) — ✅ batch 4.
+- Tracing / Chrome-trace adapter — ✅ batch 4.
+- Persistent event subscribe — ✅ batch 4 (manual unsubscribe);
+  §3.3 batch 7 (RAII `Subscription` handle).
+- HierarchySystem scale knob — ✅ batch 4.
+- Job-duration histograms — ✅ batch 4.
+- `ILogger` — ✅ batch 4.
+- SystemStats wait/queue-depth — ✅ batch 4.
+- New component slots (Health, Faction, …) — §3.1 batch 5.
+- Archetype storage + `forEachChunk` — §3.2 batch 6.
+- Pass-aware `RenderFrame` — §3.4 batch 8.
+- Determinism N-tick golden tests — §3.1 batch 5.
 - Networking deltas, task graph, cancellation — deferred to Phase 3+
   of §6.
 
@@ -484,11 +486,14 @@ listing them by batch, this is the cross-reference index:
 
 ### Milestone 1 — Hardening the current core  ✅ done
 
-Per-system instrumentation, sharded job queue, presence mask,
-hierarchy, resource registry, lifecycle hooks, scratch arenas, event
-channels, pause/time-scale, reserved handles, commit timing,
-`has`/`get`, `Bundle`, `registerSystemAt`, `frameSnapshot`,
-`IResourceLoader` contract, `SpatialHash`, Parent auto-derive.
+Per-system instrumentation (incl. wait/queue-depth and a job-duration
+histogram), sharded job queue, presence mask, hierarchy (with opt-in
+scale chain), resource registry, lifecycle hooks, scratch arenas,
+event channels (with persistent subscribe), pause/time-scale, reserved
+handles, commit timing, `has`/`get`, `Bundle`, `registerSystemAt`,
+`frameSnapshot`, `writeJsonLines`, `ChromeTraceWriter`,
+`IResourceLoader` contract, `SpatialHash`, Parent auto-derive,
+serialization + `World::snapshot`, `ILogger`.
 
 Exit criteria met: a small game can ship against the current public
 API without patching the engine.
@@ -497,13 +502,13 @@ API without patching the engine.
 
 Widened `ComponentSet`, additional engine-known component slots,
 archetype/chunk storage, `forEachChunk`, determinism golden tests.
-Covered by §3.2 batch 5 and §3.3 batch 6.
+Covered by §3.1 batch 5 and §3.2 batch 6.
 
 ### Milestone 3 — Resource and event layers
 
 Multi-stage async loader pipeline, refcounted asset handles, hot
-reload, boot-time preload, persistent event subscriptions, loader
-shutdown contract. Covered by §3.4 batch 7.
+reload, boot-time preload, persistent event subscription RAII, loader
+shutdown contract. Covered by §3.3 batch 7.
 
 ### Milestone 4 — Rendering contract expansion + reference renderer
 
@@ -511,7 +516,7 @@ Hierarchical `RenderFrame`, new render-side components (Camera,
 Light, MeshSkinned, AnimationPose, MaterialOverride), render-prep
 hooks, visibility culling, shared instance/pose buffer helpers.
 Vulkan reference renderer as `examples/vulkan_renderer/`. Covered by
-§3.5 batch 8 and §3.6 batch 9.
+§3.4 batch 8 and §3.5 batch 9.
 
 ### Milestone 5 — Task graph and deep parallelism
 
@@ -520,9 +525,9 @@ Phase 3 of the perf roadmap.
 
 ### Milestone 6 — RPG feature readiness
 
-Serialization (already in M2-era), navigation, animation, physics,
+Serialization (✅ batch 4), navigation, animation, physics,
 networking. The "endgame" — each is a sibling sub-project on its
-own. `examples/rpg_demo/` (§3.7 batch 10) is the integration proof.
+own. `examples/rpg_demo/` (§3.6 batch 10) is the integration proof.
 
 ## 9. Engineering priorities
 
@@ -552,17 +557,20 @@ When implementing future work, prioritize in this order:
 - and it scales across multiple CPU cores in common gameplay and
   render-prep workloads.
 
-Today: items "stable serialization" and "deterministic mode
-declared" are in (or in batch 4); the rest depends on §3 batches 5–10.
+Today: "stable serialization", "expose profiling data", and
+"deterministic mode declared" are in (batch 4); the rest depends on
+§3 batches 5–10.
 
 ## 11. Final note
 
 The current architecture is a solid foundation, and the Milestone 1
-additions (component masks, hierarchy, resources, work-stealing
-queue, per-system stats, lifecycle hooks, events, scratch, time
-control, tracing, async-loader contract, spatial hash) confirm that
-the layering is sound — every one landed as a pure addition without
-churning the public API.
+additions across batches 1–4 (component masks, hierarchy, resources,
+work-stealing queue, per-system stats, lifecycle hooks, events,
+scratch, time control, tracing, Chrome-trace writer, async-loader
+contract, spatial hash, serialization, logger, job histograms,
+queue/wait timing, scale-chain knob, persistent event subscribe)
+confirm that the layering is sound — every one landed as a pure
+addition without churning the public API.
 
 The §3 plan deliberately defers the most disruptive refactor
 (archetype storage) until the renderer-side and resource-side

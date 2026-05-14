@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/parent_autoderive_test.dir/link.d CMakeFiles/parent_autoderive_test.dir/parent_autoderive_test.cpp.o -o parent_autoderive_test  ../libthreadmaxx.a

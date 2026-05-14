@@ -30,6 +30,13 @@ set(THREADMAXX_TESTS
     frame_snapshot_test
     resource_loader_test
     spatial_hash_test
+    logger_test
+    hierarchy_scale_test
+    event_subscribe_test
+    job_histogram_test
+    system_wait_test
+    chrome_trace_test
+    serialization_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

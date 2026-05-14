@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 28 tests pin the
+minimal; the internals are PImpl'd so they can change. 35 tests pin the
 documented invariants.
 
 ## Highlights
@@ -56,8 +56,18 @@ documented invariants.
   `ResourceRegistry` for meshes, textures, audio clips, anything.
 - **Per-tick instrumentation.** `EngineStats`, `SystemStats`, and
   `JobSystemStats` are populated every step — no opt-in cost.
-  `Engine::frameSnapshot()` bundles them; `writeJsonLines` spools one
-  newline-terminated JSON object per tick.
+  Per-system `waitSeconds` / `peakQueueDepth` plus a 16-bin job-
+  duration histogram on `JobSystemStats`. `Engine::frameSnapshot()`
+  bundles them; `writeJsonLines` spools one newline-terminated JSON
+  object per tick; `ChromeTraceWriter` streams a Chrome Trace Event
+  Format file you can open in `chrome://tracing`.
+- **Save/load snapshot.** `World::snapshot()` copies the engine's
+  dense arrays into a `WorldSnapshot`. Header-only `serialize` /
+  `deserialize` trait pair in `<threadmaxx/Serialization.hpp>` round-
+  trips it through any `std::ostream` / `std::istream`.
+- **Pluggable log sink.** `ILogger` for engine lifecycle / registration
+  / loader-error messages. Default sink writes warnings to `std::cerr`;
+  install your own to route to spdlog / a HUD / a file.
 - **Pluggable renderer.** Implement `IRenderer::submitFrame` against a
   flat `RenderFrame`. Null renderer = headless.
 
@@ -221,11 +231,11 @@ Roadmap and intentional gaps: [`FUTURE_WORK.md`](FUTURE_WORK.md).
 ## Repository layout
 
 ```
-include/threadmaxx/    public API (18 headers)
+include/threadmaxx/    public API (20 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 28 no-dependency tests under CTest
+tests/                 35 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

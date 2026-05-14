@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <latch>
+#include <sstream>
 #include <thread>
 #include <utility>
 
@@ -77,7 +78,14 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
         });
     }
     jobsSubmitted_ += chunkCount;
+    // Sample queue depth right after submit — captures congestion the
+    // system actually saw. Reading the atomic is cheap.
+    const std::uint32_t depth = engine_.jobs().outstanding();
+    if (depth > peakQueueDepth_) peakQueueDepth_ = depth;
+    const auto waitStart = std::chrono::steady_clock::now();
     done.wait();
+    waitSeconds_ += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - waitStart).count();
 }
 
 void SystemContextImpl::parallelFor(std::uint32_t count,
@@ -107,7 +115,12 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
         });
     }
     jobsSubmitted_ += chunkCount;
+    const std::uint32_t depth = engine_.jobs().outstanding();
+    if (depth > peakQueueDepth_) peakQueueDepth_ = depth;
+    const auto waitStart = std::chrono::steady_clock::now();
     done.wait();
+    waitSeconds_ += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - waitStart).count();
 }
 
 void SystemContextImpl::single(JobFn fn) {
@@ -157,6 +170,13 @@ bool EngineImpl::initialize(IGame& game, Engine& publicEngine) {
     game_ = &game;
     publicEngine_ = &publicEngine;
 
+    {
+        std::ostringstream os;
+        os << "engine initialize: " << jobs_->workerCount()
+           << " worker(s), fixedStep=" << cfg_.fixedStepSeconds << "s";
+        logger().log(LogLevel::Info, os.str());
+    }
+
     // Recreate the world with the configured capacity. The default-constructed
     // World used a hard-coded 1024; replace it so the user's config wins.
     world_ = World{};
@@ -170,6 +190,7 @@ bool EngineImpl::initialize(IGame& game, Engine& publicEngine) {
     commitBuffer(seed);
 
     if (renderer_ && !renderer_->initialize()) {
+        logger().log(LogLevel::Error, "renderer initialize() returned false");
         return false;
     }
 
@@ -192,8 +213,14 @@ void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
     SystemStats ss;
     ss.name = system->name();
     systemStats_.push_back(ss);
+    const char* sysName = system->name();
     systems_.push_back(std::move(system));
     rebuildWaves();
+    std::ostringstream os;
+    os << "registered system '" << (sysName ? sysName : "(unnamed)")
+       << "' (now " << systems_.size() << " total, "
+       << waves_.size() << " wave(s))";
+    logger().log(LogLevel::Info, os.str());
 }
 
 IResourceLoader* EngineImpl::addResourceLoader(
@@ -378,6 +405,8 @@ void EngineImpl::step() {
         ss.lastUpdateSeconds = 0.0;
         ss.jobsSubmittedLastStep = 0;
         ss.commandsCommittedLastStep = 0;
+        ss.waitSeconds = 0.0;
+        ss.peakQueueDepth = 0;
     }
 
     // §3.1 preStep: serial, registration order, on the sim thread. Hooks
@@ -454,6 +483,8 @@ void EngineImpl::step() {
             ss.commandsCommittedLastStep = cmds;
             ss.totalJobsSubmitted += jobs;
             ss.totalCommandsCommitted += cmds;
+            ss.waitSeconds = ctxs[k]->waitSeconds();
+            ss.peakQueueDepth = ctxs[k]->peakQueueDepth();
             // EWMA with alpha = 1/16, matching EngineStats::avgStepSeconds.
             // First sample initializes the average.
             if (stats_.totalTicks == 0) {
@@ -606,6 +637,14 @@ void* EngineImpl::getEventChannelRaw(std::type_index type,
 void EngineImpl::shutdown() {
     if (!initialized_) return;
     initialized_ = false;
+
+    {
+        std::ostringstream os;
+        os << "engine shutdown after " << stats_.totalTicks
+           << " tick(s), "
+           << stats_.totalCommandsCommitted << " command(s) committed";
+        logger().log(LogLevel::Info, os.str());
+    }
 
     // Drain any in-flight jobs before we start tearing things down.
     if (jobs_) jobs_->waitIdle();

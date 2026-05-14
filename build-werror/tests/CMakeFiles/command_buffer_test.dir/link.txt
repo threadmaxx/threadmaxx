@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/command_buffer_test.dir/link.d CMakeFiles/command_buffer_test.dir/command_buffer_test.cpp.o -o command_buffer_test  ../libthreadmaxx.a

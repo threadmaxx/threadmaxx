@@ -58,8 +58,12 @@ documents the invariants this guide relies on; the
     pause-menu semantics, deterministic-tick interaction.
 19. [Stats & profiling](stats_and_profiling.md) — `EngineStats` and per-
     `SystemStats`, what they measure and how to wire them into a HUD.
-20. [Tracing](tracing.md) — bundled `frameSnapshot()` and the JSON Lines
-    serializer.
+20. [Tracing](tracing.md) — bundled `frameSnapshot()`, the JSON Lines
+    serializer, and the Chrome Trace Event Format writer.
+21. [Serialization](serialization.md) — `World::snapshot()` plus the
+    per-component `serialize` / `deserialize` trait pair for save/load.
+22. [Logging](logging.md) — pluggable `ILogger` sink for engine
+    lifecycle messages and loader errors.
 
 ## What this guide does not cover
 

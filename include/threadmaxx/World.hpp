@@ -9,6 +9,8 @@
 #include <span>
 #include <type_traits>
 
+namespace threadmaxx { struct WorldSnapshot; }
+
 namespace threadmaxx {
 
 namespace internal { class WorldImpl; }
@@ -85,6 +87,15 @@ public:
 
     /// Number of live entities.
     std::size_t size() const noexcept;
+
+    /// Capture the world's dense arrays into a @ref WorldSnapshot. The
+    /// snapshot is a stable copy — safe to keep across ticks, safe to
+    /// serialize via @ref serialize from `<threadmaxx/Serialization.hpp>`.
+    ///
+    /// Called from gameplay code; not thread-safe against concurrent
+    /// commits (run it from `postStep` or after `engine.step()` returns,
+    /// not from inside a wave system's `update`).
+    WorldSnapshot snapshot() const;
 
     /// @internal Engine-internal access; do not call from game code.
     internal::WorldImpl& impl_() noexcept { return *impl_ptr_; }

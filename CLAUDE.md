@@ -125,6 +125,32 @@ Batch form: `Engine::reserveEntityHandles(count, span)` / `SystemContext::reserv
 
 `Engine::frameSnapshot()` returns a bundled `FrameSnapshot{EngineStats, std::span<const SystemStats>, JobSystemStats}` — same field values as `stats()` / `systemStats()` / `jobSystemStats()`, just guaranteed consistent. `writeJsonLines(os, snap)` in `Trace.hpp` serializes one snapshot as a single `'\n'`-terminated JSON object; field names match the stats structs. The systems span shares the lifetime caveat of `systemStats()` (invalidated by `registerSystem` / `registerSystemAt` / `shutdown`).
 
+`ChromeTraceWriter` (in `Trace.hpp`) is a stateful streaming companion: constructor writes `[`, `emit(snap)` appends one `step` record plus one record per system per call, destructor writes `]`. Output is a valid Chrome Trace Event Format JSON array. Move-only, one-shot.
+
+## Job-duration histogram
+
+`JobSystemStats::jobDurationHistogram` is 16 log2-µs bins populated by the worker loop in `src/JobSystem.cpp`. Each worker increments its own `histogram[]` (own thread; no sync); `JobSystem::stats()` merges them on read. Bin layout described in `Stats.hpp`'s `kJobDurationHistogramBins`. `JobSystem::binFor(ns)` is exposed (static) for testability. `JobSystem::outstanding()` returns the live in-flight count for queue-depth sampling.
+
+## SystemStats waitSeconds / peakQueueDepth
+
+`SystemContextImpl` tracks two extras per `parallelFor`: `waitSeconds_` (sum of time spent in the latch's `done.wait()`) and `peakQueueDepth_` (max of `JobSystem::outstanding()` sampled right after submit). Copied into `SystemStats::waitSeconds` / `peakQueueDepth` in the wave-commit loop in `EngineImpl::step`.
+
+## EventChannel persistent subscriptions
+
+`EventChannel<Ev>::subscribe(fn)` returns a non-zero `SubscriptionId`; matching `unsubscribe(id)` detaches. The engine's tick-boundary `drain()` invokes each callback once per back-buffered event BEFORE the front/back swap (so subscribers see this tick's emits, matching what next-tick `drainTick()` consumers see). Callbacks fire on the sim thread; the subscriber list is snapshotted before invocation so a callback that subscribes/unsubscribes does not invalidate the iteration.
+
+## HierarchyConfig
+
+`makeHierarchySystem(HierarchyConfig{})` takes an optional `propagateScale` knob — default `false` preserves the historical "scale never chains" behavior. When `true`, each child's world scale becomes `parent.scale * local.scale` component-wise. Rationale and per-tier docs in `doc/hierarchy.md`.
+
+## Serialization
+
+`include/threadmaxx/Serialization.hpp` is header-only. Provides per-component `serialize(ostream&, const T&)` / `deserialize(istream&, T&)` for every built-in plus `Vec3`, `Quat`, `ComponentSet`, and the `WorldSnapshot` POD. `World::snapshot()` (in `World.cpp`) copies the engine's dense arrays into a `WorldSnapshot`. Binary format: `[magic 'SXMT'][version u32][count u64][8 dense arrays each prefixed by u64 length]`; deserialize rejects mismatched magic/version. Restoration is game-side via `cb.spawn(...)` calls — the engine never bypasses the commit phase.
+
+## Logger
+
+`ILogger` (in `Logger.hpp`) is a single `log(level, message)` virtual. The engine routes startup/shutdown/registration/loader-error messages through whichever sink is installed via `Engine::setLogger`; `nullptr` restores the default `DefaultLogger` (writes to `std::cerr` at `Warn+`, drops finer levels silently — so a no-knob engine stays quiet). `EngineImpl::logger()` returns the active sink (custom or default fallback). The engine does not take ownership of the user sink.
+
 ## registerSystemAt
 
 `Engine::registerSystemAt(position, system)` inserts at a specific index in registration order (clamped to `[0, registeredSystemCount()]`). Calls `onRegister(world)` and `rebuildWaves()` like `registerSystem`. Returns the actual insertion index. Used by tests / mod loaders that need to inject a system at a known point.

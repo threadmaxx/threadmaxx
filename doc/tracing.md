@@ -41,18 +41,45 @@ them mechanically:
  "job_pool":{"total_jobs":1234,"own_pops":1130,"steals":104,"workers":4}}
 ```
 
-## Adapting to Chrome trace / Tracy
+## Chrome Trace Event Format
 
-The library deliberately ships only the JSON Lines format. Convert to
-the trace format your tool wants on the downstream side:
+`<threadmaxx/Trace.hpp>` also provides a streaming Chrome trace writer
+that lands directly in `chrome://tracing` / Perfetto:
 
-- **Chrome trace** — emit `{"ph":"X","name":"movement","ts":...,"dur":...}`
-  per system per tick from the `systems[].update_s` field.
-- **Tracy** — call `ZoneScopedN(...)` around system update / commit
-  spans yourself; use the JSON Lines log as an offline backup.
+```cpp
+std::ofstream trace("trace.json");
+threadmaxx::ChromeTraceWriter w(trace);
+for (int i = 0; i < 600; ++i) {
+    engine.step();
+    w.emit(engine.frameSnapshot());
+}
+// w's destructor writes the closing ']'
+```
+
+What lands in the file:
+
+- One `{"ph":"X","name":"step","tid":0,...}` record per tick frames
+  the whole wave; `dur` is `lastStepSeconds` in microseconds.
+- One record per registered system per tick, on a per-system row
+  (`tid` is a stable hash of the system's name). `dur` is the system's
+  `lastUpdateSeconds`.
+- A monotonic fake timeline (`ts`) is generated; the engine snapshot
+  doesn't carry a wall-clock anchor, so timestamps are placed
+  back-to-back by measured duration. Good for "what's slow"; not
+  meaningful for "what was happening at 2:14 PM".
+
+`ChromeTraceWriter` is move-only and one-shot — construct a fresh one
+per output file. The output is a valid JSON array; it can be loaded
+mid-write (e.g. for live profiling) only after the destructor runs.
+
+## Adapting to Tracy
+
+There's no built-in Tracy integration. The typical pattern is to call
+`ZoneScopedN(...)` around system update / commit spans in user code
+and use `writeJsonLines` as an offline backup.
 
 The snapshot is cheap (`std::span` + a handful of POD fields), so
-calling `frameSnapshot()` every tick is fine. The serializer does no
+calling `frameSnapshot()` every tick is fine. The serializers do no
 allocation beyond the stream's buffer.
 
 ## Lifetime caveat

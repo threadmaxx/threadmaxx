@@ -1,12 +1,15 @@
 /// @file Trace.cpp
-/// JSON-Lines serializer for @ref threadmaxx::FrameSnapshot.
+/// JSON-Lines serializer for @ref threadmaxx::FrameSnapshot plus the
+/// streaming Chrome Trace Event Format writer.
 ///
 /// No allocations beyond what the supplied ostream's buffer does. The
-/// schema is intentionally flat — one line per tick, fields named to
-/// match the stats structs — so adapters to Chrome-trace, Tracy, or a
-/// custom ingest stack can be written in a handful of lines on the
-/// downstream side.
+/// JSON-Lines schema is intentionally flat — one line per tick, fields
+/// named to match the stats structs. The Chrome trace writer wraps a
+/// stream and emits a valid JSON array of duration events that can be
+/// loaded directly in `chrome://tracing` / Perfetto.
 #include "threadmaxx/Trace.hpp"
+
+#include <cstdint>
 
 namespace threadmaxx {
 
@@ -68,6 +71,8 @@ void writeJsonLines(std::ostream& os, const FrameSnapshot& snap) {
            << ",\"avg_update_s\":" << s.avgUpdateSeconds
            << ",\"jobs\":" << s.jobsSubmittedLastStep
            << ",\"commands\":" << s.commandsCommittedLastStep
+           << ",\"wait_s\":" << s.waitSeconds
+           << ",\"peak_queue_depth\":" << s.peakQueueDepth
            << "}";
     }
 
@@ -77,7 +82,83 @@ void writeJsonLines(std::ostream& os, const FrameSnapshot& snap) {
        << ",\"own_pops\":" << j.ownPops
        << ",\"steals\":" << j.stolenJobs
        << ",\"workers\":" << j.workerCount
-       << "}}\n";
+       << ",\"hist\":[";
+    for (std::size_t i = 0; i < kJobDurationHistogramBins; ++i) {
+        if (i != 0) os << ',';
+        os << j.jobDurationHistogram[i];
+    }
+    os << "]}}\n";
+}
+
+// ---- ChromeTraceWriter ---------------------------------------------------
+
+namespace {
+
+// Stable per-system thread id derived from the system name. Chrome
+// trace groups events by (pid, tid); reusing the same tid across
+// snapshots stacks events on a per-system row in the UI.
+std::uint32_t systemTid(const char* name) noexcept {
+    // FNV-1a 32-bit. The exact hash doesn't matter; we just need a
+    // stable, well-distributed integer per name string.
+    std::uint32_t h = 2166136261u;
+    if (name) {
+        for (const char* p = name; *p; ++p) {
+            h ^= static_cast<std::uint8_t>(*p);
+            h *= 16777619u;
+        }
+    }
+    // Reserve tid 0 for the "step" row; bias non-zero.
+    if (h == 0) h = 1;
+    return h;
+}
+
+} // namespace
+
+ChromeTraceWriter::ChromeTraceWriter(std::ostream& os) : os_(&os) {
+    (*os_) << "[\n";
+}
+
+ChromeTraceWriter::~ChromeTraceWriter() {
+    if (os_) (*os_) << "\n]\n";
+}
+
+void ChromeTraceWriter::emit(const FrameSnapshot& snap) {
+    if (!os_) return;
+    const auto& e = snap.engine;
+
+    // Step record (`tid:0`) frames the whole tick; system records live
+    // inside it on their own tids.
+    const double stepStart = cursorMicros_;
+    const double stepDur   = e.lastStepSeconds * 1'000'000.0;
+
+    auto writeEvent = [this](const char* name, double tsMicros,
+                             double durMicros, std::uint32_t tid,
+                             std::uint64_t tick) {
+        if (!firstRecord_) (*os_) << ",\n";
+        firstRecord_ = false;
+        (*os_) << "{\"ph\":\"X\",\"name\":";
+        writeJsonString(*os_, name);
+        (*os_) << ",\"ts\":" << tsMicros
+               << ",\"dur\":" << durMicros
+               << ",\"pid\":1,\"tid\":" << tid
+               << ",\"args\":{\"tick\":" << tick << "}}";
+    };
+
+    writeEvent("step", stepStart, stepDur, 0u, e.tick);
+
+    // Place system events back-to-back inside the step window. The
+    // measured per-system update_s values may sum to less than step_s
+    // (commit / overhead), which is fine — Chrome trace just shows the
+    // gap as idle time on that row.
+    double cur = stepStart;
+    for (const auto& s : snap.systems) {
+        const double dur = s.lastUpdateSeconds * 1'000'000.0;
+        writeEvent(s.name ? s.name : "(unnamed)", cur, dur,
+                   systemTid(s.name), e.tick);
+        cur += dur;
+    }
+
+    cursorMicros_ = stepStart + stepDur;
 }
 
 } // namespace threadmaxx

@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/reserve_handles_batch_test.dir/link.d CMakeFiles/reserve_handles_batch_test.dir/reserve_handles_batch_test.cpp.o -o reserve_handles_batch_test  ../libthreadmaxx.a

@@ -78,3 +78,36 @@ consistent view across the tick. If you genuinely need same-tick
 delivery, your producer and consumer should be in the same system (or
 should communicate via a `CommandBuffer` mutation that the consumer
 reads via `World` next tick).
+
+## Persistent subscriptions
+
+`EventChannel<T>::subscribe(fn)` registers a callback that fires once
+per emitted event at the tick boundary, before the buffer flips. Pair
+with `unsubscribe(id)` to detach. This is sugar on top of the
+`drainTick()` loop — useful when several non-system observers (HUDs,
+loggers, replays) want to watch the same channel without each having
+to write its own consumer system.
+
+```cpp
+auto& chan = engine.events<DamageEvent>();
+
+// Register a callback. Returns a non-zero id.
+const auto id = chan.subscribe([](const DamageEvent& e) {
+    std::printf("damage: %d\n", e.amount);
+});
+
+// ... later, in shutdown logic or when no longer interested:
+chan.unsubscribe(id);
+```
+
+Callbacks fire on the simulation thread during the tick-end drain.
+They run to completion before the front/back swap, so a callback that
+re-emits sees its own events on the next tick (the same one-tick
+delay that `drainTick()` consumers see).
+
+Subscriptions and `drainTick()` consumers coexist — installing a
+subscriber does not steal events from `drainTick`.
+
+The auto-cleanup RAII wrapper (`Subscription` handle that
+auto-unsubscribes on destruction) is a §3.4 batch 7 item; for now,
+games own the lifetime explicitly via `unsubscribe`.

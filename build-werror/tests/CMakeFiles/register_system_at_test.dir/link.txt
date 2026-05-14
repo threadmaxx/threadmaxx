@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/register_system_at_test.dir/link.d CMakeFiles/register_system_at_test.dir/register_system_at_test.cpp.o -o register_system_at_test  ../libthreadmaxx.a

@@ -1,6 +1,7 @@
 #include "threadmaxx/World.hpp"
 
 #include "WorldImpl.hpp"
+#include "threadmaxx/Serialization.hpp"
 
 namespace threadmaxx {
 
@@ -77,6 +78,20 @@ std::span<const ComponentSet> World::componentMasks() const noexcept {
 
 std::size_t World::size() const noexcept {
     return impl_ptr_->storage.size();
+}
+
+WorldSnapshot World::snapshot() const {
+    const auto& s = impl_ptr_->storage;
+    WorldSnapshot out;
+    out.entities      = s.entities();
+    out.transforms    = s.transforms();
+    out.velocities    = s.velocities();
+    out.renderTags    = s.renderTags();
+    out.userData      = s.userData();
+    out.accelerations = s.accelerations();
+    out.parents       = s.parents();
+    out.masks         = s.componentMasks();
+    return out;
 }
 
 } // namespace threadmaxx

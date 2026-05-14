@@ -42,7 +42,7 @@ Behavior:
     (Hamilton product of quaternions)
   - **Scale**: `local.scale` — scale is **not** chained from the parent.
 
-### Why scale doesn't chain
+### Why scale doesn't chain (by default)
 
 A scaled parent applied component-wise to a child position is well
 behaved, but applying it to the child's scale produces non-uniform
@@ -55,6 +55,22 @@ it explicitly in user code.
 This matches what a lot of real engines do for animation rigs (Unreal's
 "World Space Transform" mode) and avoids surprising behavior for the
 common case of a rotating mount with a child that should not stretch.
+
+### Opting in to scale chaining
+
+If your rig is uniform-scaled (or you don't care about the shear case),
+pass `HierarchyConfig{.propagateScale = true}`:
+
+```cpp
+threadmaxx::HierarchyConfig hcfg;
+hcfg.propagateScale = true;
+engine.registerSystem(threadmaxx::makeHierarchySystem(hcfg));
+```
+
+The child's world scale becomes the component-wise product of the
+parent's world scale and `localOffset.scale`. Chains compose normally.
+The default (false) is unchanged from prior batches — existing games
+do not need to change anything.
 
 ## Registration order
 

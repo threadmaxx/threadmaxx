@@ -17,6 +17,7 @@ class IRenderer;
 class IGame;
 class IResourceLoader;
 class ResourceRegistry;
+class ILogger;
 struct FrameSnapshot;
 template <typename Ev> class EventChannel;
 
@@ -100,6 +101,19 @@ public:
     /// @warning The engine does NOT take ownership: the renderer must
     ///          outlive the engine.
     void setRenderer(IRenderer* renderer) noexcept;
+
+    /// Install a log sink. `nullptr` restores the engine's default
+    /// `std::cerr`-backed logger. The engine does NOT take ownership —
+    /// the logger must outlive the engine. Lifecycle messages, system
+    /// registration, and loader errors are routed here.
+    /// @thread_safety Safe to call before `initialize`. Mid-run swaps
+    ///                are honored on the next call site.
+    void setLogger(ILogger* logger) noexcept;
+
+    /// Non-null pointer to the currently-installed logger (or the
+    /// engine's default sink if @ref setLogger was never called).
+    /// @thread_safety Safe from any thread.
+    ILogger& logger() const noexcept;
 
     World&       world() noexcept;
     const World& world() const noexcept;

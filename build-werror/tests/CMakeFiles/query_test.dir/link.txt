@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/query_test.dir/link.d CMakeFiles/query_test.dir/query_test.cpp.o -o query_test  ../libthreadmaxx.a

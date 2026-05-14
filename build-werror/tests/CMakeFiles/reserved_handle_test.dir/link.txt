@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/reserved_handle_test.dir/link.d CMakeFiles/reserved_handle_test.dir/reserved_handle_test.cpp.o -o reserved_handle_test  ../libthreadmaxx.a

@@ -44,13 +44,66 @@ struct FrameSnapshot {
 /// {"tick":N,"step_s":...,"avg_step_s":...,"commit_s":...,
 ///  "jobs":...,"commands":...,"alive":...,
 ///  "systems":[{"name":"...","update_s":...,"avg_update_s":...,
-///              "jobs":...,"commands":...},...],
-///  "job_pool":{"total_jobs":...,"own_pops":...,"steals":...,"workers":...}}
+///              "jobs":...,"commands":...,"wait_s":...,
+///              "peak_queue_depth":...},...],
+///  "job_pool":{"total_jobs":...,"own_pops":...,"steals":...,
+///              "workers":...,"hist":[...]}}
 /// @endcode
 /// Field names match the @ref EngineStats / @ref SystemStats /
 /// @ref JobSystemStats members so a downstream parser can mechanically
 /// map them. `\n`-terminated so multiple snapshots can be appended to
 /// the same stream as JSON Lines.
 void writeJsonLines(std::ostream& os, const FrameSnapshot& snap);
+
+/// Streaming adapter that emits one snapshot at a time as a sequence of
+/// records in the Chrome Trace Event format
+/// (`chrome://tracing` / Perfetto). Construct on a stream; the ctor
+/// writes the opening `[`, every call to @ref emit appends one
+/// `{ph:"X",...}` record per system in the snapshot (plus one for the
+/// step as a whole), and the dtor writes the closing `]`. The output
+/// is a valid JSON array of duration events.
+///
+/// Timestamps are in microseconds relative to construction (Chrome
+/// trace convention). The `tid` (thread id) field is filled with a
+/// per-system stable hash so multiple snapshots line up on the same
+/// row per system; `pid` is always 1.
+///
+/// @code
+/// std::ofstream trace("trace.json");
+/// threadmaxx::ChromeTraceWriter w(trace);
+/// for (int i = 0; i < 600; ++i) {
+///     engine.step();
+///     w.emit(engine.frameSnapshot());
+/// }
+/// // w destructor closes the array
+/// @endcode
+///
+/// @par Output reuse
+///      `ChromeTraceWriter` is one-shot. Move-only — construct a fresh
+///      one for a new file. The destructor writes the closer
+///      unconditionally; do not let exceptions propagate through the
+///      `emit` loop unless you are okay with a truncated trace (still
+///      valid JSON, just missing later events).
+class ChromeTraceWriter {
+public:
+    explicit ChromeTraceWriter(std::ostream& os);
+    ~ChromeTraceWriter();
+
+    ChromeTraceWriter(const ChromeTraceWriter&) = delete;
+    ChromeTraceWriter& operator=(const ChromeTraceWriter&) = delete;
+
+    /// Append one snapshot's events. Emits one record per system plus
+    /// one record describing the whole step (`name:"step"`).
+    void emit(const FrameSnapshot& snap);
+
+private:
+    std::ostream* os_;
+    bool          firstRecord_ = true;
+    // Wall-clock cursor in microseconds. We use a monotonically
+    // increasing fake timeline (each emit's events placed back-to-back
+    // by their measured durations) rather than relying on engine tick
+    // timestamps — the snapshot doesn't carry a wall-clock anchor.
+    double        cursorMicros_ = 0.0;
+};
 
 } // namespace threadmaxx

@@ -5,6 +5,7 @@
 
 #include "threadmaxx/CommandBuffer.hpp"
 #include "threadmaxx/Config.hpp"
+#include "threadmaxx/Logger.hpp"
 #include "threadmaxx/RenderFrame.hpp"
 #include "threadmaxx/Resource.hpp"
 #include "threadmaxx/ScratchArena.hpp"
@@ -61,6 +62,14 @@ public:
     // chunks count; single() does not (it runs inline).
     std::uint64_t jobsSubmitted() const noexcept { return jobsSubmitted_; }
 
+    // §3.1 SystemStats extras. waitSeconds: cumulative time spent in
+    // parallelFor's latch wait — i.e. how long the system's own thread
+    // sat blocked waiting for workers. peakQueueDepth: max value of
+    // JobSystem::outstanding() sampled right after each parallelFor
+    // submit, recording wave congestion the system saw.
+    double        waitSeconds()    const noexcept { return waitSeconds_; }
+    std::uint32_t peakQueueDepth() const noexcept { return peakQueueDepth_; }
+
 private:
     class EngineImpl& engine_;
     const World&      world_;
@@ -69,6 +78,8 @@ private:
     std::vector<CommandBuffer> buffers_;
     std::vector<ScratchArena>  arenas_;   // parallel to buffers_; same length
     std::uint64_t     jobsSubmitted_ = 0;
+    double            waitSeconds_   = 0.0;
+    std::uint32_t     peakQueueDepth_ = 0;
 };
 
 // The full engine state. Hidden behind PImpl from the public Engine class.
@@ -90,6 +101,9 @@ public:
                                  std::unique_ptr<ISystem> system);
     std::size_t registeredSystemCount() const noexcept { return systems_.size(); }
     void setRenderer(IRenderer* renderer) noexcept { renderer_ = renderer; }
+
+    void setLogger(ILogger* logger) noexcept { logger_ = logger; }
+    ILogger& logger() noexcept { return logger_ ? *logger_ : defaultLogger_; }
 
     World&        world()        noexcept { return world_; }
     const World&  world() const  noexcept { return world_; }
@@ -165,6 +179,13 @@ private:
     IRenderer* renderer_ = nullptr;
     IGame*     game_     = nullptr;
     Engine*    publicEngine_ = nullptr;
+
+    // §3.1 logger plumbing. logger_ is the user-installed sink (or null,
+    // meaning "fall back to defaultLogger_"). defaultLogger_ writes to
+    // std::cerr at Warn+. Engine routes lifecycle and loader messages
+    // through whichever is active via the logger() accessor.
+    ILogger*      logger_ = nullptr;
+    DefaultLogger defaultLogger_;
 
     std::uint64_t tick_ = 0;
     double simulationTime_ = 0.0;

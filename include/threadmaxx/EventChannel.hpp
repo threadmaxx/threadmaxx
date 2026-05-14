@@ -3,6 +3,8 @@
 #include "Engine.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <mutex>
 #include <span>
 #include <typeindex>
@@ -31,6 +33,13 @@ namespace threadmaxx {
 template <typename Ev>
 class EventChannel {
 public:
+    /// Identifier for a persistent subscription. Pass to
+    /// @ref unsubscribe to detach. Zero is reserved as the "invalid"
+    /// id; @ref subscribe never returns zero.
+    using SubscriptionId = std::uint64_t;
+    /// Callback signature for persistent subscribers.
+    using Callback       = std::function<void(const Ev&)>;
+
     EventChannel() = default;
 
     EventChannel(const EventChannel&) = delete;
@@ -54,9 +63,67 @@ public:
         return std::span<const Ev>(front_.data(), front_.size());
     }
 
-    /// @internal Engine-called: swap front/back, clear new back.
-    /// Single-threaded; runs on the sim thread at tick boundary.
+    /// Register a persistent callback that the engine invokes once per
+    /// event during the tick-boundary drain — i.e. for each event
+    /// emitted during the just-finished tick. Cheaper than maintaining
+    /// a manual `drainTick()`-in-postStep loop when several systems
+    /// want to observe the same channel.
+    ///
+    /// @return A non-zero id usable with @ref unsubscribe. Subscription
+    ///         order is preserved; callbacks are invoked in
+    ///         subscription order.
+    /// @thread_safety Safe from any thread. The callback itself fires
+    ///                on the sim thread during drain and runs to
+    ///                completion before the front/back swap, so a
+    ///                callback that re-emits sees its own events on
+    ///                the next tick.
+    SubscriptionId subscribe(Callback cb) {
+        std::lock_guard<std::mutex> lk(subscribersMtx_);
+        const SubscriptionId id = ++nextId_;
+        subscribers_.push_back({id, std::move(cb)});
+        return id;
+    }
+
+    /// Remove a previously-registered subscriber. No-op if the id is
+    /// not currently registered. Safe to call from inside a callback.
+    /// @thread_safety Safe from any thread.
+    bool unsubscribe(SubscriptionId id) {
+        std::lock_guard<std::mutex> lk(subscribersMtx_);
+        for (auto it = subscribers_.begin(); it != subscribers_.end(); ++it) {
+            if (it->id == id) {
+                subscribers_.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Number of currently-registered subscribers. Mostly useful for
+    /// tests and HUD readouts.
+    std::size_t subscriberCount() const noexcept {
+        std::lock_guard<std::mutex> lk(subscribersMtx_);
+        return subscribers_.size();
+    }
+
+    /// @internal Engine-called: invoke each subscriber once per event
+    /// in the back buffer (the events about to become readable), then
+    /// swap front/back and clear the new back. Single-threaded; runs
+    /// on the sim thread at tick boundary.
     void drain() {
+        // Snapshot subscribers so a callback that mutates the list
+        // (subscribe/unsubscribe) cannot invalidate our iterator.
+        std::vector<Callback> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(subscribersMtx_);
+            snapshot.reserve(subscribers_.size());
+            for (const auto& s : subscribers_) snapshot.push_back(s.callback);
+        }
+        if (!snapshot.empty()) {
+            std::lock_guard<std::mutex> lk(backMtx_);
+            for (const auto& ev : back_) {
+                for (auto& cb : snapshot) cb(ev);
+            }
+        }
         front_.clear();
         std::lock_guard<std::mutex> lk(backMtx_);
         front_.swap(back_);
@@ -70,9 +137,22 @@ public:
     }
 
 private:
+    struct Subscriber {
+        SubscriptionId id;
+        Callback       callback;
+    };
+
     std::vector<Ev>    front_;       ///< readers consume from here
     std::vector<Ev>    back_;        ///< writers append here, guarded by backMtx_
     mutable std::mutex backMtx_;
+
+    // §3.1 persistent subscriptions. Drain invokes each callback once
+    // per back-buffered event before the front/back swap, so the
+    // callback sees this tick's emits (matching the next tick's
+    // drainTick() consumer view).
+    std::vector<Subscriber> subscribers_;
+    mutable std::mutex      subscribersMtx_;
+    SubscriptionId          nextId_ = 0;
 };
 
 template <typename Ev>
