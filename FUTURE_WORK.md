@@ -524,9 +524,13 @@ weeks.
 #### Deliverables
 
 - **`ISystem::dependencies()`** — optional override returning a
-  `std::span<const TaskTag>`. `TaskTag` is a strongly-typed
-  `std::string_view` (or `std::uint64_t` FNV-1a hash of a literal,
-  for zero-allocation declarations). Default: empty.
+  `std::span<const TaskTag>`. `TaskTag` is a POD `{ std::string_view
+  name; std::uint64_t hash; }` constructed from a string literal at
+  compile time (the FNV-1a hash is computed by the constructor).
+  **Equality uses `name`, not `hash`** — the hash is only the
+  unordered_map bucket selector, so hash collisions become a
+  performance issue (bucket collision) rather than a correctness
+  one. Default: empty.
 - **`ISystem::provides()`** — optional override returning the tags
   this system makes valid for later systems to consume. Default:
   empty.
@@ -554,10 +558,12 @@ weeks.
   default `dependencies()`/`provides()` to empty; the topological
   sort falls back to registration order when no tag edges exist.
   Existing test suite re-runs with no behavior change.
-- **Hash collisions on `TaskTag`.** If we use FNV-1a u64 hashes,
-  collisions are astronomically rare but possible. Mitigation:
-  the engine keeps a `std::unordered_map<hash, std::string_view>`
-  and reports a collision diagnostic via the logger.
+- **Hash collisions on `TaskTag`.** Eliminated by construction —
+  the `TaskTag` carries both the `std::string_view name` and the
+  FNV-1a hash; equality compares the string. A hash collision
+  costs an extra `string_view::operator==` in the unordered_map
+  lookup path, not a wrong-ordering bug. `rebuildWaves` runs only
+  on `registerSystem`, so the extra strcmp is amortized to zero.
 
 ### 3.5 Batch 12 — Cancellation, budgets, priorities (Milestone 5, §6 phase 4)
 
@@ -582,6 +588,21 @@ edge-aware (a cancelled system's `provides` tags propagate as
   tick. The engine still completes any wave currently in flight
   (no torn commits), but skips subsequent waves whose systems are
   marked `Skippable`. `ISystem::skippable()` defaults to false.
+- **`Engine::setSkipPolicy(SkipPolicy)`** — two modes:
+  - `SkipPolicy::Budget` (default, local): skip decisions are made
+    by the engine based on `setTickBudget`. Non-deterministic
+    across machines.
+  - `SkipPolicy::Scripted`: skip decisions come from a queue
+    (`Engine::pushScriptedSkip(tick, systemName)`); the engine
+    skips the named system at the named tick verbatim and does
+    not consult the budget. Deterministic across machines — the
+    server runs `Budget`, broadcasts the decision log, clients
+    replay it via `Scripted`.
+- **`EventChannel<SystemSkipped>`** — emits `{ tick, systemName,
+  reason }` whenever a system is skipped, under either policy.
+  Authoritative servers in networked games drain this channel to
+  build the broadcast log; replays consume it to verify the
+  client matched.
 - **Per-job priority.** `parallelFor` gains an optional
   `JobPriority` parameter (`High` / `Normal` / `Low`). The work-
   stealing scheduler prefers higher-priority jobs in its local
@@ -591,14 +612,24 @@ edge-aware (a cancelled system's `provides` tags propagate as
   pending requests. `LoaderStats` gains a `cancelled` counter.
 - **`tests/cancellation_test.cpp`** — verify `shouldYield` fires
   under budget pressure, skippable systems are skipped without
-  desync, loader cancel paths drop the right pending requests.
+  desync, loader cancel paths drop the right pending requests,
+  AND that a Budget→Scripted replay pair produces byte-identical
+  `WorldSnapshot` hashes.
 
 #### Risks and mitigations
 
-- **Determinism vs. budget.** Budget-based skipping is inherently
-  non-deterministic across machines. Mitigation: budget is OFF by
-  default; turning it on is explicitly opting out of bit-exact
-  reproducibility. Determinism tests run with budget disabled.
+- **Determinism vs. budget.** `SkipPolicy::Budget` is inherently
+  non-deterministic across machines — that's the price of
+  letting the engine react to wall-clock pressure locally.
+  Mitigation comes in two layers: (1) `Budget` is opt-in (the
+  default tick-budget is "no budget" so it never engages
+  automatically); (2) networked games that need lockstep
+  determinism use `SkipPolicy::Scripted` instead, fed from the
+  `SystemSkipped` event log captured on the authoritative peer.
+  The two policies share the `Skippable` system tagging, so
+  switching is a one-line config change. Determinism tests run
+  with `Budget` disabled; a separate test exercises the
+  Budget→Scripted replay path.
 - **Priority inversion.** A high-priority job could be stuck
   waiting for a low-priority dependency. Mitigation: priorities
   are advisory only — the topological sort from batch 11 is still
@@ -637,18 +668,32 @@ batch 6 (parallel commit needs per-chunk locks). Effort ~2 weeks.
 - **Append-only event channels.** Replace the existing mutex-
   protected `emit` with a lock-free MPSC queue per channel. Drain
   is still on the sim thread at tick boundary.
+- **Per-tick commit-stream hash.** A running FNV-1a-64 accumulator
+  fed by every applied mutation (spawn / destroy / setX / migrate)
+  in the commit phase. Exposed on `EngineStats::commitHash` and
+  written to the trace sink. The single-threaded reference path
+  produces the same hash for the same inputs by construction;
+  the sharded path must match it tick-for-tick. Cheap (a few ns
+  per command) and converts any sharding bug from a silent state
+  divergence into a loud first-tick alarm.
 - **`tests/sharded_commit_test.cpp`** — large-scale spawn/destroy
-  churn with the sharded path on, hash-compared against the
-  single-threaded reference path. Both must produce the same world
-  state.
+  churn with the sharded path on, **hash-compared against the
+  single-threaded reference path for 256 ticks**, not one. Both
+  the per-tick `commitHash` AND the final `WorldSnapshot` FNV-1a
+  hash must agree. The 256-tick window catches accumulation bugs
+  the one-tick check would miss.
 
 #### Risks and mitigations
 
 - **Determinism preservation.** Per-chunk parallel commits must
   produce a state byte-identical to the single-threaded reference.
-  Mitigation: commands within a chunk still apply in submission
-  order; the cross-chunk commands fall back to deterministic
-  registration-order serial commit. The test pins this.
+  Mitigation in three layers: (1) commands within a chunk still
+  apply in submission order; (2) cross-chunk commands fall back
+  to deterministic registration-order serial commit; (3) the
+  per-tick `commitHash` above provides a runtime safety net. If a
+  divergence is ever discovered in production, `Config::singleThreadedCommit
+  = true` is the documented immediate fallback — the sharded path
+  is a pure performance opt-in.
 - **False sharing.** Per-chunk buffers risk cache-line contention.
   Mitigation: pad the buffer headers to 64 bytes; standard
   alignas-based fix.
@@ -787,6 +832,16 @@ slots) rather than ship the systems themselves:
   only needs to allow background work to be scheduled.
 - **Editor/tooling/hot-reload UI.** Out of scope until the public API
   has stabilized through Milestone 4.
+- **Math / SIMD helpers.** The engine ships POD `Vec3` / `Quat` /
+  `Transform` for layout compatibility but no arithmetic library.
+  SIMD wrappers (AVX2/NEON helpers, swizzles, fast inverse-sqrt,
+  matrix math) belong in a sibling project — games that already
+  use glm / mathfu / sleef shouldn't have to fight the engine for
+  the math style. What threadmaxx legitimately provides is
+  **layout** — the chunked archetype storage (batch 6) gives
+  contiguous parallel arrays, which is the SIMD enabler. User
+  systems vectorize their inner loops over those arrays however
+  they like.
 
 ## 6. Multithreading and performance roadmap
 
@@ -820,18 +875,21 @@ deliverables, risks, and gating.
 
 Frame cancellation (`SystemContext::shouldYield`), streaming
 cancellation (`IResourceLoader::cancel`), budget-based task
-scheduling (`Engine::setTickBudget` + `ISystem::skippable`), job
-prioritization (`JobPriority` on `parallelFor`). Tracked as
-**batch 12** in §3.5. Builds on batch 11 (cancellation must
-propagate along the DAG).
+scheduling (`Engine::setTickBudget` + `ISystem::skippable`),
+networked-deterministic skip replay (`Engine::setSkipPolicy` +
+`EventChannel<SystemSkipped>`), job prioritization (`JobPriority`
+on `parallelFor`). Tracked as **batch 12** in §3.5. Builds on
+batch 11 (cancellation must propagate along the DAG).
 
 ### Phase 5 — reduce contention in storage — §3.6 batch 13
 
 Read-only snapshots per wave, sharded commit phase keyed on
 destination chunk, append-only event channels, double/triple
-buffering where useful. The per-worker scratch arena from batch 2
-is a down payment. Tracked as **batch 13** in §3.6. Builds on
-batch 6's chunked storage; independent of 11/12.
+buffering where useful, plus a per-tick `commitHash` runtime
+determinism guard so any sharding bug surfaces on the first
+divergent tick. The per-worker scratch arena from batch 2 is a
+down payment. Tracked as **batch 13** in §3.6. Builds on batch
+6's chunked storage; independent of 11/12.
 
 ### Phase 6 — measure everything — §3.7 batch 14
 
@@ -885,10 +943,12 @@ listing them by batch, this is the cross-reference index:
 - Frame task graph (`ISystem::dependencies` / `provides`,
   `taskGraphSnapshot`) — §3.4 batch 11.
 - Cancellation + budgets (`shouldYield`, `setTickBudget`,
-  `JobPriority`, `IResourceLoader::cancel`) — §3.5 batch 12.
+  `setSkipPolicy` + `EventChannel<SystemSkipped>`, `JobPriority`,
+  `IResourceLoader::cancel`) — §3.5 batch 12.
 - Storage contention reduction (sharded commit phase, per-chunk
   command buffers, read-only world snapshot per wave, lock-free
-  event channels) — §3.6 batch 13.
+  event channels, per-tick `commitHash` runtime determinism
+  guard) — §3.6 batch 13.
 - Telemetry ingestion (`ITraceSink`, `FileTraceSink`,
   `HudTraceSink`, `FrameBudgetWatcher`, stall watchdog) — §3.7
   batch 14.
@@ -954,11 +1014,17 @@ Vulkan renderer and the RPG demo — they can ship in any order
 that doesn't violate their stated gating. Batch 14 is best landed
 alongside batch 10 so the RPG demo exercises the telemetry path.
 
-### Milestone 6 — RPG feature readiness
+### Milestone 6 — Integration readiness
 
-Serialization (✅ batch 4), navigation, animation, physics,
-networking. The "endgame" — each is a sibling sub-project on its
-own. `examples/rpg_demo/` (§3.2 batch 10) is the integration proof.
+The public API is stable and wide enough that a real 3D RPG can
+integrate sibling navigation, animation, physics, and networking
+libraries **without engine patches**. The library does not ship
+those features — the hooks for them are what threadmaxx ships:
+`NavAgentRef`, `AnimationStateRef`, `PhysicsBodyRef`, deterministic
+commit, stable entity IDs, snapshot serialization (✅ batch 4),
+event channels, hot reload. `examples/rpg_demo/` (§3.2 batch 10)
+is the integration proof — when the demo runs without a single
+engine-side edit, this milestone is closed.
 
 ## 9. Engineering priorities
 
