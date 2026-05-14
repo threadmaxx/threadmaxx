@@ -3,6 +3,8 @@
 #include "WorldImpl.hpp"
 #include "threadmaxx/Serialization.hpp"
 
+#include <algorithm>
+
 namespace threadmaxx {
 
 World::World() : impl_ptr_(std::make_unique<internal::WorldImpl>(1024)) {}
@@ -130,6 +132,29 @@ std::span<const ComponentSet> World::componentMasks() const noexcept {
 
 std::size_t World::size() const noexcept {
     return impl_ptr_->storage.size();
+}
+
+std::vector<ArchetypeSignature> World::archetypeSignatures() const {
+    const auto masks = impl_ptr_->storage.componentMasks();
+    std::vector<ArchetypeSignature> out;
+    // Real-world archetype counts in a typical game are small (under a
+    // few dozen). Linear search over a vector beats a hash map here for
+    // both code size and steady-state cache behavior.
+    out.reserve(8);
+    for (const auto& m : masks) {
+        auto it = std::find_if(out.begin(), out.end(),
+            [&](const ArchetypeSignature& s) { return s.mask.bits() == m.bits(); });
+        if (it == out.end()) {
+            out.push_back(ArchetypeSignature{m, 1});
+        } else {
+            ++it->count;
+        }
+    }
+    std::sort(out.begin(), out.end(),
+        [](const ArchetypeSignature& a, const ArchetypeSignature& b) {
+            return a.mask.bits() < b.mask.bits();
+        });
+    return out;
 }
 
 WorldSnapshot World::snapshot() const {

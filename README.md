@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 52 tests pin the
+minimal; the internals are PImpl'd so they can change. 55 tests pin the
 documented invariants.
 
 ## Highlights
@@ -71,6 +71,18 @@ documented invariants.
 - **`MaskCache` + `forEachWithCached`.** Opt-in: rebuild a cached
   index list in `preStep`, iterate it in `update` without re-testing
   the mask. Pure perf win on stable-shape queries.
+- **Generic per-component transitions.**
+  `cb.addComponent<T>(e, value)` / `cb.removeComponent<T>(e)` are
+  uniform templated entries across every built-in data component.
+  `addComponent` always attaches the presence bit, regardless of
+  per-type auto-bit rules. Forward-compatible with the upcoming
+  §3.1 batch-6 archetype refactor — the signature stays, the
+  implementation will switch from "flip a bit" to "migrate the
+  entity between archetype chunks."
+- **Archetype signatures.** `World::archetypeSignatures()` returns
+  every distinct per-entity `ComponentSet` currently live, with
+  counts. Useful for HUD/profiling today; the natural building
+  block of `forEachChunk` after batch-6 lands.
 - **Built-in hierarchy.** `Parent` component + a `HierarchySystem`
   factory that propagates world transforms in one DFS pass.
 - **Typed resource registry.** `ResourceId<T>` + a thread-safe
@@ -269,7 +281,7 @@ include/threadmaxx/    public API (20 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 52 no-dependency tests under CTest
+tests/                 55 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

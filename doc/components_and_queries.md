@@ -105,6 +105,29 @@ How the mask gets set:
   cover. Don't use it to set bits the underlying value doesn't justify —
   the engine doesn't validate consistency.
 - `addTag` / `removeTag` are the single-bit composable forms.
+- `addComponent<T>(e, value)` / `removeComponent<T>(e)` are the generic
+  templated entries (§3.1 batch-6 prep). `addComponent` always attaches
+  the presence bit, regardless of value semantics — use it when you
+  want a uniform interface that ignores the per-type auto-bit rules.
+
+## Inspecting archetype distribution
+
+`World::archetypeSignatures()` returns a `std::vector<ArchetypeSignature>`
+listing every distinct per-entity `ComponentSet` value currently in the
+world plus the entity count per mask:
+
+```cpp
+for (const auto& [mask, count] : ctx.world().archetypeSignatures()) {
+    std::printf("archetype 0x%llx: %u entities\n",
+                static_cast<unsigned long long>(mask.bits()), count);
+}
+```
+
+The output is sorted by `mask.bits()` ascending for stable ordering
+across runs. Today it's an O(N) scan useful for HUD/profiling ("how
+many distinct archetypes does my world have?"); after §3.1 batch-6's
+chunked storage lands, each row will correspond to a physical archetype
+chunk group and will become O(num archetypes) instead of O(N).
 
 ## The `Component` enum
 

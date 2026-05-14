@@ -54,6 +54,9 @@ set(THREADMAXX_TESTS
     upload_ring_test
     render_passes_test
     build_render_frame_timing_test
+    component_transition_test
+    archetype_signatures_test
+    archetype_storage_stress_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

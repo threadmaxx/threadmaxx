@@ -278,6 +278,39 @@ public:
     /// Inverse of @ref addTag — clears the bit.
     void removeTag(EntityHandle entity, Component tag);
 
+    /// Generic per-component transition (§3.1 batch-6 prep): write the
+    /// value AND unconditionally attach the presence bit. Uniform across
+    /// every built-in data component type.
+    ///
+    /// Unlike the per-type `setX` methods, this method ALWAYS attaches the
+    /// bit, regardless of the value:
+    /// `addComponent<RenderTag>(e, RenderTag{-1})` attaches the RenderTag
+    /// bit even though `setRenderTag` would have cleared it. The semantic
+    /// is "the entity logically carries T from now on"; opt out via
+    /// @ref removeComponent.
+    ///
+    /// Forward-compatible with the upcoming §3.1 batch-6 archetype
+    /// refactor: the API stays the same once chunked storage lands, but
+    /// the implementation will physically migrate the entity into the
+    /// new archetype on commit.
+    ///
+    /// Tag-only categories (`StaticTag`, `DisabledTag`, `DestroyedTag`)
+    /// have no POD value — use @ref addTag for them. This method
+    /// `static_assert`s for tag-only types.
+    template <typename T>
+    void addComponent(EntityHandle entity, const T& value);
+
+    /// Detach component T from the entity by clearing its presence bit
+    /// (§3.1 batch-6 prep). The dense storage slot is left intact in the
+    /// current parallel-array layout; once the archetype refactor lands,
+    /// `removeComponent<T>` will physically migrate the entity out of
+    /// T's storage.
+    ///
+    /// For tag-only categories, use @ref removeTag — this method
+    /// `static_assert`s for tag-only types.
+    template <typename T>
+    void removeComponent(EntityHandle entity);
+
     void reserve(std::size_t n)        { commands_.reserve(n); }
     void clear() noexcept              { commands_.clear(); }
     std::size_t size() const noexcept  { return commands_.size(); }
@@ -291,5 +324,53 @@ public:
 private:
     std::vector<detail::Command> commands_;
 };
+
+template <typename T>
+inline void CommandBuffer::addComponent(EntityHandle entity, const T& value) {
+    if constexpr (std::is_same_v<T, Transform>)              setTransform(entity, value);
+    else if constexpr (std::is_same_v<T, Velocity>)          setVelocity(entity, value);
+    else if constexpr (std::is_same_v<T, RenderTag>)         setRenderTag(entity, value);
+    else if constexpr (std::is_same_v<T, UserData>)          setUserData(entity, value);
+    else if constexpr (std::is_same_v<T, Acceleration>)      setAcceleration(entity, value);
+    else if constexpr (std::is_same_v<T, Parent>)            setParent(entity, value);
+    else if constexpr (std::is_same_v<T, Health>)            setHealth(entity, value);
+    else if constexpr (std::is_same_v<T, Faction>)           setFaction(entity, value);
+    else if constexpr (std::is_same_v<T, AnimationStateRef>) setAnimationStateRef(entity, value);
+    else if constexpr (std::is_same_v<T, PhysicsBodyRef>)    setPhysicsBodyRef(entity, value);
+    else if constexpr (std::is_same_v<T, NavAgentRef>)       setNavAgentRef(entity, value);
+    else if constexpr (std::is_same_v<T, BoundingVolume>)    setBoundingVolume(entity, value);
+    else static_assert(sizeof(T) == 0,
+        "CommandBuffer::addComponent: T must be a built-in data component "
+        "(Transform, Velocity, RenderTag, UserData, Acceleration, Parent, "
+        "Health, Faction, AnimationStateRef, PhysicsBodyRef, NavAgentRef, "
+        "BoundingVolume). Tag-only categories go through addTag.");
+    // Forcibly attach the presence bit. setX paths that already attach
+    // it (Health, Faction, ...) make this a no-op; setX paths that
+    // condition the bit on the value (RenderTag, Parent) get overridden
+    // — addComponent always means "logically present".
+    addTag(entity, detail::bundleComponentBit<T>());
+}
+
+template <typename T>
+inline void CommandBuffer::removeComponent(EntityHandle entity) {
+    if constexpr (std::is_same_v<T, Transform>
+               || std::is_same_v<T, Velocity>
+               || std::is_same_v<T, RenderTag>
+               || std::is_same_v<T, UserData>
+               || std::is_same_v<T, Acceleration>
+               || std::is_same_v<T, Parent>
+               || std::is_same_v<T, Health>
+               || std::is_same_v<T, Faction>
+               || std::is_same_v<T, AnimationStateRef>
+               || std::is_same_v<T, PhysicsBodyRef>
+               || std::is_same_v<T, NavAgentRef>
+               || std::is_same_v<T, BoundingVolume>) {
+        removeTag(entity, detail::bundleComponentBit<T>());
+    } else {
+        static_assert(sizeof(T) == 0,
+            "CommandBuffer::removeComponent: T must be a built-in data "
+            "component. Tag-only categories go through removeTag.");
+    }
+}
 
 } // namespace threadmaxx

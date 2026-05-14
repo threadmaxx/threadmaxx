@@ -77,6 +77,47 @@ Two setters update the per-entity component mask:
 Every other setter writes the value without touching the mask.
 `setComponentMask` is the escape hatch when none of those rules fit.
 
+## Per-component transitions (§3.1 batch-6 prep)
+
+Two generic templated entry points sit alongside the per-type setters:
+
+```cpp
+template <typename T>
+void addComponent(EntityHandle, const T& value);   // attach T
+
+template <typename T>
+void removeComponent(EntityHandle);                // detach T
+```
+
+`addComponent<T>(e, value)` writes the dense value AND **unconditionally**
+sets the presence bit for `T`. Unlike `setRenderTag` (which clears the
+bit if `meshId < 0`) and `setParent` (which clears the bit if the
+parent handle is invalid), `addComponent` always means "the entity
+logically carries T from now on." Pick the right tool:
+
+| You want                                | Call                              |
+|-----------------------------------------|-----------------------------------|
+| Write value, let the value decide the bit | `cb.setRenderTag(e, ...)`         |
+| Write value, always attach the bit      | `cb.addComponent<RenderTag>(e, ...)` |
+| Detach the component                    | `cb.removeComponent<RenderTag>(e)` |
+
+`removeComponent<T>(e)` clears the presence bit. In today's parallel-
+array storage the dense slot is left intact (a future read via
+`tryGetT(e)` returns the stale value); once §3.1 batch-6's chunked
+storage lands, `removeComponent` will physically migrate the entity
+out of `T`'s storage and `tryGetT` will return nullptr after the
+transition. Game code should treat the bit as the source of truth
+(use `World::has<T>(e)` rather than relying on the dense slot).
+
+Tag-only categories (`StaticTag`, `DisabledTag`, `DestroyedTag`) have
+no POD value, so `addComponent<DisabledTag>` won't compile — use
+`addTag(e, Component::DisabledTag)` / `removeTag(e, ...)` instead.
+
+The generic API is the forward-compatible shape: the §3.1 batch-6
+archetype refactor will preserve these two signatures while moving
+the implementation from "flip a bit" to "migrate the entity between
+archetype chunks."
+
 ## How commit ordering works
 
 ```

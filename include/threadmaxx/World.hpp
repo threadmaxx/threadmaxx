@@ -8,10 +8,24 @@
 #include <memory>
 #include <span>
 #include <type_traits>
+#include <vector>
 
 namespace threadmaxx { struct WorldSnapshot; }
 
 namespace threadmaxx {
+
+/// One row of @ref World::archetypeSignatures. Each row describes a
+/// distinct per-entity @ref ComponentSet currently in use and how many
+/// live entities carry exactly that mask.
+///
+/// In the current parallel-array `EntityStorage`, all entities live in
+/// one flat dense range and this is a profiling/inventory helper. After
+/// the §3.1 batch-6 archetype refactor, each signature here will
+/// correspond to a physical archetype chunk group.
+struct ArchetypeSignature {
+    ComponentSet  mask  = {};
+    std::uint32_t count = 0;
+};
 
 namespace internal { class WorldImpl; }
 
@@ -117,6 +131,19 @@ public:
     /// commits (run it from `postStep` or after `engine.step()` returns,
     /// not from inside a wave system's `update`).
     WorldSnapshot snapshot() const;
+
+    /// Inventory of distinct per-entity @ref ComponentSet values currently
+    /// live in the world, with per-mask counts (§3.1 batch-6 prep).
+    ///
+    /// O(N) over live entities, returned sorted by `mask.bits()` ascending
+    /// (so output ordering is stable across runs). Useful right now for
+    /// HUD/profiling — "how many distinct archetypes does my world
+    /// have?". Once the chunk-storage refactor lands, each row will
+    /// correspond directly to a physical archetype chunk group.
+    ///
+    /// Not thread-safe against concurrent commits; same caveat as
+    /// @ref snapshot.
+    std::vector<ArchetypeSignature> archetypeSignatures() const;
 
     /// @internal Engine-internal access; do not call from game code.
     internal::WorldImpl& impl_() noexcept { return *impl_ptr_; }
