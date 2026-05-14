@@ -17,23 +17,25 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-14 (Batches 5, 7, 8 and the batch-6a prep
-slice have landed; batch 6 — the chunked-storage refactor — is the
-only remaining Milestone 2 item. Batch 5 widened the data model;
-batch 7 shipped resource & event maturity for Milestone 3 —
-refcounted handles, hot-reload protocol, blocking preload, RAII
-event subscriptions, loader stats and shutdown hook; batch 8 shipped
-the hierarchical render contract for Milestone 4 prep — cameras,
-lights, per-pass draw bins, debug geometry, `buildRenderFrame`
-lifecycle hook, visibility culling helpers, instance buffer layout
-helper, per-frame upload ring; batch 6a (this refresh) shipped the
-non-storage parts of §3.1 batch 6 — generic per-component transition
-API (`addComponent<T>` / `removeComponent<T>` on `CommandBuffer`),
-`World::archetypeSignatures()` profiling helper, and the storage-
-churn determinism stress test that the chunked-storage refactor must
-preserve. The §3.1 plan is also rewritten with a file-level
-five-phase migration sketch so the actual refactor can land
-incrementally rather than as one big-bang change.).
+Last refreshed: 2026-05-14 (Batches 5, 6, 6a, 7, and 8 have all
+landed. Milestone 2 is closed except for the user-extension hook
+`UserComponent<T>`, now tracked as batch 6b. Batch 5 widened the
+data model; batch 6a shipped the public-API half of the chunked-
+storage refactor; batch 6 (this refresh) landed the chunked archetype
+storage itself — `EntityStorage` is now backed by `ArchetypeChunk`s
+keyed by `ComponentSet` mask; mask edits physically migrate entities
+between chunks; legacy flat dense spans (`World::transforms()` etc.)
+are reconstructed lazily via a stitched cache; `tryGetT(e)` returns
+`nullptr` after `removeComponent<T>` (mask is the source of truth);
+`forEachChunk<Required...>` is the new public chunk-iteration helper;
+`buildRenderFrame()` was migrated to chunk-level filtering. Batch 7
+shipped resource & event maturity for Milestone 3 — refcounted
+handles, hot-reload protocol, blocking preload, RAII event
+subscriptions, loader stats and shutdown hook. Batch 8 shipped the
+hierarchical render contract for Milestone 4 prep — cameras, lights,
+per-pass draw bins, debug geometry, `buildRenderFrame` lifecycle
+hook, visibility culling helpers, instance buffer layout helper,
+per-frame upload ring.).
 
 ## 1. Target outcome
 
@@ -56,12 +58,18 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Seven batches plus a prep slice have landed. Batches 1–3 brought
+Eight batches plus a prep slice have landed. Batches 1–3 brought
 **Milestone 1** to completion on 2026-05-13; batch 4 (2026-05-14)
 closed out the M1 polish and seeded the tracing maturity batches 5+
 build on; batch 5 (2026-05-14) widened the data model for Milestone
 2 — six new POD components, three tag-only categories, a 64-bit
-`ComponentSet`, and the `MaskCache` opt-in fast path; batch 7
+`ComponentSet`, and the `MaskCache` opt-in fast path; batch 6a
+(2026-05-14) shipped the non-storage half of batch 6 — generic
+per-component transition API, archetype signatures helper, and the
+storage-churn determinism stress test; batch 6 (2026-05-14)
+shipped the chunked archetype storage itself, migrating
+`EntityStorage` to `ArchetypeChunk`-keyed dense arrays while
+preserving the public API via a lazy stitched view; batch 7
 (2026-05-14) shipped resource & event maturity for Milestone 3 —
 refcounted handles, hot-reload protocol, loader shutdown hook +
 stats, blocking preload, and an RAII event subscription handle;
@@ -69,23 +77,23 @@ batch 8 (2026-05-14) shipped the hierarchical render contract for
 Milestone 4 prep — cameras, lights, per-pass draw bins, debug
 geometry, the `buildRenderFrame` lifecycle hook, visibility-
 culling helpers, an instance-buffer layout helper, and a per-frame
-upload ring; batch 6a (2026-05-14) shipped the non-storage parts
-of batch 6 — generic per-component transition API, archetype
-signatures helper, and a determinism stress test. All shipped
-items were pure additions to the public API; the only removal was
-an internal dead field on `CmdSpawn` (batch 3). Detailed
-per-feature notes live in `doc/` and `CLAUDE.md`.
+upload ring. All shipped items were pure additions to the public
+API or behavior-preserving internal refactors; the only removal was
+an internal dead field on `CmdSpawn` (batch 3). Detailed per-feature
+notes live in `doc/` and `CLAUDE.md`.
 
-Note on numbering: batch 6 (chunked storage refactor) is still
-planned in §3.1. Batches 7 and 8 landed first because §3.1's own
-deferral guidance ("intentionally deferred until the renderer-side
-and resource-side contracts have stabilized") pointed at doing the
-resource and render batches before the archetype refactor. Batch 6a
-extracts everything in batch 6 that does NOT require storage
-restructuring — the public API surface that the storage refactor
-must preserve — so the refactor itself can change implementation
-without churning the public API. The batch numbers reflect the
-*planned* sequence, not the order they shipped.
+Note on numbering: batches 7 and 8 landed before batch 6 because
+§3.1's own deferral guidance ("intentionally deferred until the
+renderer-side and resource-side contracts have stabilized") pointed
+at doing the resource and render batches before the archetype
+refactor. Batch 6a extracted everything in batch 6 that does NOT
+require storage restructuring — the public API surface that the
+storage refactor must preserve — so the refactor itself could change
+implementation without churning the public API. Batch 6 then shipped
+the chunked-storage refactor itself in one go, leaving
+`UserComponent<T>` (the user-extensible dense array hook) as a
+follow-on slice tracked in §3.1 as batch 6b. The batch numbers
+reflect the *planned* sequence, not the order they shipped.
 
 ### Batch 1 — instrumentation, sharding, presence-aware queries
 
@@ -201,10 +209,10 @@ additions are header-only or pure extensions to existing files.
   and `setParent` (auto-clears on invalid parent handle):
   `addComponent` always means "the entity logically carries T."
 - **`CommandBuffer::removeComponent<T>(e)`** — detach by clearing
-  the presence bit. In today's parallel-vector storage the dense
-  slot is left intact (callers should treat the bit, not the slot,
-  as the source of truth); the chunked-storage refactor will
-  physically migrate the entity, and `tryGetT(e)` will return
+  the presence bit. In batch-6a's parallel-vector storage the
+  dense slot is left intact (callers treat the bit, not the slot,
+  as the source of truth); batch 6 then made `removeComponent`
+  physically migrate the entity, and `tryGetT(e)` now returns
   `nullptr` after the transition.
 - Both methods are header-only inline templates in
   `CommandBuffer.hpp`; tag-only categories trip a `static_assert`
@@ -212,8 +220,9 @@ additions are header-only or pure extensions to existing files.
 - **`World::archetypeSignatures()`** — read-only inventory: a
   `std::vector<ArchetypeSignature>` of distinct per-entity
   `ComponentSet` values currently live, with per-mask counts.
-  Sorted by `mask.bits()` ascending for stable ordering. O(N)
-  today; after batch 6 it'll be O(num archetypes).
+  Sorted by `mask.bits()` ascending for stable ordering. O(N) in
+  batch 6a; batch 6 dropped it to O(num archetypes) by reading
+  straight from the table.
 - **`tests/archetype_storage_stress_test.cpp`** — the determinism
   baseline the storage refactor must preserve. 8192 entities, 24
   ticks of spawn / per-tick `addComponent`+`removeComponent` on
@@ -229,6 +238,73 @@ additions are header-only or pure extensions to existing files.
   step. `README.md` test count 52 → 55.
 
 55 tests pin the documented invariants.
+
+### Batch 6 — Chunked archetype storage (Milestone 2)
+
+Shipped 2026-05-14. The disruptive part of the original batch-6
+plan: replacing `EntityStorage`'s parallel `std::vector`s with
+archetype-keyed chunks. Public-API signatures locked down by batch
+6a were preserved bit-for-bit; the test suite's determinism
+baselines hash-match run-to-run (the stress test asserts h1 == h2,
+unchanged).
+
+- **`ArchetypeChunk` + `ArchetypeTable`** —
+  `include/threadmaxx/internal/Archetype.hpp` defines the per-mask
+  dense storage. One chunk per unique `ComponentSet`; only the
+  component vectors whose bits appear in the chunk's mask are
+  populated. `ArchetypeTable` owns the chunk list and the
+  `mask.bits() → chunk index` lookup map.
+- **`EntityStorage` rewired.** Slots now carry `(archetypeIndex,
+  row)` instead of `denseIndex`; spawn/destroy/mut* delegate to
+  `ArchetypeTable::insert` / `removeSwapPop` / `migrate`. The
+  reservation lifecycle (§3.5) is unchanged: a reserved slot
+  occupies no chunk row, and `materializeReserved` is the path that
+  inserts into the destination archetype.
+- **`EntityStorage::setMaskAndMigrate(handle, newMask)`** — the
+  commit-phase entry point for every mask change. The `addTag` /
+  `removeTag` / `setComponentMask` / `setRenderTag` (when meshId
+  crosses 0) / `setParent` (when parent validity flips) / the §3.1
+  batch-5 setters when they add their bit, all funnel through this.
+  A self-mask migration is a no-op fast path.
+- **Public `forEachChunk<Required...>(ctx, fn)`** in `Query.hpp`.
+  Iterates archetype chunks whose mask is a superset of the
+  required set, hands the callback contiguous `std::span`s for the
+  chunk's entities and each requested component, runs one job per
+  matching chunk via the existing `parallelFor` machinery.
+- **`World::archetypeChunkCount()` / `archetypeChunk(i)`** — the
+  raw chunk-access primitives that `forEachChunk` is built on.
+  Game code that needs a custom traversal strategy uses these
+  directly without going through `impl_()`.
+- **Lazy stitched view.** `EntityStorage::ensureStitched()` rebuilds
+  flat per-component vectors on demand so the legacy
+  `World::transforms()` / `velocities()` / etc. spans keep working;
+  any mutation marks the cache dirty and the next read pays the
+  rebuild. Single-archetype worlds (the common case at world boot)
+  pay zero stitching overhead because there's only one chunk to
+  copy.
+- **Render-frame builder migrated to chunks.**
+  `EngineImpl::buildRenderFrame()` now walks
+  `world.archetypes().chunks()` and skips entire chunks lacking
+  `RenderTag` or carrying `DisabledTag` — the per-row mask test
+  disappeared.
+- **`tryGetT(e)` now returns `nullptr` when the entity's archetype
+  doesn't carry T.** This is the post-removeComponent behavior the
+  batch-6a doc promised. `tests/component_transition_test.cpp` was
+  updated to assert the new contract.
+- **`tests/foreach_chunk_test.cpp`** — chunk iteration contract
+  test (multi-archetype world, per-query chunk visits + entity
+  coverage + empty-result handling).
+- **Doc updates** — `doc/components_and_queries.md` gains "Chunked
+  storage and iteration order" + "forEachChunk" sections;
+  `doc/command_buffers.md` updates the per-component transition
+  section to reflect the new physical-migration semantics;
+  `CLAUDE.md` "Adding a new built-in component" recipe is extended
+  with the chunked-storage steps (touch `ArchetypeChunk`'s vectors,
+  the `if (c.mask.has(...))` branches in `insert`/`removeSwapPop`/
+  `migrate`, `ensureStitched`, and `getChunkSpan`); README test
+  count 55 → 56.
+
+The §3.1 follow-on is `UserComponent<T>` — see batch 6b below.
 
 ### Batch 8 — Render contract expansion (Milestone 4 prep)
 
@@ -341,7 +417,8 @@ grows monotonically. The mapping to milestones (§8):
 | ~~4~~ | ~~Observability + small Milestone-1 polish~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~5~~ | ~~Data model widening~~            | ✅ landed 2026-05-14 — see §2 |
 | ~~6a~~ | ~~Archetype prep (non-storage half of 6)~~ | ✅ landed 2026-05-14 — see §2 |
-| 6     | Chunked archetype storage          | M2                    |
+| ~~6~~ | ~~Chunked archetype storage~~      | ✅ landed 2026-05-14 — see §2 |
+| 6b    | `UserComponent<T>` extension hook  | M2                    |
 | ~~7~~ | ~~Resource & event maturity~~      | ✅ landed 2026-05-14 — see §2 |
 | ~~8~~ | ~~Render contract expansion~~      | ✅ landed 2026-05-14 — see §2 |
 | 9     | Vulkan reference renderer (example) | M4                    |
@@ -349,136 +426,75 @@ grows monotonically. The mapping to milestones (§8):
 
 §3.5 covers the Vulkan defaulting strategy across batches 8–10.
 
-### 3.1 Batch 6 — Chunked archetype storage (Milestone 2)
+### 3.1 Batch 6b — `UserComponent<T>` extension hook (Milestone 2)
 
-The disruptive part of the original batch-6 plan: replacing
-`EntityStorage`'s parallel `std::vector`s with archetype-keyed
-chunks. The public-API parts (`addComponent` / `removeComponent`,
-archetype signatures, stress-test baseline) shipped as batch 6a in
-§2 (2026-05-14); this batch is now a pure internal refactor that
-must preserve those signatures.
+Batch 6 (✅ §2) shipped the chunked archetype storage refactor in
+one go. The only piece of the original §3.1 plan that did NOT land
+in that pass is the user-extensible dense-array hook —
+`UserComponent<T>` — which needs more invasive cross-cutting work
+(type-erased per-component storage in `ArchetypeChunk`, runtime bit
+allocation, and a compile-time→runtime template dispatch bridge for
+the user-side `addComponent<T>` API). It's deliberately scoped as a
+follow-on batch so the chunked-storage refactor itself could land
+clean.
 
-Gating: cleared. Batch 5 widened the mask + added the determinism
-golden test; batch 6a shipped the public surface the refactor must
-preserve plus a churn-stress determinism baseline; batches 7 and 8
-settled the resource/event and render contracts so the API won't
-need to churn again across this refactor. Effort sized at ~2–3
-weeks.
+Gating: cleared. The chunked-storage substrate is in. Effort sized
+at ~1 week.
 
-#### Remaining work
+#### Deliverables
 
-- **Chunk-based `EntityStorage`.** Replace each parallel
-  `std::vector<Foo>` with a per-archetype `ArchetypeChunk` (e.g.
-  256 entities per chunk, one chunk-list per unique mask). Within
-  a chunk, dense arrays live contiguously per component.
-- **`forEachChunk<T...>(SystemContext&, fn)`** — iterate chunks
-  whose mask is a superset of `required<T...>()`; per-chunk
-  callback gets contiguous spans of size up to chunk capacity.
-  Drop the per-entity mask test from the hot loop.
-- **Migrate `forEachWith<...>` internally** to iterate matching
-  archetypes (no API change). Existing `MaskCache` users continue
-  to work; the cache becomes a list of (chunkIdx, rowIdx) tuples
-  under the hood.
-- **Make `addComponent` / `removeComponent` physically migrate the
-  entity** between archetype chunk groups during commit. Today's
-  bit-flip-only semantic becomes a swap-and-pop out of the source
-  chunk plus a push into the destination chunk. The public
-  signature is unchanged (the §3.1 batch-6a slice locked it down).
-- **`UserComponent<T>` extension hook** (deferred from batch 5).
-  Header-only `template<class T>` registry that lets game code
-  declare additional dense arrays under engine-managed lifecycle,
-  parallel to the built-ins. Each archetype chunk needs a
-  type-erased per-component array already; user components extend
-  the registry the chunks key into.
-- **Snapshot stitching.** `World::snapshot()` must produce a
-  single linear array per component for backwards compatibility
-  with the existing serializer (and the determinism golden hash).
-  Flatten across chunks during snapshot construction; entity order
-  is the iteration order over archetype-chunks → row indices.
-  Bump `kWorldSnapshotVersion` only if the order changes (it
-  shouldn't, if the existing stress-test hash is preserved).
-
-#### File-level migration plan (five phases)
-
-Each phase is independently shippable, runs the existing test
-suite green, and preserves the batch-6a determinism stress hash.
-
-1. **Phase 1 — Introduce ArchetypeChunk + ArchetypeTable as
-   internal types, one chunk-list, single archetype matching
-   `ComponentSet::all()`.** New files:
-   `src/Archetype.hpp` / `src/Archetype.cpp`. `EntityStorage` is
-   rewired to delegate to `ArchetypeTable` but it still appears
-   as one giant archetype that holds every entity (preserving
-   current parallel-vector semantics). All existing tests pass
-   unchanged; the determinism stress hash is identical.
-2. **Phase 2 — Per-mask archetypes.** `EntityStorage::spawn`
-   picks (or creates) the archetype keyed by the entity's
-   `initialMask`. `destroy` swaps within the originating
-   chunk. Iteration helpers (`World::transforms()` etc.) still
-   return a stitched view; new helper
-   `World::forEachChunkInternal_(mask, fn)` exists for engine
-   use. The stress hash holds (entity ordering is unchanged for
-   any single archetype because spawn order is preserved within
-   a chunk-list).
-3. **Phase 3 — Public `forEachChunk<T...>`.** Add to `Query.hpp`;
-   document in `doc/components_and_queries.md`. Add
-   `tests/foreach_chunk_test.cpp`. Migrate the engine's own
-   `buildRenderFrame()` loop to use chunk iteration (skip
-   `DisabledTag` chunk-wide via the chunk's mask).
-4. **Phase 4 — Physical migration on `addComponent` /
-   `removeComponent`.** Commit-phase handler for those commands
-   now: swap-and-pop out of the source archetype's chunk, push
-   into the destination archetype's chunk, update the entity's
-   slot record. The slot bookkeeping that batch 6a left intact
-   stays; what changes is what "dense index" points to (now
-   archetype + chunk + row). After this phase, `tryGetT(e)`
-   correctly returns `nullptr` if T was removed.
-   `tests/component_transition_test.cpp` gets one more `CHECK`
-   for the post-remove `nullptr` case.
-5. **Phase 5 — `UserComponent<T>`.** Add `Engine::registerUserComponent<T>()`;
-   each archetype chunk gains a parallel `std::vector<T>` slot
-   for any registered user component whose bit is in the
-   chunk's mask. The user-side `addComponent<T>` template
-   already dispatches via `bundleComponentBit`; extend the
-   dispatch to recognize user-registered types. New test
-   `tests/user_component_test.cpp`.
+- **Type-erased per-chunk storage.** Extend `ArchetypeChunk` with a
+  parallel `std::vector<UserComponentStorage>`, where each entry
+  holds a `std::vector<std::byte>` plus stride and copy/destroy
+  hooks (or `std::unique_ptr<IUserComponentArray>` with virtual
+  overrides — both shapes work). Indexed by user-component index,
+  not bit, since user types are runtime-keyed.
+- **`Engine::registerUserComponent<T>() -> UserComponentId`.**
+  Allocates a unique bit (≥16, mapped against the spare 48 bits in
+  `ComponentSet`), associates it with `typeid(T)`, and remembers
+  the value's stride + copy/destroy hooks. The returned token is
+  what the user passes to commands that need runtime dispatch.
+- **`CommandBuffer::addComponent<T>(e, value)` /
+  `removeComponent<T>(e)` extended.** The template specializations
+  for user-registered types take an indirect path: at call time,
+  look up the bit via the engine's registry (or a TLS-cached copy
+  of it) and emit a `CmdAddUserComponent` / `CmdRemoveUserComponent`
+  carrying the type-erased value and `UserComponentId`. Tag-only
+  semantics stay as-is.
+- **`World::has<T>(e)` / `tryGet<T>(e)` / `forEachChunk<T...>`
+  extended** to recognize user-registered types via the same
+  registry lookup.
+- **Migration handles user components.** `ArchetypeTable::migrate`
+  walks both the built-in component bits AND the user-component
+  bits when projecting the moved entity's values; storage for
+  user components is allocated lazily in each chunk that carries
+  the bit (no per-chunk cost when the user-component bit is
+  absent).
+- **`tests/user_component_test.cpp`** — game code declares a custom
+  POD, adds it via `cb.addComponent<MyType>`, asserts presence and
+  value round-trips through migration.
 
 #### Risks and mitigations
 
-- **Cache locality regression for tiny worlds.** Mitigate by
-  sizing chunks at 256 entities — at <256 entities, the
-  layout is identical to today's. The Phase-1 single-archetype
-  step also gives us a fallback knob (keep one big chunk if
-  total entity count is below a threshold).
-- **Snapshot ordering drift.** The batch-6a stress test is the
-  guard. If a phase changes snapshot order, the hash diverges
-  and the test fails on CI immediately. The plan is to preserve
-  spawn-order-within-archetype so each per-component dense view
-  stays bit-identical across the refactor.
-- **Hierarchy / DFS lookups.** The hierarchy system reads
-  `parents()` as a flat span and lookups go through the
-  per-entity dense index. With chunked storage, the per-entity
-  index becomes (chunk, row); the DFS-with-memoization layer
-  needs to use slot indices (already stable) rather than dense
-  indices. One self-contained change.
-- **Iteration order for `forEach<T...>`.** Today: dense order
-  = spawn order. After: iteration order is archetype, then
-  spawn-order within archetype. Most user code shouldn't care
-  (commands commit in submission order regardless), but the
-  determinism golden test in batch 5 may need a refresh — re-run
-  with the new ordering and re-bake the comparison hash.
-- **Public dense spans (`World::transforms()` etc.).** Two
-  options: (a) deprecate in favor of `forEachChunk`, (b) keep
-  them by lazily building a stitched view. Pick (b) for batch 6
-  so no public removals happen; mark them `[[deprecated]]` at
-  the end of phase 3 with a hint at `forEachChunk`. Removal is
-  a later batch's decision.
-
-This is still the most disruptive batch left in the plan, but the
-batch-6a slice locked down the public-API parts so the refactor
-can land without API churn. With all three contracts (data model,
-resource/event, render) stable and a determinism stress baseline
-in place, the refactor is ready when someone picks it up.
+- **Template dispatch from compile-time to runtime.** `addComponent<T>`
+  is currently a header-only inline that dispatches via
+  `if constexpr` on `T`. For user types, we can't pick the bit at
+  compile time. Mitigation: add a `requires
+  std::is_same_v<T, ...> || engine::IsUserComponent<T>` constraint
+  and fall through to a runtime lookup path that emits a
+  type-erased command. The compile-time path for built-ins is
+  unchanged.
+- **Serialization of user components.** Out of scope for batch 6b;
+  user code that wants to round-trip `UserComponent<T>` values
+  through `WorldSnapshot` plugs in a side-channel
+  `serialize(ostream, span<const T>)` overload. The engine doesn't
+  need to know about it. Documented in `doc/serialization.md`.
+- **Stable bit assignment across runs.** Registration order
+  determines bit assignment, so the same code path produces the
+  same bits in two runs of the same binary — deterministic enough
+  for the stress-test pattern. Cross-process or cross-version stability
+  requires the game to remember its own user-component → bit map;
+  the engine does not persist it.
 
 ### 3.2 Batch 9 — Vulkan reference renderer (Milestone 4)
 
@@ -709,8 +725,10 @@ listing them by batch, this is the cross-reference index:
 - Determinism N-tick golden test — ✅ batch 5.
 - Generic `addComponent<T>` / `removeComponent<T>` on
   `CommandBuffer` + `World::archetypeSignatures()` — ✅ batch 6a.
-- Chunked archetype storage + `forEachChunk` + `UserComponent<T>`
-  — §3.1 batch 6.
+- Chunked archetype storage + `forEachChunk` +
+  `World::archetypeChunkCount()` / `archetypeChunk(i)` + lazy
+  stitched view + chunk-level render-frame builder — ✅ batch 6.
+- `UserComponent<T>` extension hook — §3.1 batch 6b.
 - Pass-aware `RenderFrame` + `buildRenderFrame` hook + render
   helpers (Camera, Light, DrawItem, Visibility, InstanceBufferLayout,
   UploadRing) — ✅ batch 8.
@@ -742,8 +760,11 @@ three tag-only categories, the `MaskCache` opt-in, and the N-tick
 determinism golden test. Batch 6a (✅) shipped the public-API
 half of batch 6 — generic per-component transition API,
 archetype signatures, and the determinism stress baseline.
-§3.1 batch 6 (chunked archetype storage, `forEachChunk`,
-`UserComponent<T>`) closes the milestone.
+Batch 6 (✅) shipped the chunked archetype storage —
+`ArchetypeChunk` / `ArchetypeTable`, physical mask-change
+migration, `forEachChunk<Required...>`, and chunk-level filtering
+in `buildRenderFrame`. The only remaining piece is §3.1 batch 6b
+(`UserComponent<T>`), which closes the milestone.
 
 ### Milestone 3 — Resource and event layers  ✅ done
 
@@ -801,14 +822,15 @@ When implementing future work, prioritize in this order:
 
 Today: "stable serialization", "expose profiling data", and
 "deterministic mode declared" are in (batch 4); the data-model
-widening that the §3.1 archetype refactor depends on is in
-(batch 5); "stream assets asynchronously" is in (batch 7 —
-multi-stage loader pipeline, hot reload, refcounted handles,
-blocking preload); the hierarchical render contract that
-`examples/vulkan_renderer/` will consume is in (batch 8 — cameras,
-lights, per-pass bins, debug overlay, `buildRenderFrame` hook,
-visibility helpers, instance/upload helpers); the rest depends on
-§3 batches 6, 9–10.
+widening that the archetype refactor depended on is in (batch 5);
+the chunked archetype storage itself plus `forEachChunk` are in
+(batch 6, with `UserComponent<T>` as the §3.1 batch 6b follow-on);
+"stream assets asynchronously" is in (batch 7 — multi-stage loader
+pipeline, hot reload, refcounted handles, blocking preload); the
+hierarchical render contract that `examples/vulkan_renderer/` will
+consume is in (batch 8 — cameras, lights, per-pass bins, debug
+overlay, `buildRenderFrame` hook, visibility helpers,
+instance/upload helpers); the rest depends on §3 batches 6b, 9–10.
 
 ## 11. Final note
 
@@ -822,21 +844,23 @@ plus the batch-5 data-model widening (64-bit mask, six new POD
 components, three tag-only categories, MaskCache, N-tick determinism
 golden test), the batch-7 resource/event maturity (refcounted
 handles, hot reload, loader stats / onShutdown, blocking preload,
-RAII event subscriptions), the batch-8 render contract
-(hierarchical `RenderFrame`, `buildRenderFrame` hook, Camera /
-Light / DrawItem / debug PODs, visibility helpers, instance
-buffer layout, upload ring), and the batch-6a archetype prep
-(generic `addComponent` / `removeComponent`, archetype
-signatures, determinism stress baseline) confirm that the
-layering is sound — every one landed as a pure addition without
-churning the public API.
+RAII event subscriptions), the batch-8 render contract (hierarchical
+`RenderFrame`, `buildRenderFrame` hook, Camera / Light / DrawItem /
+debug PODs, visibility helpers, instance buffer layout, upload ring),
+the batch-6a archetype prep (generic `addComponent` /
+`removeComponent`, archetype signatures, determinism stress baseline),
+and the batch-6 chunked archetype storage itself (`ArchetypeChunk` +
+`ArchetypeTable`, physical mask-change migration, `forEachChunk`,
+chunk-filtered render-frame builder, lazy stitched view) confirm
+that the layering is sound — every one landed without churning the
+public API, even the deep batch-6 internal refactor.
 
-With the resource/event and render-contract surfaces stable and
-the public half of the archetype refactor already in (batch 6a),
-the only remaining Milestone 2 work is the internal storage
-restructure itself (§3.1 batch 6). Its public-API contract is
-locked down; the migration plan in §3.1 is five small phases
-each independently shippable. The §3 plan continues to treat the
-Vulkan reference renderer as an example, not a library
-dependency. That keeps the renderer-agnostic guarantee intact
-while still letting M4+ work target a real, modern API.
+The only remaining Milestone 2 work is `UserComponent<T>` (§3.1
+batch 6b). With the resource/event, render-contract, AND archetype
+storage all stable, the public API is now wide enough that a real
+game project can be built on top without engine patches — `UserComponent<T>`
+just lets that game add custom dense-array components without
+forking the engine. The §3 plan continues to treat the Vulkan
+reference renderer as an example, not a library dependency. That
+keeps the renderer-agnostic guarantee intact while still letting
+M4+ work target a real, modern API.

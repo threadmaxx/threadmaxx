@@ -5,6 +5,7 @@
 #include "Handles.hpp"
 #include "System.hpp"
 #include "World.hpp"
+#include "internal/Archetype.hpp"
 
 #include <cstdint>
 #include <span>
@@ -263,6 +264,99 @@ void forEachWithCached(SystemContext& ctx, const MaskCache& cache,
                 if (i >= entityCount) continue;  // entity destroyed post-rebuild
                 detail::invokeAt(fn, entities[i], spans, cb, i,
                                  std::index_sequence_for<Components...>{});
+            }
+        });
+}
+
+namespace detail {
+
+template <typename C>
+auto getChunkSpan(const internal::ArchetypeChunk& c) noexcept {
+    if constexpr (std::is_same_v<C, Transform>)              return std::span<const Transform>(c.transforms);
+    else if constexpr (std::is_same_v<C, Velocity>)          return std::span<const Velocity>(c.velocities);
+    else if constexpr (std::is_same_v<C, RenderTag>)         return std::span<const RenderTag>(c.renderTags);
+    else if constexpr (std::is_same_v<C, UserData>)          return std::span<const UserData>(c.userData);
+    else if constexpr (std::is_same_v<C, Acceleration>)      return std::span<const Acceleration>(c.accelerations);
+    else if constexpr (std::is_same_v<C, Parent>)            return std::span<const Parent>(c.parents);
+    else if constexpr (std::is_same_v<C, Health>)            return std::span<const Health>(c.healths);
+    else if constexpr (std::is_same_v<C, Faction>)           return std::span<const Faction>(c.factions);
+    else if constexpr (std::is_same_v<C, AnimationStateRef>) return std::span<const AnimationStateRef>(c.animationStates);
+    else if constexpr (std::is_same_v<C, PhysicsBodyRef>)    return std::span<const PhysicsBodyRef>(c.physicsBodies);
+    else if constexpr (std::is_same_v<C, NavAgentRef>)       return std::span<const NavAgentRef>(c.navAgents);
+    else if constexpr (std::is_same_v<C, BoundingVolume>)    return std::span<const BoundingVolume>(c.boundingVolumes);
+    else static_assert(sizeof(C) == 0,
+        "forEachChunk: component type must be one of the built-in data "
+        "components — Transform, Velocity, RenderTag, UserData, "
+        "Acceleration, Parent, Health, Faction, AnimationStateRef, "
+        "PhysicsBodyRef, NavAgentRef, BoundingVolume.");
+}
+
+} // namespace detail
+
+/// Parallel iteration over archetype chunks whose mask is a superset of
+/// `required<Required...>()` (§3.1 batch 6).
+///
+/// Each invocation of @p fn receives:
+///   - `std::span<const EntityHandle> entities` — the chunk's live
+///     entity handles in row order;
+///   - `std::span<const Required>... componentSpans` — one parallel
+///     span per requested component, all of length
+///     `entities.size()`;
+///   - `CommandBuffer& cb` — the per-job recording buffer.
+///
+/// Compared with @ref forEachWith, this helper:
+///   - skips the per-entity mask test in the hot loop (the chunk's
+///     archetype mask is checked once per chunk, not per row);
+///   - exposes the cache-friendly contiguous-per-archetype layout
+///     directly, so SIMD-friendly inner loops can be written by hand
+///     when the per-row cost matters;
+///   - parallelizes over chunks (one job per chunk) rather than over
+///     entities, so per-chunk work scales naturally with archetype
+///     count.
+///
+/// @code
+/// forEachChunk<Transform, Velocity>(ctx,
+///     [dt](std::span<const EntityHandle> es,
+///          std::span<const Transform> ts,
+///          std::span<const Velocity> vs,
+///          CommandBuffer& cb) {
+///         for (std::size_t i = 0; i < es.size(); ++i) {
+///             Transform next = ts[i];
+///             next.position = ts[i].position + vs[i].linear * dt;
+///             cb.setTransform(es[i], next);
+///         }
+///     });
+/// @endcode
+template <typename... Required, typename F>
+void forEachChunk(SystemContext& ctx, F&& fn) {
+    static_assert(sizeof...(Required) > 0,
+                  "forEachChunk requires at least one required Component");
+    const auto& world = ctx.world();
+    constexpr ComponentSet req = detail::requiredMask<Required...>();
+    const auto chunkCount = world.archetypeChunkCount();
+
+    // Build the matching-chunk index list serially (cheap — typical
+    // archetype counts are a few dozen). Then fan out over the matching
+    // set so each worker processes a whole chunk.
+    std::vector<std::size_t> matching;
+    matching.reserve(chunkCount);
+    for (std::size_t i = 0; i < chunkCount; ++i) {
+        const auto& c = world.archetypeChunk(i);
+        if (c.entities.empty()) continue;
+        if (!c.mask.hasAll(req)) continue;
+        matching.push_back(i);
+    }
+    if (matching.empty()) return;
+
+    const auto matchCount = static_cast<std::uint32_t>(matching.size());
+    ctx.parallelFor(matchCount, /*grain*/ 1,
+        [&world, matching, fn = std::forward<F>(fn)]
+        (Range r, CommandBuffer& cb) mutable {
+            for (std::uint32_t k = r.begin; k < r.end; ++k) {
+                const auto& c = world.archetypeChunk(matching[k]);
+                fn(std::span<const EntityHandle>(c.entities),
+                   detail::getChunkSpan<Required>(c)...,
+                   cb);
             }
         });
 }

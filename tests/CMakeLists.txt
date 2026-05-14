@@ -57,6 +57,7 @@ set(THREADMAXX_TESTS
     component_transition_test
     archetype_signatures_test
     archetype_storage_stress_test
+    foreach_chunk_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

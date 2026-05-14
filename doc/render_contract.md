@@ -74,9 +74,11 @@ the `RenderFrameBuilder` for several reasons:
   architecture.
 
 If a future game does want entity-attached cameras as a built-in
-component, the §3.1 archetype refactor (batch 6) is the right
-moment to add that — by then the storage shape will support multiple
-parallel arrays per archetype efficiently.
+component, the §3.1 batch 6b `UserComponent<T>` extension hook is
+the right moment to add that — chunked archetype storage (✅ §3.1
+batch 6) already supports per-archetype parallel arrays
+efficiently; batch 6b lets game code register additional component
+types without forking the engine.
 
 ## The `buildRenderFrame` hook
 

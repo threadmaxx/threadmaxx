@@ -47,6 +47,7 @@ set(THREADMAXX_PUBLIC_HEADERS
 )
 
 set(THREADMAXX_SOURCES
+    src/Archetype.cpp
     src/EntityStorage.cpp
     src/JobSystem.cpp
     src/CommandBuffer.cpp

@@ -124,10 +124,79 @@ for (const auto& [mask, count] : ctx.world().archetypeSignatures()) {
 ```
 
 The output is sorted by `mask.bits()` ascending for stable ordering
-across runs. Today it's an O(N) scan useful for HUD/profiling ("how
-many distinct archetypes does my world have?"); after §3.1 batch-6's
-chunked storage lands, each row will correspond to a physical archetype
-chunk group and will become O(num archetypes) instead of O(N).
+across runs. As of §3.1 batch 6 (chunked storage), each row corresponds
+to a physical archetype chunk group, so the cost is O(num archetypes)
+rather than O(num entities).
+
+## Chunked storage and iteration order
+
+Internally, every entity lives in exactly one **archetype chunk** —
+a group keyed by a single `ComponentSet`. When an entity's mask
+changes (via `addComponent` / `removeComponent` / `addTag` /
+`removeTag` / `setComponentMask` / `setRenderTag` toggling RenderTag /
+`setParent` toggling Parent), the commit phase physically migrates
+the entity between chunks. As a consequence:
+
+- `tryGetT(e)` returns `nullptr` if the entity's archetype does not
+  carry component `T` (the mask bit is the source of truth — no stale
+  dense slot lingers).
+- The order of `world.entities()` (and every parallel dense span like
+  `transforms()`) is **archetype-creation order × spawn order within
+  archetype**, not global spawn order. Code that relies on a fixed
+  ordinal across ticks should look entities up by `EntityHandle`
+  instead of by dense index.
+- `forEach` and `forEachWith` still iterate every live entity and
+  perform mask filtering per row; the published dense spans are
+  reconstructed lazily by walking the chunks, so single-archetype
+  worlds pay the same cost as the pre-refactor parallel-vector
+  storage.
+- `forEachChunk<T...>` (below) is the preferred way to write tight
+  inner loops: it hands the callback contiguous spans for the
+  matching chunk and skips the per-row mask test entirely.
+
+### `forEachChunk<Required...>`
+
+Parallel iteration over archetype chunks whose mask is a superset of
+`required<Required...>()`. Each invocation of the callable receives
+contiguous spans (one per `Required` component, plus the chunk's
+entity handles and a per-job `CommandBuffer`) so the body can run
+hand-written SIMD-friendly loops without per-row presence checks.
+
+```cpp
+threadmaxx::forEachChunk<Transform, Velocity>(ctx,
+    [dt](std::span<const EntityHandle> es,
+         std::span<const Transform> ts,
+         std::span<const Velocity> vs,
+         CommandBuffer& cb) {
+        for (std::size_t i = 0; i < es.size(); ++i) {
+            Transform next = ts[i];
+            next.position = ts[i].position + vs[i].linear * dt;
+            cb.setTransform(es[i], next);
+        }
+    });
+```
+
+The mask check is done **once per chunk**, not once per entity, and
+the work is fanned out one chunk per worker, so the per-tick fixed
+overhead is proportional to the number of distinct archetypes
+rather than the number of entities. Choose this helper when:
+
+- inner-loop cost matters (transform integration, broad-phase
+  generation, instance packing);
+- the query's required mask is non-trivial (RenderTag+Transform,
+  Health+BoundingVolume, etc.) — chunk-level filtering wins more
+  the sparser the matching set;
+- you want direct access to the chunk's contiguous storage for
+  branch-free SIMD-style loops.
+
+`forEachWith` remains the right tool when the per-row work is heavy
+enough that a single mask test per entity is negligible, or when
+the body needs to react to component absence inside the loop.
+
+Tag-only components (`StaticTag`, `DisabledTag`, `DestroyedTag`)
+cannot appear in the `Required...` pack — they have no dense span
+to project. Use `forEachWith` plus `world.hasTag` if you need to
+filter on a tag.
 
 ## The `Component` enum
 

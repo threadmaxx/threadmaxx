@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 55 tests pin the
+minimal; the internals are PImpl'd so they can change. 56 tests pin the
 documented invariants.
 
 ## Highlights
@@ -75,14 +75,19 @@ documented invariants.
   `cb.addComponent<T>(e, value)` / `cb.removeComponent<T>(e)` are
   uniform templated entries across every built-in data component.
   `addComponent` always attaches the presence bit, regardless of
-  per-type auto-bit rules. Forward-compatible with the upcoming
-  §3.1 batch-6 archetype refactor — the signature stays, the
-  implementation will switch from "flip a bit" to "migrate the
-  entity between archetype chunks."
+  per-type auto-bit rules. As of §3.1 batch 6, `removeComponent<T>`
+  physically migrates the entity out of T's archetype chunk —
+  `tryGetT(e)` returns `nullptr` after a remove.
+- **Chunked archetype storage.** Internally, entities are grouped
+  into `ArchetypeChunk`s keyed by their `ComponentSet`; mask edits
+  swap-and-pop the entity between chunks during commit. Game code
+  iterates with `forEachChunk<Required...>(ctx, fn)` for
+  contiguous-span access without per-row mask tests, or keeps using
+  the legacy flat dense spans (`world.transforms()` etc.) — they're
+  reconstructed lazily across chunks.
 - **Archetype signatures.** `World::archetypeSignatures()` returns
   every distinct per-entity `ComponentSet` currently live, with
-  counts. Useful for HUD/profiling today; the natural building
-  block of `forEachChunk` after batch-6 lands.
+  counts. O(num archetypes) — straight from the table.
 - **Built-in hierarchy.** `Parent` component + a `HierarchySystem`
   factory that propagates world transforms in one DFS pass.
 - **Typed resource registry.** `ResourceId<T>` + a thread-safe

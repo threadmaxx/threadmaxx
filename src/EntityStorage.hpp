@@ -1,22 +1,35 @@
 #pragma once
 
+#include "threadmaxx/internal/Archetype.hpp"
 #include "threadmaxx/Components.hpp"
 #include "threadmaxx/Handles.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <vector>
 
 namespace threadmaxx::internal {
 
-// Dense, parallel-array storage for entities. Index N of every component
-// array corresponds to the same entity. Generations are tracked in a parallel
-// array so we can validate handles without searching.
-//
-// This type is NOT thread-safe. It is only mutated from the simulation
-// thread during the commit phase. During system update phase it is read-only
-// and freely shared with workers.
+/// Archetype-keyed storage for entities (§3.1 batch 6).
+///
+/// Entities live in @ref ArchetypeChunk instances keyed by their per-
+/// entity @ref ComponentSet. Per-entity slots (sparse, indexed by
+/// @ref EntityHandle::index) record which chunk and row each live
+/// entity occupies; chunks own the dense component arrays.
+///
+/// The legacy "one flat dense array per component" view is reconstructed
+/// on demand via the lazy stitched cache: a public dense accessor like
+/// @ref transforms walks the chunks in creation order and concatenates
+/// each chunk's per-row values into a single contiguous vector, filling
+/// default values for entities whose chunk doesn't carry the component.
+/// The cache is invalidated by any mutation and rebuilt the next time
+/// a dense accessor is called.
+///
+/// This type is NOT thread-safe. It is only mutated from the simulation
+/// thread during the commit phase. During system update phase it is
+/// read-only and freely shared with workers.
 class EntityStorage {
 public:
     explicit EntityStorage(std::uint32_t initialCapacity);
@@ -35,27 +48,11 @@ public:
                        const BoundingVolume& bv,
                        ComponentSet initialMask);
 
-    // §3.5 reserveHandle: allocate a slot ahead of materialization.
-    //
-    // Thread-safe under reservationMtx_: workers can call from inside
-    // ISystem::update jobs. The returned handle reads as alive()==false
-    // until it is fed to materializeReserved (or discarded). Other
-    // EntityStorage methods (spawn/destroy/mut*) must NOT be called
-    // concurrently — they assume single-threaded sim-thread access.
     EntityHandle reserveHandle();
 
-    // Batch form: reserve `count` slots under a single acquisition of
-    // reservationMtx_. The returned handles are independent (different
-    // slot indices, fresh generations) and may be materialized in any
-    // order via materializeReserved. Amortizes the per-call mutex cost
-    // when a job spawns many entities at once.
     void reserveHandles(std::uint32_t count,
                         std::span<EntityHandle> out);
 
-    // Materialize a previously-reserved slot into a live entity. Returns
-    // false if the handle is not a current reservation (e.g. it was
-    // already materialized, or referred to a stale generation). Caller
-    // is the commit phase, single-threaded.
     bool materializeReserved(EntityHandle h,
                              const Transform& t,
                              const Velocity& v,
@@ -71,39 +68,51 @@ public:
                              const BoundingVolume& bv,
                              ComponentSet initialMask);
 
-    // Drop every reservation that survived the commit phase. Each
-    // dropped reservation has its generation bumped (so the outstanding
-    // handle stops validating) and its slot returned to the free list.
-    // Single-threaded; called at step end.
     void discardAllReservations() noexcept;
 
-    // Returns true if the handle was valid and the entity was destroyed.
     bool destroy(EntityHandle h) noexcept;
 
     bool alive(EntityHandle h) const noexcept;
 
-    // Returns the dense index for a handle, or UINT32_MAX if not alive.
+    /// Stitched-view dense index for the entity, or `UINT32_MAX` if not
+    /// alive. The returned index is valid into the stitched dense
+    /// vectors returned by @ref entities / @ref transforms / etc.,
+    /// and changes whenever the chunk layout changes (spawn / destroy
+    /// / migrate). Engine internal — game code should use
+    /// `World::tryGet*` / `World::has<T>` instead.
     std::uint32_t indexOf(EntityHandle h) const noexcept;
 
-    std::size_t size() const noexcept { return entities_.size(); }
+    std::size_t size() const noexcept { return table_.totalEntities(); }
 
-    // Dense views — stable for the duration of a system update phase.
-    const std::vector<EntityHandle>&      entities()        const noexcept { return entities_; }
-    const std::vector<Transform>&         transforms()      const noexcept { return transforms_; }
-    const std::vector<Velocity>&          velocities()      const noexcept { return velocities_; }
-    const std::vector<RenderTag>&         renderTags()      const noexcept { return renderTags_; }
-    const std::vector<UserData>&          userData()        const noexcept { return userData_; }
-    const std::vector<Acceleration>&      accelerations()   const noexcept { return accelerations_; }
-    const std::vector<Parent>&            parents()         const noexcept { return parents_; }
-    const std::vector<Health>&            healths()         const noexcept { return healths_; }
-    const std::vector<Faction>&           factions()        const noexcept { return factions_; }
-    const std::vector<AnimationStateRef>& animationStates() const noexcept { return animationStates_; }
-    const std::vector<PhysicsBodyRef>&    physicsBodies()   const noexcept { return physicsBodies_; }
-    const std::vector<NavAgentRef>&       navAgents()       const noexcept { return navAgents_; }
-    const std::vector<BoundingVolume>&    boundingVolumes() const noexcept { return boundingVolumes_; }
-    const std::vector<ComponentSet>&      componentMasks()  const noexcept { return masks_; }
+    /// @name Stitched dense views
+    /// Rebuilt on first read after any mutation. Index @c i of every
+    /// span refers to the same entity; for entities whose chunk does
+    /// not carry a particular component, the corresponding span entry
+    /// is the component's default-constructed value.
+    /// @{
+    std::span<const EntityHandle>      entities()        const noexcept;
+    std::span<const Transform>         transforms()      const noexcept;
+    std::span<const Velocity>          velocities()      const noexcept;
+    std::span<const RenderTag>         renderTags()      const noexcept;
+    std::span<const UserData>          userData()        const noexcept;
+    std::span<const Acceleration>      accelerations()   const noexcept;
+    std::span<const Parent>            parents()         const noexcept;
+    std::span<const Health>            healths()         const noexcept;
+    std::span<const Faction>           factions()        const noexcept;
+    std::span<const AnimationStateRef> animationStates() const noexcept;
+    std::span<const PhysicsBodyRef>    physicsBodies()   const noexcept;
+    std::span<const NavAgentRef>       navAgents()       const noexcept;
+    std::span<const BoundingVolume>    boundingVolumes() const noexcept;
+    std::span<const ComponentSet>      componentMasks()  const noexcept;
+    /// @}
 
-    // Mutators — only called from the commit phase.
+    /// @name Per-handle mutators (commit-phase only)
+    /// Each returns a pointer to the entity's chunk-resident value, or
+    /// nullptr when the chunk's mask does not carry the component (the
+    /// archetype refactor makes "no slot" the source of truth for
+    /// absence). Callers wanting to attach an absent component must
+    /// first migrate the entity via @ref setMaskAndMigrate.
+    /// @{
     Transform*         mutTransform        (EntityHandle h) noexcept;
     Velocity*          mutVelocity         (EntityHandle h) noexcept;
     RenderTag*         mutRenderTag        (EntityHandle h) noexcept;
@@ -116,49 +125,79 @@ public:
     PhysicsBodyRef*    mutPhysicsBodyRef   (EntityHandle h) noexcept;
     NavAgentRef*       mutNavAgentRef      (EntityHandle h) noexcept;
     BoundingVolume*    mutBoundingVolume   (EntityHandle h) noexcept;
-    ComponentSet*      mutComponentMask    (EntityHandle h) noexcept;
+    /// @}
+
+    /// Per-handle component-mask accessor. Returns the chunk's
+    /// archetype mask (every entity in a chunk shares the chunk's
+    /// mask).
+    const ComponentSet* tryGetComponentMask(EntityHandle h) const noexcept;
+
+    /// Commit-phase only. Migrates the entity to the archetype whose
+    /// mask is @p newMask, preserving every component value that exists
+    /// in both the source and destination archetypes. Dropped
+    /// components lose their dense slot; added components land in
+    /// default-initialized slots (callers should follow up with the
+    /// corresponding @c mut* setter where they hold a fresh value).
+    bool setMaskAndMigrate(EntityHandle h, ComponentSet newMask) noexcept;
+
+    /// Lookup helper used by hot paths (chunk iteration, debug tools):
+    /// returns (archetype index, row) for a handle, or `(UINT32_MAX,
+    /// UINT32_MAX)` if not alive. The archetype/row encoding is the
+    /// post-refactor replacement for the legacy single dense index.
+    struct Location { std::uint32_t archetype; std::uint32_t row; };
+    Location locate(EntityHandle h) const noexcept;
+
+    /// Archetype table access for chunk iteration (@ref forEachChunk).
+    const ArchetypeTable& archetypes() const noexcept { return table_; }
+    ArchetypeTable&       archetypes()       noexcept { return table_; }
 
     void reserve(std::size_t n);
 
 private:
-    // Per-slot record. Slots are reused after destroy(); generation is
-    // bumped so old handles stop validating. `reserved` means
-    // reserveHandle() handed out a handle for this slot but
-    // materializeReserved() has not yet run (alive==false in that state).
+    /// Per-slot record. The post-refactor location is (archetype, row);
+    /// `generation` and `alive` keep their pre-refactor semantics so
+    /// handle validation continues to work unchanged.
     struct Slot {
-        std::uint32_t denseIndex = 0;   // index into the parallel arrays
-        std::uint32_t generation = 0;   // 0 means "never used"
-        bool          alive      = false;
-        bool          reserved   = false;  // see §3.5
+        std::uint32_t archetypeIndex = std::numeric_limits<std::uint32_t>::max();
+        std::uint32_t row            = std::numeric_limits<std::uint32_t>::max();
+        std::uint32_t generation     = 0;
+        bool          alive          = false;
+        bool          reserved       = false;
     };
 
-    std::vector<Slot>         slots_;        // sparse, indexed by handle.index
-    std::vector<std::uint32_t> freeSlots_;   // recycled slot indices
+    std::vector<Slot>          slots_;
+    std::vector<std::uint32_t> freeSlots_;
 
-    // §3.5 reservation tracking. Touched by reserveHandle (workers) and
-    // by materializeReserved/discardAllReservations (sim thread); the
-    // mutex covers all three so worker pushes don't race with sim-thread
-    // drains.
     std::mutex                reservationMtx_;
     std::vector<EntityHandle> reservedHandles_;
 
-    // Parallel dense arrays. denseToSlot_[i] gives the slot index that owns
-    // dense row i — used when we swap-and-pop during destroy().
-    std::vector<std::uint32_t>      denseToSlot_;
-    std::vector<EntityHandle>       entities_;
-    std::vector<Transform>          transforms_;
-    std::vector<Velocity>           velocities_;
-    std::vector<RenderTag>          renderTags_;
-    std::vector<UserData>           userData_;
-    std::vector<Acceleration>       accelerations_;
-    std::vector<Parent>             parents_;
-    std::vector<Health>             healths_;
-    std::vector<Faction>            factions_;
-    std::vector<AnimationStateRef>  animationStates_;
-    std::vector<PhysicsBodyRef>     physicsBodies_;
-    std::vector<NavAgentRef>        navAgents_;
-    std::vector<BoundingVolume>     boundingVolumes_;
-    std::vector<ComponentSet>       masks_;
+    ArchetypeTable            table_;
+
+    // Stitched (legacy linear) view of every dense component. Rebuilt
+    // lazily — every mutation marks the cache dirty; the next public
+    // accessor walks the archetype chunks and rebuilds. The cache is
+    // mutable so const accessors can refresh it.
+    mutable bool                            stitchedDirty_ = true;
+    mutable std::vector<EntityHandle>       stitchedEntities_;
+    mutable std::vector<Transform>          stitchedTransforms_;
+    mutable std::vector<Velocity>           stitchedVelocities_;
+    mutable std::vector<RenderTag>          stitchedRenderTags_;
+    mutable std::vector<UserData>           stitchedUserData_;
+    mutable std::vector<Acceleration>       stitchedAccelerations_;
+    mutable std::vector<Parent>             stitchedParents_;
+    mutable std::vector<Health>             stitchedHealths_;
+    mutable std::vector<Faction>            stitchedFactions_;
+    mutable std::vector<AnimationStateRef>  stitchedAnimationStates_;
+    mutable std::vector<PhysicsBodyRef>     stitchedPhysicsBodies_;
+    mutable std::vector<NavAgentRef>        stitchedNavAgents_;
+    mutable std::vector<BoundingVolume>     stitchedBoundingVolumes_;
+    mutable std::vector<ComponentSet>       stitchedMasks_;
+    // archetype index → start offset into the stitched arrays. Used by
+    // indexOf to translate a slot's (arch, row) into a stitched index.
+    mutable std::vector<std::uint32_t>      archetypeStitchStart_;
+
+    void markDirty() noexcept { stitchedDirty_ = true; }
+    void ensureStitched() const noexcept;
 };
 
 } // namespace threadmaxx::internal

@@ -6,10 +6,10 @@
 // bytes; if a worker-execution-order non-determinism crept in, the
 // hashes diverge.
 //
-// This is the cheap regression guard the archetype refactor (§3.2)
-// will be tested against — if a future change makes commit order
-// race-sensitive, this test fails on the very first run of
-// `cmake --build && ctest`.
+// This is the cheap regression guard the archetype refactor (§3.1
+// batch 6, shipped 2026-05-14) was tested against — if a future
+// change makes commit order race-sensitive, this test fails on the
+// very first run of `cmake --build && ctest`.
 
 #include "Check.hpp"
 

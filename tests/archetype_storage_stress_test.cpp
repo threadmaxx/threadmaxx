@@ -1,13 +1,17 @@
-// §3.1 batch-6 prep: storage churn at scale.
+// §3.1 batch 6: storage churn at scale.
 //
-// Today's parallel-array EntityStorage holds every component for every
-// live entity. A future archetype/chunk refactor must preserve:
-//   - determinism (same seeded inputs → same hashed snapshot),
+// The archetype-chunked EntityStorage groups entities by ComponentSet
+// mask; physical migration on Health/StaticTag flips moves entities
+// between chunks. Invariants this test pins:
+//   - determinism (same seeded inputs → same hashed snapshot run-to-
+//     run, even with multi-archetype churn),
 //   - signature math (sum of archetype-signature counts == live size),
-//   - safe spawn/destroy/component-flip churn at 10k+ entities.
+//   - safe spawn / per-tick addComponent+removeComponent / tag-flip /
+//     transform-integration churn at 10k+ entities.
 //
-// This test pins the baseline. The same scenario, run against the
-// chunked storage refactor, must hash identically.
+// Originally written as the batch-6a baseline that the chunked-storage
+// refactor had to preserve; the refactor (batch 6) now runs against
+// this test on every CI build.
 
 #include "Check.hpp"
 

@@ -13,70 +13,74 @@ World::~World() = default;
 World::World(World&&) noexcept = default;
 World& World::operator=(World&&) noexcept = default;
 
+namespace {
+
+// Look up the chunk row for a handle without forcing a stitched-cache
+// rebuild — needed by per-handle accessors that don't otherwise touch
+// the legacy linear view.
+template <typename T, typename ChunkAccessor>
+const T* lookupChunkValue(const internal::WorldImpl& impl,
+                          EntityHandle e, Component bit,
+                          ChunkAccessor accessor) noexcept {
+    const auto loc = impl.storage.locate(e);
+    if (loc.archetype == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    const auto& c = impl.storage.archetypes().chunks()[loc.archetype];
+    if (!c.mask.has(bit)) return nullptr;
+    return &accessor(c)[loc.row];
+}
+
+} // namespace
+
 const Transform* World::tryGetTransform(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.transforms()[i];
+    return lookupChunkValue<Transform>(*impl_ptr_, e, Component::Transform,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.transforms; });
 }
 const Velocity* World::tryGetVelocity(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.velocities()[i];
+    return lookupChunkValue<Velocity>(*impl_ptr_, e, Component::Velocity,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.velocities; });
 }
 const RenderTag* World::tryGetRenderTag(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.renderTags()[i];
+    return lookupChunkValue<RenderTag>(*impl_ptr_, e, Component::RenderTag,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.renderTags; });
 }
 const UserData* World::tryGetUserData(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.userData()[i];
+    return lookupChunkValue<UserData>(*impl_ptr_, e, Component::UserData,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.userData; });
 }
 const Acceleration* World::tryGetAcceleration(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.accelerations()[i];
+    return lookupChunkValue<Acceleration>(*impl_ptr_, e, Component::Acceleration,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.accelerations; });
 }
 const Parent* World::tryGetParent(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.parents()[i];
+    return lookupChunkValue<Parent>(*impl_ptr_, e, Component::Parent,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.parents; });
 }
 const Health* World::tryGetHealth(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.healths()[i];
+    return lookupChunkValue<Health>(*impl_ptr_, e, Component::Health,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.healths; });
 }
 const Faction* World::tryGetFaction(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.factions()[i];
+    return lookupChunkValue<Faction>(*impl_ptr_, e, Component::Faction,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.factions; });
 }
 const AnimationStateRef* World::tryGetAnimationStateRef(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.animationStates()[i];
+    return lookupChunkValue<AnimationStateRef>(*impl_ptr_, e, Component::AnimationStateRef,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.animationStates; });
 }
 const PhysicsBodyRef* World::tryGetPhysicsBodyRef(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.physicsBodies()[i];
+    return lookupChunkValue<PhysicsBodyRef>(*impl_ptr_, e, Component::PhysicsBodyRef,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.physicsBodies; });
 }
 const NavAgentRef* World::tryGetNavAgentRef(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.navAgents()[i];
+    return lookupChunkValue<NavAgentRef>(*impl_ptr_, e, Component::NavAgentRef,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.navAgents; });
 }
 const BoundingVolume* World::tryGetBoundingVolume(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.boundingVolumes()[i];
+    return lookupChunkValue<BoundingVolume>(*impl_ptr_, e, Component::BoundingVolume,
+        [](const internal::ArchetypeChunk& c) -> const auto& { return c.boundingVolumes; });
 }
 const ComponentSet* World::tryGetComponentMask(EntityHandle e) const noexcept {
-    const auto i = impl_ptr_->storage.indexOf(e);
-    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
-    return &impl_ptr_->storage.componentMasks()[i];
+    return impl_ptr_->storage.tryGetComponentMask(e);
 }
 
 bool World::alive(EntityHandle e) const noexcept {
@@ -135,20 +139,17 @@ std::size_t World::size() const noexcept {
 }
 
 std::vector<ArchetypeSignature> World::archetypeSignatures() const {
-    const auto masks = impl_ptr_->storage.componentMasks();
+    // §3.1 batch 6: archetype-keyed storage means this is now O(num
+    // archetypes) rather than O(num entities). Each chunk is one row.
+    // Empty chunks are filtered out (the `ComponentSet::all()` chunk
+    // is pre-allocated even in a never-populated world).
+    const auto& chunks = impl_ptr_->storage.archetypes().chunks();
     std::vector<ArchetypeSignature> out;
-    // Real-world archetype counts in a typical game are small (under a
-    // few dozen). Linear search over a vector beats a hash map here for
-    // both code size and steady-state cache behavior.
-    out.reserve(8);
-    for (const auto& m : masks) {
-        auto it = std::find_if(out.begin(), out.end(),
-            [&](const ArchetypeSignature& s) { return s.mask.bits() == m.bits(); });
-        if (it == out.end()) {
-            out.push_back(ArchetypeSignature{m, 1});
-        } else {
-            ++it->count;
-        }
+    out.reserve(chunks.size());
+    for (const auto& c : chunks) {
+        if (c.entities.empty()) continue;
+        out.push_back(ArchetypeSignature{
+            c.mask, static_cast<std::uint32_t>(c.entities.size())});
     }
     std::sort(out.begin(), out.end(),
         [](const ArchetypeSignature& a, const ArchetypeSignature& b) {
@@ -157,23 +158,34 @@ std::vector<ArchetypeSignature> World::archetypeSignatures() const {
     return out;
 }
 
+std::size_t World::archetypeChunkCount() const noexcept {
+    return impl_ptr_->storage.archetypes().chunks().size();
+}
+
+const internal::ArchetypeChunk& World::archetypeChunk(std::size_t i) const noexcept {
+    return impl_ptr_->storage.archetypes().chunks()[i];
+}
+
 WorldSnapshot World::snapshot() const {
     const auto& s = impl_ptr_->storage;
+    auto copySpan = [](auto& dst, auto src) {
+        dst.assign(src.begin(), src.end());
+    };
     WorldSnapshot out;
-    out.entities        = s.entities();
-    out.transforms      = s.transforms();
-    out.velocities      = s.velocities();
-    out.renderTags      = s.renderTags();
-    out.userData        = s.userData();
-    out.accelerations   = s.accelerations();
-    out.parents         = s.parents();
-    out.healths         = s.healths();
-    out.factions        = s.factions();
-    out.animationStates = s.animationStates();
-    out.physicsBodies   = s.physicsBodies();
-    out.navAgents       = s.navAgents();
-    out.boundingVolumes = s.boundingVolumes();
-    out.masks           = s.componentMasks();
+    copySpan(out.entities,        s.entities());
+    copySpan(out.transforms,      s.transforms());
+    copySpan(out.velocities,      s.velocities());
+    copySpan(out.renderTags,      s.renderTags());
+    copySpan(out.userData,        s.userData());
+    copySpan(out.accelerations,   s.accelerations());
+    copySpan(out.parents,         s.parents());
+    copySpan(out.healths,         s.healths());
+    copySpan(out.factions,        s.factions());
+    copySpan(out.animationStates, s.animationStates());
+    copySpan(out.physicsBodies,   s.physicsBodies());
+    copySpan(out.navAgents,       s.navAgents());
+    copySpan(out.boundingVolumes, s.boundingVolumes());
+    copySpan(out.masks,           s.componentMasks());
     return out;
 }
 

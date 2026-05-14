@@ -119,9 +119,9 @@ int main() {
     CHECK_EQ(w.get<RenderTag>(e).meshId, std::int32_t{-1});
     CHECK(w.has<Parent>(e));
 
-    // 2) removeComponent<T> clears the bit. The dense value is left
-    //    intact (this is the current parallel-array storage; the
-    //    archetype refactor will physically migrate it later).
+    // 2) removeComponent<T> clears the bit AND physically migrates the
+    //    entity out of T's archetype chunk (§3.1 batch 6) — a
+    //    subsequent `tryGetT(e)` returns nullptr.
     engine.registerSystem(makeRecorder(
         [e](Range, CommandBuffer& cb) {
             cb.removeComponent<Health>(e);
@@ -137,12 +137,13 @@ int main() {
     CHECK(!w.has<Faction>(e));
     CHECK(!w.has<RenderTag>(e));
     CHECK(!w.has<Parent>(e));
-    // The dense Health slot survives the bit clear (parallel-vector
-    // storage); confirms removeComponent does NOT touch the dense
-    // value. The archetype refactor will change this — at which point
-    // we'll update the test.
-    const auto* hp = w.tryGetHealth(e);
-    CHECK(hp != nullptr);
+    // §3.1 batch 6: removeComponent physically migrates the entity out
+    // of T's archetype, so `tryGetT` now returns nullptr after a
+    // removal (the mask bit IS the source of truth, and the chunked
+    // storage no longer keeps the stale value around).
+    CHECK_EQ(w.tryGetHealth(e), static_cast<const Health*>(nullptr));
+    CHECK_EQ(w.tryGetFaction(e), static_cast<const Faction*>(nullptr));
+    CHECK_EQ(w.tryGetParent(e), static_cast<const Parent*>(nullptr));
 
     // 3) Round-trip: add then remove then add again — final state has
     //    the bit and the new value.

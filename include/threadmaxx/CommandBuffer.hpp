@@ -278,9 +278,9 @@ public:
     /// Inverse of @ref addTag — clears the bit.
     void removeTag(EntityHandle entity, Component tag);
 
-    /// Generic per-component transition (§3.1 batch-6 prep): write the
-    /// value AND unconditionally attach the presence bit. Uniform across
-    /// every built-in data component type.
+    /// Generic per-component transition: write the value AND
+    /// unconditionally attach the presence bit. Uniform across every
+    /// built-in data component type.
     ///
     /// Unlike the per-type `setX` methods, this method ALWAYS attaches the
     /// bit, regardless of the value:
@@ -289,10 +289,11 @@ public:
     /// is "the entity logically carries T from now on"; opt out via
     /// @ref removeComponent.
     ///
-    /// Forward-compatible with the upcoming §3.1 batch-6 archetype
-    /// refactor: the API stays the same once chunked storage lands, but
-    /// the implementation will physically migrate the entity into the
-    /// new archetype on commit.
+    /// At commit time the engine migrates the entity into the
+    /// destination archetype chunk (§3.1 batch 6): a swap-and-pop out
+    /// of the source chunk plus a push into the destination chunk.
+    /// Same-archetype writes (the bit was already set) skip the
+    /// migration as a no-op fast path.
     ///
     /// Tag-only categories (`StaticTag`, `DisabledTag`, `DestroyedTag`)
     /// have no POD value — use @ref addTag for them. This method
@@ -300,11 +301,10 @@ public:
     template <typename T>
     void addComponent(EntityHandle entity, const T& value);
 
-    /// Detach component T from the entity by clearing its presence bit
-    /// (§3.1 batch-6 prep). The dense storage slot is left intact in the
-    /// current parallel-array layout; once the archetype refactor lands,
-    /// `removeComponent<T>` will physically migrate the entity out of
-    /// T's storage.
+    /// Detach component T from the entity by clearing its presence bit.
+    /// At commit time the engine physically migrates the entity out of
+    /// T's archetype chunk (§3.1 batch 6); a subsequent `tryGetT(e)`
+    /// returns nullptr — the mask bit is the source of truth.
     ///
     /// For tag-only categories, use @ref removeTag — this method
     /// `static_assert`s for tag-only types.

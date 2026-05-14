@@ -358,55 +358,87 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             } else if constexpr (std::is_same_v<T, detail::CmdSetVelocity>) {
                 if (auto* p = storage.mutVelocity(c.entity))  *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetRenderTag>) {
-                if (auto* p = storage.mutRenderTag(c.entity)) *p = c.value;
-                // Sync the RenderTag presence bit so renderers stay aligned
-                // with the per-entity mask without a separate command.
-                if (auto* m = storage.mutComponentMask(c.entity)) {
-                    if (c.value.meshId >= 0) m->add(Component::RenderTag);
-                    else                     m->remove(Component::RenderTag);
+                // Migrate first so the destination chunk has the
+                // RenderTag slot, then write the value. The auto-derive
+                // matches the legacy "RenderTag iff meshId>=0" rule.
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    if (c.value.meshId >= 0) newMask.add(Component::RenderTag);
+                    else                     newMask.remove(Component::RenderTag);
+                    storage.setMaskAndMigrate(c.entity, newMask);
                 }
+                if (auto* p = storage.mutRenderTag(c.entity)) *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetUserData>) {
                 if (auto* p = storage.mutUserData(c.entity))  *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetAcceleration>) {
                 if (auto* p = storage.mutAcceleration(c.entity)) *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetParent>) {
-                if (auto* p = storage.mutParent(c.entity)) *p = c.value;
-                if (auto* m = storage.mutComponentMask(c.entity)) {
-                    if (c.value.parent.valid()) m->add(Component::Parent);
-                    else                        m->remove(Component::Parent);
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    if (c.value.parent.valid()) newMask.add(Component::Parent);
+                    else                        newMask.remove(Component::Parent);
+                    storage.setMaskAndMigrate(c.entity, newMask);
                 }
+                if (auto* p = storage.mutParent(c.entity)) *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetHealth>) {
-                if (auto* p = storage.mutHealth(c.entity)) *p = c.value;
                 // §3.1 batch-5 set* methods: attaching a value attaches
-                // the presence bit. Detachment goes through setComponentMask.
-                if (auto* m = storage.mutComponentMask(c.entity))
-                    m->add(Component::Health);
+                // the presence bit. Migrate FIRST so the destination
+                // archetype has a Health slot to write into.
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(Component::Health);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
+                if (auto* p = storage.mutHealth(c.entity)) *p = c.value;
             } else if constexpr (std::is_same_v<T, detail::CmdSetFaction>) {
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(Component::Faction);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
                 if (auto* p = storage.mutFaction(c.entity)) *p = c.value;
-                if (auto* m = storage.mutComponentMask(c.entity))
-                    m->add(Component::Faction);
             } else if constexpr (std::is_same_v<T, detail::CmdSetAnimationState>) {
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(Component::AnimationStateRef);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
                 if (auto* p = storage.mutAnimationStateRef(c.entity)) *p = c.value;
-                if (auto* m = storage.mutComponentMask(c.entity))
-                    m->add(Component::AnimationStateRef);
             } else if constexpr (std::is_same_v<T, detail::CmdSetPhysicsBody>) {
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(Component::PhysicsBodyRef);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
                 if (auto* p = storage.mutPhysicsBodyRef(c.entity)) *p = c.value;
-                if (auto* m = storage.mutComponentMask(c.entity))
-                    m->add(Component::PhysicsBodyRef);
             } else if constexpr (std::is_same_v<T, detail::CmdSetNavAgent>) {
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(Component::NavAgentRef);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
                 if (auto* p = storage.mutNavAgentRef(c.entity)) *p = c.value;
-                if (auto* m = storage.mutComponentMask(c.entity))
-                    m->add(Component::NavAgentRef);
             } else if constexpr (std::is_same_v<T, detail::CmdSetBoundingVolume>) {
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(Component::BoundingVolume);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
                 if (auto* p = storage.mutBoundingVolume(c.entity)) *p = c.value;
-                if (auto* m = storage.mutComponentMask(c.entity))
-                    m->add(Component::BoundingVolume);
             } else if constexpr (std::is_same_v<T, detail::CmdSetComponentMask>) {
-                if (auto* p = storage.mutComponentMask(c.entity)) *p = c.value;
+                storage.setMaskAndMigrate(c.entity, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdAddTag>) {
-                if (auto* p = storage.mutComponentMask(c.entity)) p->add(c.tag);
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.add(c.tag);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
             } else if constexpr (std::is_same_v<T, detail::CmdRemoveTag>) {
-                if (auto* p = storage.mutComponentMask(c.entity)) p->remove(c.tag);
+                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                    ComponentSet newMask = *m;
+                    newMask.remove(c.tag);
+                    storage.setMaskAndMigrate(c.entity, newMask);
+                }
             }
         }, cmd);
     }
@@ -418,25 +450,33 @@ void EngineImpl::buildRenderFrame() {
     auto& dst = renderInstanceBuffers_[back];
     dst.clear();
 
-    const auto& storage = world_.impl_().storage;
-    const auto& entities = storage.entities();
-    const auto& transforms = storage.transforms();
-    const auto& tags = storage.renderTags();
-    const auto& uds = storage.userData();
-    const auto& masks = storage.componentMasks();
-    dst.reserve(entities.size());
-
-    for (std::size_t i = 0; i < entities.size(); ++i) {
-        if (!masks[i].has(Component::RenderTag)) continue;
-        if (masks[i].has(Component::DisabledTag)) continue;
-        dst.push_back(RenderInstance{
-            entities[i],
-            transforms[i],
-            tags[i].meshId,
-            tags[i].materialId,
-            tags[i].flags,
-            uds[i].value,
-        });
+    // §3.1 batch 6: walk archetype chunks rather than the legacy
+    // stitched dense view — the chunk's mask is checked once per chunk
+    // (skipping RenderTag-less and Disabled archetypes wholesale)
+    // instead of a per-entity test inside the loop.
+    const auto& chunks = world_.impl_().storage.archetypes().chunks();
+    std::size_t reserveHint = 0;
+    for (const auto& c : chunks) {
+        if (!c.mask.has(Component::RenderTag)) continue;
+        if (c.mask.has(Component::DisabledTag)) continue;
+        reserveHint += c.entities.size();
+    }
+    dst.reserve(reserveHint);
+    for (const auto& c : chunks) {
+        if (!c.mask.has(Component::RenderTag)) continue;
+        if (c.mask.has(Component::DisabledTag)) continue;
+        const bool hasUserData = c.mask.has(Component::UserData);
+        const auto rows = c.entities.size();
+        for (std::size_t i = 0; i < rows; ++i) {
+            dst.push_back(RenderInstance{
+                c.entities[i],
+                c.transforms[i],
+                c.renderTags[i].meshId,
+                c.renderTags[i].materialId,
+                c.renderTags[i].flags,
+                hasUserData ? c.userData[i].value : 0,
+            });
+        }
     }
 
     // §3.2 batch 8: merge per-system RenderFrameBuilder slices into the

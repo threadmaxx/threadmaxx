@@ -1,62 +1,41 @@
 /// @file EntityStorage.cpp
-/// Dense parallel-array storage for entities + the swap-and-pop destroy
-/// path.
+/// Archetype-backed entity storage (§3.1 batch 6).
 ///
-/// Invariant: every component vector has exactly `entities_.size()`
-/// elements. The `denseToSlot_` array is the inverse mapping: dense row
-/// `i` corresponds to slot `denseToSlot_[i]`. On `destroy(handle)` we
-/// pop the back of every parallel array and re-point the moved row's
-/// slot at the new dense index; if you add a new built-in component,
-/// you MUST add a swap-and-pop branch here or the arrays go out of sync.
+/// Slots are sparse (indexed by @ref EntityHandle::index); each live
+/// slot records the entity's (archetype, row) position in the
+/// @ref ArchetypeTable. Mutations (spawn/destroy/migrate) update the
+/// chunk and patch any slot whose row moved via swap-and-pop. The
+/// legacy flat dense views are reconstructed lazily — `ensureStitched`
+/// walks the chunks in creation order and rebuilds the cache; a single
+/// mutation marks `stitchedDirty_=true` and the next public accessor
+/// pays the rebuild.
 ///
-/// Reservation lifecycle (§3.5):
+/// Reservation lifecycle (§3.5) is unchanged:
 ///   reserveHandle    [workers, locked]    slot.reserved = true
 ///   materializeReserved [sim thread]      slot.alive    = true, dense_grows
 ///   discardAllReservations [sim thread]   slot.gen++, slot reused
 #include "EntityStorage.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
-#include <span>
 
 namespace threadmaxx::internal {
 
+namespace {
+
+constexpr std::uint32_t kInvalidIndex = std::numeric_limits<std::uint32_t>::max();
+
+} // namespace
+
 EntityStorage::EntityStorage(std::uint32_t initialCapacity) {
     slots_.reserve(initialCapacity);
-    denseToSlot_.reserve(initialCapacity);
-    entities_.reserve(initialCapacity);
-    transforms_.reserve(initialCapacity);
-    velocities_.reserve(initialCapacity);
-    renderTags_.reserve(initialCapacity);
-    userData_.reserve(initialCapacity);
-    accelerations_.reserve(initialCapacity);
-    parents_.reserve(initialCapacity);
-    healths_.reserve(initialCapacity);
-    factions_.reserve(initialCapacity);
-    animationStates_.reserve(initialCapacity);
-    physicsBodies_.reserve(initialCapacity);
-    navAgents_.reserve(initialCapacity);
-    boundingVolumes_.reserve(initialCapacity);
-    masks_.reserve(initialCapacity);
+    table_.reserveFirstChunk(initialCapacity);
 }
 
 void EntityStorage::reserve(std::size_t n) {
     slots_.reserve(n);
-    denseToSlot_.reserve(n);
-    entities_.reserve(n);
-    transforms_.reserve(n);
-    velocities_.reserve(n);
-    renderTags_.reserve(n);
-    userData_.reserve(n);
-    accelerations_.reserve(n);
-    parents_.reserve(n);
-    healths_.reserve(n);
-    factions_.reserve(n);
-    animationStates_.reserve(n);
-    physicsBodies_.reserve(n);
-    navAgents_.reserve(n);
-    boundingVolumes_.reserve(n);
-    masks_.reserve(n);
+    table_.reserveFirstChunk(n);
 }
 
 EntityHandle EntityStorage::spawn(const Transform& t,
@@ -82,27 +61,15 @@ EntityHandle EntityStorage::spawn(const Transform& t,
     }
 
     Slot& slot = slots_[slotIdx];
-    // Bump generation; starts at 1 the first time a slot is used.
     slot.generation = (slot.generation == 0) ? 1u : slot.generation + 1u;
     slot.alive = true;
-    slot.denseIndex = static_cast<std::uint32_t>(entities_.size());
-
+    const std::uint32_t archIdx = table_.getOrCreateArchetype(initialMask);
     const EntityHandle h{slotIdx, slot.generation};
-    denseToSlot_.push_back(slotIdx);
-    entities_.push_back(h);
-    transforms_.push_back(t);
-    velocities_.push_back(v);
-    renderTags_.push_back(r);
-    userData_.push_back(u);
-    accelerations_.push_back(a);
-    parents_.push_back(p);
-    healths_.push_back(hp);
-    factions_.push_back(fac);
-    animationStates_.push_back(anim);
-    physicsBodies_.push_back(phys);
-    navAgents_.push_back(nav);
-    boundingVolumes_.push_back(bv);
-    masks_.push_back(initialMask);
+    const std::uint32_t row = table_.insert(archIdx, h, slotIdx,
+        t, v, r, u, a, p, hp, fac, anim, phys, nav, bv);
+    slot.archetypeIndex = archIdx;
+    slot.row            = row;
+    markDirty();
     return h;
 }
 
@@ -120,7 +87,8 @@ EntityHandle EntityStorage::reserveHandle() {
     slot.generation = (slot.generation == 0) ? 1u : slot.generation + 1u;
     slot.reserved   = true;
     slot.alive      = false;
-    slot.denseIndex = std::numeric_limits<std::uint32_t>::max();
+    slot.archetypeIndex = kInvalidIndex;
+    slot.row            = kInvalidIndex;
     const EntityHandle h{slotIdx, slot.generation};
     reservedHandles_.push_back(h);
     return h;
@@ -145,7 +113,8 @@ void EntityStorage::reserveHandles(std::uint32_t count,
         slot.generation = (slot.generation == 0) ? 1u : slot.generation + 1u;
         slot.reserved   = true;
         slot.alive      = false;
-        slot.denseIndex = std::numeric_limits<std::uint32_t>::max();
+        slot.archetypeIndex = kInvalidIndex;
+        slot.row            = kInvalidIndex;
         const EntityHandle h{slotIdx, slot.generation};
         reservedHandles_.push_back(h);
         out[i] = h;
@@ -174,41 +143,27 @@ bool EntityStorage::materializeReserved(EntityHandle h,
 
     slot.reserved   = false;
     slot.alive      = true;
-    slot.denseIndex = static_cast<std::uint32_t>(entities_.size());
+    const std::uint32_t archIdx = table_.getOrCreateArchetype(initialMask);
+    const std::uint32_t row = table_.insert(archIdx, h, h.index,
+        t, v, r, u, a, p, hp, fac, anim, phys, nav, bv);
+    slot.archetypeIndex = archIdx;
+    slot.row            = row;
 
-    denseToSlot_.push_back(h.index);
-    entities_.push_back(h);
-    transforms_.push_back(t);
-    velocities_.push_back(v);
-    renderTags_.push_back(r);
-    userData_.push_back(u);
-    accelerations_.push_back(a);
-    parents_.push_back(p);
-    healths_.push_back(hp);
-    factions_.push_back(fac);
-    animationStates_.push_back(anim);
-    physicsBodies_.push_back(phys);
-    navAgents_.push_back(nav);
-    boundingVolumes_.push_back(bv);
-    masks_.push_back(initialMask);
-
-    // Remove the consumed reservation from the tracking list. The list
-    // is small (handful of items per tick), so linear scan is fine.
     auto& tracked = reservedHandles_;
     tracked.erase(std::remove(tracked.begin(), tracked.end(), h), tracked.end());
+    markDirty();
     return true;
 }
 
 void EntityStorage::discardAllReservations() noexcept {
     std::lock_guard<std::mutex> lk(reservationMtx_);
     for (auto h : reservedHandles_) {
-        // Bump generation so the user's handle stops validating, then
-        // return the slot to the free list for reuse next tick.
         Slot& slot = slots_[h.index];
         slot.generation++;
         slot.reserved   = false;
         slot.alive      = false;
-        slot.denseIndex = std::numeric_limits<std::uint32_t>::max();
+        slot.archetypeIndex = kInvalidIndex;
+        slot.row            = kInvalidIndex;
         freeSlots_.push_back(h.index);
     }
     reservedHandles_.clear();
@@ -217,49 +172,17 @@ void EntityStorage::discardAllReservations() noexcept {
 bool EntityStorage::destroy(EntityHandle h) noexcept {
     if (!alive(h)) return false;
     Slot& slot = slots_[h.index];
-    const std::uint32_t deadDense = slot.denseIndex;
-    const std::uint32_t lastDense = static_cast<std::uint32_t>(entities_.size() - 1);
-
-    if (deadDense != lastDense) {
-        // Swap-and-pop: move the last element into the freed dense slot,
-        // then update the owning slot's denseIndex.
-        entities_       [deadDense] = entities_       [lastDense];
-        transforms_     [deadDense] = transforms_     [lastDense];
-        velocities_     [deadDense] = velocities_     [lastDense];
-        renderTags_     [deadDense] = renderTags_     [lastDense];
-        userData_       [deadDense] = userData_       [lastDense];
-        accelerations_  [deadDense] = accelerations_  [lastDense];
-        parents_        [deadDense] = parents_        [lastDense];
-        healths_        [deadDense] = healths_        [lastDense];
-        factions_       [deadDense] = factions_       [lastDense];
-        animationStates_[deadDense] = animationStates_[lastDense];
-        physicsBodies_  [deadDense] = physicsBodies_  [lastDense];
-        navAgents_      [deadDense] = navAgents_      [lastDense];
-        boundingVolumes_[deadDense] = boundingVolumes_[lastDense];
-        masks_          [deadDense] = masks_          [lastDense];
-        denseToSlot_    [deadDense] = denseToSlot_    [lastDense];
-        slots_[denseToSlot_[deadDense]].denseIndex = deadDense;
+    const std::uint32_t archIdx = slot.archetypeIndex;
+    const std::uint32_t row     = slot.row;
+    const std::uint32_t swapped = table_.removeSwapPop(archIdx, row);
+    if (swapped != kInvalidIndex) {
+        slots_[swapped].row = row;
     }
-
-    entities_.pop_back();
-    transforms_.pop_back();
-    velocities_.pop_back();
-    renderTags_.pop_back();
-    userData_.pop_back();
-    accelerations_.pop_back();
-    parents_.pop_back();
-    healths_.pop_back();
-    factions_.pop_back();
-    animationStates_.pop_back();
-    physicsBodies_.pop_back();
-    navAgents_.pop_back();
-    boundingVolumes_.pop_back();
-    masks_.pop_back();
-    denseToSlot_.pop_back();
-
     slot.alive = false;
-    slot.denseIndex = std::numeric_limits<std::uint32_t>::max();
+    slot.archetypeIndex = kInvalidIndex;
+    slot.row            = kInvalidIndex;
     freeSlots_.push_back(h.index);
+    markDirty();
     return true;
 }
 
@@ -269,62 +192,267 @@ bool EntityStorage::alive(EntityHandle h) const noexcept {
     return slot.alive && slot.generation == h.generation && h.generation != 0;
 }
 
-std::uint32_t EntityStorage::indexOf(EntityHandle h) const noexcept {
-    if (!alive(h)) return std::numeric_limits<std::uint32_t>::max();
-    return slots_[h.index].denseIndex;
+EntityStorage::Location EntityStorage::locate(EntityHandle h) const noexcept {
+    if (!alive(h)) return {kInvalidIndex, kInvalidIndex};
+    const Slot& slot = slots_[h.index];
+    return {slot.archetypeIndex, slot.row};
 }
 
+std::uint32_t EntityStorage::indexOf(EntityHandle h) const noexcept {
+    if (!alive(h)) return kInvalidIndex;
+    ensureStitched();
+    const Slot& slot = slots_[h.index];
+    if (slot.archetypeIndex >= archetypeStitchStart_.size()) return kInvalidIndex;
+    return archetypeStitchStart_[slot.archetypeIndex] + slot.row;
+}
+
+bool EntityStorage::setMaskAndMigrate(EntityHandle h, ComponentSet newMask) noexcept {
+    if (!alive(h)) return false;
+    Slot& slot = slots_[h.index];
+    const auto& chunks = table_.chunks();
+    if (slot.archetypeIndex >= chunks.size()) return false;
+    if (chunks[slot.archetypeIndex].mask == newMask) return true;
+
+    const std::uint32_t srcArch = slot.archetypeIndex;
+    const std::uint32_t srcRow  = slot.row;
+    const auto res = table_.migrate(srcArch, srcRow, newMask);
+    if (res.swappedSlot != kInvalidIndex) {
+        slots_[res.swappedSlot].row = srcRow;
+    }
+    slot.archetypeIndex = res.dstArchetype;
+    slot.row            = res.dstRow;
+    markDirty();
+    return true;
+}
+
+// ---- per-handle mutators -------------------------------------------------
+
 Transform* EntityStorage::mutTransform(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &transforms_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::Transform)) return nullptr;
+    markDirty();
+    return &c.transforms[slot.row];
 }
 Velocity* EntityStorage::mutVelocity(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &velocities_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::Velocity)) return nullptr;
+    markDirty();
+    return &c.velocities[slot.row];
 }
 RenderTag* EntityStorage::mutRenderTag(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &renderTags_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::RenderTag)) return nullptr;
+    markDirty();
+    return &c.renderTags[slot.row];
 }
 UserData* EntityStorage::mutUserData(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &userData_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::UserData)) return nullptr;
+    markDirty();
+    return &c.userData[slot.row];
 }
 Acceleration* EntityStorage::mutAcceleration(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &accelerations_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::Acceleration)) return nullptr;
+    markDirty();
+    return &c.accelerations[slot.row];
 }
 Parent* EntityStorage::mutParent(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &parents_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::Parent)) return nullptr;
+    markDirty();
+    return &c.parents[slot.row];
 }
 Health* EntityStorage::mutHealth(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &healths_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::Health)) return nullptr;
+    markDirty();
+    return &c.healths[slot.row];
 }
 Faction* EntityStorage::mutFaction(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &factions_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::Faction)) return nullptr;
+    markDirty();
+    return &c.factions[slot.row];
 }
 AnimationStateRef* EntityStorage::mutAnimationStateRef(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &animationStates_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::AnimationStateRef)) return nullptr;
+    markDirty();
+    return &c.animationStates[slot.row];
 }
 PhysicsBodyRef* EntityStorage::mutPhysicsBodyRef(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &physicsBodies_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::PhysicsBodyRef)) return nullptr;
+    markDirty();
+    return &c.physicsBodies[slot.row];
 }
 NavAgentRef* EntityStorage::mutNavAgentRef(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &navAgents_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::NavAgentRef)) return nullptr;
+    markDirty();
+    return &c.navAgents[slot.row];
 }
 BoundingVolume* EntityStorage::mutBoundingVolume(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &boundingVolumes_[i];
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    auto& c = table_.chunks()[slot.archetypeIndex];
+    if (!c.mask.has(Component::BoundingVolume)) return nullptr;
+    markDirty();
+    return &c.boundingVolumes[slot.row];
 }
-ComponentSet* EntityStorage::mutComponentMask(EntityHandle h) noexcept {
-    const auto i = indexOf(h);
-    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &masks_[i];
+
+const ComponentSet* EntityStorage::tryGetComponentMask(EntityHandle h) const noexcept {
+    if (!alive(h)) return nullptr;
+    const Slot& slot = slots_[h.index];
+    const auto& c = table_.chunks()[slot.archetypeIndex];
+    return &c.masks[slot.row];
+}
+
+// ---- stitched views ------------------------------------------------------
+
+void EntityStorage::ensureStitched() const noexcept {
+    if (!stitchedDirty_) return;
+
+    const auto& chunks = table_.chunks();
+    archetypeStitchStart_.assign(chunks.size(), 0);
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+        archetypeStitchStart_[i] = static_cast<std::uint32_t>(total);
+        total += chunks[i].entities.size();
+    }
+
+    stitchedEntities_.resize(total);
+    stitchedTransforms_.resize(total);
+    stitchedVelocities_.resize(total);
+    stitchedRenderTags_.resize(total);
+    stitchedUserData_.resize(total);
+    stitchedAccelerations_.resize(total);
+    stitchedParents_.resize(total);
+    stitchedHealths_.resize(total);
+    stitchedFactions_.resize(total);
+    stitchedAnimationStates_.resize(total);
+    stitchedPhysicsBodies_.resize(total);
+    stitchedNavAgents_.resize(total);
+    stitchedBoundingVolumes_.resize(total);
+    stitchedMasks_.resize(total);
+
+    std::size_t cursor = 0;
+    for (const auto& c : chunks) {
+        const std::size_t n = c.entities.size();
+        if (n == 0) continue;
+        std::copy(c.entities.begin(), c.entities.end(),
+                  stitchedEntities_.begin() + static_cast<std::ptrdiff_t>(cursor));
+        std::copy(c.masks.begin(), c.masks.end(),
+                  stitchedMasks_.begin() + static_cast<std::ptrdiff_t>(cursor));
+        // Per-component: if chunk carries it, copy values; otherwise
+        // default-initialize the stitched slots so the legacy "parallel
+        // arrays of size world.size()" contract still holds.
+        auto fill = [&](auto& dst, auto src, bool present, auto defaultVal) {
+            using V = typename std::decay_t<decltype(defaultVal)>;
+            if (present) {
+                std::copy(src.begin(), src.end(),
+                          dst.begin() + static_cast<std::ptrdiff_t>(cursor));
+            } else {
+                std::fill(dst.begin() + static_cast<std::ptrdiff_t>(cursor),
+                          dst.begin() + static_cast<std::ptrdiff_t>(cursor + n),
+                          V{});
+            }
+        };
+        fill(stitchedTransforms_,      std::span<const Transform>(c.transforms),         c.mask.has(Component::Transform),         Transform{});
+        fill(stitchedVelocities_,      std::span<const Velocity>(c.velocities),          c.mask.has(Component::Velocity),          Velocity{});
+        fill(stitchedRenderTags_,      std::span<const RenderTag>(c.renderTags),         c.mask.has(Component::RenderTag),         RenderTag{});
+        fill(stitchedUserData_,        std::span<const UserData>(c.userData),            c.mask.has(Component::UserData),          UserData{});
+        fill(stitchedAccelerations_,   std::span<const Acceleration>(c.accelerations),   c.mask.has(Component::Acceleration),      Acceleration{});
+        fill(stitchedParents_,         std::span<const Parent>(c.parents),               c.mask.has(Component::Parent),            Parent{});
+        fill(stitchedHealths_,         std::span<const Health>(c.healths),               c.mask.has(Component::Health),            Health{});
+        fill(stitchedFactions_,        std::span<const Faction>(c.factions),             c.mask.has(Component::Faction),           Faction{});
+        fill(stitchedAnimationStates_, std::span<const AnimationStateRef>(c.animationStates), c.mask.has(Component::AnimationStateRef), AnimationStateRef{});
+        fill(stitchedPhysicsBodies_,   std::span<const PhysicsBodyRef>(c.physicsBodies), c.mask.has(Component::PhysicsBodyRef),    PhysicsBodyRef{});
+        fill(stitchedNavAgents_,       std::span<const NavAgentRef>(c.navAgents),        c.mask.has(Component::NavAgentRef),       NavAgentRef{});
+        fill(stitchedBoundingVolumes_, std::span<const BoundingVolume>(c.boundingVolumes), c.mask.has(Component::BoundingVolume),  BoundingVolume{});
+        cursor += n;
+    }
+    stitchedDirty_ = false;
+}
+
+std::span<const EntityHandle> EntityStorage::entities() const noexcept {
+    ensureStitched();
+    return {stitchedEntities_.data(), stitchedEntities_.size()};
+}
+std::span<const Transform> EntityStorage::transforms() const noexcept {
+    ensureStitched();
+    return {stitchedTransforms_.data(), stitchedTransforms_.size()};
+}
+std::span<const Velocity> EntityStorage::velocities() const noexcept {
+    ensureStitched();
+    return {stitchedVelocities_.data(), stitchedVelocities_.size()};
+}
+std::span<const RenderTag> EntityStorage::renderTags() const noexcept {
+    ensureStitched();
+    return {stitchedRenderTags_.data(), stitchedRenderTags_.size()};
+}
+std::span<const UserData> EntityStorage::userData() const noexcept {
+    ensureStitched();
+    return {stitchedUserData_.data(), stitchedUserData_.size()};
+}
+std::span<const Acceleration> EntityStorage::accelerations() const noexcept {
+    ensureStitched();
+    return {stitchedAccelerations_.data(), stitchedAccelerations_.size()};
+}
+std::span<const Parent> EntityStorage::parents() const noexcept {
+    ensureStitched();
+    return {stitchedParents_.data(), stitchedParents_.size()};
+}
+std::span<const Health> EntityStorage::healths() const noexcept {
+    ensureStitched();
+    return {stitchedHealths_.data(), stitchedHealths_.size()};
+}
+std::span<const Faction> EntityStorage::factions() const noexcept {
+    ensureStitched();
+    return {stitchedFactions_.data(), stitchedFactions_.size()};
+}
+std::span<const AnimationStateRef> EntityStorage::animationStates() const noexcept {
+    ensureStitched();
+    return {stitchedAnimationStates_.data(), stitchedAnimationStates_.size()};
+}
+std::span<const PhysicsBodyRef> EntityStorage::physicsBodies() const noexcept {
+    ensureStitched();
+    return {stitchedPhysicsBodies_.data(), stitchedPhysicsBodies_.size()};
+}
+std::span<const NavAgentRef> EntityStorage::navAgents() const noexcept {
+    ensureStitched();
+    return {stitchedNavAgents_.data(), stitchedNavAgents_.size()};
+}
+std::span<const BoundingVolume> EntityStorage::boundingVolumes() const noexcept {
+    ensureStitched();
+    return {stitchedBoundingVolumes_.data(), stitchedBoundingVolumes_.size()};
+}
+std::span<const ComponentSet> EntityStorage::componentMasks() const noexcept {
+    ensureStitched();
+    return {stitchedMasks_.data(), stitchedMasks_.size()};
 }
 
 } // namespace threadmaxx::internal

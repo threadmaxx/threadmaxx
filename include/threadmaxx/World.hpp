@@ -12,16 +12,17 @@
 
 namespace threadmaxx { struct WorldSnapshot; }
 
+namespace threadmaxx::internal { struct ArchetypeChunk; }
+
 namespace threadmaxx {
 
 /// One row of @ref World::archetypeSignatures. Each row describes a
 /// distinct per-entity @ref ComponentSet currently in use and how many
 /// live entities carry exactly that mask.
 ///
-/// In the current parallel-array `EntityStorage`, all entities live in
-/// one flat dense range and this is a profiling/inventory helper. After
-/// the §3.1 batch-6 archetype refactor, each signature here will
-/// correspond to a physical archetype chunk group.
+/// Each row corresponds to a physical archetype chunk group (§3.1
+/// batch 6); the signature is the chunk's mask and the count is the
+/// chunk's row count.
 struct ArchetypeSignature {
     ComponentSet  mask  = {};
     std::uint32_t count = 0;
@@ -133,17 +134,31 @@ public:
     WorldSnapshot snapshot() const;
 
     /// Inventory of distinct per-entity @ref ComponentSet values currently
-    /// live in the world, with per-mask counts (§3.1 batch-6 prep).
+    /// live in the world, with per-mask counts.
     ///
-    /// O(N) over live entities, returned sorted by `mask.bits()` ascending
-    /// (so output ordering is stable across runs). Useful right now for
-    /// HUD/profiling — "how many distinct archetypes does my world
-    /// have?". Once the chunk-storage refactor lands, each row will
-    /// correspond directly to a physical archetype chunk group.
+    /// O(num archetypes) — one row per non-empty @ref
+    /// internal::ArchetypeChunk, sorted by `mask.bits()` ascending so
+    /// output order is stable across runs. Useful for HUD/profiling
+    /// ("how many distinct archetypes does my world have?") and for
+    /// driving custom chunk iteration without going through
+    /// @ref forEachChunk.
     ///
     /// Not thread-safe against concurrent commits; same caveat as
     /// @ref snapshot.
     std::vector<ArchetypeSignature> archetypeSignatures() const;
+
+    /// @name Archetype chunk iteration (§3.1 batch 6)
+    ///
+    /// Number of @ref internal::ArchetypeChunk groups currently in the
+    /// world, and read-only access to each by index. Game code should
+    /// use the higher-level @ref forEachChunk helper in `Query.hpp`;
+    /// these accessors are the foundation it builds on, but they're
+    /// public so users who need a custom traversal strategy don't have
+    /// to reach through `impl_()`.
+    /// @{
+    std::size_t archetypeChunkCount() const noexcept;
+    const internal::ArchetypeChunk& archetypeChunk(std::size_t i) const noexcept;
+    /// @}
 
     /// @internal Engine-internal access; do not call from game code.
     internal::WorldImpl& impl_() noexcept { return *impl_ptr_; }

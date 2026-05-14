@@ -110,18 +110,34 @@ int main() {
     CHECK(!w.hasTag(e1, Component::DisabledTag));
     CHECK_EQ(cap.lastInstances, std::size_t{2});
 
-    // Snapshot preserves tag bits.
+    // Snapshot preserves tag bits. §3.1 batch 6: dense iteration order is
+    // archetype-creation order (× spawn order within archetype), not
+    // global spawn order, so we look up each entity's row by scanning
+    // the snapshot's entities array rather than indexing by spawn
+    // ordinal.
     const auto snap = w.snapshot();
-    CHECK(snap.masks[0].has(Component::StaticTag));
+    auto rowOf = [&](EntityHandle h) -> std::size_t {
+        for (std::size_t i = 0; i < snap.entities.size(); ++i) {
+            if (snap.entities[i] == h) return i;
+        }
+        return snap.entities.size();
+    };
+    const auto row0 = rowOf(e0);
+    const auto row1 = rowOf(e1);
+    CHECK(row0 < snap.entities.size());
+    CHECK(row1 < snap.entities.size());
+    CHECK(snap.masks[row0].has(Component::StaticTag));
 
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     serialize(ss, snap);
     WorldSnapshot back;
     CHECK(deserialize(ss, back));
-    CHECK(back.masks[0].has(Component::StaticTag));
+    // Serialization preserves order, so rowOf maps the same way through
+    // the round-trip.
+    CHECK(back.masks[row0].has(Component::StaticTag));
     // The roundtripped mask should NOT carry DisabledTag (we cleared
     // it above before snapshotting).
-    CHECK(!back.masks[1].has(Component::DisabledTag));
+    CHECK(!back.masks[row1].has(Component::DisabledTag));
 
     engine.shutdown();
     EXIT_WITH_RESULT();

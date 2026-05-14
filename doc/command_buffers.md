@@ -77,7 +77,7 @@ Two setters update the per-entity component mask:
 Every other setter writes the value without touching the mask.
 `setComponentMask` is the escape hatch when none of those rules fit.
 
-## Per-component transitions (§3.1 batch-6 prep)
+## Per-component transitions
 
 Two generic templated entry points sit alongside the per-type setters:
 
@@ -101,22 +101,25 @@ logically carries T from now on." Pick the right tool:
 | Write value, always attach the bit      | `cb.addComponent<RenderTag>(e, ...)` |
 | Detach the component                    | `cb.removeComponent<RenderTag>(e)` |
 
-`removeComponent<T>(e)` clears the presence bit. In today's parallel-
-array storage the dense slot is left intact (a future read via
-`tryGetT(e)` returns the stale value); once §3.1 batch-6's chunked
-storage lands, `removeComponent` will physically migrate the entity
-out of `T`'s storage and `tryGetT` will return nullptr after the
-transition. Game code should treat the bit as the source of truth
-(use `World::has<T>(e)` rather than relying on the dense slot).
+`removeComponent<T>(e)` clears the presence bit. As of §3.1 batch 6
+(chunked archetype storage), this **physically migrates** the entity
+out of `T`'s storage chunk — a subsequent `tryGetT(e)` returns
+`nullptr`. Treat the bit as the source of truth (use
+`World::has<T>(e)`); never rely on the chunk's underlying dense slot
+to outlive the bit clear.
 
 Tag-only categories (`StaticTag`, `DisabledTag`, `DestroyedTag`) have
 no POD value, so `addComponent<DisabledTag>` won't compile — use
 `addTag(e, Component::DisabledTag)` / `removeTag(e, ...)` instead.
 
-The generic API is the forward-compatible shape: the §3.1 batch-6
-archetype refactor will preserve these two signatures while moving
-the implementation from "flip a bit" to "migrate the entity between
-archetype chunks."
+Every mask-changing command (`addComponent`, `removeComponent`,
+`addTag`, `removeTag`, `setComponentMask`, the auto-attaching
+`setHealth`/`setFaction`/etc. setters, `setRenderTag` and `setParent`
+when they toggle their respective bits) drives the same migration
+path inside the commit phase, so the cost model is uniform: a single
+mask edit is a swap-and-pop out of the source archetype's chunk plus
+a push into the destination chunk. Same-archetype writes — a plain
+`setTransform`, `setUserData`, etc. — never migrate.
 
 ## How commit ordering works
 
