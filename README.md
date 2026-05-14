@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 35 tests pin the
+minimal; the internals are PImpl'd so they can change. 40 tests pin the
 documented invariants.
 
 ## Highlights
@@ -48,8 +48,16 @@ documented invariants.
 - **Deterministic commit phase.** Workers emit commands into per-job
   buffers; the engine applies them on the sim thread in submission
   order. Same inputs → same world.
-- **Per-entity component-presence mask.** Renderers and queries can skip
-  entities that don't carry a given component without sentinel checks.
+- **Per-entity component-presence mask.** 64-bit `ComponentSet` over
+  16 built-in categories (Transform, Velocity, Acceleration, RenderTag,
+  UserData, Parent, Health, Faction, AnimationStateRef, PhysicsBodyRef,
+  NavAgentRef, BoundingVolume + three tag-only flags StaticTag /
+  DisabledTag / DestroyedTag); 48 spare bits. Renderers and queries can
+  skip entities that don't carry a given component without sentinel
+  checks.
+- **`MaskCache` + `forEachWithCached`.** Opt-in: rebuild a cached
+  index list in `preStep`, iterate it in `update` without re-testing
+  the mask. Pure perf win on stable-shape queries.
 - **Built-in hierarchy.** `Parent` component + a `HierarchySystem`
   factory that propagates world transforms in one DFS pass.
 - **Typed resource registry.** `ResourceId<T>` + a thread-safe
@@ -235,7 +243,7 @@ include/threadmaxx/    public API (20 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 35 no-dependency tests under CTest
+tests/                 40 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

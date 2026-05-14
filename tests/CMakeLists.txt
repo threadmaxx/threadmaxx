@@ -37,6 +37,11 @@ set(THREADMAXX_TESTS
     system_wait_test
     chrome_trace_test
     serialization_test
+    determinism_golden_test
+    wide_mask_test
+    new_components_test
+    tags_test
+    mask_cache_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

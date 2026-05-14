@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Handles.hpp"
+#include "Resource.hpp"
 
 #include <cstdint>
 #include <initializer_list>
@@ -19,14 +20,26 @@ namespace threadmaxx {
 ///
 /// `EntityStructural` is only meaningful in the scheduling role; it
 /// does not appear in per-entity masks.
-enum class Component : std::uint32_t {
-    Transform        = 1u << 0,
-    Velocity         = 1u << 1,
-    RenderTag        = 1u << 2,
-    UserData         = 1u << 3,
-    EntityStructural = 1u << 4,   ///< Scheduling only: "this system touches the set of live entities".
-    Acceleration     = 1u << 5,
-    Parent           = 1u << 6,
+///
+/// The underlying type is @c std::uint64_t — 64 distinct categories,
+/// of which the first 16 are currently allocated.
+enum class Component : std::uint64_t {
+    Transform         = 1ull << 0,
+    Velocity          = 1ull << 1,
+    RenderTag         = 1ull << 2,
+    UserData          = 1ull << 3,
+    EntityStructural  = 1ull << 4,  ///< Scheduling only: "this system touches the set of live entities".
+    Acceleration      = 1ull << 5,
+    Parent            = 1ull << 6,
+    Health            = 1ull << 7,
+    Faction           = 1ull << 8,
+    AnimationStateRef = 1ull << 9,
+    PhysicsBodyRef    = 1ull << 10,
+    NavAgentRef       = 1ull << 11,
+    BoundingVolume    = 1ull << 12,
+    StaticTag         = 1ull << 13,
+    DisabledTag       = 1ull << 14,
+    DestroyedTag      = 1ull << 15,
 };
 
 /// Bitset over @ref Component values. Trivially copyable, no allocation.
@@ -34,21 +47,23 @@ class ComponentSet {
 public:
     constexpr ComponentSet() noexcept = default;
     constexpr ComponentSet(Component c) noexcept
-        : bits_(static_cast<std::uint32_t>(c)) {}
+        : bits_(static_cast<std::uint64_t>(c)) {}
     constexpr ComponentSet(std::initializer_list<Component> cs) noexcept {
-        for (auto c : cs) bits_ |= static_cast<std::uint32_t>(c);
+        for (auto c : cs) bits_ |= static_cast<std::uint64_t>(c);
     }
 
-    /// Universal set (bits 0..6). Default for `ISystem::reads()` /
-    /// `writes()` — makes every pair of systems conflict.
+    /// Universal set (all currently-allocated bits). Default for
+    /// `ISystem::reads()` / `writes()` — makes every pair of systems
+    /// conflict. Keep in sync with the @ref Component enum: bits 0..15
+    /// are allocated as of batch 5.
     static constexpr ComponentSet all() noexcept {
         ComponentSet s;
-        s.bits_ = 0x7Fu;  // bits 0..6 — keep in sync with Component
+        s.bits_ = 0xFFFFull;  // bits 0..15 — keep in sync with Component
         return s;
     }
     static constexpr ComponentSet none() noexcept { return ComponentSet{}; }
 
-    constexpr std::uint32_t bits()  const noexcept { return bits_; }
+    constexpr std::uint64_t bits()  const noexcept { return bits_; }
     constexpr bool          empty() const noexcept { return bits_ == 0; }
 
     /// True iff the two sets share at least one bit.
@@ -58,7 +73,7 @@ public:
 
     /// True iff bit `c` is set.
     constexpr bool has(Component c) const noexcept {
-        return (bits_ & static_cast<std::uint32_t>(c)) != 0;
+        return (bits_ & static_cast<std::uint64_t>(c)) != 0;
     }
 
     /// True iff every bit in `o` is set in `*this`.
@@ -76,15 +91,15 @@ public:
         ComponentSet r; r.bits_ = bits_ & o.bits_; return r;
     }
     constexpr ComponentSet& add(Component c) noexcept {
-        bits_ |= static_cast<std::uint32_t>(c); return *this;
+        bits_ |= static_cast<std::uint64_t>(c); return *this;
     }
     constexpr ComponentSet& remove(Component c) noexcept {
-        bits_ &= ~static_cast<std::uint32_t>(c); return *this;
+        bits_ &= ~static_cast<std::uint64_t>(c); return *this;
     }
     constexpr bool operator==(const ComponentSet&) const noexcept = default;
 
 private:
-    std::uint32_t bits_ = 0;
+    std::uint64_t bits_ = 0;
 };
 
 constexpr ComponentSet operator|(Component a, Component b) noexcept {
@@ -161,6 +176,62 @@ struct UserData {
 struct Parent {
     EntityHandle parent      = kInvalidEntity;
     Transform    localOffset = {};
+};
+
+/// Per-entity hit-point pool. The engine never integrates this; user
+/// systems (damage, regen, death) own the math. Capped at @c max by
+/// convention but the engine does not enforce it.
+struct Health {
+    float current = 0.0f;
+    float max     = 0.0f;
+};
+
+/// Per-entity faction / team id. The engine never interprets this; AI
+/// systems use it for friend/foe checks.
+struct Faction {
+    std::uint32_t id = 0;
+};
+
+/// Phantom tag identifying an animation graph resource. Used as the
+/// type parameter of `ResourceId<AnimationGraph>` in
+/// @ref AnimationStateRef. The engine never instantiates the type — it
+/// is only used as a compile-time brand on the resource id.
+struct AnimationGraph;
+
+/// Per-entity animation state reference. Points at a resource-managed
+/// animation graph plus the entity's current state within it and the
+/// elapsed time since that state began. The engine never integrates
+/// this — a user-side animation system reads it and writes the
+/// resulting pose into a future @ref AnimationPose component (deferred
+/// to §3.4 batch 8).
+struct AnimationStateRef {
+    ResourceId<AnimationGraph> graph;
+    std::uint32_t              state = 0;
+    float                      t     = 0.0f;
+};
+
+/// Opaque per-entity reference to a physics body owned by a sibling
+/// physics library (Bullet, Jolt, PhysX, …). The engine never
+/// interprets the handle; user systems read positions out of and write
+/// positions into the foreign world via this opaque value.
+struct PhysicsBodyRef {
+    std::uint64_t handle = 0;
+};
+
+/// Opaque per-entity reference to a navigation agent owned by a
+/// sibling navmesh library. Same shape and reasoning as
+/// @ref PhysicsBodyRef.
+struct NavAgentRef {
+    std::uint64_t handle = 0;
+};
+
+/// Axis-aligned bounding volume in world space. Visibility-culling and
+/// broad-phase systems consume this; the engine itself does not
+/// populate or maintain it (a render-prep system or the physics body
+/// usually does).
+struct BoundingVolume {
+    Vec3 min;
+    Vec3 max;
 };
 
 } // namespace threadmaxx

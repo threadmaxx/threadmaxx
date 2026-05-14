@@ -56,16 +56,20 @@ When adding a public symbol, include a Doxygen-flavored comment on it (`///` or 
 This is the one operation that crosses every layer. To add component `Foo`:
 
 1. Define the POD in `include/threadmaxx/Components.hpp`.
-2. Add a `Component::Foo` enum value and extend `ComponentSet::all()`'s mask to cover its bit.
-3. Add a parallel `std::vector<Foo>` to `EntityStorage` (storage, dense view accessor, `mutFoo`, and the swap-and-pop branch in `destroy()` and the push in `spawn()`). `EntityStorage::spawn` now also takes a `ComponentSet initialMask` — pass it through.
-4. Extend `CmdSpawn` (add a `Foo foo` field), add `CmdSetFoo`, all four `spawn` overloads (two with auto-derived mask, two with `EntityHandle reserved` for §3.5), and the matching method in `CommandBuffer.cpp`. Update `defaultSpawnMask` if presence should auto-derive from values (`RenderTag` does this from `meshId >= 0`).
-5. Handle the new variant alternatives in `EngineImpl::commitBuffer` (the `std::visit` lambda). For setters that change presence (`RenderTag`, `Parent`), also call `mutComponentMask` to add/remove the bit. Also pass the new field through `EntityStorage::materializeReserved` so reserved-handle spawns get it.
-6. Add the read accessor + dense span on `World` (`tryGetFoo`, `foos()`).
-7. If it affects rendering, populate `RenderInstance` from it in `EngineImpl::buildRenderFrame` (and gate on the new presence bit instead of a sentinel).
-8. Optionally extend `Query.hpp::detail::getSpan` and `componentBit` so `forEach<Foo>` and `forEachWith<Foo>` work.
-9. Add a Doxygen brief to the new POD and any new public methods.
+2. Add a `Component::Foo` enum value (bit position past the highest currently allocated; the underlying type is `std::uint64_t` so room is cheap) and extend `ComponentSet::all()`'s mask to cover its bit.
+3. Add a parallel `std::vector<Foo>` to `EntityStorage` (storage, dense view accessor, `mutFoo`, and the swap-and-pop branch in `destroy()` and the push in `spawn()`). `EntityStorage::spawn` and `materializeReserved` both take all dense-component values by const-ref before the trailing `ComponentSet initialMask` — pass it through.
+4. Extend `CmdSpawn` (add a `Foo foo` field), add `CmdSetFoo`, all four `spawn` overloads (two with auto-derived mask, two with `EntityHandle reserved` for §3.5), and the matching method in `CommandBuffer.cpp`. Update `defaultSpawnMask` if presence should auto-derive from values (`RenderTag` does this from `meshId >= 0`; `Parent` from `parent.valid()`). Add the type to `bundle()`'s `bundleComponentBit` / `bundleStore` switches and a `Foo foo` member on `Bundle`.
+5. Handle the new variant alternatives in `EngineImpl::commitBuffer` (the `std::visit` lambda). For setters that should attach a presence bit on write (the §3.1 batch-5 setters all do this), also call `mutComponentMask` to add/remove the bit. For tag-only categories use `addTag` / `removeTag` rather than introducing a setter.
+6. Add the read accessor + dense span on `World` (`tryGetFoo`, `foos()`), and the `if constexpr` arm in `World.hpp::detail::worldComponentBit` / `worldTryGetSpanElement` so `World::has<Foo>` / `get<Foo>` work.
+7. If it affects rendering, populate `RenderInstance` from it in `EngineImpl::buildRenderFrame` (and gate on the new presence bit instead of a sentinel). The `DisabledTag` skip lives in the same loop.
+8. Extend `Query.hpp::detail::getSpan` and `componentBit` so `forEach<Foo>` and `forEachWith<Foo>` work.
+9. Add `serialize` / `deserialize` overloads for the POD in `Serialization.hpp`, append a `std::vector<Foo>` field to `WorldSnapshot`, extend the serialize/deserialize bodies for `WorldSnapshot` to write/read it, AND extend the `ComponentSet` deserialize fallthrough list with the new bit. Bump `kWorldSnapshotVersion` since the on-disk shape changes.
+10. Mirror the new dense array in `World::snapshot()` (in `src/World.cpp`).
+11. Add a Doxygen brief to the new POD and any new public methods.
 
-Missing any one of these will compile but corrupt state at runtime (dense arrays go out of sync). The `EntityStorage::destroy` swap-and-pop is the bit that tends to be forgotten. `Parent` (added 2026-05-13) and `Acceleration` show the full recipe end-to-end.
+Missing any one of these will compile but corrupt state at runtime (dense arrays go out of sync). The `EntityStorage::destroy` swap-and-pop is the bit that tends to be forgotten. Batch 5's `Health`, `Faction`, `AnimationStateRef`, `PhysicsBodyRef`, `NavAgentRef`, `BoundingVolume` (added 2026-05-14) and `Parent` / `Acceleration` (earlier) all show the full recipe end-to-end.
+
+Tag-only components (no dense data; presence-bit only) skip steps 3, 6 (no `tryGetFoo`), 8, 9 (no dense vec), and 10. Add the enum bit, extend `ComponentSet::all()`, mention it in the `ComponentSet` deserialize fallthrough, and game code drives it via `cb.addTag` / `cb.removeTag` / `World::hasTag`.
 
 ## Render frame lifetime
 
@@ -145,7 +149,7 @@ Batch form: `Engine::reserveEntityHandles(count, span)` / `SystemContext::reserv
 
 ## Serialization
 
-`include/threadmaxx/Serialization.hpp` is header-only. Provides per-component `serialize(ostream&, const T&)` / `deserialize(istream&, T&)` for every built-in plus `Vec3`, `Quat`, `ComponentSet`, and the `WorldSnapshot` POD. `World::snapshot()` (in `World.cpp`) copies the engine's dense arrays into a `WorldSnapshot`. Binary format: `[magic 'SXMT'][version u32][count u64][8 dense arrays each prefixed by u64 length]`; deserialize rejects mismatched magic/version. Restoration is game-side via `cb.spawn(...)` calls — the engine never bypasses the commit phase.
+`include/threadmaxx/Serialization.hpp` is header-only. Provides per-component `serialize(ostream&, const T&)` / `deserialize(istream&, T&)` for every built-in plus `Vec3`, `Quat`, `ComponentSet`, and the `WorldSnapshot` POD. `World::snapshot()` (in `World.cpp`) copies the engine's dense arrays into a `WorldSnapshot`. Binary format: `[magic 'SXMT'][version u32][count u64][14 dense arrays each prefixed by u64 length]`; deserialize rejects mismatched magic/version. `kWorldSnapshotVersion` was bumped to 2 with batch 5 (added Health, Faction, AnimationStateRef, PhysicsBodyRef, NavAgentRef, BoundingVolume dense arrays + 64-bit `ComponentSet` field). Restoration is game-side via `cb.spawn(...)` calls — the engine never bypasses the commit phase.
 
 ## Logger
 
@@ -159,6 +163,22 @@ Batch form: `Engine::reserveEntityHandles(count, span)` / `SystemContext::reserv
 
 `bundle(Cs...)` (in `CommandBuffer.hpp`) is a variadic factory that returns a `Bundle` struct containing default-constructed values for every built-in component slot plus the supplied values, with `initialMask` = union of bits for the listed `Cs`. Feed to `CommandBuffer::spawnBundle(...)` (or the reserved-handle overload). Named distinctly from `spawn` so `cb.spawn({})` stays unambiguous. The default-mask `spawn` overloads now also auto-derive the Parent presence bit from `p.parent.valid()` (mirrors the existing RenderTag auto-derive on `r.meshId >= 0`); both `spawn(...)` and `spawn(handle, ...)` take an optional trailing `Parent` parameter.
 
-## World::has / World::get
+## World::has / World::get / World::hasTag
 
-Header-only sugar on `World` for the built-in component types: `world.has<T>(handle)` returns true iff `alive(handle)` AND the per-entity mask has the bit for `T`. `world.get<T>(handle)` returns a `const T&` and asserts presence. Type dispatch via `if constexpr` chains in `detail::worldComponentBit` / `detail::worldTryGetSpanElement` — extend both alongside `Query.hpp::detail::componentBit` when adding a new built-in component.
+Header-only sugar on `World` for the built-in component types: `world.has<T>(handle)` returns true iff `alive(handle)` AND the per-entity mask has the bit for `T`. `world.get<T>(handle)` returns a `const T&` and asserts presence. Type dispatch via `if constexpr` chains in `detail::worldComponentBit` / `detail::worldTryGetSpanElement` — extend both alongside `Query.hpp::detail::componentBit` when adding a new built-in component. Tag-only categories (`StaticTag`, `DisabledTag`, `DestroyedTag`) have no dense data, so `has<T>` rejects them at compile time — use `world.hasTag(handle, Component::Tag)` instead.
+
+## ComponentSet width
+
+`ComponentSet` widened to `std::uint64_t` in batch 5 (was 32 bits). 16 bits are currently allocated (Transform=0 … DestroyedTag=15). `ComponentSet::all()` returns `0xFFFFu`. `Component`'s underlying type is `std::uint64_t`. Serialization writes the full 64-bit field; v1 32-bit snapshots are not loadable by current builds (deserializer rejects on version mismatch). 48 spare bits are available without another widening.
+
+## Tag-only components
+
+`Component::StaticTag` / `DisabledTag` / `DestroyedTag` are presence-bit-only — no dense storage, no setters, no command-buffer Cmd*. Game code drives them via `cb.addTag(e, tag)` / `cb.removeTag(e, tag)` (race-free single-bit flips that compose across workers) and observes them via `world.hasTag(e, tag)`. `EngineImpl::buildRenderFrame` skips entities with `DisabledTag`; no other engine system reacts to a tag bit. `DestroyedTag` is a marker for gameplay code only — the engine never auto-destroys on it. Tag bits ride in the serialized `ComponentSet` so they round-trip through `WorldSnapshot`.
+
+## §3.1 batch-5 component setters
+
+`setHealth` / `setFaction` / `setAnimationStateRef` / `setPhysicsBodyRef` / `setNavAgentRef` / `setBoundingVolume` each write a dense value AND set the corresponding presence bit on commit. There is no auto-derive-from-value convention (unlike RenderTag's `meshId >= 0` and Parent's `parent.valid()`) — attaching one of these is always an explicit decision. Detach goes through `cb.removeTag(e, Component::Foo)` or `cb.setComponentMask`. The default-mask `cb.spawn(...)` overloads do NOT attach these bits; opt in with a `Bundle` or the explicit-mask overload.
+
+## MaskCache and forEachWithCached
+
+`Query.hpp` ships `MaskCache` (user-owned vector of dense indices matching a `ComponentSet`) and `forEachWithCached<...>` (iterates the cache, skips out-of-range entries, no per-entity mask test in the hot loop). Rebuild discipline is on the caller: call `cache.rebuild(world, required<T...>())` in `preStep` when the required set may match a new or removed entity since last tick. The bounds check protects against a destroy between rebuilds, but cannot detect an entry whose mask flipped to no longer match. The base `forEachWith<...>` path is unchanged — `MaskCache` is purely additive, opt-in via call site.

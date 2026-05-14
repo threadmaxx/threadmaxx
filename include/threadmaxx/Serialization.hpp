@@ -29,7 +29,7 @@ namespace threadmaxx {
 ///      All multi-byte values are written host-endian. Snapshots are
 ///      not portable across architectures of different endianness;
 ///      treat them as an opaque savegame format on a single platform.
-///      A cross-platform format is a §3.4 batch 7 / batch 5 concern.
+///      A cross-platform format is a §3.3 batch 7 concern.
 
 namespace detail {
 
@@ -99,19 +99,42 @@ inline bool deserialize(std::istream& is,       UserData& u) { return detail::re
 inline void serialize  (std::ostream& os, const Parent& p) { detail::writePod(os, p); }
 inline bool deserialize(std::istream& is,       Parent& p) { return detail::readPod(is, p); }
 
+inline void serialize  (std::ostream& os, const Health& h) { detail::writePod(os, h); }
+inline bool deserialize(std::istream& is,       Health& h) { return detail::readPod(is, h); }
+
+inline void serialize  (std::ostream& os, const Faction& f) { detail::writePod(os, f); }
+inline bool deserialize(std::istream& is,       Faction& f) { return detail::readPod(is, f); }
+
+inline void serialize  (std::ostream& os, const AnimationStateRef& a) { detail::writePod(os, a); }
+inline bool deserialize(std::istream& is,       AnimationStateRef& a) { return detail::readPod(is, a); }
+
+inline void serialize  (std::ostream& os, const PhysicsBodyRef& p) { detail::writePod(os, p); }
+inline bool deserialize(std::istream& is,       PhysicsBodyRef& p) { return detail::readPod(is, p); }
+
+inline void serialize  (std::ostream& os, const NavAgentRef& n) { detail::writePod(os, n); }
+inline bool deserialize(std::istream& is,       NavAgentRef& n) { return detail::readPod(is, n); }
+
+inline void serialize  (std::ostream& os, const BoundingVolume& b) { detail::writePod(os, b); }
+inline bool deserialize(std::istream& is,       BoundingVolume& b) { return detail::readPod(is, b); }
+
 inline void serialize(std::ostream& os, const ComponentSet& m) {
-    const std::uint32_t bits = m.bits();
+    const std::uint64_t bits = m.bits();
     detail::writePod(os, bits);
 }
 inline bool deserialize(std::istream& is, ComponentSet& m) {
-    std::uint32_t bits = 0;
+    std::uint64_t bits = 0;
     if (!detail::readPod(is, bits)) return false;
     // Rebuild via the public API: clear, then set every present bit.
     m = ComponentSet{};
     for (auto c : { Component::Transform, Component::Velocity,
                     Component::RenderTag, Component::UserData,
-                    Component::Acceleration, Component::Parent }) {
-        if (bits & static_cast<std::uint32_t>(c)) m.add(c);
+                    Component::Acceleration, Component::Parent,
+                    Component::Health, Component::Faction,
+                    Component::AnimationStateRef, Component::PhysicsBodyRef,
+                    Component::NavAgentRef, Component::BoundingVolume,
+                    Component::StaticTag, Component::DisabledTag,
+                    Component::DestroyedTag }) {
+        if (bits & static_cast<std::uint64_t>(c)) m.add(c);
     }
     return true;
 }
@@ -126,25 +149,38 @@ inline bool deserialize(std::istream& is, ComponentSet& m) {
 /// command-buffer commit phase. See `doc/serialization.md` for the
 /// pattern.
 struct WorldSnapshot {
-    std::vector<EntityHandle> entities;
-    std::vector<Transform>    transforms;
-    std::vector<Velocity>     velocities;
-    std::vector<RenderTag>    renderTags;
-    std::vector<UserData>     userData;
-    std::vector<Acceleration> accelerations;
-    std::vector<Parent>       parents;
-    std::vector<ComponentSet> masks;
+    std::vector<EntityHandle>      entities;
+    std::vector<Transform>         transforms;
+    std::vector<Velocity>          velocities;
+    std::vector<RenderTag>         renderTags;
+    std::vector<UserData>          userData;
+    std::vector<Acceleration>      accelerations;
+    std::vector<Parent>            parents;
+    std::vector<Health>            healths;
+    std::vector<Faction>           factions;
+    std::vector<AnimationStateRef> animationStates;
+    std::vector<PhysicsBodyRef>    physicsBodies;
+    std::vector<NavAgentRef>       navAgents;
+    std::vector<BoundingVolume>    boundingVolumes;
+    std::vector<ComponentSet>      masks;
 
     std::size_t size() const noexcept { return entities.size(); }
 };
 
 /// Wire-format magic and version. Bump @ref kWorldSnapshotVersion on
 /// breaking changes — the deserializer rejects mismatched versions.
+///
+/// History:
+///   - v1: 8 dense arrays, 32-bit ComponentSet mask. Pre-batch-5.
+///   - v2: 14 dense arrays (added Health, Faction, AnimationStateRef,
+///         PhysicsBodyRef, NavAgentRef, BoundingVolume), 64-bit
+///         ComponentSet mask. Tag-only components ride in the mask
+///         bits, no dense storage. Batch 5.
 inline constexpr std::uint32_t kWorldSnapshotMagic   = 0x544D5853u; // 'SXMT' (LE)
-inline constexpr std::uint32_t kWorldSnapshotVersion = 1u;
+inline constexpr std::uint32_t kWorldSnapshotVersion = 2u;
 
 /// Write a @ref WorldSnapshot as a self-describing binary blob:
-/// `[magic u32][version u32][entityCount u64][8 dense arrays...]`.
+/// `[magic u32][version u32][entityCount u64][14 dense arrays...]`.
 inline void serialize(std::ostream& os, const WorldSnapshot& s) {
     detail::writePod(os, kWorldSnapshotMagic);
     detail::writePod(os, kWorldSnapshotVersion);
@@ -157,6 +193,12 @@ inline void serialize(std::ostream& os, const WorldSnapshot& s) {
     detail::writeVec(os, s.userData);
     detail::writeVec(os, s.accelerations);
     detail::writeVec(os, s.parents);
+    detail::writeVec(os, s.healths);
+    detail::writeVec(os, s.factions);
+    detail::writeVec(os, s.animationStates);
+    detail::writeVec(os, s.physicsBodies);
+    detail::writeVec(os, s.navAgents);
+    detail::writeVec(os, s.boundingVolumes);
     detail::writeVec(os, s.masks);
 }
 
@@ -174,25 +216,37 @@ inline bool deserialize(std::istream& is, WorldSnapshot& s) {
     if (version != kWorldSnapshotVersion) return false;
     if (!detail::readPod(is, count))   return false;
 
-    if (!detail::readVec(is, s.entities))      return false;
-    if (!detail::readVec(is, s.transforms))    return false;
-    if (!detail::readVec(is, s.velocities))    return false;
-    if (!detail::readVec(is, s.renderTags))    return false;
-    if (!detail::readVec(is, s.userData))      return false;
-    if (!detail::readVec(is, s.accelerations)) return false;
-    if (!detail::readVec(is, s.parents))       return false;
-    if (!detail::readVec(is, s.masks))         return false;
+    if (!detail::readVec(is, s.entities))        return false;
+    if (!detail::readVec(is, s.transforms))      return false;
+    if (!detail::readVec(is, s.velocities))      return false;
+    if (!detail::readVec(is, s.renderTags))      return false;
+    if (!detail::readVec(is, s.userData))        return false;
+    if (!detail::readVec(is, s.accelerations))   return false;
+    if (!detail::readVec(is, s.parents))         return false;
+    if (!detail::readVec(is, s.healths))         return false;
+    if (!detail::readVec(is, s.factions))        return false;
+    if (!detail::readVec(is, s.animationStates)) return false;
+    if (!detail::readVec(is, s.physicsBodies))   return false;
+    if (!detail::readVec(is, s.navAgents))       return false;
+    if (!detail::readVec(is, s.boundingVolumes)) return false;
+    if (!detail::readVec(is, s.masks))           return false;
 
     // Sanity: the header count should match every array's length. If
     // it doesn't, the file is corrupt.
-    if (s.entities.size() != count)      return false;
-    if (s.transforms.size() != count)    return false;
-    if (s.velocities.size() != count)    return false;
-    if (s.renderTags.size() != count)    return false;
-    if (s.userData.size() != count)      return false;
-    if (s.accelerations.size() != count) return false;
-    if (s.parents.size() != count)       return false;
-    if (s.masks.size() != count)         return false;
+    if (s.entities.size() != count)        return false;
+    if (s.transforms.size() != count)      return false;
+    if (s.velocities.size() != count)      return false;
+    if (s.renderTags.size() != count)      return false;
+    if (s.userData.size() != count)        return false;
+    if (s.accelerations.size() != count)   return false;
+    if (s.parents.size() != count)         return false;
+    if (s.healths.size() != count)         return false;
+    if (s.factions.size() != count)        return false;
+    if (s.animationStates.size() != count) return false;
+    if (s.physicsBodies.size() != count)   return false;
+    if (s.navAgents.size() != count)       return false;
+    if (s.boundingVolumes.size() != count) return false;
+    if (s.masks.size() != count)           return false;
     return true;
 }
 

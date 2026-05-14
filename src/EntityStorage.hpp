@@ -27,6 +27,12 @@ public:
                        const UserData& u,
                        const Acceleration& a,
                        const Parent& p,
+                       const Health& hp,
+                       const Faction& fac,
+                       const AnimationStateRef& anim,
+                       const PhysicsBodyRef& phys,
+                       const NavAgentRef& nav,
+                       const BoundingVolume& bv,
                        ComponentSet initialMask);
 
     // §3.5 reserveHandle: allocate a slot ahead of materialization.
@@ -57,6 +63,12 @@ public:
                              const UserData& u,
                              const Acceleration& a,
                              const Parent& p,
+                             const Health& hp,
+                             const Faction& fac,
+                             const AnimationStateRef& anim,
+                             const PhysicsBodyRef& phys,
+                             const NavAgentRef& nav,
+                             const BoundingVolume& bv,
                              ComponentSet initialMask);
 
     // Drop every reservation that survived the commit phase. Each
@@ -76,23 +88,35 @@ public:
     std::size_t size() const noexcept { return entities_.size(); }
 
     // Dense views — stable for the duration of a system update phase.
-    const std::vector<EntityHandle>& entities()   const noexcept { return entities_; }
-    const std::vector<Transform>&    transforms() const noexcept { return transforms_; }
-    const std::vector<Velocity>&     velocities() const noexcept { return velocities_; }
-    const std::vector<RenderTag>&    renderTags() const noexcept { return renderTags_; }
-    const std::vector<UserData>&     userData()   const noexcept { return userData_; }
-    const std::vector<Acceleration>& accelerations() const noexcept { return accelerations_; }
-    const std::vector<Parent>&       parents()       const noexcept { return parents_; }
-    const std::vector<ComponentSet>& componentMasks() const noexcept { return masks_; }
+    const std::vector<EntityHandle>&      entities()        const noexcept { return entities_; }
+    const std::vector<Transform>&         transforms()      const noexcept { return transforms_; }
+    const std::vector<Velocity>&          velocities()      const noexcept { return velocities_; }
+    const std::vector<RenderTag>&         renderTags()      const noexcept { return renderTags_; }
+    const std::vector<UserData>&          userData()        const noexcept { return userData_; }
+    const std::vector<Acceleration>&      accelerations()   const noexcept { return accelerations_; }
+    const std::vector<Parent>&            parents()         const noexcept { return parents_; }
+    const std::vector<Health>&            healths()         const noexcept { return healths_; }
+    const std::vector<Faction>&           factions()        const noexcept { return factions_; }
+    const std::vector<AnimationStateRef>& animationStates() const noexcept { return animationStates_; }
+    const std::vector<PhysicsBodyRef>&    physicsBodies()   const noexcept { return physicsBodies_; }
+    const std::vector<NavAgentRef>&       navAgents()       const noexcept { return navAgents_; }
+    const std::vector<BoundingVolume>&    boundingVolumes() const noexcept { return boundingVolumes_; }
+    const std::vector<ComponentSet>&      componentMasks()  const noexcept { return masks_; }
 
     // Mutators — only called from the commit phase.
-    Transform*    mutTransform   (EntityHandle h) noexcept;
-    Velocity*     mutVelocity    (EntityHandle h) noexcept;
-    RenderTag*    mutRenderTag   (EntityHandle h) noexcept;
-    UserData*     mutUserData    (EntityHandle h) noexcept;
-    Acceleration* mutAcceleration(EntityHandle h) noexcept;
-    Parent*       mutParent      (EntityHandle h) noexcept;
-    ComponentSet* mutComponentMask(EntityHandle h) noexcept;
+    Transform*         mutTransform        (EntityHandle h) noexcept;
+    Velocity*          mutVelocity         (EntityHandle h) noexcept;
+    RenderTag*         mutRenderTag        (EntityHandle h) noexcept;
+    UserData*          mutUserData         (EntityHandle h) noexcept;
+    Acceleration*      mutAcceleration     (EntityHandle h) noexcept;
+    Parent*            mutParent           (EntityHandle h) noexcept;
+    Health*            mutHealth           (EntityHandle h) noexcept;
+    Faction*           mutFaction          (EntityHandle h) noexcept;
+    AnimationStateRef* mutAnimationStateRef(EntityHandle h) noexcept;
+    PhysicsBodyRef*    mutPhysicsBodyRef   (EntityHandle h) noexcept;
+    NavAgentRef*       mutNavAgentRef      (EntityHandle h) noexcept;
+    BoundingVolume*    mutBoundingVolume   (EntityHandle h) noexcept;
+    ComponentSet*      mutComponentMask    (EntityHandle h) noexcept;
 
     void reserve(std::size_t n);
 
@@ -120,15 +144,21 @@ private:
 
     // Parallel dense arrays. denseToSlot_[i] gives the slot index that owns
     // dense row i — used when we swap-and-pop during destroy().
-    std::vector<std::uint32_t> denseToSlot_;
-    std::vector<EntityHandle>  entities_;
-    std::vector<Transform>     transforms_;
-    std::vector<Velocity>      velocities_;
-    std::vector<RenderTag>     renderTags_;
-    std::vector<UserData>      userData_;
-    std::vector<Acceleration>  accelerations_;
-    std::vector<Parent>        parents_;
-    std::vector<ComponentSet>  masks_;
+    std::vector<std::uint32_t>      denseToSlot_;
+    std::vector<EntityHandle>       entities_;
+    std::vector<Transform>          transforms_;
+    std::vector<Velocity>           velocities_;
+    std::vector<RenderTag>          renderTags_;
+    std::vector<UserData>           userData_;
+    std::vector<Acceleration>       accelerations_;
+    std::vector<Parent>             parents_;
+    std::vector<Health>             healths_;
+    std::vector<Faction>            factions_;
+    std::vector<AnimationStateRef>  animationStates_;
+    std::vector<PhysicsBodyRef>     physicsBodies_;
+    std::vector<NavAgentRef>        navAgents_;
+    std::vector<BoundingVolume>     boundingVolumes_;
+    std::vector<ComponentSet>       masks_;
 };
 
 } // namespace threadmaxx::internal

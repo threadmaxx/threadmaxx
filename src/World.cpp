@@ -41,6 +41,36 @@ const Parent* World::tryGetParent(EntityHandle e) const noexcept {
     if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
     return &impl_ptr_->storage.parents()[i];
 }
+const Health* World::tryGetHealth(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.healths()[i];
+}
+const Faction* World::tryGetFaction(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.factions()[i];
+}
+const AnimationStateRef* World::tryGetAnimationStateRef(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.animationStates()[i];
+}
+const PhysicsBodyRef* World::tryGetPhysicsBodyRef(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.physicsBodies()[i];
+}
+const NavAgentRef* World::tryGetNavAgentRef(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.navAgents()[i];
+}
+const BoundingVolume* World::tryGetBoundingVolume(EntityHandle e) const noexcept {
+    const auto i = impl_ptr_->storage.indexOf(e);
+    if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
+    return &impl_ptr_->storage.boundingVolumes()[i];
+}
 const ComponentSet* World::tryGetComponentMask(EntityHandle e) const noexcept {
     const auto i = impl_ptr_->storage.indexOf(e);
     if (i == std::numeric_limits<std::uint32_t>::max()) return nullptr;
@@ -72,6 +102,28 @@ std::span<const Acceleration> World::accelerations() const noexcept {
 std::span<const Parent> World::parents() const noexcept {
     return {impl_ptr_->storage.parents().data(), impl_ptr_->storage.parents().size()};
 }
+std::span<const Health> World::healths() const noexcept {
+    return {impl_ptr_->storage.healths().data(), impl_ptr_->storage.healths().size()};
+}
+std::span<const Faction> World::factions() const noexcept {
+    return {impl_ptr_->storage.factions().data(), impl_ptr_->storage.factions().size()};
+}
+std::span<const AnimationStateRef> World::animationStates() const noexcept {
+    return {impl_ptr_->storage.animationStates().data(),
+            impl_ptr_->storage.animationStates().size()};
+}
+std::span<const PhysicsBodyRef> World::physicsBodies() const noexcept {
+    return {impl_ptr_->storage.physicsBodies().data(),
+            impl_ptr_->storage.physicsBodies().size()};
+}
+std::span<const NavAgentRef> World::navAgents() const noexcept {
+    return {impl_ptr_->storage.navAgents().data(),
+            impl_ptr_->storage.navAgents().size()};
+}
+std::span<const BoundingVolume> World::boundingVolumes() const noexcept {
+    return {impl_ptr_->storage.boundingVolumes().data(),
+            impl_ptr_->storage.boundingVolumes().size()};
+}
 std::span<const ComponentSet> World::componentMasks() const noexcept {
     return {impl_ptr_->storage.componentMasks().data(), impl_ptr_->storage.componentMasks().size()};
 }
@@ -83,14 +135,20 @@ std::size_t World::size() const noexcept {
 WorldSnapshot World::snapshot() const {
     const auto& s = impl_ptr_->storage;
     WorldSnapshot out;
-    out.entities      = s.entities();
-    out.transforms    = s.transforms();
-    out.velocities    = s.velocities();
-    out.renderTags    = s.renderTags();
-    out.userData      = s.userData();
-    out.accelerations = s.accelerations();
-    out.parents       = s.parents();
-    out.masks         = s.componentMasks();
+    out.entities        = s.entities();
+    out.transforms      = s.transforms();
+    out.velocities      = s.velocities();
+    out.renderTags      = s.renderTags();
+    out.userData        = s.userData();
+    out.accelerations   = s.accelerations();
+    out.parents         = s.parents();
+    out.healths         = s.healths();
+    out.factions        = s.factions();
+    out.animationStates = s.animationStates();
+    out.physicsBodies   = s.physicsBodies();
+    out.navAgents       = s.navAgents();
+    out.boundingVolumes = s.boundingVolumes();
+    out.masks           = s.componentMasks();
     return out;
 }
 

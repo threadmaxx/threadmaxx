@@ -21,12 +21,18 @@ namespace threadmaxx {
 /// entity with just Transform+Velocity bits, not Transform+Velocity+
 /// UserData+Acceleration.
 struct Bundle {
-    Transform    transform    = {};
-    Velocity     velocity     = {};
-    RenderTag    renderTag    = {};
-    UserData     userData     = {};
-    Acceleration acceleration = {};
-    Parent       parent       = {};
+    Transform         transform        = {};
+    Velocity          velocity         = {};
+    RenderTag         renderTag        = {};
+    UserData          userData         = {};
+    Acceleration      acceleration     = {};
+    Parent            parent           = {};
+    Health            health           = {};
+    Faction           faction          = {};
+    AnimationStateRef animationState   = {};
+    PhysicsBodyRef    physicsBody      = {};
+    NavAgentRef       navAgent         = {};
+    BoundingVolume    boundingVolume   = {};
     /// Set of component-presence bits derived from the parameter pack
     /// passed to @ref bundle. The engine writes this verbatim into the
     /// new entity's per-entity mask.
@@ -37,25 +43,38 @@ namespace detail {
 
 template <typename T>
 constexpr Component bundleComponentBit() noexcept {
-    if constexpr (std::is_same_v<T, Transform>)         return Component::Transform;
-    else if constexpr (std::is_same_v<T, Velocity>)     return Component::Velocity;
-    else if constexpr (std::is_same_v<T, RenderTag>)    return Component::RenderTag;
-    else if constexpr (std::is_same_v<T, UserData>)     return Component::UserData;
-    else if constexpr (std::is_same_v<T, Acceleration>) return Component::Acceleration;
-    else if constexpr (std::is_same_v<T, Parent>)       return Component::Parent;
+    if constexpr (std::is_same_v<T, Transform>)              return Component::Transform;
+    else if constexpr (std::is_same_v<T, Velocity>)          return Component::Velocity;
+    else if constexpr (std::is_same_v<T, RenderTag>)         return Component::RenderTag;
+    else if constexpr (std::is_same_v<T, UserData>)          return Component::UserData;
+    else if constexpr (std::is_same_v<T, Acceleration>)      return Component::Acceleration;
+    else if constexpr (std::is_same_v<T, Parent>)            return Component::Parent;
+    else if constexpr (std::is_same_v<T, Health>)            return Component::Health;
+    else if constexpr (std::is_same_v<T, Faction>)           return Component::Faction;
+    else if constexpr (std::is_same_v<T, AnimationStateRef>) return Component::AnimationStateRef;
+    else if constexpr (std::is_same_v<T, PhysicsBodyRef>)    return Component::PhysicsBodyRef;
+    else if constexpr (std::is_same_v<T, NavAgentRef>)       return Component::NavAgentRef;
+    else if constexpr (std::is_same_v<T, BoundingVolume>)    return Component::BoundingVolume;
     else static_assert(sizeof(T) == 0,
         "bundle(): argument type must be one of Transform, Velocity, "
-        "RenderTag, UserData, Acceleration, Parent");
+        "RenderTag, UserData, Acceleration, Parent, Health, Faction, "
+        "AnimationStateRef, PhysicsBodyRef, NavAgentRef, BoundingVolume");
 }
 
 template <typename T>
 constexpr void bundleStore(Bundle& b, const T& v) noexcept {
-    if constexpr (std::is_same_v<T, Transform>)         b.transform    = v;
-    else if constexpr (std::is_same_v<T, Velocity>)     b.velocity     = v;
-    else if constexpr (std::is_same_v<T, RenderTag>)    b.renderTag    = v;
-    else if constexpr (std::is_same_v<T, UserData>)     b.userData     = v;
-    else if constexpr (std::is_same_v<T, Acceleration>) b.acceleration = v;
-    else if constexpr (std::is_same_v<T, Parent>)       b.parent       = v;
+    if constexpr (std::is_same_v<T, Transform>)              b.transform      = v;
+    else if constexpr (std::is_same_v<T, Velocity>)          b.velocity       = v;
+    else if constexpr (std::is_same_v<T, RenderTag>)         b.renderTag      = v;
+    else if constexpr (std::is_same_v<T, UserData>)          b.userData       = v;
+    else if constexpr (std::is_same_v<T, Acceleration>)      b.acceleration   = v;
+    else if constexpr (std::is_same_v<T, Parent>)            b.parent         = v;
+    else if constexpr (std::is_same_v<T, Health>)            b.health         = v;
+    else if constexpr (std::is_same_v<T, Faction>)           b.faction        = v;
+    else if constexpr (std::is_same_v<T, AnimationStateRef>) b.animationState = v;
+    else if constexpr (std::is_same_v<T, PhysicsBodyRef>)    b.physicsBody    = v;
+    else if constexpr (std::is_same_v<T, NavAgentRef>)       b.navAgent       = v;
+    else if constexpr (std::is_same_v<T, BoundingVolume>)    b.boundingVolume = v;
 }
 
 } // namespace detail
@@ -84,17 +103,25 @@ namespace detail {
 /// component-presence mask in `CommandBuffer::spawn()` if the caller
 /// does not provide one explicitly.
 struct CmdSpawn {
-    Transform transform;
-    Velocity velocity;
-    RenderTag render;
-    UserData userData;
-    Acceleration acceleration;
-    Parent parent;
+    Transform         transform;
+    Velocity          velocity;
+    RenderTag         render;
+    UserData          userData;
+    Acceleration      acceleration;
+    Parent            parent;
+    Health            health;
+    Faction           faction;
+    AnimationStateRef animationState;
+    PhysicsBodyRef    physicsBody;
+    NavAgentRef       navAgent;
+    BoundingVolume    boundingVolume;
     /// Bitset of which components are logically present on this entity.
     /// Defaults are filled in by `CommandBuffer::spawn()` from the
     /// supplied values (RenderTag bit iff `render.meshId >= 0`; Parent
-    /// bit iff `parent.parent.valid()`; the other built-ins are always
-    /// considered present).
+    /// bit iff `parent.parent.valid()`; Transform/Velocity/UserData/
+    /// Acceleration always; the §3.1 batch-5 slots are off by default
+    /// and only attach when the caller uses an explicit mask or a
+    /// @ref Bundle).
     ComponentSet initialMask;
     /// If valid, materialize a slot previously obtained via
     /// `SystemContext::reserveHandle()` instead of allocating a fresh
@@ -102,14 +129,22 @@ struct CmdSpawn {
     /// already been consumed or discarded.
     EntityHandle reserved = kInvalidEntity;
 };
-struct CmdDestroy         { EntityHandle entity; };
-struct CmdSetTransform    { EntityHandle entity; Transform    value; };
-struct CmdSetVelocity     { EntityHandle entity; Velocity     value; };
-struct CmdSetRenderTag    { EntityHandle entity; RenderTag    value; };
-struct CmdSetUserData     { EntityHandle entity; UserData     value; };
-struct CmdSetAcceleration { EntityHandle entity; Acceleration value; };
-struct CmdSetParent       { EntityHandle entity; Parent       value; };
-struct CmdSetComponentMask{ EntityHandle entity; ComponentSet value; };
+struct CmdDestroy            { EntityHandle entity; };
+struct CmdSetTransform       { EntityHandle entity; Transform         value; };
+struct CmdSetVelocity        { EntityHandle entity; Velocity          value; };
+struct CmdSetRenderTag       { EntityHandle entity; RenderTag         value; };
+struct CmdSetUserData        { EntityHandle entity; UserData          value; };
+struct CmdSetAcceleration    { EntityHandle entity; Acceleration      value; };
+struct CmdSetParent          { EntityHandle entity; Parent            value; };
+struct CmdSetHealth          { EntityHandle entity; Health            value; };
+struct CmdSetFaction         { EntityHandle entity; Faction           value; };
+struct CmdSetAnimationState  { EntityHandle entity; AnimationStateRef value; };
+struct CmdSetPhysicsBody     { EntityHandle entity; PhysicsBodyRef    value; };
+struct CmdSetNavAgent        { EntityHandle entity; NavAgentRef       value; };
+struct CmdSetBoundingVolume  { EntityHandle entity; BoundingVolume    value; };
+struct CmdSetComponentMask   { EntityHandle entity; ComponentSet      value; };
+struct CmdAddTag             { EntityHandle entity; Component         tag;   };
+struct CmdRemoveTag          { EntityHandle entity; Component         tag;   };
 
 using Command = std::variant<
     CmdSpawn,
@@ -120,7 +155,15 @@ using Command = std::variant<
     CmdSetUserData,
     CmdSetAcceleration,
     CmdSetParent,
-    CmdSetComponentMask>;
+    CmdSetHealth,
+    CmdSetFaction,
+    CmdSetAnimationState,
+    CmdSetPhysicsBody,
+    CmdSetNavAgent,
+    CmdSetBoundingVolume,
+    CmdSetComponentMask,
+    CmdAddTag,
+    CmdRemoveTag>;
 
 } // namespace detail
 
@@ -144,9 +187,10 @@ public:
     /// Spawn with an automatically-derived component mask: Transform,
     /// Velocity, UserData and Acceleration are always set; RenderTag is
     /// set iff `r.meshId >= 0`; Parent is set iff `p.parent.valid()`.
-    /// Use the explicit-mask overload (below) when you need full control
-    /// over which bits are present (e.g. spawning an entity that lacks
-    /// Velocity).
+    /// The §3.1 batch-5 slots (Health, Faction, AnimationStateRef,
+    /// PhysicsBodyRef, NavAgentRef, BoundingVolume) are *not* attached
+    /// by default — use the explicit-mask overload or @ref spawnBundle
+    /// when you need them.
     void spawn(const Transform& t, const Velocity& v = {},
                const RenderTag& r = {}, const UserData& u = {},
                const Acceleration& a = {}, const Parent& p = {});
@@ -201,10 +245,38 @@ public:
     /// bit (set if `p.parent.valid()`, cleared otherwise).
     void setParent      (EntityHandle entity, const Parent&       p);
 
+    /// @name §3.1 batch-5 setters
+    /// Each writes the dense-array value AND sets the corresponding
+    /// component-presence bit. There is no "auto-derive a bit from the
+    /// value" convention for these — opting an entity into Health,
+    /// Faction, etc. is always an explicit decision by gameplay code.
+    /// @{
+    void setHealth          (EntityHandle entity, const Health&            h);
+    void setFaction         (EntityHandle entity, const Faction&           f);
+    void setAnimationStateRef(EntityHandle entity, const AnimationStateRef& a);
+    void setPhysicsBodyRef  (EntityHandle entity, const PhysicsBodyRef&    p);
+    void setNavAgentRef     (EntityHandle entity, const NavAgentRef&       n);
+    void setBoundingVolume  (EntityHandle entity, const BoundingVolume&    b);
+    /// @}
+
     /// Directly overwrite the entity's component mask. Use for cases
     /// the automatic spawn/setRenderTag/setParent derivation does not
-    /// cover; the engine does not validate consistency.
+    /// cover; the engine does not validate consistency. For single-bit
+    /// edits prefer @ref addTag / @ref removeTag — they compose
+    /// correctly when multiple workers each flip a different bit on
+    /// the same entity within a tick, whereas this method clobbers
+    /// the whole mask in submission order.
     void setComponentMask(EntityHandle entity, ComponentSet mask);
+
+    /// Attach a tag-only category (`Component::StaticTag`,
+    /// `DisabledTag`, `DestroyedTag`) — or any component bit you want
+    /// to flip without rewriting the rest of the mask. The commit
+    /// phase ORs the bit in. Independent tag flips from different
+    /// workers in the same tick all land.
+    void addTag(EntityHandle entity, Component tag);
+
+    /// Inverse of @ref addTag — clears the bit.
+    void removeTag(EntityHandle entity, Component tag);
 
     void reserve(std::size_t n)        { commands_.reserve(n); }
     void clear() noexcept              { commands_.clear(); }

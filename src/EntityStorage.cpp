@@ -31,6 +31,12 @@ EntityStorage::EntityStorage(std::uint32_t initialCapacity) {
     userData_.reserve(initialCapacity);
     accelerations_.reserve(initialCapacity);
     parents_.reserve(initialCapacity);
+    healths_.reserve(initialCapacity);
+    factions_.reserve(initialCapacity);
+    animationStates_.reserve(initialCapacity);
+    physicsBodies_.reserve(initialCapacity);
+    navAgents_.reserve(initialCapacity);
+    boundingVolumes_.reserve(initialCapacity);
     masks_.reserve(initialCapacity);
 }
 
@@ -44,6 +50,12 @@ void EntityStorage::reserve(std::size_t n) {
     userData_.reserve(n);
     accelerations_.reserve(n);
     parents_.reserve(n);
+    healths_.reserve(n);
+    factions_.reserve(n);
+    animationStates_.reserve(n);
+    physicsBodies_.reserve(n);
+    navAgents_.reserve(n);
+    boundingVolumes_.reserve(n);
     masks_.reserve(n);
 }
 
@@ -53,6 +65,12 @@ EntityHandle EntityStorage::spawn(const Transform& t,
                                   const UserData& u,
                                   const Acceleration& a,
                                   const Parent& p,
+                                  const Health& hp,
+                                  const Faction& fac,
+                                  const AnimationStateRef& anim,
+                                  const PhysicsBodyRef& phys,
+                                  const NavAgentRef& nav,
+                                  const BoundingVolume& bv,
                                   ComponentSet initialMask) {
     std::uint32_t slotIdx;
     if (!freeSlots_.empty()) {
@@ -78,6 +96,12 @@ EntityHandle EntityStorage::spawn(const Transform& t,
     userData_.push_back(u);
     accelerations_.push_back(a);
     parents_.push_back(p);
+    healths_.push_back(hp);
+    factions_.push_back(fac);
+    animationStates_.push_back(anim);
+    physicsBodies_.push_back(phys);
+    navAgents_.push_back(nav);
+    boundingVolumes_.push_back(bv);
     masks_.push_back(initialMask);
     return h;
 }
@@ -135,6 +159,12 @@ bool EntityStorage::materializeReserved(EntityHandle h,
                                         const UserData& u,
                                         const Acceleration& a,
                                         const Parent& p,
+                                        const Health& hp,
+                                        const Faction& fac,
+                                        const AnimationStateRef& anim,
+                                        const PhysicsBodyRef& phys,
+                                        const NavAgentRef& nav,
+                                        const BoundingVolume& bv,
                                         ComponentSet initialMask) {
     if (h.index >= slots_.size()) return false;
     Slot& slot = slots_[h.index];
@@ -154,6 +184,12 @@ bool EntityStorage::materializeReserved(EntityHandle h,
     userData_.push_back(u);
     accelerations_.push_back(a);
     parents_.push_back(p);
+    healths_.push_back(hp);
+    factions_.push_back(fac);
+    animationStates_.push_back(anim);
+    physicsBodies_.push_back(phys);
+    navAgents_.push_back(nav);
+    boundingVolumes_.push_back(bv);
     masks_.push_back(initialMask);
 
     // Remove the consumed reservation from the tracking list. The list
@@ -187,15 +223,21 @@ bool EntityStorage::destroy(EntityHandle h) noexcept {
     if (deadDense != lastDense) {
         // Swap-and-pop: move the last element into the freed dense slot,
         // then update the owning slot's denseIndex.
-        entities_      [deadDense] = entities_      [lastDense];
-        transforms_    [deadDense] = transforms_    [lastDense];
-        velocities_    [deadDense] = velocities_    [lastDense];
-        renderTags_    [deadDense] = renderTags_    [lastDense];
-        userData_      [deadDense] = userData_      [lastDense];
-        accelerations_ [deadDense] = accelerations_ [lastDense];
-        parents_       [deadDense] = parents_       [lastDense];
-        masks_         [deadDense] = masks_         [lastDense];
-        denseToSlot_   [deadDense] = denseToSlot_   [lastDense];
+        entities_       [deadDense] = entities_       [lastDense];
+        transforms_     [deadDense] = transforms_     [lastDense];
+        velocities_     [deadDense] = velocities_     [lastDense];
+        renderTags_     [deadDense] = renderTags_     [lastDense];
+        userData_       [deadDense] = userData_       [lastDense];
+        accelerations_  [deadDense] = accelerations_  [lastDense];
+        parents_        [deadDense] = parents_        [lastDense];
+        healths_        [deadDense] = healths_        [lastDense];
+        factions_       [deadDense] = factions_       [lastDense];
+        animationStates_[deadDense] = animationStates_[lastDense];
+        physicsBodies_  [deadDense] = physicsBodies_  [lastDense];
+        navAgents_      [deadDense] = navAgents_      [lastDense];
+        boundingVolumes_[deadDense] = boundingVolumes_[lastDense];
+        masks_          [deadDense] = masks_          [lastDense];
+        denseToSlot_    [deadDense] = denseToSlot_    [lastDense];
         slots_[denseToSlot_[deadDense]].denseIndex = deadDense;
     }
 
@@ -206,6 +248,12 @@ bool EntityStorage::destroy(EntityHandle h) noexcept {
     userData_.pop_back();
     accelerations_.pop_back();
     parents_.pop_back();
+    healths_.pop_back();
+    factions_.pop_back();
+    animationStates_.pop_back();
+    physicsBodies_.pop_back();
+    navAgents_.pop_back();
+    boundingVolumes_.pop_back();
     masks_.pop_back();
     denseToSlot_.pop_back();
 
@@ -249,6 +297,30 @@ Acceleration* EntityStorage::mutAcceleration(EntityHandle h) noexcept {
 Parent* EntityStorage::mutParent(EntityHandle h) noexcept {
     const auto i = indexOf(h);
     return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &parents_[i];
+}
+Health* EntityStorage::mutHealth(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &healths_[i];
+}
+Faction* EntityStorage::mutFaction(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &factions_[i];
+}
+AnimationStateRef* EntityStorage::mutAnimationStateRef(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &animationStates_[i];
+}
+PhysicsBodyRef* EntityStorage::mutPhysicsBodyRef(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &physicsBodies_[i];
+}
+NavAgentRef* EntityStorage::mutNavAgentRef(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &navAgents_[i];
+}
+BoundingVolume* EntityStorage::mutBoundingVolume(EntityHandle h) noexcept {
+    const auto i = indexOf(h);
+    return i == std::numeric_limits<std::uint32_t>::max() ? nullptr : &boundingVolumes_[i];
 }
 ComponentSet* EntityStorage::mutComponentMask(EntityHandle h) noexcept {
     const auto i = indexOf(h);

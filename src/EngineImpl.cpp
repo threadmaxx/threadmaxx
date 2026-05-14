@@ -285,16 +285,23 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     // (e.g. by a competing path that consumed it first).
                     if (!storage.materializeReserved(c.reserved,
                             c.transform, c.velocity, c.render, c.userData,
-                            c.acceleration, c.parent, c.initialMask)) {
+                            c.acceleration, c.parent,
+                            c.health, c.faction, c.animationState,
+                            c.physicsBody, c.navAgent, c.boundingVolume,
+                            c.initialMask)) {
                         storage.spawn(c.transform, c.velocity,
                                       c.render, c.userData,
                                       c.acceleration, c.parent,
+                                      c.health, c.faction, c.animationState,
+                                      c.physicsBody, c.navAgent, c.boundingVolume,
                                       c.initialMask);
                     }
                 } else {
                     storage.spawn(c.transform, c.velocity,
                                   c.render, c.userData,
                                   c.acceleration, c.parent,
+                                  c.health, c.faction, c.animationState,
+                                  c.physicsBody, c.navAgent, c.boundingVolume,
                                   c.initialMask);
                 }
             } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
@@ -321,8 +328,38 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     if (c.value.parent.valid()) m->add(Component::Parent);
                     else                        m->remove(Component::Parent);
                 }
+            } else if constexpr (std::is_same_v<T, detail::CmdSetHealth>) {
+                if (auto* p = storage.mutHealth(c.entity)) *p = c.value;
+                // §3.1 batch-5 set* methods: attaching a value attaches
+                // the presence bit. Detachment goes through setComponentMask.
+                if (auto* m = storage.mutComponentMask(c.entity))
+                    m->add(Component::Health);
+            } else if constexpr (std::is_same_v<T, detail::CmdSetFaction>) {
+                if (auto* p = storage.mutFaction(c.entity)) *p = c.value;
+                if (auto* m = storage.mutComponentMask(c.entity))
+                    m->add(Component::Faction);
+            } else if constexpr (std::is_same_v<T, detail::CmdSetAnimationState>) {
+                if (auto* p = storage.mutAnimationStateRef(c.entity)) *p = c.value;
+                if (auto* m = storage.mutComponentMask(c.entity))
+                    m->add(Component::AnimationStateRef);
+            } else if constexpr (std::is_same_v<T, detail::CmdSetPhysicsBody>) {
+                if (auto* p = storage.mutPhysicsBodyRef(c.entity)) *p = c.value;
+                if (auto* m = storage.mutComponentMask(c.entity))
+                    m->add(Component::PhysicsBodyRef);
+            } else if constexpr (std::is_same_v<T, detail::CmdSetNavAgent>) {
+                if (auto* p = storage.mutNavAgentRef(c.entity)) *p = c.value;
+                if (auto* m = storage.mutComponentMask(c.entity))
+                    m->add(Component::NavAgentRef);
+            } else if constexpr (std::is_same_v<T, detail::CmdSetBoundingVolume>) {
+                if (auto* p = storage.mutBoundingVolume(c.entity)) *p = c.value;
+                if (auto* m = storage.mutComponentMask(c.entity))
+                    m->add(Component::BoundingVolume);
             } else if constexpr (std::is_same_v<T, detail::CmdSetComponentMask>) {
                 if (auto* p = storage.mutComponentMask(c.entity)) *p = c.value;
+            } else if constexpr (std::is_same_v<T, detail::CmdAddTag>) {
+                if (auto* p = storage.mutComponentMask(c.entity)) p->add(c.tag);
+            } else if constexpr (std::is_same_v<T, detail::CmdRemoveTag>) {
+                if (auto* p = storage.mutComponentMask(c.entity)) p->remove(c.tag);
             }
         }, cmd);
     }
@@ -344,6 +381,7 @@ void EngineImpl::buildRenderFrame() {
 
     for (std::size_t i = 0; i < entities.size(); ++i) {
         if (!masks[i].has(Component::RenderTag)) continue;
+        if (masks[i].has(Component::DisabledTag)) continue;
         dst.push_back(RenderInstance{
             entities[i],
             transforms[i],
