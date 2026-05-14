@@ -35,13 +35,32 @@ runtime? io_uring?); pumping `update` instead lets each game pick.
 
 ## Lifecycle
 
-- Loaders are pumped in registration order, every step.
-- `Engine::shutdown()` calls each loader's `onShutdown(engine)` in
-  reverse-registration order, then destroys them in the same order.
-  Use `onShutdown` to cancel in-flight uploads or join I/O threads;
-  the engine guarantees `update` is not invoked again afterward.
-- A loader that calls `engine.shutdown()` from inside `update()` is
-  undefined behavior; treat the pump as a leaf call.
+Each tick, on the sim thread, every registered loader has two hooks
+called back-to-back in registration order:
+
+1. `cancel(Engine&)` — drop newly-stale pending requests. New in
+   §3.5 batch 12; defaults to a no-op. Game code that wants to say
+   "I no longer need any mesh load for chunk X" pushes the request
+   into a loader-internal queue via a loader-specific API, then the
+   engine's per-tick `cancel()` pump gives the loader a stable place
+   to drain that queue. Increment `LoaderStats::cancelled` per item
+   dropped — the engine sums it across loaders in
+   `aggregateLoaderStats()`.
+2. `update(Engine&)` — poll completed work, install assets via
+   `engine.resources().add(...)`, kick off new fetches.
+
+The order is deliberate: dropping stale items before kicking new ones
+lets a loader compute "queue is empty after this cancel, idle the
+worker thread" in the same tick.
+
+`Engine::shutdown()` calls each loader's `onShutdown(engine)` in
+reverse-registration order, then destroys them in the same order.
+Use `onShutdown` to cancel in-flight uploads or join I/O threads; the
+engine guarantees neither `cancel` nor `update` is invoked again
+afterward.
+
+A loader that calls `engine.shutdown()` from inside `update()` is
+undefined behavior; treat the pump as a leaf call.
 
 ```cpp
 class MeshLoader : public threadmaxx::IResourceLoader {

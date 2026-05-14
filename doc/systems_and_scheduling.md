@@ -169,6 +169,86 @@ class IntegrationSystem : public ISystem {
 Pass-through `grain > 0` calls are unaffected — `preferredGrain()`
 is only consulted when the user defers to the engine.
 
+## Tick budgets, skipping, and `shouldYield` (§3.5 batch 12)
+
+Some systems are nice-to-have: analytics, debug overlays, low-priority
+AI tickers. Missing one tick of those is strictly better than a frame
+hitch. The engine has an opt-in skip machinery for exactly this case:
+
+```cpp
+class AnalyticsSystem : public ISystem {
+    bool skippable() const noexcept override { return true; }  // opt-in
+    // ...
+};
+```
+
+```cpp
+engine.setTickBudget(0.012);   // 12 ms per tick (e.g. 60 fps with margin)
+```
+
+When the engine's `step()` elapsed time exceeds the budget at a wave
+boundary, all subsequent waves' `skippable()` systems have their
+`update()` skipped on the current tick. `preStep` / `postStep` /
+`buildRenderFrame` are NEVER skipped.
+
+User systems can poll the over-budget flag from inside `update()`:
+
+```cpp
+void update(SystemContext& ctx) override {
+    for (Range r : ranges_) {
+        if (ctx.shouldYield()) {
+            cb.emitDeferred(...);   // bail; resume next tick
+            return;
+        }
+        // ... heavy work ...
+    }
+}
+```
+
+Every skip is reported on `engine.events<SystemSkipped>()` as a
+`{tick, systemName, reason}` event. `reason` is `"budget"` for
+budget-driven skips.
+
+### Deterministic replay — `SkipPolicy::Scripted`
+
+`Budget` mode is local to the machine — under wall-clock pressure
+two peers can diverge. For networked / lockstep games:
+
+```cpp
+// Authoritative server:
+engine.setSkipPolicy(SkipPolicy::Budget);
+engine.setTickBudget(0.012);
+// ... drain events<SystemSkipped>(), broadcast the log ...
+
+// Clients replay:
+engine.setSkipPolicy(SkipPolicy::Scripted);
+for (const auto& [tick, name] : broadcastLog) {
+    engine.pushScriptedSkip(tick, name);
+}
+```
+
+`Scripted` ignores `tickBudget` entirely and consults the queue
+verbatim. World hashes match the server's bit-for-bit when the same
+skip log is applied.
+
+## Per-job priorities — `JobPriority` (§3.5 batch 12)
+
+`parallelFor` accepts an optional `JobPriority` (`High` / `Normal` /
+`Low`). Higher-priority jobs are popped from a worker's own queue
+before lower-priority ones, and cross-worker steals also scan in
+priority order. Defaults to `Normal` everywhere, so adding the
+argument never changes existing behavior.
+
+```cpp
+ctx.parallelFor(items.size(), 0,
+    [](Range r, CommandBuffer& cb) { /* ... */ },
+    JobPriority::High);   // jump the queue ahead of other waves' Normal work
+```
+
+Priorities are advisory — the engine's deterministic commit phase
+runs after every wave fully settles, so changing priorities never
+alters world state, only when work runs.
+
 ## How waves run
 
 Within a wave the engine fans systems out across `workerCount - 1`

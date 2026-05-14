@@ -37,15 +37,16 @@ JobSystem::~JobSystem() {
     }
 }
 
-void JobSystem::submit(JobFn fn) {
+void JobSystem::submit(JobFn fn, JobPriority priority) {
     outstanding_.fetch_add(1, std::memory_order_acq_rel);
     totalJobs_.fetch_add(1, std::memory_order_relaxed);
     const std::uint32_t n = static_cast<std::uint32_t>(workers_.size());
     const std::uint32_t idx = pushCounter_.fetch_add(1, std::memory_order_relaxed) % n;
     auto& w = *workers_[idx];
+    const std::size_t pri = static_cast<std::size_t>(priority);
     {
         std::lock_guard<std::mutex> lk(w.mtx);
-        w.queue.emplace_back(std::move(fn));
+        w.queues[pri].emplace_back(std::move(fn));
     }
     w.cv.notify_one();
 }
@@ -97,13 +98,15 @@ JobSystem::JobFn JobSystem::trySteal(std::uint32_t selfIdx) noexcept {
         auto& victim = *workers_[(selfIdx + i) % n];
         if (!victim.mtx.try_lock()) continue;
         std::lock_guard<std::mutex> lk(victim.mtx, std::adopt_lock);
-        if (!victim.queue.empty()) {
-            // Steal from the back of the victim's deque: producers push to
-            // the back and the victim itself pops from the front, so we
-            // contend with the producer (rare, by round-robin) rather
-            // than with the victim's own pop path.
-            JobFn job = std::move(victim.queue.back());
-            victim.queue.pop_back();
+        // §3.5 batch 12: prefer higher-priority deques when stealing.
+        // We still steal from the back (oldest) of each deque to keep
+        // the producer-consumer contention pattern unchanged from
+        // batch 1's design.
+        for (std::size_t pri = 0; pri < kJobPriorityLevels; ++pri) {
+            auto& q = victim.queues[pri];
+            if (q.empty()) continue;
+            JobFn job = std::move(q.back());
+            q.pop_back();
             workers_[selfIdx]->stolenJobs++;
             return job;
         }
@@ -113,21 +116,31 @@ JobSystem::JobFn JobSystem::trySteal(std::uint32_t selfIdx) noexcept {
 
 void JobSystem::workerLoop(std::uint32_t selfIdx) {
     auto& self = *workers_[selfIdx];
+    // §3.5 batch 12: scan deques in priority order (High → Normal → Low),
+    // popping from the front (FIFO within a priority class) to keep
+    // batch-submitted work executing in submission order at each level.
+    auto popOwn = [&](JobFn& out) {
+        for (std::size_t pri = 0; pri < kJobPriorityLevels; ++pri) {
+            auto& q = self.queues[pri];
+            if (!q.empty()) {
+                out = std::move(q.front());
+                q.pop_front();
+                return true;
+            }
+        }
+        return false;
+    };
     for (;;) {
         JobFn job;
 
         bool fromOwn = false;
-        // 1) Drain own queue first (FIFO from producer's perspective).
+        // 1) Drain own queues first, priority-ordered.
         {
             std::lock_guard<std::mutex> lk(self.mtx);
-            if (!self.queue.empty()) {
-                job = std::move(self.queue.front());
-                self.queue.pop_front();
-                fromOwn = true;
-            }
+            if (popOwn(job)) fromOwn = true;
         }
 
-        // 2) If own queue is empty, try stealing from siblings.
+        // 2) If own queues are empty, try stealing from siblings.
         if (!job) job = trySteal(selfIdx);
 
         // 3) Still nothing — park until the producer notifies us or we are
@@ -135,17 +148,13 @@ void JobSystem::workerLoop(std::uint32_t selfIdx) {
         if (!job) {
             std::unique_lock<std::mutex> lk(self.mtx);
             self.cv.wait(lk, [this, &self] {
-                return !self.queue.empty() ||
+                return self.hasWork() ||
                        stopping_.load(std::memory_order_acquire);
             });
-            if (stopping_.load(std::memory_order_acquire) && self.queue.empty()) {
+            if (stopping_.load(std::memory_order_acquire) && !self.hasWork()) {
                 return;
             }
-            if (!self.queue.empty()) {
-                job = std::move(self.queue.front());
-                self.queue.pop_front();
-                fromOwn = true;
-            }
+            if (popOwn(job)) fromOwn = true;
         }
 
         if (fromOwn) self.ownPops++;

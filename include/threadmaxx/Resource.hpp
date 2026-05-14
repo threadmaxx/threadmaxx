@@ -271,6 +271,10 @@ struct LoaderStats {
     std::uint64_t ready           = 0;
     /// Items that failed (parse errors, file-not-found, etc).
     std::uint64_t failed          = 0;
+    /// §3.5 batch 12 — items cancelled by @ref IResourceLoader::cancel.
+    /// Lifetime counter; loaders increment when a pending or in-flight
+    /// request is dropped.
+    std::uint64_t cancelled       = 0;
     /// Current resident byte count. Zero means "loader does not track".
     std::uint64_t memoryFootprint = 0;
     /// Configured ceiling. Zero means "no budget set / unbounded".
@@ -331,6 +335,19 @@ public:
     ///                ticks; concurrent calls from other threads must
     ///                be safe in the override.
     virtual LoaderStats stats() const noexcept { return {}; }
+
+    /// §3.5 batch 12 — per-tick cancellation pump. The engine calls
+    /// this on the simulation thread immediately BEFORE
+    /// @ref update each tick. Loaders that maintain a queue of
+    /// game-driven "cancel anything pointing at chunk X" requests
+    /// process them here; the default is a no-op.
+    ///
+    /// Returns the number of items cancelled this call; the engine
+    /// uses the return value only for instrumentation
+    /// (`LoaderStats::cancelled` is the loader's responsibility to
+    /// keep in sync).
+    /// @thread_safety Sim thread only — same context as @ref update.
+    virtual std::uint64_t cancel(Engine& /*engine*/) { return 0; }
 };
 
 /// Event published by the engine when a resource id is hot-reloaded

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "threadmaxx/Stats.hpp"
+#include "threadmaxx/System.hpp"
 
 #include <array>
 #include <atomic>
@@ -39,8 +40,11 @@ public:
     JobSystem& operator=(const JobSystem&) = delete;
 
     // Submit a job. Increments the outstanding-job counter and pushes onto
-    // a worker's local queue (round-robin by submit count).
-    void submit(JobFn fn);
+    // a worker's local queue (round-robin by submit count). The optional
+    // @p priority steers which per-worker deque the job lands in
+    // (§3.5 batch 12); workers prefer higher-priority deques both in
+    // their own pop path and in cross-worker steals.
+    void submit(JobFn fn, JobPriority priority = JobPriority::Normal);
 
     // Block until every submitted job has finished. Safe to call again.
     void waitIdle();
@@ -63,7 +67,12 @@ public:
 
 private:
     struct Worker {
-        std::deque<JobFn>       queue;
+        // §3.5 batch 12: three per-priority deques (High / Normal /
+        // Low). Workers' own pops and cross-worker steals scan in
+        // priority order so the work-stealing scheduler honors the
+        // priority hint. Backwards-compatible: pre-batch-12 calls go
+        // through `Normal` and behave bit-for-bit as before.
+        std::array<std::deque<JobFn>, kJobPriorityLevels> queues;
         std::mutex              mtx;
         std::condition_variable cv;
         std::thread             thread;
@@ -73,6 +82,12 @@ private:
         // each job() returns; no synchronization needed (own thread).
         // Aggregated at read time in stats().
         std::array<std::uint64_t, kJobDurationHistogramBins> histogram = {};
+
+        // True iff any of the priority deques has work.
+        bool hasWork() const noexcept {
+            for (const auto& q : queues) if (!q.empty()) return true;
+            return false;
+        }
     };
 
     /// Compute the histogram bin for a job duration. Log2-spaced in

@@ -21,6 +21,7 @@
 #include "Resource.hpp"
 #include "ScratchArena.hpp"
 #include "Serialization.hpp"
+#include "SkipPolicy.hpp"
 #include "SpatialHash.hpp"
 #include "Stats.hpp"
 #include "System.hpp"

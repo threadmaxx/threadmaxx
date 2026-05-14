@@ -17,22 +17,25 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-14 (Milestone 2 closed and the first
-Milestone-5 slice landed. Batch 6b shipped the user-extensible
-dense-component hook (`registerUserComponent<T>`, `UserComponentId`,
-`addUserComponent` / `removeUserComponent`, `user::has` / `tryGet` /
-`chunkSpan`). Batch 11 then shipped the frame task graph (§6 phase
-3) — `TaskTag` POD with name-based equality, `ISystem::dependencies`
-/ `provides` / `preferredGrain` virtuals, DAG-aware `rebuildWaves`
-with Kahn's-algorithm cycle detection (logged via `ILogger`,
-graceful tag-edge drop on recovery), and `Engine::taskGraphSnapshot()`
-for HUD / Graphviz export. Backwards-compatible: the wave scheduler
-output is bit-for-bit identical when no system declares tags.
-Batches 5, 6, 6a, 7, 8 remain ✅ (see prior refresh notes below). The
-§3 plan continues with batches 9 (Vulkan reference renderer) and 10
-(RPG demo) for Milestones 4 and 6, plus the remaining perf batches
-12–14 lifting §6 phases 4–6 (cancellation/budgets, storage
-contention, instrumentation ingestion) — see §3.5–§3.7.).
+Last refreshed: 2026-05-14 (Milestone 2 closed and the first two
+Milestone-5 slices landed. Batch 6b shipped the user-extensible
+dense-component hook. Batch 11 shipped the frame task graph
+(`TaskTag`, `ISystem::dependencies` / `provides` /
+`preferredGrain`, DAG-aware `rebuildWaves` with cycle detection,
+`Engine::taskGraphSnapshot()`). Batch 12 shipped cancellation,
+budgets, and priorities — `Engine::setTickBudget`,
+`SystemContext::shouldYield()`, `ISystem::skippable()`,
+`Engine::setSkipPolicy(Budget|Scripted)` +
+`EventChannel<SystemSkipped>` for deterministic networked replay,
+`JobPriority` (High/Normal/Low) on `parallelFor` with per-worker
+per-priority deques, and `IResourceLoader::cancel(Engine&)` pumped
+before `update()` each tick + `LoaderStats::cancelled`. All five
+pieces are opt-in; defaults preserve existing behavior
+bit-for-bit. Batches 5, 6, 6a, 7, 8 remain ✅ (see prior refresh
+notes below). The §3 plan continues with batches 9 (Vulkan
+reference renderer) and 10 (RPG demo) for Milestones 4 and 6, plus
+the remaining perf batches 13 (storage contention) and 14
+(telemetry ingestion) — see §3.6 and §3.7.).
 
 ## 1. Target outcome
 
@@ -55,8 +58,9 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Ten batches plus a prep slice have landed, closing Milestones 1, 2,
-and 3, the M4 contract, and the first slice of M5. Batches 1–3 brought **Milestone 1** to
+Eleven batches plus a prep slice have landed, closing Milestones 1,
+2, and 3, the M4 contract, and §6 phases 3+4 of M5. Batches 1–3
+brought **Milestone 1** to
 completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
 polish and seeded the tracing maturity batches 5+ build on; batch 5
 (2026-05-14) widened the data model for Milestone 2 — six new POD
@@ -411,6 +415,56 @@ bit-for-bit identical when no system declares tags.
   (3) `preferredGrain` honored, (4) cycle detection logs + recovers,
   (5) default heuristic when `preferredGrain == 0`.
 
+### Batch 12 — Cancellation, budgets, priorities (Milestone 5, §6 phase 4)
+
+Shipped 2026-05-14. Four pieces, all opt-in (defaults preserve existing
+behavior bit-for-bit). Closes §6 phase 4.
+
+- **Tick budget + skip policy.** `Engine::setTickBudget(seconds)` caps
+  per-tick wall-clock spend; the engine samples elapsed time after
+  every wave commit, flips an atomic `overBudget_` flag, and skips
+  subsequent waves' `ISystem::skippable()` systems for the current
+  tick. `preStep` / `postStep` / `buildRenderFrame` are NEVER skipped.
+  `ISystem::skippable()` defaults to `false` so no existing system
+  becomes droppable accidentally.
+- **`SystemContext::shouldYield()`** — cheap atomic poll (mirrors
+  `overBudget_`) for long `parallelFor` bodies to bail early on
+  budget pressure.
+- **`SkipPolicy::Budget` (default) and `SkipPolicy::Scripted`.**
+  `Scripted` ignores the budget entirely and consults a
+  `(tick, systemName)` queue populated via
+  `Engine::pushScriptedSkip`; gives deterministic replay for
+  lockstep / networked games. The authoritative peer runs `Budget`,
+  drains `EventChannel<SystemSkipped>`, broadcasts the log;
+  clients run `Scripted` with the broadcast log and produce
+  byte-identical world state.
+- **`EventChannel<SystemSkipped>`.** Emitted on every skip with
+  `{tick, systemName, reason}`. `reason` is `"budget"` or
+  `"scripted"`. Drains at tick boundary like every other typed channel.
+- **`JobPriority`.** New three-valued enum (`High` / `Normal` /
+  `Low`). New `parallelFor` overloads on `SystemContext` accept it;
+  the no-priority overloads default to `Normal`. `JobSystem` was
+  expanded with per-worker per-priority deques — own pops and steals
+  scan in priority order. Backwards-compatible: pre-batch-12 calls
+  go through `Normal` and behave bit-for-bit as before.
+- **`IResourceLoader::cancel(Engine&)`.** New virtual (default returns
+  0). The engine calls it on the sim thread immediately BEFORE
+  `update()` each tick — drop newly-stale requests in the same tick
+  rather than waiting another. `LoaderStats::cancelled` is a new
+  counter aggregated by `Engine::aggregateLoaderStats()`.
+- **Doc updates.** `doc/systems_and_scheduling.md` gained "Tick
+  budgets, skipping, and `shouldYield`" + "Per-job priorities"
+  sections. `doc/resource_loaders.md` gained the
+  `cancel`-before-`update` ordering note. `CLAUDE.md` gained a §3.5
+  batch-12 section. README test count 58 → 59.
+- **Test.** `tests/cancellation_test.cpp` covers (1) no-budget runs
+  every skippable system; (2) tight budget skips them and emits
+  `SystemSkipped{reason="budget"}`; (3) `shouldYield()` reflects the
+  over-budget flag in a later-wave system; (4) `Scripted` policy
+  reproduces a captured skip log; (5) `JobPriority` API coverage
+  across High/Normal/Low; (6) loader `cancel()` fires before
+  `update()` and `cancelled` aggregates.
+
 ### Batch 7 — Resource & event maturity (Milestone 3)
 
 Shipped 2026-05-14, ahead of batch 6 per §3.1's deferral guidance.
@@ -474,7 +528,7 @@ grows monotonically. The mapping to milestones (§8):
 | 9     | Vulkan reference renderer (example) | M4 — example, not library |
 | 10    | 3D RPG demo example                | M6 lead-in — example, not library |
 | ~~11~~ | ~~Frame task graph (§6 phase 3)~~ | ✅ landed 2026-05-14 — see §2 |
-| 12    | Cancellation, budgets, priorities (§6 phase 4) | M5      |
+| ~~12~~ | ~~Cancellation, budgets, priorities (§6 phase 4)~~ | ✅ landed 2026-05-14 — see §2 |
 | 13    | Storage contention reduction (§6 phase 5) | M5             |
 | 14    | Telemetry ingestion (§6 phase 6 close-out) | M5            |
 
@@ -563,76 +617,13 @@ hash-collision elimination, no-tags backward compatibility) are
 preserved as comments in `tests/task_graph_test.cpp` and
 `doc/systems_and_scheduling.md`.
 
-### 3.5 Batch 12 — Cancellation, budgets, priorities (Milestone 5, §6 phase 4)
+### 3.5 Batch 12 — Cancellation, budgets, priorities  ✅ landed 2026-05-14
 
-Phase 3 unlocks finer-grain dependencies; phase 4 unlocks
-controlled work *removal*. Two motivating cases: a frame is
-budgeted (16.66ms @ 60fps), the streaming loader is mid-upload
-when the player teleports across the map and the uploads are
-suddenly dead weight; or a long-running per-tick analytics system
-needs to bail when the frame is close to its budget.
-
-Gating: builds on the task graph from batch 11 — cancellation is
-edge-aware (a cancelled system's `provides` tags propagate as
-"unavailable" to consumers). Effort sized at ~1 week.
-
-#### Deliverables
-
-- **`SystemContext::shouldYield()`** — cooperative cancellation
-  hint. Returns true when the engine's current-tick budget is
-  exhausted; user systems polling this in long loops can break out
-  and emit a "deferred to next tick" command instead.
-- **`Engine::setTickBudget(seconds)`** — caps wall-clock spend per
-  tick. The engine still completes any wave currently in flight
-  (no torn commits), but skips subsequent waves whose systems are
-  marked `Skippable`. `ISystem::skippable()` defaults to false.
-- **`Engine::setSkipPolicy(SkipPolicy)`** — two modes:
-  - `SkipPolicy::Budget` (default, local): skip decisions are made
-    by the engine based on `setTickBudget`. Non-deterministic
-    across machines.
-  - `SkipPolicy::Scripted`: skip decisions come from a queue
-    (`Engine::pushScriptedSkip(tick, systemName)`); the engine
-    skips the named system at the named tick verbatim and does
-    not consult the budget. Deterministic across machines — the
-    server runs `Budget`, broadcasts the decision log, clients
-    replay it via `Scripted`.
-- **`EventChannel<SystemSkipped>`** — emits `{ tick, systemName,
-  reason }` whenever a system is skipped, under either policy.
-  Authoritative servers in networked games drain this channel to
-  build the broadcast log; replays consume it to verify the
-  client matched.
-- **Per-job priority.** `parallelFor` gains an optional
-  `JobPriority` parameter (`High` / `Normal` / `Low`). The work-
-  stealing scheduler prefers higher-priority jobs in its local
-  deque. Default `Normal` keeps every existing call site unchanged.
-- **Loader cancellation.** `IResourceLoader::cancel(predicate)` —
-  the engine pumps it before each `update()` so the loader can drop
-  pending requests. `LoaderStats` gains a `cancelled` counter.
-- **`tests/cancellation_test.cpp`** — verify `shouldYield` fires
-  under budget pressure, skippable systems are skipped without
-  desync, loader cancel paths drop the right pending requests,
-  AND that a Budget→Scripted replay pair produces byte-identical
-  `WorldSnapshot` hashes.
-
-#### Risks and mitigations
-
-- **Determinism vs. budget.** `SkipPolicy::Budget` is inherently
-  non-deterministic across machines — that's the price of
-  letting the engine react to wall-clock pressure locally.
-  Mitigation comes in two layers: (1) `Budget` is opt-in (the
-  default tick-budget is "no budget" so it never engages
-  automatically); (2) networked games that need lockstep
-  determinism use `SkipPolicy::Scripted` instead, fed from the
-  `SystemSkipped` event log captured on the authoritative peer.
-  The two policies share the `Skippable` system tagging, so
-  switching is a one-line config change. Determinism tests run
-  with `Budget` disabled; a separate test exercises the
-  Budget→Scripted replay path.
-- **Priority inversion.** A high-priority job could be stuck
-  waiting for a low-priority dependency. Mitigation: priorities
-  are advisory only — the topological sort from batch 11 is still
-  the hard constraint. Within a wave, priorities just bias the
-  steal target.
+See the per-batch entry in §2 for the as-shipped shape. The Budget
+vs Scripted split that informed the design (per DeepSeek's review)
+is preserved as `engine.setSkipPolicy(SkipPolicy::{Budget|Scripted})`
+plus the `EventChannel<SystemSkipped>` broadcast log; clients
+replay deterministically.
 
 ### 3.6 Batch 13 — Storage contention reduction (Milestone 5, §6 phase 5)
 
@@ -869,15 +860,16 @@ and drops tag-only edges to recover; `Engine::taskGraphSnapshot()`
 exposes the resolved graph for HUD / visualization. Shipped in
 batch 11; details in §2.
 
-### Phase 4 — cancellation and budgets — §3.5 batch 12
+### Phase 4 — cancellation and budgets  ✅ done (batch 12, 2026-05-14)
 
-Frame cancellation (`SystemContext::shouldYield`), streaming
-cancellation (`IResourceLoader::cancel`), budget-based task
-scheduling (`Engine::setTickBudget` + `ISystem::skippable`),
-networked-deterministic skip replay (`Engine::setSkipPolicy` +
-`EventChannel<SystemSkipped>`), job prioritization (`JobPriority`
-on `parallelFor`). Tracked as **batch 12** in §3.5. Builds on
-batch 11 (cancellation must propagate along the DAG).
+`SystemContext::shouldYield` (atomic poll mirroring engine's
+`overBudget_`); `Engine::setTickBudget` + `ISystem::skippable`;
+`Engine::setSkipPolicy(Budget|Scripted)` +
+`EventChannel<SystemSkipped>` for deterministic networked replay;
+`JobPriority` (High/Normal/Low) on `parallelFor` with per-worker
+per-priority deques; `IResourceLoader::cancel(Engine&)` pumped
+before `update()` each tick + `LoaderStats::cancelled`. Shipped in
+batch 12; details in §2.
 
 ### Phase 5 — reduce contention in storage — §3.6 batch 13
 
@@ -941,8 +933,9 @@ listing them by batch, this is the cross-reference index:
 - Frame task graph (`ISystem::dependencies` / `provides` /
   `preferredGrain`, `TaskTag`, `taskGraphSnapshot`) — ✅ batch 11.
 - Cancellation + budgets (`shouldYield`, `setTickBudget`,
-  `setSkipPolicy` + `EventChannel<SystemSkipped>`, `JobPriority`,
-  `IResourceLoader::cancel`) — §3.5 batch 12.
+  `setSkipPolicy` + `EventChannel<SystemSkipped>`,
+  `pushScriptedSkip`, `JobPriority`, `IResourceLoader::cancel`,
+  `LoaderStats::cancelled`) — ✅ batch 12.
 - Storage contention reduction (sharded commit phase, per-chunk
   command buffers, read-only world snapshot per wave, lock-free
   event channels, per-tick `commitHash` runtime determinism

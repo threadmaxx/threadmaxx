@@ -249,6 +249,74 @@ Determinism: `tests/archetype_storage_stress_test.cpp` (8192 entities × 24 tick
 
 `tests/foreach_chunk_test.cpp` is the chunk-iteration contract test — spawn across three archetype shapes, verify per-query chunk visits + entity coverage + empty-result behavior.
 
+## §3.5 batch 12 — Cancellation, budgets, priorities
+
+Closes the §6 phase-4 work. Four pieces, all opt-in (defaults preserve
+existing behavior bit-for-bit):
+
+**Tick budget + skip policy.** `Engine::setTickBudget(seconds)` caps
+the wall-clock per-tick spend. The engine samples `now - stepStart`
+after every wave's commit; if elapsed > budget AND `setSkipPolicy` is
+`SkipPolicy::Budget` (the default), an atomic `overBudget_` flag is
+flipped to `true` and subsequent waves' `ISystem::skippable()` systems
+have their `update()` calls skipped. `preStep` / `postStep` /
+`buildRenderFrame` are NEVER skipped — they're load-bearing for engine
+bookkeeping.
+
+`SkipPolicy::Scripted` is the deterministic-replay alternative. The
+engine ignores `tickBudget_` entirely and consults
+`scriptedSkips_` (populated via `Engine::pushScriptedSkip(tick,
+name)`) — a system is skipped iff `(currentTick, name)` matches an
+entry. Networked / lockstep games run `Budget` on the authoritative
+server, drain `EventChannel<SystemSkipped>`, broadcast the log, and
+clients replay it with `Scripted`. World hashes match.
+
+`SystemContext::shouldYield()` exposes the over-budget flag to user
+systems for cooperative cancellation. Returns `engine.overBudget()` —
+a single atomic load. Cheap to poll inside long `parallelFor` bodies.
+
+**`SystemSkipped` event.** New POD `{ tick, systemName, reason }` in
+`include/threadmaxx/SkipPolicy.hpp`. Emitted on the engine's typed
+event channel during `step()` whenever a system is skipped. Reason
+is `"budget"` or `"scripted"`. Drains at the tick boundary like every
+other typed channel; safe to capture into a log via
+`subscribeScoped`.
+
+**`JobPriority`.** Three-valued enum (`High` / `Normal` / `Low`) in
+`include/threadmaxx/System.hpp`. New `parallelFor` overloads on
+`SystemContext` accept it; the no-priority overloads default to
+`Normal` so existing call sites are unchanged. `JobSystem::Worker`
+gained `std::array<std::deque<JobFn>, kJobPriorityLevels> queues` —
+three per-priority deques. Own pops and cross-worker steals scan in
+priority order. Backwards-compatible: the priority-deque mechanism
+collapses to the original single-deque behavior when every job is
+`Normal`.
+
+**Loader cancellation pump.** `IResourceLoader::cancel(Engine&)` —
+new virtual, default returns 0 (no-op). The engine calls it on the
+sim thread immediately BEFORE `update()` each tick so a loader can
+drop newly-stale requests on the same tick rather than waiting
+another. `LoaderStats::cancelled` is a new counter aggregated by
+`Engine::aggregateLoaderStats()`.
+
+The `step()` loop was updated to:
+1. Reset `overBudget_` to `false` at step start.
+2. For each wave: pre-compute per-system `skipReason` (skip iff
+   `skippable()` AND policy/queue says so).
+3. `runIndex(k)` short-circuits on `waveSkipReason[k].empty() == false`.
+4. After each wave's commit, sample wall-clock and flip `overBudget_`
+   if over budget.
+5. After each wave: emit `SystemSkipped` events for skipped slots.
+6. Before each loader's `update()`: call `cancel()`.
+
+Test: `tests/cancellation_test.cpp` covers (1) no-budget runs every
+skippable system normally; (2) tight budget skips them and emits
+`SystemSkipped{reason="budget"}`; (3) `shouldYield()` reflects the
+over-budget flag in a later-wave system; (4) `Scripted` policy
+reproduces a captured skip log; (5) `JobPriority` API coverage
+across High/Normal/Low without deadlocking; (6) loader `cancel()`
+fires before `update()` and `cancelled` aggregates.
+
 ## §3.4 batch 11 — Frame task graph
 
 The wave scheduler used to be pure first-fit packing keyed on

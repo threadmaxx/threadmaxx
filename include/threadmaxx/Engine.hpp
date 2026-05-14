@@ -3,6 +3,7 @@
 #include "Config.hpp"
 #include "Handles.hpp"
 #include "Resource.hpp"
+#include "SkipPolicy.hpp"
 #include "Stats.hpp"
 #include "UserComponent.hpp"
 
@@ -275,6 +276,50 @@ public:
     /// @thread_safety Safe from any thread.
     void setPaused(bool paused) noexcept;
     bool paused() const noexcept;
+
+    /// §3.5 batch 12 — wall-clock budget per tick, in seconds. Default
+    /// `0.0` means "no budget — never skip". Negative values are
+    /// clamped to zero.
+    ///
+    /// When the engine's `step()` elapsed time exceeds @p seconds at a
+    /// wave boundary, subsequent waves' `ISystem::skippable()` systems
+    /// have their `update()` skipped this tick (under
+    /// @ref SkipPolicy::Budget). `preStep` / `postStep` /
+    /// `buildRenderFrame` are NEVER skipped — they're load-bearing for
+    /// engine bookkeeping.
+    ///
+    /// Skipping is reported on the `events<SystemSkipped>()` channel.
+    /// @thread_safety Sim thread only.
+    void setTickBudget(double seconds) noexcept;
+    double tickBudget() const noexcept;
+
+    /// §3.5 batch 12 — how the engine decides which systems to skip.
+    /// Default @ref SkipPolicy::Budget (uses @ref setTickBudget).
+    /// @ref SkipPolicy::Scripted ignores the budget and consults the
+    /// scripted-skip queue (@ref pushScriptedSkip) for deterministic
+    /// replay (lockstep networking).
+    /// @thread_safety Sim thread only.
+    void setSkipPolicy(SkipPolicy p) noexcept;
+    SkipPolicy skipPolicy() const noexcept;
+
+    /// §3.5 batch 12 — append one `(tick, systemName)` entry to the
+    /// scripted-skip queue. When @ref skipPolicy is
+    /// @ref SkipPolicy::Scripted, the engine skips system named
+    /// @p systemName on tick @p tick (provided that system's
+    /// `skippable()` returns true). Multiple entries for the same tick
+    /// are allowed.
+    ///
+    /// The engine copies the name into internal storage, so callers
+    /// can pass temporaries. Entries persist until @ref clearScriptedSkips
+    /// or engine teardown; the engine never auto-prunes.
+    /// @thread_safety Sim thread only.
+    void pushScriptedSkip(std::uint64_t tick, std::string_view systemName);
+
+    /// §3.5 batch 12 — wipe the scripted-skip queue. Call at session
+    /// boundaries to release the memory; never required for
+    /// correctness.
+    /// @thread_safety Sim thread only.
+    void clearScriptedSkips() noexcept;
 
     /// @internal Engine-internal access. Used by `EventChannel<T>` to
     /// install or recover the channel for type `T`. Not part of the

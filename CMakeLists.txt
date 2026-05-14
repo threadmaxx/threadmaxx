@@ -36,6 +36,7 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/RenderFrame.hpp
     include/threadmaxx/Resource.hpp
     include/threadmaxx/ScratchArena.hpp
+    include/threadmaxx/SkipPolicy.hpp
     include/threadmaxx/Serialization.hpp
     include/threadmaxx/Stats.hpp
     include/threadmaxx/System.hpp

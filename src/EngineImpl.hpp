@@ -10,6 +10,7 @@
 #include "threadmaxx/RenderFrame.hpp"
 #include "threadmaxx/Resource.hpp"
 #include "threadmaxx/ScratchArena.hpp"
+#include "threadmaxx/SkipPolicy.hpp"
 #include "threadmaxx/Stats.hpp"
 #include "threadmaxx/System.hpp"
 #include "threadmaxx/World.hpp"
@@ -21,6 +22,8 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <string>
+#include <string_view>
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
@@ -49,11 +52,16 @@ public:
 
     void parallelFor(std::uint32_t count, std::uint32_t grain, JobFn fn) override;
     void parallelFor(std::uint32_t count, std::uint32_t grain, JobFnArena fn) override;
+    void parallelFor(std::uint32_t count, std::uint32_t grain, JobFn fn,
+                     JobPriority priority) override;
+    void parallelFor(std::uint32_t count, std::uint32_t grain, JobFnArena fn,
+                     JobPriority priority) override;
     void single(JobFn fn) override;
     void single(JobFnArena fn) override;
     EntityHandle reserveHandle() override;
     std::uint32_t reserveHandles(std::uint32_t count,
                                  std::span<EntityHandle> out) override;
+    bool shouldYield() const noexcept override;
 
     // Per-system list of command buffers, in submission order. The
     // matching ScratchArena (if any) lives in `arenas_[i]` — they grow
@@ -160,6 +168,21 @@ public:
     double timeScale() const noexcept { return timeScale_; }
     void setPaused(bool paused) noexcept { paused_.store(paused, std::memory_order_release); }
     bool paused() const noexcept { return paused_.load(std::memory_order_acquire); }
+
+    // §3.5 batch 12 — tick budget + skip policy.
+    void   setTickBudget(double seconds) noexcept { tickBudgetSeconds_ = seconds < 0.0 ? 0.0 : seconds; }
+    double tickBudget() const noexcept            { return tickBudgetSeconds_; }
+    void   setSkipPolicy(SkipPolicy p) noexcept   { skipPolicy_ = p; }
+    SkipPolicy skipPolicy() const noexcept        { return skipPolicy_; }
+    /// Append a scripted skip entry: `(tick, systemName-view)` —
+    /// `name` must reference storage that outlives the queue. We copy
+    /// to an internal std::string for safety.
+    void pushScriptedSkip(std::uint64_t tick, std::string_view systemName);
+    void clearScriptedSkips() noexcept;
+    /// Atomic flag mirrored from the budget check; workers poll via
+    /// SystemContext::shouldYield(). Reset to false at step() start;
+    /// set true once wall-clock exceeds budget.
+    bool overBudget() const noexcept { return overBudget_.load(std::memory_order_acquire); }
 
     // Event-channel access (§3.3). Channels are created on first request,
     // keyed by std::type_index. The returned void* points at a stable
@@ -294,6 +317,13 @@ private:
     // engine. World's ArchetypeTable holds a non-owning pointer to it
     // (wired in `initialize`) so new chunks can look up strides.
     UserComponentRegistry userRegistry_;
+
+    // §3.5 batch 12 — tick budget & skip policy state.
+    double             tickBudgetSeconds_ = 0.0;   // 0 == no budget
+    std::atomic<bool>  overBudget_{false};
+    SkipPolicy         skipPolicy_ = SkipPolicy::Budget;
+    struct ScriptedSkip { std::uint64_t tick; std::string systemName; };
+    std::vector<ScriptedSkip> scriptedSkips_;
 
 public:
     // §3.4 batch 11: per-system wave + predecessor snapshot. Parallel to

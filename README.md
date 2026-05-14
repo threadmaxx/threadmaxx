@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 58 tests pin the
+minimal; the internals are PImpl'd so they can change. 59 tests pin the
 documented invariants.
 
 ## Highlights
@@ -37,6 +37,19 @@ documented invariants.
 - **Pause + time-scale.** `setPaused(true)` freezes the simulation
   without freezing render-frame submission; `setTimeScale(s)` scales
   `dt` while leaving `tick()` an integer.
+- **Tick budget + cooperative skip.** `Engine::setTickBudget(s)` caps
+  per-tick wall-clock; opt-in `ISystem::skippable()` systems drop
+  their `update()` when the budget is blown. `SystemContext::shouldYield()`
+  is a cheap atomic poll for long inner loops. Every skip publishes a
+  `SystemSkipped` event. `SkipPolicy::Scripted` replays a captured
+  skip log for deterministic lockstep networking.
+- **Per-job priority.** `parallelFor` accepts an optional
+  `JobPriority` (`High` / `Normal` / `Low`); the work-stealing pool
+  prefers higher-priority jobs in own-pop and steal paths. Defaults
+  to `Normal` everywhere so existing call sites are unchanged.
+- **Loader cancel hook.** `IResourceLoader::cancel(engine)` is pumped
+  before `update()` each tick — drop stale requests within the same
+  frame, increment `LoaderStats::cancelled` aggregated across loaders.
 - **Reserved spawn handles.** `reserveHandle()` lets a single job
   spawn a parent and a child with the parent's handle wired into the
   child's `Parent` field. `reserveHandles(count, span)` is the

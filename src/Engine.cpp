@@ -123,6 +123,15 @@ double Engine::timeScale() const noexcept     { return impl_->timeScale(); }
 void Engine::setPaused(bool p) noexcept       { impl_->setPaused(p); }
 bool Engine::paused() const noexcept          { return impl_->paused(); }
 
+void Engine::setTickBudget(double s) noexcept { impl_->setTickBudget(s); }
+double Engine::tickBudget() const noexcept    { return impl_->tickBudget(); }
+void Engine::setSkipPolicy(SkipPolicy p) noexcept { impl_->setSkipPolicy(p); }
+SkipPolicy Engine::skipPolicy() const noexcept    { return impl_->skipPolicy(); }
+void Engine::pushScriptedSkip(std::uint64_t tick, std::string_view name) {
+    impl_->pushScriptedSkip(tick, name);
+}
+void Engine::clearScriptedSkips() noexcept { impl_->clearScriptedSkips(); }
+
 void* Engine::getEventChannelRaw(std::type_index type,
                                  void* (*factory)(),
                                  void (*deleter)(void*),

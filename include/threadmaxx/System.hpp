@@ -12,6 +12,28 @@
 
 namespace threadmaxx {
 
+/// §3.5 batch 12 — per-job scheduling priority for `parallelFor`.
+///
+/// Higher-priority jobs are popped from a worker's own queue before
+/// lower-priority ones (LIFO within a priority class); cross-worker
+/// stealers also scan in priority order. Priorities are advisory:
+/// the engine's deterministic commit phase (run after a wave fully
+/// settles) is unaffected, so changing priorities never alters the
+/// world state — only when work runs.
+///
+/// Defaults to @c Normal so adding the parameter never reshuffles
+/// existing call sites.
+enum class JobPriority : std::uint8_t {
+    High   = 0,
+    Normal = 1,
+    Low    = 2,
+};
+constexpr std::size_t kJobPriorityLevels = 3;
+
+} // namespace threadmaxx
+
+namespace threadmaxx {
+
 class World;
 
 /// Half-open index range `[begin, end)` into the dense entity arrays.
@@ -67,6 +89,21 @@ public:
                              std::uint32_t grain,
                              JobFnArena fn) = 0;
 
+    /// §3.5 batch 12 — priority-aware variant. The worker pool prefers
+    /// higher-priority jobs in its own queue and when stealing from
+    /// siblings. Same wait-for-completion semantics as the no-priority
+    /// overload.
+    virtual void parallelFor(std::uint32_t count,
+                             std::uint32_t grain,
+                             JobFn fn,
+                             JobPriority priority) = 0;
+
+    /// §3.5 batch 12 — priority-aware variant with scratch arena.
+    virtual void parallelFor(std::uint32_t count,
+                             std::uint32_t grain,
+                             JobFnArena fn,
+                             JobPriority priority) = 0;
+
     /// Run on the simulation thread, single-threaded. Useful for setup
     /// work or systems that fundamentally cannot be parallelized.
     /// The callable receives a zero-length @ref Range and a single
@@ -97,6 +134,20 @@ public:
     /// @thread_safety Safe to call from any worker job under this `update()`.
     virtual std::uint32_t reserveHandles(std::uint32_t count,
                                          std::span<EntityHandle> out) = 0;
+
+    /// §3.5 batch 12 — cooperative cancellation hint. Returns `true`
+    /// when the engine's current-tick wall-clock budget (set via
+    /// `Engine::setTickBudget`) is exhausted. Long-running update
+    /// bodies are expected to poll this and bail early — emit a
+    /// "deferred to next tick" command and return.
+    ///
+    /// Returns `false` when no budget has been set, when the policy
+    /// is @ref SkipPolicy::Scripted (which ignores wall-clock
+    /// pressure), or when the budget has not yet been exceeded.
+    ///
+    /// @thread_safety Safe from worker jobs under this `update()`.
+    /// The check is a single atomic load; cheap to poll in a hot loop.
+    virtual bool shouldYield() const noexcept = 0;
 };
 
 /// User-implemented unit of gameplay/physics/AI.
@@ -203,6 +254,22 @@ public:
     /// Default: 0 (use the heuristic). Pick a non-zero value when
     /// inner-loop cost makes a known good batch size win.
     virtual std::uint32_t preferredGrain() const noexcept { return 0; }
+
+    /// §3.5 batch 12 — opt the system into the engine's skip
+    /// machinery. Returning `true` declares "it is safe to drop this
+    /// system's `update()` on a busy tick" — the engine may skip it
+    /// when `Engine::setTickBudget` is engaged (under
+    /// @ref SkipPolicy::Budget) or when @ref Engine::pushScriptedSkip
+    /// names it (under @ref SkipPolicy::Scripted).
+    ///
+    /// @c preStep / @c postStep / @c buildRenderFrame are NEVER
+    /// skipped — they're load-bearing for engine bookkeeping. Only
+    /// `update()` is droppable.
+    ///
+    /// Default: `false`. Pick `true` for analytics, debug overlays,
+    /// non-essential AI tickers — anything where one missed tick is
+    /// strictly better than a frame hitch.
+    virtual bool skippable() const noexcept { return false; }
 };
 
 /// Configuration knobs for the built-in hierarchy system. Pass to

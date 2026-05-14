@@ -60,6 +60,7 @@ set(THREADMAXX_TESTS
     foreach_chunk_test
     user_component_test
     task_graph_test
+    cancellation_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

@@ -21,8 +21,10 @@
 #include "EngineImpl.hpp"
 
 #include "threadmaxx/Engine.hpp"
+#include "threadmaxx/EventChannel.hpp"
 #include "threadmaxx/Game.hpp"
 #include "threadmaxx/Renderer.hpp"
+#include "threadmaxx/SkipPolicy.hpp"
 
 #include <cstring>
 
@@ -58,6 +60,19 @@ std::uint32_t pickGrain(std::uint32_t count, std::uint32_t workers,
 void SystemContextImpl::parallelFor(std::uint32_t count,
                                     std::uint32_t grain,
                                     JobFn fn) {
+    parallelFor(count, grain, std::move(fn), JobPriority::Normal);
+}
+
+void SystemContextImpl::parallelFor(std::uint32_t count,
+                                    std::uint32_t grain,
+                                    JobFnArena fn) {
+    parallelFor(count, grain, std::move(fn), JobPriority::Normal);
+}
+
+void SystemContextImpl::parallelFor(std::uint32_t count,
+                                    std::uint32_t grain,
+                                    JobFn fn,
+                                    JobPriority priority) {
     if (count == 0 || !fn) return;
 
     const std::uint32_t workers = engine_.jobs().workerCount();
@@ -82,7 +97,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
         engine_.jobs().submit([userFn, begin, end, cb, &done] {
             userFn(Range{begin, end}, *cb);
             done.count_down();
-        });
+        }, priority);
     }
     jobsSubmitted_ += chunkCount;
     // Sample queue depth right after submit — captures congestion the
@@ -97,7 +112,8 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
 
 void SystemContextImpl::parallelFor(std::uint32_t count,
                                     std::uint32_t grain,
-                                    JobFnArena fn) {
+                                    JobFnArena fn,
+                                    JobPriority priority) {
     if (count == 0 || !fn) return;
 
     const std::uint32_t workers = engine_.jobs().workerCount();
@@ -119,7 +135,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
         engine_.jobs().submit([userFn, begin, end, cb, arena, &done] {
             userFn(Range{begin, end}, *cb, *arena);
             done.count_down();
-        });
+        }, priority);
     }
     jobsSubmitted_ += chunkCount;
     const std::uint32_t depth = engine_.jobs().outstanding();
@@ -154,6 +170,10 @@ std::uint32_t SystemContextImpl::reserveHandles(std::uint32_t count,
         static_cast<std::uint32_t>(out.size()));
     engine_.world().impl_().storage.reserveHandles(n, out);
     return n;
+}
+
+bool SystemContextImpl::shouldYield() const noexcept {
+    return engine_.overBudget();
 }
 
 // ---- EngineImpl ---------------------------------------------------------
@@ -253,6 +273,7 @@ LoaderStats EngineImpl::aggregateLoaderStats() const noexcept {
         agg.inFlight        += s.inFlight;
         agg.ready           += s.ready;
         agg.failed          += s.failed;
+        agg.cancelled       += s.cancelled;
         agg.memoryFootprint += s.memoryFootprint;
         agg.memoryBudget    += s.memoryBudget;
     }
@@ -744,6 +765,28 @@ void EngineImpl::step() {
             std::chrono::steady_clock::now() - commitStart).count();
     }
 
+    // §3.5 batch 12: reset the budget flag at step start. Workers see
+    // false until we observe an over-budget wave boundary below.
+    overBudget_.store(false, std::memory_order_release);
+
+    // §3.5 batch 12: helper — decide whether system `sysIdx` is skipped
+    // this tick under the active policy. Returns the reason tag if
+    // skipped, or empty if not. Per-wave / pre-update.
+    auto skipReason = [this](std::size_t sysIdx) -> std::string_view {
+        if (!systems_[sysIdx]->skippable()) return {};
+        if (skipPolicy_ == SkipPolicy::Budget) {
+            if (overBudget_.load(std::memory_order_acquire)) return "budget";
+        } else { // Scripted
+            const char* nm = systems_[sysIdx]->name();
+            if (!nm) return {};
+            const std::string_view view(nm);
+            for (const auto& s : scriptedSkips_) {
+                if (s.tick == tick_ && s.systemName == view) return "scripted";
+            }
+        }
+        return {};
+    };
+
     // Run systems wave by wave. Within a wave, all systems have pairwise
     // non-conflicting declared read/write sets, so they're safe to drive
     // concurrently — each writes into its own SystemContext's buffer list
@@ -758,10 +801,21 @@ void EngineImpl::step() {
                 systemPreferredGrain(wave[k])));
         }
 
+        // Pre-compute skip decisions for this wave. The result drives
+        // both `update()` invocation and stats reporting.
+        std::vector<std::string_view> waveSkipReason(wave.size());
+        for (std::size_t k = 0; k < wave.size(); ++k) {
+            waveSkipReason[k] = skipReason(wave[k]);
+        }
+
         // Per-system update durations, captured by whichever thread runs
         // the system. Slot k corresponds to wave[k].
         std::vector<double> updateSeconds(wave.size(), 0.0);
         auto runIndex = [&](std::size_t k) {
+            if (!waveSkipReason[k].empty()) {
+                updateSeconds[k] = 0.0;
+                return;
+            }
             const auto t0 = std::chrono::steady_clock::now();
             systems_[wave[k]]->update(*ctxs[k]);
             updateSeconds[k] = std::chrono::duration<double>(
@@ -780,6 +834,21 @@ void EngineImpl::step() {
             }
             runIndex(wave.size() - 1);
             for (auto& t : helpers) t.join();
+        }
+
+        // Emit SystemSkipped events for any skipped slot. Drained at the
+        // tick boundary like every other typed channel.
+        if (publicEngine_) {
+            for (std::size_t k = 0; k < wave.size(); ++k) {
+                if (waveSkipReason[k].empty()) continue;
+                SystemSkipped ev;
+                ev.tick       = tick_;
+                ev.systemName = systems_[wave[k]]->name()
+                              ? std::string_view(systems_[wave[k]]->name())
+                              : std::string_view();
+                ev.reason     = waveSkipReason[k];
+                publicEngine_->events<SystemSkipped>().emit(ev);
+            }
         }
 
         // Commit buffers in registration order (wave[] is already in
@@ -818,6 +887,19 @@ void EngineImpl::step() {
                                     + ss.lastUpdateSeconds * kEwmaAlpha;
             }
         }
+
+        // §3.5 batch 12: post-wave budget check. We sample wall-clock
+        // AFTER the commit phase so a wave that overruns hands the next
+        // wave a chance to skip its `Skippable` systems. Pure Scripted
+        // mode bypasses this — its skip decisions come from the queue,
+        // not the clock.
+        if (skipPolicy_ == SkipPolicy::Budget && tickBudgetSeconds_ > 0.0) {
+            const double elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - stepStart).count();
+            if (elapsed > tickBudgetSeconds_) {
+                overBudget_.store(true, std::memory_order_release);
+            }
+        }
     }
 
     // §3.1 postStep: serial, registration order, after every wave's
@@ -839,9 +921,16 @@ void EngineImpl::step() {
     // any I/O threads themselves; we just give them their per-tick
     // poll opportunity. Iterating in registration order keeps
     // teardown order well-defined.
+    //
+    // §3.5 batch 12: call cancel() BEFORE update() so a loader can drop
+    // newly-stale requests this same tick rather than waiting another
+    // tick. Each loader's `cancel()` and `update()` run on the sim
+    // thread back-to-back.
     if (publicEngine_) {
         for (auto& loader : resourceLoaders_) {
-            if (loader) loader->update(*publicEngine_);
+            if (!loader) continue;
+            loader->cancel(*publicEngine_);
+            loader->update(*publicEngine_);
         }
     }
 
@@ -951,6 +1040,15 @@ void EngineImpl::setTimeScale(double scale) noexcept {
     // Clamp to non-negative — a negative scale would mean "go backwards"
     // which is nonsense for a forward-only fixed-step loop.
     timeScale_ = scale < 0.0 ? 0.0 : scale;
+}
+
+void EngineImpl::pushScriptedSkip(std::uint64_t tick,
+                                  std::string_view systemName) {
+    scriptedSkips_.push_back(ScriptedSkip{tick, std::string(systemName)});
+}
+
+void EngineImpl::clearScriptedSkips() noexcept {
+    scriptedSkips_.clear();
 }
 
 void* EngineImpl::getEventChannelRaw(std::type_index type,
