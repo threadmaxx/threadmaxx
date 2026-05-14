@@ -54,14 +54,54 @@ registration and per-frame lookups; it is **not** designed for "I load
 1000 resources concurrently". For an async loader, do the I/O off-thread
 and call `add()` once each resource is ready.
 
+## Refcounted handles (`ResourceHandle<T>`)
+
+The legacy `add` / `remove` pair gives you a bare `ResourceId<T>` and
+trusts the caller to drop the slot manually. The §3.2 batch-7
+`addRefCounted` path returns an RAII handle that owns its slot: copies
+bump the refcount, destruction decrements, and the last drop frees the
+slot AND bumps generation so stale ids never alias.
+
+```cpp
+auto& reg = engine.resources();
+
+ResourceHandle<Mesh> primary = reg.addRefCounted(loadMesh("oak.gltf"));
+const ResourceId<Mesh> id = primary.id();
+
+// Share ownership: bump the refcount.
+ResourceHandle<Mesh> shared = reg.acquire(id);
+assert(reg.refCount(id) == 2);
+
+primary.reset();              // refcount → 1, slot still alive
+// when `shared` goes out of scope here, slot is freed automatically
+```
+
+Key properties:
+
+- **Copy bumps**, **move transfers**, **default-constructed is null**.
+- `acquire(id)` returns a null handle for non-refcounted slots and stale
+  ids. The two paths (`add`+`remove` vs. `addRefCounted`+handle) don't
+  mix on the same slot.
+- `ResourceHandle<T>::id()` exposes the bare id for interop with
+  renderer code that only takes a `ResourceId<T>`. The slot stays alive
+  as long as at least one handle copy survives, so it's safe to hold
+  the bare id transitively while a handle is in scope.
+- `reset()` detaches eagerly. `~ResourceHandle()` does the same.
+
+Hot-reload integration (§3.2 batch 7) emits `AssetReloaded{oldId, newId}`
+when a loader replaces an asset — subscribe to the event channel and
+rewire any cached `ResourceId<T>` your game code holds. Refcounted
+handles do NOT auto-redirect across reloads; that would require a
+trampoline layer the library deliberately doesn't ship. Game code
+controls the rewire timing.
+
 ## Lifetime model
 
 The registry owns each stored value via `std::shared_ptr<void>` with a
 type-aware deleter. `remove()` drops the registry's reference; the value
-is destroyed when the last outstanding `shared_ptr` is gone. Today
-nothing else in the engine retains those `shared_ptr`s, so `remove()`
-destroys the value synchronously — but if a future feature hands out
-strong references, that contract still holds.
+is destroyed when the last outstanding `shared_ptr` is gone. With the
+refcounted handle path, the last handle destruction is what triggers
+release — `remove()` is not called explicitly.
 
 The registry lives as long as the `Engine` does. It never reseats and is
 never replaced.
@@ -89,7 +129,8 @@ What doesn't belong:
 - Per-entity state (use a component).
 - Things that change every tick (use a component or world-scoped data).
 - One-shots that the engine should clean up automatically — there's no
-  automatic GC; you call `remove()`.
+  automatic GC for the bare `add` path; you call `remove()`. Use
+  `addRefCounted` if you want automatic cleanup.
 
 ## Worked example: hooking a mesh registry to a renderer
 
@@ -137,11 +178,13 @@ ctx.parallelFor(N, 0, [&reg, &handles](Range r, CommandBuffer&) {
 });
 ```
 
-`get`, `add`, `remove`, and `count` are all thread-safe. The pointer
-returned by `get` remains valid as long as you hold its `ResourceId`
-*and* nothing calls `remove` on it. In practice that's "for the duration
-of the job that fetched it" — don't stash raw `const T*` pointers across
-ticks unless you can guarantee nobody removes the resource.
+`get`, `add`, `remove`, `count`, `addRefCounted`, `acquire`, and
+`refCount` are all thread-safe. The pointer returned by `get` remains
+valid as long as you hold its `ResourceId` *and* nothing calls `remove`
+on it (or, for refcounted slots, the refcount stays above zero). In
+practice that's "for the duration of the job that fetched it" — don't
+stash raw `const T*` pointers across ticks unless you can guarantee
+nobody removes the resource.
 
 If you need long-lived references that outlive `remove()`, store a copy
 of the value (or your own `shared_ptr` to it) outside the registry. The

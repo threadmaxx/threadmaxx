@@ -36,19 +36,160 @@ runtime? io_uring?); pumping `update` instead lets each game pick.
 ## Lifecycle
 
 - Loaders are pumped in registration order, every step.
-- Loaders are destroyed in reverse-registration order during
-  `Engine::shutdown()` — so a loader that depends on another (e.g. a
-  texture loader that needs the GPU upload loader registered first)
-  tears down second.
+- `Engine::shutdown()` calls each loader's `onShutdown(engine)` in
+  reverse-registration order, then destroys them in the same order.
+  Use `onShutdown` to cancel in-flight uploads or join I/O threads;
+  the engine guarantees `update` is not invoked again afterward.
 - A loader that calls `engine.shutdown()` from inside `update()` is
   undefined behavior; treat the pump as a leaf call.
 
+```cpp
+class MeshLoader : public threadmaxx::IResourceLoader {
+public:
+    void onShutdown(threadmaxx::Engine&) override {
+        ioPool_.requestStop();
+        ioPool_.join();  // safe to block — runs once, during shutdown
+    }
+    // ...
+};
+```
+
+## Multi-stage pipelines
+
+A typical loader runs three stages off the sim thread — *fetch* (disk /
+network), *decode* (parse / decompress), *upload* (GPU buffer) — and
+hands the final asset to the registry via `update()`. The engine
+deliberately doesn't model the stages; they live inside the loader. A
+typical layout:
+
+```cpp
+class TextureLoader : public threadmaxx::IResourceLoader {
+public:
+    void request(std::string path) { /* enqueue for fetchPool_ */ }
+
+    void update(threadmaxx::Engine& engine) override {
+        // Pickup whatever finished since the last tick. Drain in
+        // priority order so latency-critical assets land first.
+        while (auto t = ready_.tryPop()) {
+            const auto id = engine.resources().add(std::move(*t));
+            // notify the rest of the game via an event channel
+            engine.events<TextureReady>().emit(TextureReady{id});
+        }
+    }
+
+    threadmaxx::LoaderStats stats() const noexcept override {
+        return {
+            .pendingLoads    = fetchPool_.queueDepth(),
+            .inFlight        = decodePool_.queueDepth() + uploadPool_.queueDepth(),
+            .ready           = ready_.size(),
+            .failed          = failed_.load(),
+            .memoryFootprint = resident_.load(),
+            .memoryBudget    = budget_,
+        };
+    }
+
+    void onShutdown(threadmaxx::Engine&) override {
+        fetchPool_.requestStop();  decodePool_.requestStop();  uploadPool_.requestStop();
+        fetchPool_.join();         decodePool_.join();         uploadPool_.join();
+    }
+
+private:
+    /* fetchPool_, decodePool_, uploadPool_, ready_, ... */
+};
+```
+
+The `stats()` override is optional; the default returns zero
+counters. `Engine::aggregateLoaderStats()` sums them across loaders for
+HUD readouts:
+
+```cpp
+const auto agg = engine.aggregateLoaderStats();
+hud.write("loader queue: {}\nresident: {} / {} bytes",
+          agg.pendingLoads + agg.inFlight,
+          agg.memoryFootprint, agg.memoryBudget);
+```
+
 ## Hot reload
 
-Add a `markStale(ResourceId)` method on your loader subclass. When the
-file watcher (or your equivalent) notices a change, queue a reload; the
-next `update()` pump picks it up. The engine's contract stays the
-same — it just keeps pumping `update()`.
+Override `IResourceLoader::markStale` to receive type-erased
+notifications when game code (or a file watcher) decides a previously-
+installed asset should be reloaded:
+
+```cpp
+void markStale(std::uint32_t index, std::uint32_t generation,
+               std::type_index type) override {
+    if (type != std::type_index(typeid(Mesh))) return;
+    pendingReload_.push_back({index, generation});
+}
+```
+
+Game code triggers reload via the typed dispatcher:
+
+```cpp
+engine.markResourceStale(myMeshId);
+```
+
+On the next `update()` pump, the loader installs the new value via
+`engine.resources().add(...)` and publishes an `AssetReloaded` event:
+
+```cpp
+void update(threadmaxx::Engine& engine) override {
+    for (auto stale : pendingReload_) {
+        const auto newId = engine.resources().add(reloadFromDisk(stale));
+        engine.events<threadmaxx::AssetReloaded>().emit({
+            stale.first, stale.second,
+            newId.index, newId.generation,
+            std::type_index(typeid(Mesh)),
+        });
+        engine.resources().remove(ResourceId<Mesh>{stale.first, stale.second});
+    }
+    pendingReload_.clear();
+}
+```
+
+Subscribers (renderer, gameplay code) rewire their cached ids by
+subscribing to `engine.events<AssetReloaded>()`:
+
+```cpp
+auto sub = engine.events<AssetReloaded>().subscribeScoped(
+    [&](const AssetReloaded& ev) {
+        if (ev.matches(currentMeshId_)) {
+            currentMeshId_ = ResourceId<Mesh>{ev.newIndex, ev.newGeneration};
+        }
+    });
+```
+
+The library deliberately doesn't auto-redirect `ResourceId`s across
+reload; that would require a trampoline layer with its own cost. Each
+game decides how to consume the swap (immediately update caches, defer
+until the next pass, etc.).
+
+## Boot-time blocking preload
+
+For splash-screen / startup flows where the game shouldn't enter its
+main loop until a named set of assets is ready, use
+`Engine::preloadUntil`:
+
+```cpp
+// kick the loader once to enqueue all needed assets
+loader.request("hero.mesh");
+loader.request("hero.tex");
+
+const bool ok = engine.preloadUntil(
+    [&] {
+        return engine.resources().get(heroMeshId) != nullptr &&
+               engine.resources().get(heroTexId)  != nullptr;
+    },
+    std::chrono::milliseconds(5000));
+if (!ok) {
+    // timed out — bail or fall back to placeholders
+}
+```
+
+`preloadUntil` pumps loaders synchronously (`update()` only) without
+running waves, drains, or advancing the tick. It yields between
+iterations so off-thread loader work can progress. Returns true if the
+predicate became true within the timeout, false otherwise.
 
 ## Cost when there are no loaders
 

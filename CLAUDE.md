@@ -81,6 +81,8 @@ Tag-only components (no dense data; presence-bit only) skip steps 3, 6 (no `tryG
 
 `ResourceRegistry` (in `include/threadmaxx/Resource.hpp`) is engine-owned and thread-safe under a single internal mutex. It stores values type-erased via `std::shared_ptr<void>` keyed by `std::type_index`. The mutex is sized for setup-time registration and per-frame lookups, not for high-throughput concurrent inserts — an async loader should do its I/O off-thread and call `add()` when ready. Stale handles (after `remove()`) never alias new ones because the slot's generation bumps on every removal.
 
+The opt-in batch-7 path: `addRefCounted<T>(value)` returns a `ResourceHandle<T>` (refcount=1); `acquire(id)` bumps; `~ResourceHandle` decrements; on zero refcount the slot is freed AND its generation bumps. Slots that came in via the legacy `add` are marked `refCounted=false` and `acquire` refuses to bump them — the two pathways don't share lifetime semantics on the same slot. `refCount(id)` reports 0 for non-refcounted or stale slots.
+
 ## HierarchySystem
 
 `makeHierarchySystem()` in `src/HierarchySystem.cpp` propagates world transforms for `Parent`-attached entities. It runs single-threaded in `ctx.single()` and resolves multi-level chains via DFS-with-memoization. Composition: `position = parent.position + rotate(parent.orientation, local.position)`; `orientation = parent.orientation * local.orientation`; `scale = local.scale` — scale does NOT chain (see `doc/hierarchy.md` for rationale).
@@ -120,6 +122,23 @@ Batch form: `Engine::reserveEntityHandles(count, span)` / `SystemContext::reserv
 ## Resource loaders
 
 `IResourceLoader` (in `Resource.hpp`) is the engine's per-tick pump for asset I/O. Registered via `Engine::addResourceLoader`; the engine owns the loader and calls `loader->update(engine)` once per `step()` on the sim thread, immediately after the last `postStep` hook commits and before the reservation reap / event drain. Loaders are torn down in reverse-registration order during `shutdown()`. The engine never spawns threads for a loader — it owns its own pool (if any) and calls `engine.resources().add(...)` when an asset is ready.
+
+Three optional batch-7 virtuals:
+- `onShutdown(Engine&)` — called by `EngineImpl::shutdown` in reverse-registration order before the loader is destroyed. Use it to cancel in-flight uploads and join I/O threads. The engine guarantees `update` is not called again after `onShutdown` returns.
+- `markStale(index, generation, type)` — type-erased so the engine can dispatch `Engine::markResourceStale<T>(id)` to every loader without templating. Loaders filter on `type`; default is a no-op.
+- `stats() -> LoaderStats` — pending / inFlight / ready / failed counters plus `memoryFootprint` and `memoryBudget`. `Engine::aggregateLoaderStats()` sums them. Default returns zeros.
+
+## Hot reload and `AssetReloaded`
+
+`Engine::markResourceStale<T>(ResourceId<T>)` walks the registered loaders and calls each one's `markStale(index, generation, typeid(T))`. The loader that recognizes the type queues a reload; on its next `update()` it installs the replacement via `engine.resources().add(...)` and publishes `AssetReloaded{oldIndex, oldGeneration, newIndex, newGeneration, type}` on the engine's typed `events<AssetReloaded>()` channel. Subscribers rewire their cached ids (use `AssetReloaded::matches<T>(id)` for the comparison). The library deliberately does NOT auto-redirect `ResourceId`s — game code controls the rewire timing.
+
+## Engine::preloadUntil
+
+`Engine::preloadUntil(predicate, timeout = 5s)` pumps every registered loader's `update()` in a yield loop until the predicate returns true or the timeout elapses. The simulation does not advance (no waves, no `step()`, no event drain). Sim-thread only; use this for splash-screen / boot-time preloads where the main loop shouldn't start until a named asset set is ready. Returns `true` on `done()`, `false` on timeout.
+
+## Subscription RAII handle
+
+`EventChannel<Ev>::subscribeScoped(fn)` returns a `Subscription` (in `EventChannel.hpp`): move-only, type-erased, auto-detaches on destruction. The subscriber list is now owned by a `std::shared_ptr<SubscriberList>` inside the channel; `Subscription` holds a `std::weak_ptr<void>` to it, so a `Subscription` that outlives its channel safely no-ops at destruction. `Subscription::reset()` detaches eagerly; `valid()` reflects "still attached AND channel still alive". The legacy `subscribe` / `unsubscribe` pair is unchanged and targets the same underlying list.
 
 ## SpatialHash
 

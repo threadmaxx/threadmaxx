@@ -108,6 +108,50 @@ delay that `drainTick()` consumers see).
 Subscriptions and `drainTick()` consumers coexist — installing a
 subscriber does not steal events from `drainTick`.
 
-The auto-cleanup RAII wrapper (`Subscription` handle that
-auto-unsubscribes on destruction) is a §3.4 batch 7 item; for now,
-games own the lifetime explicitly via `unsubscribe`.
+## RAII subscriptions
+
+`EventChannel<T>::subscribeScoped(fn)` is the §3.2 batch-7 sugar for
+`subscribe` + manual `unsubscribe`. It returns a `Subscription` handle
+(type-erased; move-only) that auto-detaches on destruction:
+
+```cpp
+class HudOverlay {
+public:
+    HudOverlay(threadmaxx::Engine& engine)
+        : sub_(engine.events<DamageEvent>().subscribeScoped(
+              [this](const DamageEvent& e) { onDamage(e); })) {}
+    // No explicit unsubscribe needed; ~Subscription detaches.
+private:
+    void onDamage(const DamageEvent&);
+    threadmaxx::Subscription sub_;
+};
+```
+
+The handle is **safe to outlive the channel.** Internally it holds a
+`weak_ptr` to the channel's subscriber list, so if the engine is
+destroyed before the `Subscription`, the eventual destructor no-ops
+instead of dereferencing a dangling pointer. This matters when
+`Subscription`s live in long-running game objects that may not be
+torn down in a precise order.
+
+```cpp
+threadmaxx::Subscription sub;
+{
+    threadmaxx::Engine engine(cfg);
+    /* ... */
+    sub = engine.events<Bang>().subscribeScoped([](const Bang&) { });
+    /* engine destroyed here */
+}
+// sub is now invalid — sub.valid() returns false — and its
+// destructor is a no-op when it eventually fires.
+```
+
+Use `Subscription::reset()` to detach eagerly without destroying the
+handle, and move semantics (`Subscription a = std::move(b);`) to
+transfer ownership. Copy is intentionally disabled — duplicating a
+subscription is almost never the right thing.
+
+If you need the bare numeric id (e.g. for interop with a callback
+registry that already keys on `SubscriptionId`), the legacy
+`subscribe` / `unsubscribe` API is unchanged; the two APIs target the
+same underlying list.

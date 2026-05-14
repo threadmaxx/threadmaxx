@@ -42,6 +42,12 @@ set(THREADMAXX_TESTS
     new_components_test
     tags_test
     mask_cache_test
+    resource_handle_test
+    asset_reload_test
+    preload_until_test
+    loader_shutdown_test
+    loader_stats_test
+    subscription_raii_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

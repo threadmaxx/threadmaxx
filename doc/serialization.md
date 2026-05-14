@@ -47,7 +47,8 @@ The output is a self-describing binary blob:
 `[magic u32][version u32][entityCount u64][14 dense arrays each
 prefixed by a u64 length]`. All values are host-endian; the format is
 not portable across architectures with different endianness (a
-cross-platform format is in §3.3 batch 7).
+cross-platform format isn't on any current §3 batch — file a PR if
+you want one).
 
 Per-component serializers are also available if you want to slice the
 state differently:

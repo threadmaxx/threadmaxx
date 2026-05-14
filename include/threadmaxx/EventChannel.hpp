@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <typeindex>
@@ -12,6 +13,83 @@
 #include <vector>
 
 namespace threadmaxx {
+
+/// RAII handle returned by @ref EventChannel::subscribeScoped (§3.2
+/// batch 7). On destruction (or @ref reset) it detaches the underlying
+/// subscription. Move-only. Safe to outlive the channel: the handle
+/// holds a `weak_ptr` to the channel's subscriber list, so if the
+/// channel is destroyed first the dtor no-ops.
+///
+/// Type-erased so it can be stored in containers without templating
+/// on the event type.
+class Subscription {
+public:
+    using SubscriptionId = std::uint64_t;
+
+    Subscription() = default;
+
+    Subscription(const Subscription&) = delete;
+    Subscription& operator=(const Subscription&) = delete;
+
+    Subscription(Subscription&& other) noexcept
+        : list_(std::move(other.list_)),
+          unsubscribe_(other.unsubscribe_),
+          id_(other.id_) {
+        other.unsubscribe_ = nullptr;
+        other.id_          = 0;
+    }
+
+    Subscription& operator=(Subscription&& other) noexcept {
+        if (this == &other) return *this;
+        reset();
+        list_         = std::move(other.list_);
+        unsubscribe_  = other.unsubscribe_;
+        id_           = other.id_;
+        other.unsubscribe_ = nullptr;
+        other.id_          = 0;
+        return *this;
+    }
+
+    ~Subscription() { reset(); }
+
+    /// True iff this handle still represents an attached subscription.
+    /// Returns false after `reset()` or after the source channel has
+    /// been destroyed.
+    bool valid() const noexcept {
+        return id_ != 0 && unsubscribe_ && !list_.expired();
+    }
+    explicit operator bool() const noexcept { return valid(); }
+
+    /// Detach now (no-op if already detached / channel destroyed).
+    void reset() noexcept {
+        if (id_ != 0 && unsubscribe_) {
+            if (auto locked = list_.lock()) {
+                unsubscribe_(locked.get(), id_);
+            }
+        }
+        list_.reset();
+        unsubscribe_ = nullptr;
+        id_          = 0;
+    }
+
+    /// The underlying numeric id, for compatibility with the legacy
+    /// `subscribe` / `unsubscribe` interface. Zero if invalid.
+    SubscriptionId id() const noexcept { return id_; }
+
+private:
+    template <typename Ev> friend class EventChannel;
+
+    using UnsubscribeFn = void (*)(void*, SubscriptionId) noexcept;
+
+    Subscription(std::weak_ptr<void> list,
+                 UnsubscribeFn fn,
+                 SubscriptionId id) noexcept
+        : list_(std::move(list)), unsubscribe_(fn), id_(id) {}
+
+    std::weak_ptr<void> list_;
+    UnsubscribeFn       unsubscribe_ = nullptr;
+    SubscriptionId      id_          = 0;
+};
 
 /// Typed double-buffered event queue for cross-system messaging.
 ///
@@ -36,11 +114,11 @@ public:
     /// Identifier for a persistent subscription. Pass to
     /// @ref unsubscribe to detach. Zero is reserved as the "invalid"
     /// id; @ref subscribe never returns zero.
-    using SubscriptionId = std::uint64_t;
+    using SubscriptionId = Subscription::SubscriptionId;
     /// Callback signature for persistent subscribers.
     using Callback       = std::function<void(const Ev&)>;
 
-    EventChannel() = default;
+    EventChannel() : subscribers_(std::make_shared<SubscriberList>()) {}
 
     EventChannel(const EventChannel&) = delete;
     EventChannel& operator=(const EventChannel&) = delete;
@@ -78,20 +156,32 @@ public:
     ///                callback that re-emits sees its own events on
     ///                the next tick.
     SubscriptionId subscribe(Callback cb) {
-        std::lock_guard<std::mutex> lk(subscribersMtx_);
-        const SubscriptionId id = ++nextId_;
-        subscribers_.push_back({id, std::move(cb)});
+        std::lock_guard<std::mutex> lk(subscribers_->mtx);
+        const SubscriptionId id = ++subscribers_->nextId;
+        subscribers_->subs.push_back({id, std::move(cb)});
         return id;
+    }
+
+    /// RAII flavor of @ref subscribe (§3.2 batch 7). Returns a
+    /// @ref Subscription that auto-detaches on destruction. The
+    /// `Subscription` is type-erased and safe to outlive the channel.
+    /// @thread_safety Same as @ref subscribe.
+    Subscription subscribeScoped(Callback cb) {
+        const SubscriptionId id = subscribe(std::move(cb));
+        std::shared_ptr<void> erased = subscribers_;
+        return Subscription(std::weak_ptr<void>(erased),
+                            &unsubscribeImpl_, id);
     }
 
     /// Remove a previously-registered subscriber. No-op if the id is
     /// not currently registered. Safe to call from inside a callback.
     /// @thread_safety Safe from any thread.
     bool unsubscribe(SubscriptionId id) {
-        std::lock_guard<std::mutex> lk(subscribersMtx_);
-        for (auto it = subscribers_.begin(); it != subscribers_.end(); ++it) {
+        std::lock_guard<std::mutex> lk(subscribers_->mtx);
+        auto& subs = subscribers_->subs;
+        for (auto it = subs.begin(); it != subs.end(); ++it) {
             if (it->id == id) {
-                subscribers_.erase(it);
+                subs.erase(it);
                 return true;
             }
         }
@@ -101,8 +191,8 @@ public:
     /// Number of currently-registered subscribers. Mostly useful for
     /// tests and HUD readouts.
     std::size_t subscriberCount() const noexcept {
-        std::lock_guard<std::mutex> lk(subscribersMtx_);
-        return subscribers_.size();
+        std::lock_guard<std::mutex> lk(subscribers_->mtx);
+        return subscribers_->subs.size();
     }
 
     /// @internal Engine-called: invoke each subscriber once per event
@@ -114,9 +204,9 @@ public:
         // (subscribe/unsubscribe) cannot invalidate our iterator.
         std::vector<Callback> snapshot;
         {
-            std::lock_guard<std::mutex> lk(subscribersMtx_);
-            snapshot.reserve(subscribers_.size());
-            for (const auto& s : subscribers_) snapshot.push_back(s.callback);
+            std::lock_guard<std::mutex> lk(subscribers_->mtx);
+            snapshot.reserve(subscribers_->subs.size());
+            for (const auto& s : subscribers_->subs) snapshot.push_back(s.callback);
         }
         if (!snapshot.empty()) {
             std::lock_guard<std::mutex> lk(backMtx_);
@@ -141,18 +231,33 @@ private:
         SubscriptionId id;
         Callback       callback;
     };
+    // Held by `shared_ptr` so a `Subscription` can hold a `weak_ptr` to
+    // it and safely no-op when this channel is destroyed before the
+    // Subscription (e.g. game-side state outliving Engine::shutdown).
+    struct SubscriberList {
+        mutable std::mutex      mtx;
+        std::vector<Subscriber> subs;
+        SubscriptionId          nextId = 0;
+    };
+
+    // Per-Ev static used by Subscription to detach without templating.
+    // Generated once per Ev type by the linker.
+    static void unsubscribeImpl_(void* listPtr, SubscriptionId id) noexcept {
+        auto* list = static_cast<SubscriberList*>(listPtr);
+        std::lock_guard<std::mutex> lk(list->mtx);
+        for (auto it = list->subs.begin(); it != list->subs.end(); ++it) {
+            if (it->id == id) {
+                list->subs.erase(it);
+                return;
+            }
+        }
+    }
 
     std::vector<Ev>    front_;       ///< readers consume from here
     std::vector<Ev>    back_;        ///< writers append here, guarded by backMtx_
     mutable std::mutex backMtx_;
 
-    // §3.1 persistent subscriptions. Drain invokes each callback once
-    // per back-buffered event before the front/back swap, so the
-    // callback sees this tick's emits (matching the next tick's
-    // drainTick() consumer view).
-    std::vector<Subscriber> subscribers_;
-    mutable std::mutex      subscribersMtx_;
-    SubscriptionId          nextId_ = 0;
+    std::shared_ptr<SubscriberList> subscribers_;
 };
 
 template <typename Ev>

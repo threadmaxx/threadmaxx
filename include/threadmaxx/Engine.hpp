@@ -2,9 +2,12 @@
 
 #include "Config.hpp"
 #include "Handles.hpp"
+#include "Resource.hpp"
 #include "Stats.hpp"
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <typeindex>
@@ -152,15 +155,60 @@ public:
     ResourceRegistry&       resources()       noexcept;
     const ResourceRegistry& resources() const noexcept;
 
-    /// Register an asset loader (§3.3). The engine takes ownership and
+    /// Register an asset loader. The engine takes ownership and
     /// pumps `loader->update(*this)` once per tick, on the simulation
     /// thread, after every `postStep` hook commits. The engine does
     /// not spawn worker threads for the loader; its own pool (if any)
     /// is its concern.
     /// @return A non-owning pointer to the loader, for tests / inspection.
     ///         Loaders are torn down in reverse-registration order
-    ///         during `shutdown()`.
+    ///         during `shutdown()` after each has been notified via
+    ///         @ref IResourceLoader::onShutdown.
     IResourceLoader* addResourceLoader(std::unique_ptr<IResourceLoader> loader);
+
+    /// Number of currently-registered resource loaders. Stable until the
+    /// next @ref addResourceLoader or @ref shutdown.
+    std::size_t resourceLoaderCount() const noexcept;
+
+    /// Sum of every registered loader's @ref LoaderStats — pendingLoads,
+    /// inFlight, ready, failed, memoryFootprint, memoryBudget. Useful
+    /// for HUD readouts and capacity alerts.
+    LoaderStats aggregateLoaderStats() const noexcept;
+
+    /// Hot-reload notification (§3.2 batch 7). Iterates registered
+    /// loaders in registration order and calls
+    /// `loader->markStale(index, generation, typeid(T))` on each. The
+    /// loader that owns the asset is expected to queue a reload; on a
+    /// later tick's `update()` it installs the new value via
+    /// `engine.resources().add(...)` and publishes an
+    /// @ref AssetReloaded event on `events<AssetReloaded>()` so
+    /// subscribers can rewire their cached ids.
+    ///
+    /// @thread_safety Currently sim-thread only — calls into the loader
+    ///                vector are unsynchronized. Wrap with your own
+    ///                queue if you need to call from worker jobs.
+    template <typename T>
+    void markResourceStale(ResourceId<T> id) {
+        markResourceStaleRaw_(id.index, id.generation,
+                              std::type_index(typeid(T)));
+    }
+
+    /// Block the calling thread until `done()` returns true or `timeout`
+    /// elapses, pumping all registered loaders' `update()` once per
+    /// iteration. Useful for splash-screen / boot-time preloads where
+    /// the game shouldn't enter its main loop until a named asset set
+    /// is ready.
+    ///
+    /// The engine yields between iterations rather than calling
+    /// `step()` — the simulation does not advance, no waves run, no
+    /// events drain. Pair with `engine.resources()` lookups inside the
+    /// predicate to check readiness.
+    /// @return `true` if `done()` returned true within the timeout;
+    ///         `false` on timeout.
+    /// @thread_safety Sim thread only; mirrors `step()` / `run()`.
+    bool preloadUntil(std::function<bool()> done,
+                      std::chrono::milliseconds timeout =
+                          std::chrono::milliseconds(5000));
 
     /// Aggregate worker-pool counters (jobs submitted, own-pops, steals).
     /// Cheap to call; safe from any thread.
@@ -215,6 +263,10 @@ public:
     EventChannel<Ev>& events();
 
 private:
+    void markResourceStaleRaw_(std::uint32_t index,
+                               std::uint32_t generation,
+                               std::type_index type);
+
     std::unique_ptr<internal::EngineImpl> impl_;
 };
 

@@ -53,6 +53,25 @@ IResourceLoader* Engine::addResourceLoader(std::unique_ptr<IResourceLoader> load
     return impl_->addResourceLoader(std::move(loader));
 }
 
+std::size_t Engine::resourceLoaderCount() const noexcept {
+    return impl_->resourceLoaderCount();
+}
+
+LoaderStats Engine::aggregateLoaderStats() const noexcept {
+    return impl_->aggregateLoaderStats();
+}
+
+void Engine::markResourceStaleRaw_(std::uint32_t index,
+                                   std::uint32_t generation,
+                                   std::type_index type) {
+    impl_->markResourceStale(index, generation, type);
+}
+
+bool Engine::preloadUntil(std::function<bool()> done,
+                          std::chrono::milliseconds timeout) {
+    return impl_->preloadUntil(std::move(done), timeout);
+}
+
 JobSystemStats Engine::jobSystemStats() const noexcept { return impl_->jobSystemStats(); }
 
 FrameSnapshot Engine::frameSnapshot() const noexcept {

@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 40 tests pin the
+minimal; the internals are PImpl'd so they can change. 46 tests pin the
 documented invariants.
 
 ## Highlights
@@ -27,7 +27,9 @@ documented invariants.
   zero-allocation steady-state scratch.
 - **Typed event channels.** `Engine::events<T>()` returns a
   double-buffered queue; safe to emit from worker jobs, drained on
-  tick boundary.
+  tick boundary. Persistent `subscribe`/`unsubscribe` callbacks plus
+  an RAII `Subscription` handle (`subscribeScoped`) that
+  auto-detaches on destruction and survives the channel safely.
 - **Pause + time-scale.** `setPaused(true)` freezes the simulation
   without freezing render-frame submission; `setTimeScale(s)` scales
   `dt` while leaving `tick()` an integer.
@@ -42,7 +44,18 @@ documented invariants.
   accessors over the existing component-presence mask.
 - **Async resource loader contract.** `IResourceLoader` pumped once
   per tick on the sim thread; the engine never spawns I/O threads
-  itself.
+  itself. `onShutdown` hook for graceful cancellation; `stats()` +
+  `Engine::aggregateLoaderStats()` for HUD progress and memory
+  accounting; `Engine::preloadUntil(predicate, timeout)` for
+  splash-screen / boot-time blocking preloads.
+- **Refcounted resource handles.** `ResourceRegistry::addRefCounted`
+  + `acquire` return a `ResourceHandle<T>` whose destruction frees
+  the slot on last drop. The legacy `add` / `remove` pair stays as
+  the un-managed path.
+- **Hot reload protocol.** `Engine::markResourceStale<T>(id)`
+  dispatches to every loader; the loader replaces the asset and
+  emits `AssetReloaded{oldId, newId}` on the typed event channel
+  for subscribers to rewire cached ids.
 - **Spatial hash helper.** `SpatialHash<Payload>` uniform-grid index
   for neighbor lookups, broadphase, AOI streaming.
 - **Deterministic commit phase.** Workers emit commands into per-job
@@ -243,7 +256,7 @@ include/threadmaxx/    public API (20 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 40 no-dependency tests under CTest
+tests/                 46 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <typeindex>
@@ -112,6 +113,19 @@ public:
     // after the postStep hooks commit. addLoader returns a non-owning
     // pointer for inspection / tests.
     IResourceLoader* addResourceLoader(std::unique_ptr<IResourceLoader> loader);
+
+    std::size_t resourceLoaderCount() const noexcept {
+        return resourceLoaders_.size();
+    }
+
+    LoaderStats aggregateLoaderStats() const noexcept;
+
+    void markResourceStale(std::uint32_t index,
+                           std::uint32_t generation,
+                           std::type_index type);
+
+    bool preloadUntil(std::function<bool()> done,
+                      std::chrono::milliseconds timeout);
     const Config& config() const noexcept { return cfg_; }
     std::uint64_t tick()   const noexcept { return tick_; }
     double simulationTime() const noexcept { return simulationTime_; }

@@ -231,6 +231,50 @@ IResourceLoader* EngineImpl::addResourceLoader(
     return raw;
 }
 
+LoaderStats EngineImpl::aggregateLoaderStats() const noexcept {
+    LoaderStats agg;
+    for (const auto& loader : resourceLoaders_) {
+        if (!loader) continue;
+        const LoaderStats s = loader->stats();
+        agg.pendingLoads    += s.pendingLoads;
+        agg.inFlight        += s.inFlight;
+        agg.ready           += s.ready;
+        agg.failed          += s.failed;
+        agg.memoryFootprint += s.memoryFootprint;
+        agg.memoryBudget    += s.memoryBudget;
+    }
+    return agg;
+}
+
+void EngineImpl::markResourceStale(std::uint32_t index,
+                                   std::uint32_t generation,
+                                   std::type_index type) {
+    // Loaders are filtered by their own implementation — the one that
+    // recognizes the type handles the call, the rest no-op via the
+    // default virtual.
+    for (auto& loader : resourceLoaders_) {
+        if (loader) loader->markStale(index, generation, type);
+    }
+}
+
+bool EngineImpl::preloadUntil(std::function<bool()> done,
+                              std::chrono::milliseconds timeout) {
+    if (!done) return false;
+    if (!publicEngine_) return false;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (true) {
+        if (done()) return true;
+        for (auto& loader : resourceLoaders_) {
+            if (loader) loader->update(*publicEngine_);
+        }
+        // Check again after pumping so a loader that finishes in this
+        // pass exits the loop immediately.
+        if (done()) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::yield();
+    }
+}
+
 std::size_t EngineImpl::registerSystemAt(std::size_t position,
                                          std::unique_ptr<ISystem> system) {
     if (!system) return systems_.size();
@@ -700,8 +744,19 @@ void EngineImpl::shutdown() {
     }
     systems_.clear();
 
-    // §3.3 release resource loaders in reverse-registration order, so
-    // a loader that depends on an earlier-registered one tears down
+    // §3.2 batch 7: notify loaders so they can cancel in-flight work
+    // before destruction. Reverse-registration order matches the
+    // teardown that immediately follows so a loader's onShutdown sees
+    // the same engine state its destructor will.
+    if (publicEngine_) {
+        for (auto it = resourceLoaders_.rbegin();
+             it != resourceLoaders_.rend(); ++it) {
+            if (*it) (*it)->onShutdown(*publicEngine_);
+        }
+    }
+
+    // Release resource loaders in reverse-registration order, so a
+    // loader that depends on an earlier-registered one tears down
     // first.
     while (!resourceLoaders_.empty()) {
         resourceLoaders_.pop_back();
