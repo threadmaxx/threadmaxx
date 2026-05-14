@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 57 tests pin the
+minimal; the internals are PImpl'd so they can change. 58 tests pin the
 documented invariants.
 
 ## Highlights
@@ -16,7 +16,11 @@ documented invariants.
   interpolation alpha for render-side smoothing.
 - **Wave scheduler** — systems declare their read/write component sets;
   the engine packs non-conflicting systems into the same wave and runs
-  them concurrently.
+  them concurrently. Optional named **task-graph edges** (`TaskTag` +
+  `ISystem::dependencies` / `provides`) push producer/consumer pairs
+  into different waves even when their masks don't conflict; cycles
+  are detected and logged, never crashed. `Engine::taskGraphSnapshot()`
+  exposes the DAG for HUD or Graphviz export.
 - **Three-phase tick** — `preStep` (serial), `update` (parallel waves),
   `postStep` (serial). Pump input queues, snapshot for HUD, finalize
   per-tick aggregates.

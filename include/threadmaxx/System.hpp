@@ -2,6 +2,7 @@
 
 #include "CommandBuffer.hpp"
 #include "ScratchArena.hpp"
+#include "TaskTag.hpp"
 #include "render/RenderFrameBuilder.hpp"
 
 #include <cstdint>
@@ -170,6 +171,38 @@ public:
     /// `S1.writes ∩ S2.reads  ≠ ∅` OR
     /// `S1.reads  ∩ S2.writes ≠ ∅`.
     virtual ComponentSet writes() const noexcept { return ComponentSet::all(); }
+
+    /// §3.4 batch 11 — tags this system *consumes*. Each tag becomes
+    /// a directed edge "this-system runs after every system whose
+    /// @ref provides set contains the same tag", in addition to the
+    /// component-mask conflict edges from @ref reads / @ref writes.
+    /// Use it when reads/writes alone can't capture a producer →
+    /// consumer order (e.g. two systems write the same component but
+    /// one must happen first).
+    ///
+    /// Default: empty. The returned span must outlive the call; the
+    /// engine never copies it. Static storage (a `constexpr` array
+    /// member) is the convention.
+    virtual std::span<const TaskTag> dependencies() const noexcept { return {}; }
+
+    /// §3.4 batch 11 — tags this system *produces*. Each tag becomes
+    /// a directed edge "every system whose @ref dependencies set
+    /// contains the same tag runs after this one".
+    ///
+    /// Default: empty. Same lifetime rule as @ref dependencies.
+    virtual std::span<const TaskTag> provides() const noexcept { return {}; }
+
+    /// §3.4 batch 11 — hint to the engine's default chunk-grain
+    /// picker. When a `parallelFor` call passes `grain == 0`, the
+    /// engine normally picks `(count + workers*4 - 1) / (workers*4)`
+    /// to fan out 4 chunks per worker. Overriding @ref preferredGrain
+    /// to a non-zero value pins the per-system default to that
+    /// number (capped at `count`). Pass-through `grain != 0` calls
+    /// are unaffected.
+    ///
+    /// Default: 0 (use the heuristic). Pick a non-zero value when
+    /// inner-loop cost makes a known good batch size win.
+    virtual std::uint32_t preferredGrain() const noexcept { return 0; }
 };
 
 /// Configuration knobs for the built-in hierarchy system. Pass to

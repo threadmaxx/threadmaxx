@@ -85,6 +85,90 @@ the other reads or writes. The engine's wave packer is a greedy
 first-fit: each newly registered system is placed in the earliest wave
 that contains no conflicts.
 
+## Task-graph edges via tags (§3.4 batch 11)
+
+Read/write masks cover the *what* of dependencies (component
+intersection); they don't cover the *when* — sometimes two systems
+have non-overlapping masks but one must logically run after the
+other (a producer-consumer pair where the consumer reads side-state
+the producer scattered around). For those cases, systems declare
+named tag edges:
+
+```cpp
+class PhysicsSystem : public ISystem {
+    static constexpr TaskTag kResults{"physics-results"};
+    std::span<const TaskTag> provides() const noexcept override {
+        return {&kResults, 1};
+    }
+    // ...
+};
+
+class AISystem : public ISystem {
+    static constexpr TaskTag kPhysics{"physics-results"};
+    std::span<const TaskTag> dependencies() const noexcept override {
+        return {&kPhysics, 1};
+    }
+    // ...
+};
+```
+
+The engine adds an edge `PhysicsSystem → AISystem` to the DAG: even
+if their read/write masks don't overlap, `AISystem` is pushed into
+a wave **strictly later than** `PhysicsSystem`. `TaskTag` is a POD
+carrying both the string name (used for equality) and a pre-computed
+FNV-1a hash (used as a lookup accelerator); name-based equality
+means hash collisions are a performance issue, never a correctness
+one.
+
+The DAG is rebuilt every `registerSystem` and `registerSystemAt`.
+Cycles (A depends on a tag B provides AND B depends on a tag A
+provides) are detected and logged via `ILogger`; the engine recovers
+by dropping the offending **tag-only** edges (read/write edges are
+always preserved). Subsequent ticks still run — the engine never
+deadlocks on a malformed graph.
+
+Inspect the resulting graph at runtime with
+`Engine::taskGraphSnapshot()`:
+
+```cpp
+const auto snap = engine.taskGraphSnapshot();
+for (const auto& node : snap) {
+    std::cout << "system " << node.index << " '" << node.name
+              << "' is in wave " << node.wave;
+    if (!node.dependsOn.empty()) {
+        std::cout << " (after: ";
+        for (auto p : node.dependsOn) std::cout << p << ' ';
+        std::cout << ')';
+    }
+    std::cout << '\n';
+}
+```
+
+`taskGraphSnapshot` is sim-thread-only and returns owned strings, so
+it's safe to keep across registrations.
+
+## Per-system grain hints (§3.4 batch 11)
+
+`parallelFor(count, grain, fn)` picks the slice size when the
+caller passes `grain == 0`. The default heuristic targets
+`workers * 4` chunks per call (4 chunks per worker). When a system
+*knows* its inner-loop cost — typically because the body does
+~constant work per item and there's a sweet spot for cache locality
+— override `ISystem::preferredGrain()` and the engine uses your
+value for that system's `grain=0` calls:
+
+```cpp
+class IntegrationSystem : public ISystem {
+    std::uint32_t preferredGrain() const noexcept override {
+        return 256;   // tuned offline; 256 items per worker
+    }
+    // ...
+};
+```
+
+Pass-through `grain > 0` calls are unaffected — `preferredGrain()`
+is only consulted when the user defers to the engine.
+
 ## How waves run
 
 Within a wave the engine fans systems out across `workerCount - 1`

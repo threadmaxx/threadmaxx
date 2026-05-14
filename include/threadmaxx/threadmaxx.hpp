@@ -24,6 +24,7 @@
 #include "SpatialHash.hpp"
 #include "Stats.hpp"
 #include "System.hpp"
+#include "TaskTag.hpp"
 #include "Trace.hpp"
 #include "UserComponent.hpp"
 #include "World.hpp"

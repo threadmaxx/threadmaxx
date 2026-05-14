@@ -249,6 +249,75 @@ Determinism: `tests/archetype_storage_stress_test.cpp` (8192 entities × 24 tick
 
 `tests/foreach_chunk_test.cpp` is the chunk-iteration contract test — spawn across three archetype shapes, verify per-query chunk visits + entity coverage + empty-result behavior.
 
+## §3.4 batch 11 — Frame task graph
+
+The wave scheduler used to be pure first-fit packing keyed on
+`ComponentSet` read/write conflicts: each system landed in the first
+wave with no conflicting predecessor. Batch 11 adds **named tag
+edges** alongside the mask-based ones so user code can express
+producer/consumer order even when read/write masks alone wouldn't
+capture it.
+
+`include/threadmaxx/TaskTag.hpp` defines `TaskTag { string_view name;
+uint64_t hash; }`. The constexpr constructor computes the FNV-1a
+hash at compile time; `operator==` compares the `name`. The hash is
+purely the `unordered_map` bucket selector — hash collisions degrade
+to extra string comparisons, never to wrong scheduling.
+
+Three new optional virtuals on `ISystem`:
+
+- `dependencies() -> span<const TaskTag>` — tags this system
+  *consumes*. Each consumed tag becomes an edge "this system runs
+  after every system that provides the same tag".
+- `provides() -> span<const TaskTag>` — tags this system *produces*.
+  Each tag becomes an edge "every consumer of this tag runs after
+  this system".
+- `preferredGrain() -> uint32_t` — hint to `pickGrain` when a
+  `parallelFor` call passes `grain=0`. Pinned per-system; pass-through
+  `grain != 0` calls are unaffected.
+
+`EngineImpl::rebuildWaves` was rewritten from naive first-fit to a
+**topological-sort-then-pack** algorithm:
+
+1. Build directed edges. For each pair `(a, b)`:
+   - If `a < b` and they have a read/write conflict → edge `a → b`
+     (rw edges always go from lower index to higher, so they alone
+     can never form a cycle).
+   - If `a.provides()` shares any tag with `b.dependencies()` → edge
+     `a → b` (tag edge). Both directions are checked, so a
+     later-registered system can be the provider.
+2. Kahn's algorithm picks zero-in-degree systems in registration-
+   index order (stable tiebreaker). When the algorithm stalls
+   without finishing — i.e. a tag cycle exists — the lowest-index
+   stuck system has its **tag-only** incoming edges dropped, a
+   warning is logged via `ILogger`, and Kahn resumes.
+3. Pack the topologically-ordered systems greedily: each system
+   lands in the earliest wave such that (a) all its predecessors
+   are in earlier waves, AND (b) it doesn't read/write-conflict
+   with anyone already in the wave.
+
+The result preserves the original behavior **bit-for-bit** when no
+tags are declared (rw-only edges always go from low to high index,
+so Kahn produces registration order, and the packing rules match
+the old first-fit). With tags, the only observable change is that
+consumers may land in waves later than they would have under
+first-fit; producers' waves are never delayed by their consumers.
+
+`EngineImpl::systemWaves()` / `systemDeps()` are non-public
+accessors that feed the public `Engine::taskGraphSnapshot()` ->
+`std::vector<TaskGraphNode>` API. Each `TaskGraphNode { index, name
+(owned string), wave, dependsOn[] }` describes one system. Use it
+for HUD diagnostics, Graphviz/Mermaid export, or test assertions.
+`systemPreferredGrain_` is parallel to `systems_`; both grow with
+`registerSystem` and `registerSystemAt`. `SystemContextImpl` learns
+the active system's preferred grain at construction time and passes
+it through to `pickGrain` whenever the user-supplied `grain == 0`.
+
+Test: `tests/task_graph_test.cpp` covers (1) backward-compat with
+no tags, (2) consumer pushed into later wave by tag dep, (3)
+preferredGrain honored, (4) cycle detection logs + recovers, (5)
+default grain heuristic when `preferredGrain == 0`.
+
 ## §3.1 batch 6b — `UserComponent<T>` extension hook
 
 Closes Milestone 2. Game code registers arbitrary trivially-copyable POD types at runtime via `Engine::registerUserComponent<T>()` and gets a `UserComponentId{ bit, stride, type }` token back. The engine assigns bits from 16 upward (built-ins occupy 0..15); registration is idempotent on `typeid(T)` and stable within a process.

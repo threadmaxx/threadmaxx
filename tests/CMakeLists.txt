@@ -59,6 +59,7 @@ set(THREADMAXX_TESTS
     archetype_storage_stress_test
     foreach_chunk_test
     user_component_test
+    task_graph_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

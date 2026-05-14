@@ -36,11 +36,16 @@ namespace threadmaxx::internal {
 
 namespace {
 
-// Picks a sensible chunk size when the caller passes grain=0. Aims for
-// roughly 4 chunks per worker so load balances without overwhelming the
-// queue with tiny jobs.
-std::uint32_t pickGrain(std::uint32_t count, std::uint32_t workers) {
+// Picks a sensible chunk size when the caller passes grain=0. The
+// active system's `preferredGrain()` (batch 11) wins when it's
+// non-zero; otherwise aim for roughly 4 chunks per worker so load
+// balances without overwhelming the queue with tiny jobs.
+std::uint32_t pickGrain(std::uint32_t count, std::uint32_t workers,
+                        std::uint32_t preferred) {
     if (count == 0) return 1;
+    if (preferred > 0) {
+        return std::min(preferred, std::max(1u, count));
+    }
     const std::uint32_t target = std::max(1u, workers * 4);
     const std::uint32_t grain  = (count + target - 1) / target;
     return std::max(1u, grain);
@@ -56,7 +61,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     if (count == 0 || !fn) return;
 
     const std::uint32_t workers = engine_.jobs().workerCount();
-    if (grain == 0) grain = pickGrain(count, workers);
+    if (grain == 0) grain = pickGrain(count, workers, preferredGrain_);
 
     const std::uint32_t chunkCount = (count + grain - 1) / grain;
 
@@ -96,7 +101,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     if (count == 0 || !fn) return;
 
     const std::uint32_t workers = engine_.jobs().workerCount();
-    if (grain == 0) grain = pickGrain(count, workers);
+    if (grain == 0) grain = pickGrain(count, workers, preferredGrain_);
 
     const std::uint32_t chunkCount = (count + grain - 1) / grain;
 
@@ -220,6 +225,7 @@ void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
     ss.name = system->name();
     systemStats_.push_back(ss);
     const char* sysName = system->name();
+    systemPreferredGrain_.push_back(system->preferredGrain());
     systems_.push_back(std::move(system));
     systemRenderBuilders_.emplace_back();
     rebuildWaves();
@@ -291,6 +297,9 @@ std::size_t EngineImpl::registerSystemAt(std::size_t position,
     ss.name = system->name();
     systemStats_.insert(systemStats_.begin() +
                         static_cast<std::ptrdiff_t>(position), ss);
+    systemPreferredGrain_.insert(systemPreferredGrain_.begin() +
+                                 static_cast<std::ptrdiff_t>(position),
+                                 system->preferredGrain());
     systems_.insert(systems_.begin() +
                     static_cast<std::ptrdiff_t>(position),
                     std::move(system));
@@ -301,27 +310,146 @@ std::size_t EngineImpl::registerSystemAt(std::size_t position,
 }
 
 void EngineImpl::rebuildWaves() {
+    // §3.4 batch 11: DAG-aware first-fit packer.
+    //
+    // Edge sources:
+    //   1. Read/write conflict (existing behavior): two systems with
+    //      overlapping read/write sets must land in different waves.
+    //      Modelled as a directed edge from the lower-indexed system to
+    //      the higher-indexed one, so the topological tiebreaker matches
+    //      registration order in the no-tag case.
+    //   2. Tag dependency (new): for each tag a system @c j provides
+    //      that some other system @c i lists in `dependencies()`, an
+    //      edge `j -> i` (j runs before i). Both directions are
+    //      considered — a later-registered system can be the provider
+    //      and an earlier-registered one the consumer; the topo sort
+    //      moves the consumer to a later wave when needed.
+    //
+    // Cycle handling: Kahn's algorithm processes systems in index order
+    // when in-degrees tie. If a cycle blocks progress, the first stuck
+    // system has its tag-only incoming edges dropped (read/write edges
+    // are preserved); a warning is logged via @ref ILogger.
     waves_.clear();
-    for (std::size_t i = 0; i < systems_.size(); ++i) {
-        const auto rI = systems_[i]->reads();
-        const auto wI = systems_[i]->writes();
+    const std::size_t N = systems_.size();
+    systemWave_.assign(N, 0);
+    systemDependsOn_.assign(N, {});
+    if (N == 0) return;
 
-        std::size_t target = waves_.size();  // default: open a new wave
-        for (std::size_t w = 0; w < waves_.size(); ++w) {
-            bool conflicts = false;
-            for (std::size_t j : waves_[w]) {
-                const auto rJ = systems_[j]->reads();
-                const auto wJ = systems_[j]->writes();
-                if (wI.intersects(wJ) || wI.intersects(rJ) || rI.intersects(wJ)) {
-                    conflicts = true;
-                    break;
+    auto rwConflict = [this](std::size_t a, std::size_t b) -> bool {
+        const auto rA = systems_[a]->reads();
+        const auto wA = systems_[a]->writes();
+        const auto rB = systems_[b]->reads();
+        const auto wB = systems_[b]->writes();
+        return wA.intersects(wB) || wA.intersects(rB) || rA.intersects(wB);
+    };
+
+    auto tagEdge = [this](std::size_t from, std::size_t to) -> bool {
+        const auto provides = systems_[from]->provides();
+        const auto deps     = systems_[to]->dependencies();
+        for (const auto& p : provides) {
+            if (!p.valid()) continue;
+            for (const auto& d : deps) {
+                if (p == d) return true;
+            }
+        }
+        return false;
+    };
+
+    std::vector<std::vector<std::size_t>> predecessors(N);
+    std::vector<std::vector<std::size_t>> successors(N);
+    std::vector<bool> edgeIsTagOnly(0);
+    auto addEdge = [&](std::size_t from, std::size_t to, bool tagOnly) {
+        predecessors[to].push_back(from);
+        successors[from].push_back(to);
+        // Track whether the edge is tag-only (so the cycle breaker can
+        // distinguish droppable from non-droppable edges).
+        edgeIsTagOnly.push_back(tagOnly);
+    };
+    // Build edges. The (a, b) pair with a<b is iterated once; rw-conflict
+    // produces a->b, tag-deps in either direction are checked.
+    for (std::size_t a = 0; a < N; ++a) {
+        for (std::size_t b = 0; b < N; ++b) {
+            if (a == b) continue;
+            const bool rw = (a < b) && rwConflict(a, b);
+            const bool tag = tagEdge(a, b);
+            if (rw || tag) {
+                // If both rw and tag, the edge is NOT tag-only.
+                addEdge(a, b, /*tagOnly=*/!rw && tag);
+            }
+        }
+    }
+
+    std::vector<std::size_t> inDegree(N, 0);
+    for (std::size_t i = 0; i < N; ++i) inDegree[i] = predecessors[i].size();
+
+    std::vector<std::size_t> processed;
+    processed.reserve(N);
+    std::vector<bool> done(N, false);
+
+    while (processed.size() < N) {
+        std::size_t pick = N;
+        for (std::size_t i = 0; i < N; ++i) {
+            if (!done[i] && inDegree[i] == 0) { pick = i; break; }
+        }
+        if (pick == N) {
+            // Cycle. Find the lowest-indexed undone system and drop its
+            // tag-only incoming edges. Read/write edges are preserved —
+            // they're load-bearing for memory safety, and rw-only edges
+            // are i<j by construction so they cannot form a cycle.
+            std::size_t stuck = N;
+            for (std::size_t i = 0; i < N; ++i) {
+                if (!done[i]) { stuck = i; break; }
+            }
+            if (stuck == N) break;  // shouldn't happen, but defensive
+            std::ostringstream os;
+            os << "task graph cycle involving system '"
+               << systems_[stuck]->name()
+               << "'; dropping its tag-only incoming dependency edges to recover";
+            logger().log(LogLevel::Warn, os.str());
+            auto& preds = predecessors[stuck];
+            std::vector<std::size_t> kept;
+            kept.reserve(preds.size());
+            for (std::size_t pred : preds) {
+                if (pred < stuck && rwConflict(pred, stuck)) {
+                    kept.push_back(pred);  // rw-conflict; cannot drop
+                } else {
+                    // Drop: remove `stuck` from `pred`'s successors list too.
+                    auto& s = successors[pred];
+                    s.erase(std::remove(s.begin(), s.end(), stuck), s.end());
                 }
             }
-            if (!conflicts) { target = w; break; }
+            preds = std::move(kept);
+            inDegree[stuck] = preds.size();
+            continue;
         }
-        if (target == waves_.size()) waves_.emplace_back();
-        waves_[target].push_back(i);
+        done[pick] = true;
+        processed.push_back(pick);
+        for (std::size_t succ : successors[pick]) {
+            if (inDegree[succ] > 0) inDegree[succ]--;
+        }
     }
+
+    // Pack into waves following the topological order.
+    for (std::size_t i : processed) {
+        std::size_t minWave = 0;
+        for (std::size_t pred : predecessors[i]) {
+            minWave = std::max(minWave, systemWave_[pred] + 1);
+        }
+        std::size_t w = minWave;
+        while (true) {
+            if (w >= waves_.size()) { waves_.emplace_back(); break; }
+            bool conflicts = false;
+            for (std::size_t j : waves_[w]) {
+                if (rwConflict(i, j)) { conflicts = true; break; }
+            }
+            if (!conflicts) break;
+            ++w;
+        }
+        waves_[w].push_back(i);
+        systemWave_[i]      = w;
+        systemDependsOn_[i] = predecessors[i];
+    }
+    (void)edgeIsTagOnly;
 }
 
 void EngineImpl::commitBuffer(CommandBuffer& cb) {
@@ -607,7 +735,8 @@ void EngineImpl::step() {
     // or reset scratch state. Commands emitted via ctx.single() are
     // committed immediately so wave systems observe them.
     for (std::size_t i = 0; i < systems_.size(); ++i) {
-        SystemContextImpl ctx(*this, world_, dt, tick_);
+        SystemContextImpl ctx(*this, world_, dt, tick_,
+                              systemPreferredGrain(i));
         systems_[i]->preStep(ctx);
         const auto commitStart = std::chrono::steady_clock::now();
         for (auto& cb : ctx.buffers()) commitBuffer(cb);
@@ -625,7 +754,8 @@ void EngineImpl::step() {
         ctxs.reserve(wave.size());
         for (std::size_t k = 0; k < wave.size(); ++k) {
             ctxs.push_back(std::make_unique<SystemContextImpl>(
-                *this, world_, dt, tick_));
+                *this, world_, dt, tick_,
+                systemPreferredGrain(wave[k])));
         }
 
         // Per-system update durations, captured by whichever thread runs
@@ -695,7 +825,8 @@ void EngineImpl::step() {
     // Commands emitted here are visible to the next tick's preStep, not
     // to this tick's wave systems.
     for (std::size_t i = 0; i < systems_.size(); ++i) {
-        SystemContextImpl ctx(*this, world_, dt, tick_);
+        SystemContextImpl ctx(*this, world_, dt, tick_,
+                              systemPreferredGrain(i));
         systems_[i]->postStep(ctx);
         const auto commitStart = std::chrono::steady_clock::now();
         for (auto& cb : ctx.buffers()) commitBuffer(cb);

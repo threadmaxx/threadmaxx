@@ -17,21 +17,22 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-14 (Milestone 2 closed: batches 5, 6, 6a, 6b
-all landed. Batch 6b is the user-extensible dense-component hook —
-`Engine::registerUserComponent<T>()` returns a `UserComponentId`
-token, game code drives the same migration semantics as built-ins
-via `addUserComponent<T>` / `removeUserComponent` and reads with
-`user::has` / `user::tryGet` / `user::chunkSpan`. Storage is via a
-per-chunk `std::vector<UserComponentColumn>` whose strides come from
-the engine's `UserComponentRegistry`; migrations memcpy bytes for
-bits in both source and destination masks. Batches 5, 6, 6a, 7, 8
-remain ✅ (see prior refresh notes below). With Milestone 2 fully
-closed, the §3 plan reorients around batches 9 (Vulkan reference
-renderer) and 10 (RPG demo) for Milestones 4 and 6, plus a new run
-of perf batches 11–14 that lift §6 phases 3–6 (frame task graph,
-cancellation/budgets, storage contention, instrumentation ingestion)
-into shippable slices — see §3.4–§3.7.).
+Last refreshed: 2026-05-14 (Milestone 2 closed and the first
+Milestone-5 slice landed. Batch 6b shipped the user-extensible
+dense-component hook (`registerUserComponent<T>`, `UserComponentId`,
+`addUserComponent` / `removeUserComponent`, `user::has` / `tryGet` /
+`chunkSpan`). Batch 11 then shipped the frame task graph (§6 phase
+3) — `TaskTag` POD with name-based equality, `ISystem::dependencies`
+/ `provides` / `preferredGrain` virtuals, DAG-aware `rebuildWaves`
+with Kahn's-algorithm cycle detection (logged via `ILogger`,
+graceful tag-edge drop on recovery), and `Engine::taskGraphSnapshot()`
+for HUD / Graphviz export. Backwards-compatible: the wave scheduler
+output is bit-for-bit identical when no system declares tags.
+Batches 5, 6, 6a, 7, 8 remain ✅ (see prior refresh notes below). The
+§3 plan continues with batches 9 (Vulkan reference renderer) and 10
+(RPG demo) for Milestones 4 and 6, plus the remaining perf batches
+12–14 lifting §6 phases 4–6 (cancellation/budgets, storage
+contention, instrumentation ingestion) — see §3.5–§3.7.).
 
 ## 1. Target outcome
 
@@ -54,8 +55,8 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Nine batches plus a prep slice have landed, closing Milestones 1, 2,
-and 3 and the M4 contract. Batches 1–3 brought **Milestone 1** to
+Ten batches plus a prep slice have landed, closing Milestones 1, 2,
+and 3, the M4 contract, and the first slice of M5. Batches 1–3 brought **Milestone 1** to
 completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
 polish and seeded the tracing maturity batches 5+ build on; batch 5
 (2026-05-14) widened the data model for Milestone 2 — six new POD
@@ -363,6 +364,53 @@ builder, a one-call helper inside game code's own
 
 52 tests pin the documented invariants.
 
+### Batch 11 — Frame task graph (Milestone 5, §6 phase 3)
+
+Shipped 2026-05-14. The first of the §3.4–§3.7 Milestone-5 perf
+batches. All public-API additions are pure extensions to existing
+headers (`System.hpp`, `Engine.hpp`) plus a new tiny header
+`TaskTag.hpp`. No public ABI break; the wave scheduler's output is
+bit-for-bit identical when no system declares tags.
+
+- **`TaskTag` POD** — `{ std::string_view name; std::uint64_t hash; }`
+  with constexpr FNV-1a hash computation in the constructor and
+  **name-based equality**. Hash collisions become extra `string_view`
+  comparisons in the `unordered_map` bucket chain, never wrong
+  scheduling. Eliminates the class of bug DeepSeek's review flagged
+  on the original spec.
+- **`ISystem::dependencies()` / `provides()`** — optional virtuals
+  returning `std::span<const TaskTag>`. Defaults: empty. Each
+  consumed tag becomes an edge "this system runs after every
+  producer of the same tag" in the DAG; producers' tags are matched
+  symmetrically across all registered systems.
+- **`ISystem::preferredGrain()`** — optional virtual returning
+  `std::uint32_t`. Default 0 = use the existing `workers*4` chunks
+  heuristic. Non-zero pins the per-system default for
+  `parallelFor(count, /*grain=*/0, ...)` calls; pass-through
+  `grain != 0` calls are unaffected.
+- **DAG-aware `rebuildWaves`.** The first-fit packer was replaced by
+  a topological-sort-then-pack algorithm. Edges from read/write
+  conflicts (always `a→b` with `a<b`, so cycle-free by construction)
+  combine with tag edges (either direction). Kahn's algorithm picks
+  zero-in-degree nodes in registration order, preserving the no-tag
+  behavior verbatim.
+- **Cycle handling.** If a tag cycle stalls Kahn's algorithm, the
+  lowest-index stuck system has its tag-only incoming edges dropped
+  and a warning is logged via `ILogger`. The engine recovers
+  gracefully and continues running — no crash, no hang.
+- **`Engine::taskGraphSnapshot()`** — public debug accessor returning
+  `std::vector<TaskGraphNode>`. Each row carries `{ index, name (owned
+  string), wave, dependsOn[] }`. Suitable for HUD diagnostics,
+  Graphviz/Mermaid export, or test assertions over the DAG shape.
+- **Doc updates.** `doc/systems_and_scheduling.md` gained sections
+  "Task-graph edges via tags" and "Per-system grain hints" with the
+  full code example. `CLAUDE.md` gained a §3.4 batch-11 section.
+  README test count 57 → 58.
+- **Test.** `tests/task_graph_test.cpp` covers (1) backwards compat
+  with no tags, (2) tag dependency pushes consumer into later wave,
+  (3) `preferredGrain` honored, (4) cycle detection logs + recovers,
+  (5) default heuristic when `preferredGrain == 0`.
+
 ### Batch 7 — Resource & event maturity (Milestone 3)
 
 Shipped 2026-05-14, ahead of batch 6 per §3.1's deferral guidance.
@@ -425,7 +473,7 @@ grows monotonically. The mapping to milestones (§8):
 | ~~8~~ | ~~Render contract expansion~~      | ✅ landed 2026-05-14 — see §2 |
 | 9     | Vulkan reference renderer (example) | M4 — example, not library |
 | 10    | 3D RPG demo example                | M6 lead-in — example, not library |
-| 11    | Frame task graph (§6 phase 3)      | M5                    |
+| ~~11~~ | ~~Frame task graph (§6 phase 3)~~ | ✅ landed 2026-05-14 — see §2 |
 | 12    | Cancellation, budgets, priorities (§6 phase 4) | M5      |
 | 13    | Storage contention reduction (§6 phase 5) | M5             |
 | 14    | Telemetry ingestion (§6 phase 6 close-out) | M5            |
@@ -507,63 +555,13 @@ into a batch.
 - **Editor / hot-reload UI.** Out of scope until the public API has
   stabilized through M4.
 
-### 3.4 Batch 11 — Frame task graph (Milestone 5, §6 phase 3)
+### 3.4 Batch 11 — Frame task graph  ✅ landed 2026-05-14
 
-The current scheduler packs systems into waves based on declared
-read/write masks. That's correct but coarse: two systems with
-disjoint masks can race in the same wave, but two systems with
-overlapping masks always serialize to the next wave, even when the
-real dependency is only a single producer → single consumer pair.
-A frame task graph lets game code express finer-grain ordering
-without splitting systems.
-
-Gating: independent of batches 9–10 — neither needs the task graph,
-and neither blocks it. Library-only batch; effort sized at ~1.5
-weeks.
-
-#### Deliverables
-
-- **`ISystem::dependencies()`** — optional override returning a
-  `std::span<const TaskTag>`. `TaskTag` is a POD `{ std::string_view
-  name; std::uint64_t hash; }` constructed from a string literal at
-  compile time (the FNV-1a hash is computed by the constructor).
-  **Equality uses `name`, not `hash`** — the hash is only the
-  unordered_map bucket selector, so hash collisions become a
-  performance issue (bucket collision) rather than a correctness
-  one. Default: empty.
-- **`ISystem::provides()`** — optional override returning the tags
-  this system makes valid for later systems to consume. Default:
-  empty.
-- **DAG construction in `rebuildWaves`.** The existing first-fit
-  packer becomes a topological sort with `reads/writes` as the
-  primary edge source AND `dependencies/provides` as additional
-  edges. Cycles trigger an error at registration time (logged via
-  `ILogger`, not a crash).
-- **Per-system queue-depth hint.** A system that emits many
-  `parallelFor` chunks can declare a target inner-grain count via
-  `ISystem::preferredGrain()`. The engine threads it through to the
-  default `pickGrain` heuristic.
-- **`Engine::taskGraphSnapshot()`** — debug accessor returning a
-  serializable description (nodes, edges, wave assignments) for
-  visualization. Plays nicely with the Chrome trace adapter.
-- **`tests/task_graph_test.cpp`** — declare a producer-consumer
-  pair across waves; verify the consumer never runs before the
-  producer's commit. Also: cycle detection produces a deterministic
-  error, not a hang.
-
-#### Risks and mitigations
-
-- **Wave determinism.** Adding a tag-based edge mustn't shift
-  existing waves unless the tag is actually declared. Mitigation:
-  default `dependencies()`/`provides()` to empty; the topological
-  sort falls back to registration order when no tag edges exist.
-  Existing test suite re-runs with no behavior change.
-- **Hash collisions on `TaskTag`.** Eliminated by construction —
-  the `TaskTag` carries both the `std::string_view name` and the
-  FNV-1a hash; equality compares the string. A hash collision
-  costs an extra `string_view::operator==` in the unordered_map
-  lookup path, not a wrong-ordering bug. `rebuildWaves` runs only
-  on `registerSystem`, so the extra strcmp is amortized to zero.
+See the per-batch entry in §2 for the as-shipped shape. The
+roadmap-side notes that informed the design (DeepSeek's review,
+hash-collision elimination, no-tags backward compatibility) are
+preserved as comments in `tests/task_graph_test.cpp` and
+`doc/systems_and_scheduling.md`.
 
 ### 3.5 Batch 12 — Cancellation, budgets, priorities (Milestone 5, §6 phase 4)
 
@@ -862,14 +860,14 @@ is finer slicing *within* a system: per-chunk iteration becomes
 expressible after §3.1, and per-render-pass iteration is now
 expressible (batch 8 landed in §2).
 
-### Phase 3 — frame task graph — §3.4 batch 11
+### Phase 3 — frame task graph  ✅ done (batch 11, 2026-05-14)
 
-After Phase 2's primitives are in, layer an explicit DAG on top of
-the wave scheduler: systems optionally declare
-`dependencies()` / `provides()` so the engine can schedule
-producer-consumer pairs in the same wave when reads/writes alone
-don't capture the order. Tracked as **batch 11** in §3.4 with
-deliverables, risks, and gating.
+`TaskTag` + `ISystem::dependencies` / `provides` /
+`preferredGrain`; `rebuildWaves` rewritten to topo-sort the
+combined read/write + tag DAG; cycle detection logs via `ILogger`
+and drops tag-only edges to recover; `Engine::taskGraphSnapshot()`
+exposes the resolved graph for HUD / visualization. Shipped in
+batch 11; details in §2.
 
 ### Phase 4 — cancellation and budgets — §3.5 batch 12
 
@@ -940,8 +938,8 @@ listing them by batch, this is the cross-reference index:
 - Pass-aware `RenderFrame` + `buildRenderFrame` hook + render
   helpers (Camera, Light, DrawItem, Visibility, InstanceBufferLayout,
   UploadRing) — ✅ batch 8.
-- Frame task graph (`ISystem::dependencies` / `provides`,
-  `taskGraphSnapshot`) — §3.4 batch 11.
+- Frame task graph (`ISystem::dependencies` / `provides` /
+  `preferredGrain`, `TaskTag`, `taskGraphSnapshot`) — ✅ batch 11.
 - Cancellation + budgets (`shouldYield`, `setTickBudget`,
   `setSkipPolicy` + `EventChannel<SystemSkipped>`, `JobPriority`,
   `IResourceLoader::cancel`) — §3.5 batch 12.

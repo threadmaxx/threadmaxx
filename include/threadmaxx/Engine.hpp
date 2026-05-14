@@ -11,8 +11,10 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <typeindex>
+#include <vector>
 
 namespace threadmaxx {
 
@@ -27,6 +29,18 @@ struct FrameSnapshot;
 template <typename Ev> class EventChannel;
 
 namespace internal { class EngineImpl; }
+
+/// §3.4 batch 11 — one row of @ref Engine::taskGraphSnapshot. Describes
+/// one registered system, the wave it lands in, and the indices of
+/// systems it directly depends on (read/write conflict OR tag
+/// dependency). Strings are owned copies — safe to keep across
+/// `registerSystem` calls.
+struct TaskGraphNode {
+    std::size_t              index = 0;
+    std::string              name;
+    std::size_t              wave  = 0;
+    std::vector<std::size_t> dependsOn;
+};
 
 /// Top-level engine: owns the world, the worker pool, the registered
 /// systems and the renderer (if any).
@@ -100,6 +114,19 @@ public:
 
     /// Number of currently-registered systems.
     std::size_t registeredSystemCount() const noexcept;
+
+    /// §3.4 batch 11 — debug snapshot of the wave scheduler's DAG. One
+    /// @ref TaskGraphNode per registered system, in registration order,
+    /// carrying its wave assignment and direct predecessor indices.
+    ///
+    /// Useful for visualization (feed into a Graphviz / Mermaid
+    /// generator) and for HUD assertions ("two systems that depend on
+    /// each other must not share a wave"). Computed from the engine's
+    /// current state — call after every `registerSystem` if you keep a
+    /// running graph in your tooling.
+    ///
+    /// @thread_safety Sim thread only.
+    std::vector<TaskGraphNode> taskGraphSnapshot() const;
 
     /// Set the renderer (optional). `nullptr` is allowed (headless mode);
     /// the engine simply skips `submitFrame()` calls.

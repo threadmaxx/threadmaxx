@@ -39,6 +39,7 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/Serialization.hpp
     include/threadmaxx/Stats.hpp
     include/threadmaxx/System.hpp
+    include/threadmaxx/TaskTag.hpp
     include/threadmaxx/Renderer.hpp
     include/threadmaxx/Game.hpp
     include/threadmaxx/SpatialHash.hpp

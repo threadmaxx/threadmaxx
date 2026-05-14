@@ -38,8 +38,10 @@ namespace threadmaxx::internal {
 class SystemContextImpl : public SystemContext {
 public:
     SystemContextImpl(class EngineImpl& engine, const World& world,
-                      double dt, std::uint64_t tick)
-        : engine_(engine), world_(world), dt_(dt), tick_(tick) {}
+                      double dt, std::uint64_t tick,
+                      std::uint32_t preferredGrain = 0)
+        : engine_(engine), world_(world), dt_(dt), tick_(tick),
+          preferredGrain_(preferredGrain) {}
 
     const World& world() const noexcept override { return world_; }
     double       dt()    const noexcept override { return dt_; }
@@ -82,6 +84,7 @@ private:
     std::uint64_t     jobsSubmitted_ = 0;
     double            waitSeconds_   = 0.0;
     std::uint32_t     peakQueueDepth_ = 0;
+    std::uint32_t     preferredGrain_ = 0;
 };
 
 // The full engine state. Hidden behind PImpl from the public Engine class.
@@ -291,6 +294,27 @@ private:
     // engine. World's ArchetypeTable holds a non-owning pointer to it
     // (wired in `initialize`) so new chunks can look up strides.
     UserComponentRegistry userRegistry_;
+
+public:
+    // §3.4 batch 11: per-system wave + predecessor snapshot. Parallel to
+    // `systems_` (same index ordering). Updated by `rebuildWaves`;
+    // exposed read-only via the public `taskGraphSnapshot` API.
+    const std::vector<std::size_t>& systemWaves() const noexcept {
+        return systemWave_;
+    }
+    const std::vector<std::vector<std::size_t>>& systemDeps() const noexcept {
+        return systemDependsOn_;
+    }
+    // §3.4 batch 11: per-system preferred grain. Looked up by
+    // SystemContextImpl::pickGrain when the user passes grain=0.
+    std::uint32_t systemPreferredGrain(std::size_t i) const noexcept {
+        return i < systemPreferredGrain_.size() ? systemPreferredGrain_[i] : 0u;
+    }
+
+private:
+    std::vector<std::size_t>              systemWave_;
+    std::vector<std::vector<std::size_t>> systemDependsOn_;
+    std::vector<std::uint32_t>            systemPreferredGrain_;
 };
 
 } // namespace threadmaxx::internal

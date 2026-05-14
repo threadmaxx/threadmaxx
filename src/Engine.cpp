@@ -72,6 +72,26 @@ UserComponentId Engine::registerUserComponentRaw_(std::type_index type,
     return impl_->userComponents().reg(type, stride);
 }
 
+std::vector<TaskGraphNode> Engine::taskGraphSnapshot() const {
+    const std::size_t N = impl_->registeredSystemCount();
+    const auto& waves = impl_->systemWaves();
+    const auto& deps  = impl_->systemDeps();
+    const auto stats  = impl_->systemStats();
+    std::vector<TaskGraphNode> out;
+    out.reserve(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        TaskGraphNode n;
+        n.index = i;
+        n.name  = (i < stats.size() && stats[i].name)
+                  ? std::string(stats[i].name)
+                  : std::string("(unnamed)");
+        n.wave  = (i < waves.size()) ? waves[i] : 0u;
+        if (i < deps.size()) n.dependsOn = deps[i];
+        out.push_back(std::move(n));
+    }
+    return out;
+}
+
 bool Engine::preloadUntil(std::function<bool()> done,
                           std::chrono::milliseconds timeout) {
     return impl_->preloadUntil(std::move(done), timeout);
