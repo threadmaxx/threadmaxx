@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/event_channel_test.dir/link.d CMakeFiles/event_channel_test.dir/event_channel_test.cpp.o -o event_channel_test  ../libthreadmaxx.a

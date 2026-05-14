@@ -1,2 +1,0 @@
-/usr/bin/ar qc libthreadmaxx.a CMakeFiles/threadmaxx.dir/src/EntityStorage.cpp.o CMakeFiles/threadmaxx.dir/src/JobSystem.cpp.o CMakeFiles/threadmaxx.dir/src/CommandBuffer.cpp.o CMakeFiles/threadmaxx.dir/src/World.cpp.o CMakeFiles/threadmaxx.dir/src/Engine.cpp.o CMakeFiles/threadmaxx.dir/src/EngineImpl.cpp.o CMakeFiles/threadmaxx.dir/src/HierarchySystem.cpp.o CMakeFiles/threadmaxx.dir/src/ResourceRegistry.cpp.o CMakeFiles/threadmaxx.dir/src/ScratchArena.cpp.o CMakeFiles/threadmaxx.dir/src/Trace.cpp.o
-/usr/bin/ranlib libthreadmaxx.a

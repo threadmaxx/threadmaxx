@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/stats_test.dir/link.d CMakeFiles/stats_test.dir/stats_test.cpp.o -o stats_test  ../libthreadmaxx.a

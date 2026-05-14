@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/component_mask_test.dir/link.d CMakeFiles/component_mask_test.dir/component_mask_test.cpp.o -o component_mask_test  ../libthreadmaxx.a

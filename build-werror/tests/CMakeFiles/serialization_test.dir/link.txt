@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/serialization_test.dir/link.d CMakeFiles/serialization_test.dir/serialization_test.cpp.o -o serialization_test  ../libthreadmaxx.a

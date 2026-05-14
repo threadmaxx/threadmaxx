@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/acceleration_test.dir/link.d CMakeFiles/acceleration_test.dir/acceleration_test.cpp.o -o acceleration_test  ../libthreadmaxx.a

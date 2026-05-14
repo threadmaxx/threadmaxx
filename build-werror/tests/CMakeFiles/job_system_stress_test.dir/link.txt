@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/job_system_stress_test.dir/link.d CMakeFiles/job_system_stress_test.dir/job_system_stress_test.cpp.o -o job_system_stress_test  ../libthreadmaxx.a

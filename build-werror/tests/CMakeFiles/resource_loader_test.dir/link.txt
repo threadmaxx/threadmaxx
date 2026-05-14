@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/resource_loader_test.dir/link.d CMakeFiles/resource_loader_test.dir/resource_loader_test.cpp.o -o resource_loader_test  ../libthreadmaxx.a

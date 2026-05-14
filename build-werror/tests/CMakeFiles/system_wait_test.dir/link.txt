@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/system_wait_test.dir/link.d CMakeFiles/system_wait_test.dir/system_wait_test.cpp.o -o system_wait_test  ../libthreadmaxx.a

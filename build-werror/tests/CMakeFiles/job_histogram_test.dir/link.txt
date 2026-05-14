@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/job_histogram_test.dir/link.d CMakeFiles/job_histogram_test.dir/job_histogram_test.cpp.o -o job_histogram_test  ../libthreadmaxx.a

@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/small_wins_test.dir/link.d CMakeFiles/small_wins_test.dir/small_wins_test.cpp.o -o small_wins_test  ../libthreadmaxx.a

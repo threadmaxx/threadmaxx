@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/parallel_systems_test.dir/link.d CMakeFiles/parallel_systems_test.dir/parallel_systems_test.cpp.o -o parallel_systems_test  ../libthreadmaxx.a

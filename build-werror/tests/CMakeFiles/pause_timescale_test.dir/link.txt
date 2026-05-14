@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/pause_timescale_test.dir/link.d CMakeFiles/pause_timescale_test.dir/pause_timescale_test.cpp.o -o pause_timescale_test  ../libthreadmaxx.a
