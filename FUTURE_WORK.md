@@ -58,8 +58,10 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Eleven batches plus a prep slice have landed, closing Milestones 1,
-2, and 3, the M4 contract, and §6 phases 3+4 of M5. Batches 1–3
+Eleven batches plus a prep slice and the batch-13a safety net have
+landed, closing Milestones 1, 2, and 3, the M4 contract, and §6
+phases 3+4 of M5 with the §6 phase 5 deterministic safety net in
+place. Batches 1–3
 brought **Milestone 1** to
 completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
 polish and seeded the tracing maturity batches 5+ build on; batch 5
@@ -470,6 +472,49 @@ behavior bit-for-bit). Closes §6 phase 4.
   across High/Normal/Low; (6) loader `cancel()` fires before
   `update()` and `cancelled` aggregates.
 
+### Batch 13a — Commit-hash determinism safety net (Milestone 5, §6 phase 5 prep)
+
+Shipped 2026-05-15. Lands the deterministic-runtime safety net plus
+the `Config` toggles batch 13b's sharded commit path will key off.
+No behavior change: the commit phase is still single-threaded;
+what changed is that every commit now produces a per-tick
+FNV-1a-64 hash that *future* sharded code must reproduce
+bit-for-bit. Effort ~0.5 days.
+
+- **`EngineStats::commitHash`.** Running FNV-1a-64 over every
+  applied mutation (spawn / destroy / setX / addTag / removeTag /
+  user-component blob) in the commit phase. Reset to the FNV-1a-64
+  offset basis at step start; published at step end. Same inputs
+  → same hash, across runs and machines. Implementation in
+  `EngineImpl::commitBuffer` mixes each variant's discriminator +
+  entity handle + value bytes inline with the existing
+  `std::visit` dispatch. Cost: a few ns per applied command.
+- **`Config::singleThreadedCommit = true`.** Public toggle for
+  the deterministic reference path. Today it's the only path; the
+  knob is the documented immediate fallback if batch 13b's sharded
+  path ever divergences in production.
+- **`Config::logCommitHashEvery = 0`.** Opt-in production
+  diagnostic. When `N > 0` the engine logs `commitHash` via
+  `ILogger` at `Info` every N ticks (default `0` = off, zero
+  cost). Two clients with the same seed but diverging logs
+  pinpoint the offending tick for local repro.
+- **Trace integration.** `writeJsonLines` adds a
+  `"commit_hash":"0x…"` field; `ChromeTraceWriter` adds the same
+  to its `step` event's `args`. A diff between two trace files
+  surfaces the diverging tick instantly.
+- **Test.** `tests/commit_hash_test.cpp` — five seeded churn
+  scenarios (1k/8k/32k entities × {transform-only,
+  transform+health, transform+statictag, parent-hierarchy,
+  mixed multi-setter}) × 256 ticks × 2 runs each.
+  Per-tick `commitHash` and final `WorldSnapshot` hash must agree
+  across runs. Plus: different command stream yields different
+  hash; pause leaves hash at the FNV-1a basis;
+  `logCommitHashEvery` cadence + content; default `0` is silent.
+  Runtime ~7.5 s end-to-end.
+- **Doc updates.** README test count 59 → 60.
+
+The test is the baseline batch 13b will hash-compare against.
+
 ### Batch 7 — Resource & event maturity (Milestone 3)
 
 Shipped 2026-05-14, ahead of batch 6 per §3.1's deferral guidance.
@@ -639,15 +684,74 @@ churn, it becomes the bottleneck a profiler flags first. Batch 13
 attacks the contention without giving up determinism.
 
 Gating: independent of 11/12. Builds on the chunked storage from
-batch 6 (parallel commit needs per-chunk locks). Effort ~2 weeks.
+batch 6 (parallel commit needs per-chunk locks). Total effort
+~2 weeks — split into **13a (safety net)** and **13b (sharded
+commit)** so the runtime divergence check ships *before* the
+optimization that depends on it.
 
-#### Deliverables
+#### 3.6.1 Batch 13a — Determinism safety net  ✅ landed 2026-05-15
+
+Lands the deterministic-runtime safety net plus the `Config`
+toggles that batch 13b's sharded path will key off. No behavior
+change: the commit path is still single-threaded; what changed is
+that every commit now produces a per-tick FNV-1a-64 hash that
+*future* sharded code must reproduce bit-for-bit.
+
+Deliverables shipped:
+
+- **`EngineStats::commitHash`.** Running FNV-1a-64 over every
+  applied mutation (spawn / destroy / setX / addTag / removeTag /
+  user-component blob) in the commit phase. Reset to the
+  FNV-1a-64 offset basis at step start; published at step end.
+  Cheap (a few ns per command). Same inputs → same hash, across
+  runs and machines. Implemented in `EngineImpl::commitBuffer`
+  alongside the existing `std::visit` dispatch — every variant
+  arm mixes its discriminator + entity handle + value bytes.
+- **`Config::singleThreadedCommit = true`.** Public toggle for
+  the deterministic reference path. Today it's the only path;
+  batch 13b will plumb the sharded code under
+  `singleThreadedCommit = false` and key off the runtime hash to
+  prove the two paths agree. Documented as the immediate
+  fallback if any divergence is ever discovered in production.
+- **`Config::logCommitHashEvery = 0`.** Opt-in production
+  diagnostic. When N > 0 the engine logs `commitHash` via
+  `ILogger` at `Info` every N ticks. Default 0 = off, zero cost.
+  Two clients with the same seed but diverging logs pinpoint the
+  offending tick for local repro.
+- **Trace integration.** `writeJsonLines` adds a
+  `"commit_hash":"0x…"` field; `ChromeTraceWriter` adds the same
+  to its `step` event's `args`. A diff between two trace files
+  surfaces the diverging tick instantly.
+- **`tests/commit_hash_test.cpp`** — **five seeded churn
+  scenarios** (1k/8k/32k entities × {transform-only,
+  transform+health, transform+statictag, parent-hierarchy,
+  mixed multi-setter}), each run **twice** for **256 ticks**.
+  Per-tick `commitHash` AND the final `WorldSnapshot` FNV-1a
+  hash must agree across runs. Plus targeted assertions:
+  different command stream (one extra spawn) yields a different
+  hash; pause leaves hash at the FNV-1a basis;
+  `logCommitHashEvery` emits at the expected cadence with
+  matching hash values; default `logCommitHashEvery=0` emits
+  nothing.
+
+The test is the baseline batch 13b will hash-compare against —
+the moment the sharded path lands, the same suite runs with
+`singleThreadedCommit = false` and the existing per-tick
+assertions catch any reordering bug as a loud first-tick
+mismatch.
+
+#### 3.6.2 Batch 13b — Sharded commit phase (planned)
+
+With the safety net in place, batch 13b lands the actual
+parallel commit. Effort ~1.5 weeks.
+
+Deliverables:
 
 - **Sharded commit phase.** Group commands by destination chunk;
   commit each group on its own helper thread. Spawn/destroy on
-  disjoint chunks no longer serializes. The single-threaded path
-  remains for tests / debugging via
-  `Config::singleThreadedCommit = true`.
+  disjoint chunks no longer serializes. Gated by
+  `Config::singleThreadedCommit = false`; default stays `true`
+  until the path has soaked.
 - **Per-chunk command buffers.** During wave execution, workers
   emit commands into a "by destination chunk" thread-local bucket
   (using the entity's current archetype as the routing key) rather
@@ -662,31 +766,11 @@ batch 6 (parallel commit needs per-chunk locks). Effort ~2 weeks.
 - **Append-only event channels.** Replace the existing mutex-
   protected `emit` with a lock-free MPSC queue per channel. Drain
   is still on the sim thread at tick boundary.
-- **Per-tick commit-stream hash.** A running FNV-1a-64 accumulator
-  fed by every applied mutation (spawn / destroy / setX / migrate)
-  in the commit phase. Exposed on `EngineStats::commitHash` and
-  written to the trace sink. The single-threaded reference path
-  produces the same hash for the same inputs by construction;
-  the sharded path must match it tick-for-tick. Cheap (a few ns
-  per command) and converts any sharding bug from a silent state
-  divergence into a loud first-tick alarm.
-- **`Config::logCommitHashEvery`.** Opt-in production diagnostic
-  knob: when set to N > 0, the engine logs `commitHash` via
-  `ILogger` every N ticks. Default 0 (off, zero cost). Catches
-  divergence in shipped builds — game devs run two clients with
-  the same seed, the first diverging hash points at the offending
-  tick and reproduces the bug locally.
-- **`tests/sharded_commit_test.cpp`** — **five seeded churn
-  scenarios** (varying entity counts 1k/8k/32k, varying mask-flip
-  patterns, with/without parent-hierarchy mutations), each running
-  for **256 ticks with the sharded path on, hash-compared against
-  the single-threaded reference path**. Both the per-tick
-  `commitHash` AND the final `WorldSnapshot` FNV-1a hash must
-  agree across every (scenario, tick) pair. The five scenarios
-  catch interleaving bugs that a single fixed pattern would miss;
-  the 256-tick window catches accumulation bugs the one-tick check
-  would miss; and the `Config::logCommitHashEvery` knob above is
-  the production-side equivalent if any divergence escapes CI.
+- **`tests/sharded_commit_test.cpp`** — reruns the batch 13a
+  scenarios with `singleThreadedCommit = false`, hash-compared
+  against the reference run from `commit_hash_test.cpp`. Both
+  paths must produce identical per-tick `commitHash` and final
+  `WorldSnapshot` hash across every (scenario, tick) pair.
 
 #### Risks and mitigations
 
@@ -695,10 +779,11 @@ batch 6 (parallel commit needs per-chunk locks). Effort ~2 weeks.
   Mitigation in three layers: (1) commands within a chunk still
   apply in submission order; (2) cross-chunk commands fall back
   to deterministic registration-order serial commit; (3) the
-  per-tick `commitHash` above provides a runtime safety net. If a
-  divergence is ever discovered in production, `Config::singleThreadedCommit
-  = true` is the documented immediate fallback — the sharded path
-  is a pure performance opt-in.
+  per-tick `commitHash` (batch 13a, shipped) provides a runtime
+  safety net. If a divergence is ever discovered in production,
+  `Config::singleThreadedCommit = true` is the documented
+  immediate fallback — the sharded path is a pure performance
+  opt-in.
 - **False sharing.** Per-chunk buffers risk cache-line contention.
   Mitigation: pad the buffer headers to 64 bytes; standard
   alignas-based fix.

@@ -19,6 +19,7 @@ struct EngineStats {
     std::uint64_t totalTicks;
     std::uint64_t totalJobsSubmitted;
     std::uint64_t totalCommandsCommitted;
+    std::uint64_t commitHash;               // §3.6 batch 13a — FNV-1a-64 over this tick's commits
 };
 ```
 
@@ -37,6 +38,31 @@ Read it with `engine.stats()`.
 - `jobsSubmittedLastStep` counts each `parallelFor` chunk as one job.
   `single()` does not submit and is not counted.
 - `aliveEntities` is the live count after the most recent commit.
+- `commitHash` is a running FNV-1a-64 over every applied mutation
+  (spawn / destroy / setX / addTag / removeTag / user-component
+  blob) in the commit phase. Reset to the offset basis
+  (`0xcbf29ce484222325`) at step start; same inputs → same hash,
+  across runs and machines. Use it as a deterministic per-tick
+  checksum: two engine runs (or two clients in a networked game)
+  with the same seed produce the same hash sequence — the first
+  mismatch points at the offending tick. A paused tick commits
+  nothing and leaves the field at the basis value.
+
+## Catching divergence in production — `Config::logCommitHashEvery`
+
+Setting `Config::logCommitHashEvery = N` (default `0` = off) makes
+the engine log `commitHash` via `ILogger` at `LogLevel::Info` every
+N ticks. The line format is `commitHash tick=<T> hash=0x<16 hex>`.
+
+Use it to spot non-determinism in shipped builds where attaching a
+trace sink isn't practical: two clients with the same input log
+their hashes, the first diverging tick locates the bug. Zero cost
+when off (`if (N > 0 && totalTicks % N == 0)`).
+
+The same field is emitted by `writeJsonLines` (as
+`"commit_hash":"0x…"`) and by `ChromeTraceWriter`'s `step` event's
+`args.commit_hash` — pick whichever sink is cheapest to wire into
+the build.
 
 ## `JobSystemStats`
 

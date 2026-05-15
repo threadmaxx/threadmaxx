@@ -53,6 +53,31 @@ std::uint32_t pickGrain(std::uint32_t count, std::uint32_t workers,
     return std::max(1u, grain);
 }
 
+// FNV-1a-64 byte mixer. Used by `commitBuffer` to maintain
+// `commitHashAcc_` — see `EngineStats::commitHash`.
+constexpr inline std::uint64_t mixHashByte(std::uint64_t h,
+                                           std::uint8_t b) noexcept {
+    h ^= b;
+    h *= 0x100000001b3ull;
+    return h;
+}
+
+// Mix the raw byte representation of a trivially-copyable POD. The
+// component PODs (Vec3 / Quat / Transform / …) are tightly packed
+// floats with no internal padding, so this produces stable output
+// across runs and machines. The `mixHashTag` overload below covers
+// the variant-index discriminator.
+template <typename T>
+inline std::uint64_t mixHashBytes(std::uint64_t h, const T& v) noexcept {
+    static_assert(std::is_trivially_copyable_v<T>,
+                  "commitHash requires trivially-copyable inputs");
+    const auto* p = reinterpret_cast<const std::byte*>(&v);
+    for (std::size_t i = 0; i < sizeof(T); ++i) {
+        h = mixHashByte(h, static_cast<std::uint8_t>(p[i]));
+    }
+    return h;
+}
+
 } // namespace
 
 // ---- SystemContextImpl --------------------------------------------------
@@ -477,21 +502,30 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
     auto& storage = world_.impl_().storage;
     commandsThisStep_ += cb.commands().size();
     for (auto& cmd : cb.commands()) {
+        // §3.6 batch 13a — mix the variant discriminator into the
+        // running hash before dispatch. Each arm below mixes the
+        // command's payload (entity handle, new value, spawn result)
+        // into `commitHashAcc_`. Same inputs → same hash.
+        commitHashAcc_ = mixHashByte(commitHashAcc_,
+            static_cast<std::uint8_t>(cmd.index()));
         std::visit([&](auto& c) {
             using T = std::decay_t<decltype(c)>;
             if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
+                EntityHandle resultHandle = kInvalidEntity;
                 if (c.reserved.valid()) {
                     // §3.5: spawn into a slot previously taken via
                     // SystemContext::reserveHandle(). Falls back to a
                     // fresh allocation if the reservation was discarded
                     // (e.g. by a competing path that consumed it first).
-                    if (!storage.materializeReserved(c.reserved,
+                    if (storage.materializeReserved(c.reserved,
                             c.transform, c.velocity, c.render, c.userData,
                             c.acceleration, c.parent,
                             c.health, c.faction, c.animationState,
                             c.physicsBody, c.navAgent, c.boundingVolume,
                             c.initialMask)) {
-                        storage.spawn(c.transform, c.velocity,
+                        resultHandle = c.reserved;
+                    } else {
+                        resultHandle = storage.spawn(c.transform, c.velocity,
                                       c.render, c.userData,
                                       c.acceleration, c.parent,
                                       c.health, c.faction, c.animationState,
@@ -499,19 +533,28 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                                       c.initialMask);
                     }
                 } else {
-                    storage.spawn(c.transform, c.velocity,
+                    resultHandle = storage.spawn(c.transform, c.velocity,
                                   c.render, c.userData,
                                   c.acceleration, c.parent,
                                   c.health, c.faction, c.animationState,
                                   c.physicsBody, c.navAgent, c.boundingVolume,
                                   c.initialMask);
                 }
+                // Hash inputs AND the resulting handle so reservation
+                // vs. fresh-alloc paths produce distinguishable values.
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, resultHandle);
             } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
                 storage.destroy(c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
             } else if constexpr (std::is_same_v<T, detail::CmdSetTransform>) {
                 if (auto* p = storage.mutTransform(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetVelocity>) {
                 if (auto* p = storage.mutVelocity(c.entity))  *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetRenderTag>) {
                 // Migrate first so the destination chunk has the
                 // RenderTag slot, then write the value. The auto-derive
@@ -523,10 +566,16 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutRenderTag(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetUserData>) {
                 if (auto* p = storage.mutUserData(c.entity))  *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetAcceleration>) {
                 if (auto* p = storage.mutAcceleration(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetParent>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
@@ -535,6 +584,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutParent(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetHealth>) {
                 // §3.1 batch-5 set* methods: attaching a value attaches
                 // the presence bit. Migrate FIRST so the destination
@@ -545,6 +596,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutHealth(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetFaction>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
@@ -552,6 +605,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutFaction(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetAnimationState>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
@@ -559,6 +614,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutAnimationStateRef(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetPhysicsBody>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
@@ -566,6 +623,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutPhysicsBodyRef(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetNavAgent>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
@@ -573,6 +632,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutNavAgentRef(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetBoundingVolume>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
@@ -580,20 +641,31 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
                 if (auto* p = storage.mutBoundingVolume(c.entity)) *p = c.value;
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
             } else if constexpr (std::is_same_v<T, detail::CmdSetComponentMask>) {
                 storage.setMaskAndMigrate(c.entity, c.value);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                const std::uint64_t bits = c.value.bits();
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, bits);
             } else if constexpr (std::is_same_v<T, detail::CmdAddTag>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
                     newMask.add(c.tag);
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                const std::uint64_t tag = static_cast<std::uint64_t>(c.tag);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, tag);
             } else if constexpr (std::is_same_v<T, detail::CmdRemoveTag>) {
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
                     ComponentSet newMask = *m;
                     newMask.remove(c.tag);
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                const std::uint64_t tag = static_cast<std::uint64_t>(c.tag);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, tag);
             } else if constexpr (std::is_same_v<T, detail::CmdAddUserComponent>) {
                 // §3.1 batch 6b: migrate the entity into the
                 // destination archetype (which gets a UserComponentColumn
@@ -610,6 +682,13 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                         std::memcpy(col->rowPtr(loc.row), c.data(), col->stride);
                     }
                 }
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.bit);
+                const auto* blob = reinterpret_cast<const std::byte*>(c.data());
+                for (std::size_t i = 0; i < c.stride; ++i) {
+                    commitHashAcc_ = mixHashByte(commitHashAcc_,
+                        static_cast<std::uint8_t>(blob[i]));
+                }
             } else if constexpr (std::is_same_v<T, detail::CmdRemoveUserComponent>) {
                 // Idempotent: bit absent → migrate is a no-op fast path.
                 if (const auto* m = storage.tryGetComponentMask(c.entity)) {
@@ -617,6 +696,8 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
                     newMask.remove(static_cast<Component>(1ull << c.bit));
                     storage.setMaskAndMigrate(c.entity, newMask);
                 }
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
+                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.bit);
             }
         }, cmd);
     }
@@ -732,6 +813,10 @@ void EngineImpl::step() {
         stats_.jobsSubmittedLastStep = 0;
         stats_.commandsCommittedLastStep = 0;
         stats_.commitDurationSeconds = 0.0;
+        // §3.6 batch 13a: paused step did not commit anything, so the
+        // hash is the FNV-1a-64 offset basis (the "no commits"
+        // sentinel). Keeps the field stable across pause windows.
+        stats_.commitHash = 0xcbf29ce484222325ull;
         return;
     }
 
@@ -741,6 +826,12 @@ void EngineImpl::step() {
     commandsThisStep_ = 0;
     commitSecondsThisStep_ = 0.0;
     std::uint64_t jobsThisStep = 0;
+
+    // §3.6 batch 13a: reset commit-hash to FNV-1a-64 offset basis at
+    // step start. Every applied command mixes into this in
+    // `commitBuffer`; we publish it on `EngineStats::commitHash` at
+    // step end.
+    commitHashAcc_ = 0xcbf29ce484222325ull;
 
     // Reset per-system "last step" counters; lifetime totals are preserved.
     for (auto& ss : systemStats_) {
@@ -987,6 +1078,19 @@ void EngineImpl::step() {
     stats_.totalTicks++;
     stats_.totalJobsSubmitted += jobsThisStep;
     stats_.totalCommandsCommitted += commandsThisStep_;
+    stats_.commitHash = commitHashAcc_;
+
+    // §3.6 batch 13a: opt-in production diagnostic. When
+    // `logCommitHashEvery > 0`, log the running hash at Info every N
+    // ticks. Devs comparing two clients with the same seed but
+    // diverging hashes get a tick number to bisect against.
+    if (cfg_.logCommitHashEvery > 0 &&
+        (stats_.totalTicks % cfg_.logCommitHashEvery) == 0) {
+        std::ostringstream os;
+        os << "commitHash tick=" << stats_.tick
+           << " hash=0x" << std::hex << commitHashAcc_;
+        logger().log(LogLevel::Info, os.str());
+    }
 }
 
 void EngineImpl::run() {

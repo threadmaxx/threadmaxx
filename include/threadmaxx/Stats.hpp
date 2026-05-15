@@ -55,6 +55,20 @@ struct EngineStats {
     std::uint64_t totalTicks = 0;
     std::uint64_t totalJobsSubmitted = 0;
     std::uint64_t totalCommandsCommitted = 0;
+
+    /// §3.6 batch 13a — Running FNV-1a-64 over every applied
+    /// mutation in this step's commit phase. Updated by
+    /// `EngineImpl::commitBuffer` as each command lands. Reset to the
+    /// FNV-1a-64 offset basis (`0xcbf29ce484222325`) at step start, so
+    /// a step with zero commits leaves this at the basis value.
+    ///
+    /// Same inputs → same hash, across runs and machines. The hash is
+    /// the runtime safety net for the batch 13b sharded commit path:
+    /// it converts any sharding bug from a silent state divergence
+    /// into a loud first-tick mismatch. Compare client-vs-server in
+    /// networked games to detect drift early; tests use it as a
+    /// stronger-than-`WorldSnapshot` per-tick checksum.
+    std::uint64_t commitHash = 0xcbf29ce484222325ull;
 };
 
 /// Aggregate worker-pool counters. Read via `Engine::jobSystemStats()`.

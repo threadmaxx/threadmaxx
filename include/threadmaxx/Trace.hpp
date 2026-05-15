@@ -43,12 +43,18 @@ struct FrameSnapshot {
 /// @code
 /// {"tick":N,"step_s":...,"avg_step_s":...,"commit_s":...,
 ///  "jobs":...,"commands":...,"alive":...,
+///  "commit_hash":"0x...",
 ///  "systems":[{"name":"...","update_s":...,"avg_update_s":...,
 ///              "jobs":...,"commands":...,"wait_s":...,
 ///              "peak_queue_depth":...},...],
 ///  "job_pool":{"total_jobs":...,"own_pops":...,"steals":...,
 ///              "workers":...,"hist":[...]}}
 /// @endcode
+///
+/// `commit_hash` is the FNV-1a-64 over every applied mutation this
+/// tick, formatted as a 16-char lowercase hex string. See
+/// @ref EngineStats::commitHash for the semantics — a diff between
+/// two log files surfaces the diverging tick instantly.
 /// Field names match the @ref EngineStats / @ref SystemStats /
 /// @ref JobSystemStats members so a downstream parser can mechanically
 /// map them. `\n`-terminated so multiple snapshots can be appended to

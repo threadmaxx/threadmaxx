@@ -301,6 +301,12 @@ private:
     std::uint64_t commandsThisStep_ = 0;  // accumulated across commitBuffer calls
     double        commitSecondsThisStep_ = 0.0;  // accumulated in step() across waves
 
+    // §3.6 batch 13a — Running FNV-1a-64 hash fed by every applied
+    // mutation in commitBuffer. Reset to the offset basis at step
+    // start; published to stats_.commitHash at step end. See
+    // `EngineStats::commitHash` for the semantics.
+    std::uint64_t commitHashAcc_ = 0xcbf29ce484222325ull;
+
     // Per-system snapshot, one entry per registered system in registration
     // order. Grown by registerSystem; updated at the end of each step().
     std::vector<SystemStats> systemStats_;

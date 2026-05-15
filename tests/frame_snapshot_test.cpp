@@ -79,6 +79,8 @@ int main() {
     CHECK(line.find("\"sysA\"")    != std::string::npos);
     CHECK(line.find("\"job_pool\":{") != std::string::npos);          // job pool block
     CHECK(line.find("\"workers\":") != std::string::npos);
+    // §3.6 batch 13a: commit_hash field is a 16-char hex value.
+    CHECK(line.find("\"commit_hash\":\"0x") != std::string::npos);
 
     // The system named sys"with\quote should be escaped as
     // sys\"with\\quote inside JSON. Look for the escaped form.

@@ -53,6 +53,21 @@ void writeJsonString(std::ostream& os, const char* s) {
 
 void writeJsonLines(std::ostream& os, const FrameSnapshot& snap) {
     const auto& e = snap.engine;
+    // §3.6 batch 13a: commit_hash is the running FNV-1a-64 over every
+    // applied mutation this tick. Emitted as a 16-char lowercase hex
+    // string so it survives JSON parsers that mishandle 64-bit ints.
+    //   layout: " 0 x H...H "  -> 1 + 2 + 16 + 1 = 20 chars
+    char hashBuf[20];
+    {
+        static const char hex[] = "0123456789abcdef";
+        hashBuf[0] = '"';
+        hashBuf[1] = '0';
+        hashBuf[2] = 'x';
+        for (int i = 0; i < 16; ++i) {
+            hashBuf[3 + i] = hex[(e.commitHash >> (60 - 4 * i)) & 0xF];
+        }
+        hashBuf[19] = '"';
+    }
     os << "{\"tick\":" << e.tick
        << ",\"step_s\":" << e.lastStepSeconds
        << ",\"avg_step_s\":" << e.avgStepSeconds
@@ -60,7 +75,9 @@ void writeJsonLines(std::ostream& os, const FrameSnapshot& snap) {
        << ",\"jobs\":" << e.jobsSubmittedLastStep
        << ",\"commands\":" << e.commandsCommittedLastStep
        << ",\"alive\":" << e.aliveEntities
-       << ",\"systems\":[";
+       << ",\"commit_hash\":";
+    os.write(hashBuf, 20);
+    os << ",\"systems\":[";
 
     for (std::size_t i = 0; i < snap.systems.size(); ++i) {
         const auto& s = snap.systems[i];
@@ -144,7 +161,23 @@ void ChromeTraceWriter::emit(const FrameSnapshot& snap) {
                << ",\"args\":{\"tick\":" << tick << "}}";
     };
 
-    writeEvent("step", stepStart, stepDur, 0u, e.tick);
+    // Step record (tid=0) carries the commit_hash in its args so a
+    // diff between two trace files surfaces the diverging tick.
+    if (!firstRecord_) (*os_) << ",\n";
+    firstRecord_ = false;
+    (*os_) << "{\"ph\":\"X\",\"name\":\"step\""
+           << ",\"ts\":" << stepStart
+           << ",\"dur\":" << stepDur
+           << ",\"pid\":1,\"tid\":0"
+           << ",\"args\":{\"tick\":" << e.tick
+           << ",\"commit_hash\":\"0x";
+    {
+        static const char hex[] = "0123456789abcdef";
+        for (int i = 0; i < 16; ++i) {
+            (*os_) << hex[(e.commitHash >> (60 - 4 * i)) & 0xF];
+        }
+    }
+    (*os_) << "\"}}";
 
     // Place system events back-to-back inside the step window. The
     // measured per-system update_s values may sum to less than step_s

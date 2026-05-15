@@ -401,3 +401,60 @@ Public surface (`include/threadmaxx/UserComponent.hpp`): `UserComponentId` POD, 
 Out of scope for batch 6b: serialization of user components, cross-process bit stability, non-trivially-copyable user types. All three are documented as "game code's responsibility" in `doc/components_and_queries.md`.
 
 Test: `tests/user_component_test.cpp` exercises register / addUserComponent / migration / removeUserComponent / round-trip / multi-type / second-entity spawn after the registry has been touched.
+
+## §3.6 batch 13a — Commit-hash determinism safety net
+
+Lands the runtime safety net plus the `Config` toggles batch 13b's
+sharded commit will key off. No behavior change — the commit phase
+is still single-threaded — but every commit now produces a per-tick
+FNV-1a-64 hash that future sharded code must reproduce bit-for-bit.
+
+`EngineStats::commitHash` is reset to the FNV-1a-64 offset basis
+(`0xcbf29ce484222325`) at step start and updated inline inside
+`EngineImpl::commitBuffer` for every applied command. Each variant
+arm (spawn / destroy / setX / addTag / removeTag / addUserComponent
+/ removeUserComponent / setComponentMask) mixes the variant
+discriminator + entity handle + relevant value bytes via the
+`mixHashByte` / `mixHashBytes` helpers in the anonymous namespace
+at the top of `EngineImpl.cpp`. For `CmdSpawn` the engine also
+mixes the *resulting* `EntityHandle` so reservation-vs-fresh-alloc
+paths produce distinguishable hashes. A paused step commits nothing
+and leaves the field at the basis value (documented contract).
+
+`Config::singleThreadedCommit = true` is the public toggle for the
+deterministic reference path. Today it's the only path; batch 13b's
+sharded code will plumb under `singleThreadedCommit = false` and
+key off the runtime hash to prove the two paths agree. Documented
+as the immediate fallback if any divergence is ever discovered in
+production.
+
+`Config::logCommitHashEvery = 0` (default off, zero cost). When
+`N > 0` the engine logs `commitHash` via `ILogger` at `Info` every
+N ticks. Format: `commitHash tick=<T> hash=0x<16 hex digits>`. Two
+clients with the same seed but diverging logs pinpoint the
+offending tick for local repro.
+
+`writeJsonLines` gained a `"commit_hash":"0x…"` field (16-char
+lowercase hex). `ChromeTraceWriter`'s `step` event carries the same
+in `args.commit_hash`. `frame_snapshot_test` asserts the field is
+present in the JSON.
+
+Test: `tests/commit_hash_test.cpp` — five seeded churn scenarios
+(1k/8k/32k entities × {transform-only, transform+health,
+transform+statictag, parent-hierarchy, mixed multi-setter}) × 256
+ticks × 2 runs each. Per-tick `commitHash` and final
+`WorldSnapshot` FNV-1a must agree across runs; different command
+streams yield different hashes; `logCommitHashEvery` cadence +
+content; default `0` is silent. The test is the baseline batch 13b
+will hash-compare against — when the sharded path lands, the same
+suite reruns under `singleThreadedCommit = false` and any
+reordering bug surfaces as a loud first-tick mismatch.
+
+Adding a new command variant to `CommandBuffer` requires a matching
+arm in `commitBuffer` that mixes the variant's discriminator +
+entity + value into `commitHashAcc_`. Skipping the hash update will
+not visibly break tests today (the run-vs-run path still sees
+identical state) but will silently mask divergence the moment batch
+13b's sharded path goes live. The recipe is one
+`mixHashBytes(commitHashAcc_, c.entity)` + one per-field
+`mixHashBytes` call below the existing storage mutation.
