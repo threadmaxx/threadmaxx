@@ -441,6 +441,11 @@ behavior bit-for-bit). Closes §6 phase 4.
 - **`EventChannel<SystemSkipped>`.** Emitted on every skip with
   `{tick, systemName, reason}`. `reason` is `"budget"` or
   `"scripted"`. Drains at tick boundary like every other typed channel.
+  Per-event emission keeps the deterministic-replay path simple
+  (one event per `(tick, systemName)` mapping); coalesced batched
+  emission is a future tuning option if a game ever measures the
+  per-tick event volume mattering, but for the expected workloads
+  (a handful of `skippable()` systems × 60–120 fps) it never does.
 - **`JobPriority`.** New three-valued enum (`High` / `Normal` /
   `Low`). New `parallelFor` overloads on `SystemContext` accept it;
   the no-priority overloads default to `Normal`. `JobSystem` was
@@ -665,12 +670,23 @@ batch 6 (parallel commit needs per-chunk locks). Effort ~2 weeks.
   the sharded path must match it tick-for-tick. Cheap (a few ns
   per command) and converts any sharding bug from a silent state
   divergence into a loud first-tick alarm.
-- **`tests/sharded_commit_test.cpp`** — large-scale spawn/destroy
-  churn with the sharded path on, **hash-compared against the
-  single-threaded reference path for 256 ticks**, not one. Both
-  the per-tick `commitHash` AND the final `WorldSnapshot` FNV-1a
-  hash must agree. The 256-tick window catches accumulation bugs
-  the one-tick check would miss.
+- **`Config::logCommitHashEvery`.** Opt-in production diagnostic
+  knob: when set to N > 0, the engine logs `commitHash` via
+  `ILogger` every N ticks. Default 0 (off, zero cost). Catches
+  divergence in shipped builds — game devs run two clients with
+  the same seed, the first diverging hash points at the offending
+  tick and reproduces the bug locally.
+- **`tests/sharded_commit_test.cpp`** — **five seeded churn
+  scenarios** (varying entity counts 1k/8k/32k, varying mask-flip
+  patterns, with/without parent-hierarchy mutations), each running
+  for **256 ticks with the sharded path on, hash-compared against
+  the single-threaded reference path**. Both the per-tick
+  `commitHash` AND the final `WorldSnapshot` FNV-1a hash must
+  agree across every (scenario, tick) pair. The five scenarios
+  catch interleaving bugs that a single fixed pattern would miss;
+  the 256-tick window catches accumulation bugs the one-tick check
+  would miss; and the `Config::logCommitHashEvery` knob above is
+  the production-side equivalent if any divergence escapes CI.
 
 #### Risks and mitigations
 
