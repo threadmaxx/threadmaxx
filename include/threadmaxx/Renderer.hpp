@@ -2,6 +2,8 @@
 
 #include "RenderFrame.hpp"
 
+#include <cstdint>
+
 namespace threadmaxx {
 
 /// Renderer-side interface. The engine owns scheduling and snapshotting;
@@ -13,13 +15,31 @@ class IRenderer {
 public:
     virtual ~IRenderer() = default;
 
-    /// Called once when the engine starts.
+    /// Called once when the engine starts. A return of `false` aborts
+    /// `Engine::initialize`; the engine treats the renderer as if it
+    /// were never installed and `shutdown()` is NOT called on a
+    /// renderer whose `initialize()` returned false (the engine assumes
+    /// the renderer has already cleaned up internally before reporting
+    /// failure).
     /// @return false to abort startup.
     virtual bool initialize() { return true; }
 
     /// Called once at shutdown after the final frame has been
-    /// submitted.
+    /// submitted. Skipped entirely if `initialize()` returned false or
+    /// if the renderer was never installed (`Engine::setRenderer(nullptr)`).
     virtual void shutdown() {}
+
+    /// §3.6.5 batch 15a — informational hook fired in response to
+    /// `Engine::notifyResize(w, h)`. Default no-op; renderers bound to
+    /// a swapchain typically rebuild it here. The engine never
+    /// independently watches the host window — game code is expected
+    /// to forward platform resize events into `notifyResize`.
+    ///
+    /// Called on the simulation thread, between `step()` invocations.
+    /// The renderer must not retain pointers from the previously-
+    /// submitted @ref RenderFrame across this call.
+    virtual void onResize(std::uint32_t /*width*/,
+                          std::uint32_t /*height*/) {}
 
     /// Called from the simulation thread after each commit, with the
     /// engine-owned @ref RenderFrame for the just-completed tick.

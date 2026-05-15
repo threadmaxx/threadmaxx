@@ -151,6 +151,15 @@ struct SystemStats {
     /// peak ≪ `JobSystemStats::workerCount` means the wave is starving
     /// the pool; ≫ workers means the wave is queue-bound.
     std::uint32_t peakQueueDepth = 0;
+
+    /// §3.6.5 batch 15a — wall-clock duration of the system's
+    /// `buildRenderFrame()` hook in the most recent step. Not
+    /// included in @ref lastUpdateSeconds (those count the wave
+    /// update only); broken out so a slow render-prep step is
+    /// visible without being charged to update time. Single-threaded
+    /// (the hook always runs on the sim thread in registration
+    /// order).
+    double buildRenderFrameSeconds = 0.0;
 };
 
 } // namespace threadmaxx

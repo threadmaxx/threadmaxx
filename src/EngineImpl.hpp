@@ -121,6 +121,13 @@ public:
     std::size_t registeredSystemCount() const noexcept { return systems_.size(); }
     void setRenderer(IRenderer* renderer) noexcept { renderer_ = renderer; }
 
+    // §3.6.5 batch 15a — informational resize forwarding. No-op if no
+    // renderer is installed.
+    void notifyResize(std::uint32_t width, std::uint32_t height) noexcept;
+
+    // §3.6.5 batch 15a — public-API surface for Engine::workerCount.
+    std::uint32_t workerCount() const noexcept;
+
     void setLogger(ILogger* logger) noexcept { logger_ = logger; }
 
     // §3.7 batch 14 — telemetry / stall watchdog.
@@ -324,6 +331,16 @@ private:
     // Double-buffered render-frame storage. We build into back_, then
     // atomically publish the pointer; the renderer reads through front_.
     std::array<std::vector<RenderInstance>, 2> renderInstanceBuffers_;
+    // §3.6.5 batch 15a — previous-tick transform snapshot, paired with
+    // each `instances` entry. Index i in renderInstancePrev_[back] is
+    // the previous transform for renderInstanceBuffers_[back][i]. The
+    // lookup keys off the persistent `prevTransformMap_` which is
+    // populated at the END of each `buildRenderFrame` from the just-
+    // built `instances` array — i.e. the map describes the just-
+    // published frame, ready to be consumed as "prev" on the next
+    // tick.
+    std::array<std::vector<RenderInstancePrev>, 2> renderInstancePrev_;
+    std::unordered_map<EntityHandle, Transform> prevTransformMap_;
     // §3.2 batch 8: per-frame merged storage backing the hierarchical
     // RenderFrame spans (cameras, lights, per-pass draw items, debug
     // geometry). Double-buffered alongside renderInstanceBuffers_; the

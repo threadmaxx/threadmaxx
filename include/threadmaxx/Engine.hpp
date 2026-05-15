@@ -136,6 +136,22 @@ public:
     ///          outlive the engine.
     void setRenderer(IRenderer* renderer) noexcept;
 
+    /// §3.6.5 batch 15a — forward a host-window resize to the
+    /// installed renderer's @ref IRenderer::onResize hook. A no-op
+    /// when no renderer is installed. The engine never independently
+    /// watches the host window; game code (typically a platform
+    /// integration system or the main loop) is expected to forward
+    /// resize events here.
+    ///
+    /// Calls happen synchronously on the calling thread; the renderer
+    /// must be ready to handle the resize on whichever thread invokes
+    /// `notifyResize`. The default (sim-thread) path matches
+    /// `submitFrame`'s context.
+    /// @thread_safety Sim thread by convention. If you need to call
+    ///                from a UI thread, the renderer's `onResize` must
+    ///                tolerate it.
+    void notifyResize(std::uint32_t width, std::uint32_t height) noexcept;
+
     /// Install a log sink. `nullptr` restores the engine's default
     /// `std::cerr`-backed logger. The engine does NOT take ownership —
     /// the logger must outlive the engine. Lifecycle messages, system
@@ -244,6 +260,15 @@ public:
     /// Aggregate worker-pool counters (jobs submitted, own-pops, steals).
     /// Cheap to call; safe from any thread.
     JobSystemStats jobSystemStats() const noexcept;
+
+    /// §3.6.5 batch 15a — number of worker threads owned by the engine's
+    /// `JobSystem`. Resolved from `Config::workerCount` at construction
+    /// (with `0` mapped to `max(1, hardware_concurrency - 1)`) and
+    /// stable thereafter. Cheaper than `jobSystemStats().workerCount`
+    /// (no atomic loads / no histogram merge); use this for sizing
+    /// per-worker scratch storage and instance ring buffers.
+    /// @thread_safety Safe from any thread.
+    std::uint32_t workerCount() const noexcept;
 
     /// §3.7 batch 14 — install a per-tick @ref ITraceSink. The engine
     /// calls @ref ITraceSink::onFrame once per `step()` on the sim
@@ -366,6 +391,15 @@ public:
     /// `Ev`. Same instance is returned across calls and across threads.
     /// Definition lives in `EventChannel.hpp` — include that header to
     /// instantiate.
+    ///
+    /// @par Warm cross-thread channels at setup (§3.6.5 batch 15b)
+    ///      First call for a new `Ev` performs a map insert under the
+    ///      internal `eventChannelsMtx_` (audit-added 2026-05-15).
+    ///      Subsequent calls are lookup-hits and uncontended. If
+    ///      worker threads or the stall-watchdog thread will be the
+    ///      first to call `events<Ev>()`, call it once on the sim
+    ///      thread at setup (e.g. inside `IGame::onSetup`) to avoid
+    ///      paying the contended-insert cost on a worker.
     template <typename Ev>
     EventChannel<Ev>& events();
 

@@ -1041,7 +1041,7 @@ Both items are documented as candidates rather than batches so
 the roadmap doesn't accumulate speculative scope. The
 microbenchmark + correctness suite in batch 13c is the gate.
 
-### 3.6.5 Batch 15 — Audit-driven hygiene + pre-batch-9 API polish (planned)
+### 3.6.5 Batch 15 — Audit-driven hygiene + pre-batch-9 API polish  ✅ landed 2026-05-15
 
 A focused hardening pass that closes the gaps surfaced by the
 post-batch-14 audit. Scope mirrors the audit report: fix
@@ -1144,6 +1144,50 @@ Gating: batch 15 should land BEFORE batch 9 starts so
 the Vulkan example doesn't have to navigate around
 known gaps. Batch 15a (the must-haves) is roughly
 2–3 days; 15b can land alongside or after batch 9.
+
+**As-shipped 2026-05-15.** Both 15a and 15b landed in a
+single pass.
+
+Batch 15a (seven API additions, all opt-in / additive — no
+public API breakage):
+
+- `IRenderer::onResize(w, h)` + `Engine::notifyResize(w, h)`
+- `Engine::workerCount()` accessor
+- `SystemStats::buildRenderFrameSeconds` per-system timing
+- `RenderFrame::prevTransforms` parallel span + engine-owned
+  per-tick `prevTransformMap_` refresh
+- `RenderFrame::cameraIndexById(id) -> optional<uint8_t>` +
+  `kMaxCameras` (= 32)
+- `RenderFrameBuilder::addDebugText(pos, sv, color)` owning-
+  string overload with per-builder arena
+- `ResourceHandle<T>::get() / operator-> / operator*`
+
+Batch 15b shipped 10 new tests (concurrency_soak,
+stitched_view_concurrency, render_pass_ordering,
+render_frame_interpolation, file_trace_sink_rotation,
+visibility_culling_32_cam, renderer_resize,
+resource_handle_indirection, debug_text_owning,
+build_render_frame_seconds), 6 new benchmarks (hierarchy,
+cull, foreach, resource_handle, pack_instances,
+job_stealing) under the existing `-DTHREADMAXX_BUILD_BENCHMARKS=ON`
+opt-in, and the documented clarifications on Renderer.hpp /
+ScratchArena.hpp / Telemetry.hpp / Engine.hpp::events.
+
+Test count: 79. Both default and `-Werror` builds pass
+`ctest` 100% in ~33s.
+
+What is NOT in 15:
+
+- Vulkan renderer integration. That IS batch 9 — 15 is the
+  pre-flight check that batch 9 won't trip on a known API
+  gap.
+- TSAN / sanitizer CI integration. The soak + stitched-view
+  tests are structured to surface races under TSAN if run
+  with it locally; the CI knob is a separate concern.
+- Async file-trace sink. The existing `FileTraceSink` is
+  sim-thread; for game-side use under tight budgets a custom
+  sink threading the writer off-thread is the recommendation
+  — out of scope here.
 
 ### 3.7 Batch 14 — Telemetry ingestion close-out  ✅ landed 2026-05-15
 

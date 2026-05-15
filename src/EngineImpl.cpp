@@ -449,6 +449,22 @@ EngineImpl::~EngineImpl() {
     }
 }
 
+// §3.6.5 batch 15a — IRenderer::onResize forwarding. Stays on whichever
+// thread calls it; the documented convention is sim-thread invocation
+// matching submitFrame.
+void EngineImpl::notifyResize(std::uint32_t width,
+                              std::uint32_t height) noexcept {
+    if (renderer_) renderer_->onResize(width, height);
+}
+
+// §3.6.5 batch 15a — Public Engine::workerCount accessor; resolves from
+// the JobSystem (which itself is the source of truth: a Config of 0
+// gets mapped to `max(1, hardware_concurrency - 1)` at JobSystem
+// construction time).
+std::uint32_t EngineImpl::workerCount() const noexcept {
+    return jobs_ ? jobs_->workerCount() : 0u;
+}
+
 // §3.7 batch 14 — stall watchdog plumbing.
 
 void EngineImpl::setStallTimeout(double seconds) noexcept {
@@ -940,7 +956,9 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
 void EngineImpl::buildRenderFrame() {
     const unsigned back = 1u - frontIndex_.load(std::memory_order_acquire);
     auto& dst = renderInstanceBuffers_[back];
+    auto& prev = renderInstancePrev_[back];
     dst.clear();
+    prev.clear();
 
     // §3.1 batch 6: walk archetype chunks rather than the legacy
     // stitched dense view — the chunk's mask is checked once per chunk
@@ -954,6 +972,7 @@ void EngineImpl::buildRenderFrame() {
         reserveHint += c.entities.size();
     }
     dst.reserve(reserveHint);
+    prev.reserve(reserveHint);
     for (const auto& c : chunks) {
         if (!c.mask.has(Component::RenderTag)) continue;
         if (c.mask.has(Component::DisabledTag)) continue;
@@ -968,6 +987,15 @@ void EngineImpl::buildRenderFrame() {
                 c.renderTags[i].flags,
                 hasUserData ? c.userData[i].value : 0,
             });
+            // §3.6.5 batch 15a — pair each instance with its
+            // previous-tick transform. New entities (not in the
+            // map yet) get their current transform, giving a
+            // clean lerp(prev, current, alpha) with no special
+            // case on first-frame spawn.
+            auto it = prevTransformMap_.find(c.entities[i]);
+            const Transform& prevT = (it != prevTransformMap_.end())
+                                     ? it->second : c.transforms[i];
+            prev.push_back(RenderInstancePrev{c.entities[i], prevT});
         }
     }
 
@@ -1002,6 +1030,8 @@ void EngineImpl::buildRenderFrame() {
     frame.deltaTime = cfg_.fixedStepSeconds;
     frame.alpha = 0.0f;
     frame.instances = std::span<const RenderInstance>(dst.data(), dst.size());
+    frame.prevTransforms = std::span<const RenderInstancePrev>(
+        prev.data(), prev.size());
     frame.cameras = std::span<const Camera>(hier.cameras.data(),
                                             hier.cameras.size());
     frame.lights  = std::span<const Light>(hier.lights.data(),
@@ -1016,6 +1046,17 @@ void EngineImpl::buildRenderFrame() {
         hier.debugPoints.data(), hier.debugPoints.size());
     frame.debugText   = std::span<const DebugText>(
         hier.debugText.data(), hier.debugText.size());
+
+    // §3.6.5 batch 15a — refresh the previous-transform map from this
+    // tick's instances. Next tick's `buildRenderFrame` will use this
+    // as the "prev" for its own instances. Entities that no longer
+    // carry RenderTag fall out automatically because we clear+rebuild
+    // (no stale entries linger past a tick of invisibility).
+    prevTransformMap_.clear();
+    prevTransformMap_.reserve(dst.size());
+    for (const auto& inst : dst) {
+        prevTransformMap_[inst.entity] = inst.transform;
+    }
 
     frontIndex_.store(back, std::memory_order_release);
 }
@@ -1041,6 +1082,7 @@ void EngineImpl::step() {
             ss.lastUpdateSeconds = 0.0;
             ss.jobsSubmittedLastStep = 0;
             ss.commandsCommittedLastStep = 0;
+            ss.buildRenderFrameSeconds = 0.0;
         }
         stats_.lastStepSeconds = 0.0;
         stats_.jobsSubmittedLastStep = 0;
@@ -1084,6 +1126,7 @@ void EngineImpl::step() {
         ss.commandsCommittedLastStep = 0;
         ss.waitSeconds = 0.0;
         ss.peakQueueDepth = 0;
+        ss.buildRenderFrameSeconds = 0.0;
     }
 
     // §3.1 preStep: serial, registration order, on the sim thread. Hooks
@@ -1310,7 +1353,17 @@ void EngineImpl::step() {
     // settled by this point.
     for (std::size_t i = 0; i < systems_.size(); ++i) {
         systemRenderBuilders_[i].reset();
+        // §3.6.5 batch 15a — time the per-system hook so a slow
+        // render-prep step shows up in `SystemStats::buildRenderFrameSeconds`
+        // rather than being silently bundled into `lastStepSeconds`.
+        const auto brfStart = std::chrono::steady_clock::now();
         systems_[i]->buildRenderFrame(systemRenderBuilders_[i]);
+        systemRenderBuilders_[i].finalizeDebugTextViews();
+        const auto brfEnd = std::chrono::steady_clock::now();
+        if (i < systemStats_.size()) {
+            systemStats_[i].buildRenderFrameSeconds =
+                std::chrono::duration<double>(brfEnd - brfStart).count();
+        }
     }
 
     tick_++;

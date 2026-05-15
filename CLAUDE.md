@@ -699,3 +699,130 @@ benchmarks, doc clarifications) are tracked as **batch 15** in
 §3.6.5 of `FUTURE_WORK.md`. They aren't blocking and should
 land in a focused pass before batch 9 (Vulkan reference
 renderer) starts.
+
+## §3.6.5 batch 15a — pre-batch-9 API polish
+
+Closes the must-haves the post-batch-14 audit flagged as
+blocking the Vulkan reference renderer. Every addition is
+opt-in / additive; existing code keeps building. Seven
+pieces:
+
+**`IRenderer::onResize(w, h)` + `Engine::notifyResize(w, h)`.**
+A new virtual on `IRenderer` (default no-op) and a forwarding
+method on `Engine`. Game code (typically a platform-integration
+system or the host main loop) forwards window resize events
+into `notifyResize`; the engine routes them to whichever
+renderer is currently installed. No engine state changes —
+purely informational. Sim-thread by convention; renderers that
+want it on a UI thread must handle that themselves.
+
+**`Engine::workerCount()`.** Public accessor that mirrors the
+`JobSystem::workerCount`. Cheaper than going through
+`jobSystemStats().workerCount` (no atomic loads / no histogram
+merge). Use for sizing per-worker scratch buffers and instance
+ring-buffer slots.
+
+**`SystemStats::buildRenderFrameSeconds`.** Per-system timing
+of the `ISystem::buildRenderFrame` hook. Was previously
+silently bundled into `lastStepSeconds`; broken out so a slow
+render-prep step (e.g. a culling system in batch 9) shows up
+without confusion. Reset to 0 each tick like the other
+`*LastStep` fields, including across paused steps.
+
+**`RenderFrame::prevTransforms`.** Span parallel to
+`instances`, carrying each render-eligible entity's transform
+from the previous tick (or its current transform on the first
+frame it became visible — gives a clean `lerp(prev, current,
+alpha)` with no special-case on spawn). The engine maintains
+`prevTransformMap_` and refreshes it at the end of every
+`buildRenderFrame`. New entities cost one map insert; entities
+that no longer carry RenderTag fall out automatically because
+the map is clear+rebuild per tick.
+
+**`RenderFrame::cameraIndexById(id) -> optional<uint8_t>`.**
+Maps a `Camera::id` back to its index in `RenderFrame::cameras`
+(which is also its bit position in `DrawItem::cameraMask`).
+Linear scan; cheap for the ≤32-camera mask cap. Returns
+nullopt for unknown ids and silently caps the search at 32 to
+match the mask width. Also: a new `kMaxCameras` constant
+(value 32) documents the cap symbolically.
+
+**Owning-string `DebugText` overload.** New
+`RenderFrameBuilder::addDebugText(pos, string_view, color)`
+overload copies the bytes into a per-builder string arena. The
+finalize-views pass (called by the engine immediately after
+each system's `buildRenderFrame` returns) patches the
+`DebugText::text` views to point at the (now address-stable)
+arena. The existing non-owning overload (which takes a
+pre-built `DebugText`) is preserved — game code with stable
+backing storage can still use it. The two overloads can be
+mixed in one hook; the arena tracks slice indices so ordering
+is preserved across both pushes.
+
+**`ResourceHandle<T>::get()` / `operator->` / `operator*`.**
+Indirection sugar. `get()` returns a `const T*` (or nullptr
+on a null / freed handle); `->` and `*` lower to it. Defined
+out-of-line below `ResourceRegistry` because the inline
+template needs the full type.
+
+## §3.6.5 batch 15b — industrial-grade tests + benchmarks + doc polish
+
+Test suite extensions (all under `tests/`, registered with
+CTest, run on every `ctest` invocation):
+
+- `concurrency_soak_test.cpp` — 200 ticks × 8 workers × sharded
+  commit × budget+Budget-policy skips × hot-reload events ×
+  RAII subscriptions × stall watchdog (long timeout) × 4096
+  entities. Asserts per-tick `commitHash` reproducibility and
+  documented skip-count behavior across two runs.
+- `stitched_view_concurrency_test.cpp` — 250 ticks × 8 workers
+  hammering `world.transforms()` from many concurrent jobs
+  right after a churn system has dirtied the cache. Pins the
+  audit fix's mutex / double-checked locking.
+- `render_pass_ordering_test.cpp` — within-system push order
+  preserved, across-system registration order preserved
+  per-pass, passIndex round-trip.
+- `render_frame_interpolation_test.cpp` — `prevTransforms`
+  size + entity alignment + content rules (first-frame == self,
+  subsequent frames == prior tick).
+- `file_trace_sink_rotation_test.cpp` — tiny rotationBytes
+  forces multiple files; each file is a standalone valid JSON
+  array; `%N` substitution and the no-`%N` fallback both work.
+- `visibility_culling_32_cam_test.cpp` — 32-camera mask cap
+  behavior: at-32 the mask is filled; at-33 the 33rd is
+  silently dropped; degenerate projections don't crash;
+  `cameraIndexById` finds each by id and rejects unknowns.
+- `renderer_resize_test.cpp` — `notifyResize` routes to
+  installed renderer; sequential calls preserve order; no-op
+  with no renderer; replaceable renderer.
+- `resource_handle_indirection_test.cpp` — `get` / `->` / `*`
+  basics + null behavior + refcount survival under copy.
+- `debug_text_owning_test.cpp` — owning-string overload survives
+  user stack collapse; arena rebuild across ticks; interleaved
+  owning + non-owning pushes preserve order.
+- `build_render_frame_seconds_test.cpp` — timer reports
+  non-negative for no-hook systems and > sleep-floor for
+  hooks that sleep; paused-step resets the counter.
+
+Bench infra (opt-in via `-DTHREADMAXX_BUILD_BENCHMARKS=ON`):
+
+- `bench/hierarchy_bench.cpp` — flat / chain-8 / chain-32 ×
+  1k / 10k / 100k.
+- `bench/cull_bench.cpp` — items × cameras matrix.
+- `bench/foreach_bench.cpp` — `forEachWith` vs.
+  `forEachWithCached` vs. `forEachChunk`.
+- `bench/resource_handle_bench.cpp` — refcount churn across
+  1 / 2 / 4 / 8 threads.
+- `bench/pack_instances_bench.cpp` — InstanceBufferLayout
+  packing throughput.
+- `bench/job_stealing_bench.cpp` — worker × entity-count ×
+  grain matrix, reporting `stolenJobs / totalJobs` ratio.
+
+Doc clarifications: `Renderer.hpp` (initialize false /
+shutdown contract), `ScratchArena.hpp` (wave-scoped lifetime,
+not engine-scoped), `Telemetry.hpp::FileTraceSink` (silent
+no-op on open failure), `Engine::events<T>()` (warm cross-
+thread channels at setup).
+
+Total test count is 79 after batch 15. Both `build/` and
+`build-werror/` pass `ctest` 100%.

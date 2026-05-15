@@ -89,6 +89,22 @@ public:
     /// but `registry.get(id)` will return nullptr in that case).
     ResourceId<T> id() const noexcept { return id_; }
 
+    /// §3.6.5 batch 15a — direct pointer to the underlying value.
+    /// Returns @c nullptr if the handle is null or the slot has been
+    /// freed (which is only possible if the handle's refcount logic
+    /// has been bypassed — refcounted slots can't be freed while a
+    /// handle holds them). Cheap: a single registry lookup.
+    const T* get() const noexcept;
+
+    /// §3.6.5 batch 15a — convenience pointer-style access. Same
+    /// semantics as @ref get; UB if the handle is null or the slot
+    /// has been freed.
+    const T* operator->() const noexcept { return get(); }
+
+    /// §3.6.5 batch 15a — convenience deref. Same semantics as
+    /// @ref get; UB if the handle is null or the slot has been freed.
+    const T& operator*() const noexcept { return *get(); }
+
     /// Drop ownership without destroying the slot. Equivalent to moving
     /// into a temporary. Useful when handing the bare id off to legacy
     /// `add`-style callers.
@@ -255,6 +271,12 @@ inline void ResourceHandle<T>::retain_() noexcept {
 template <typename T>
 inline void ResourceHandle<T>::release_() noexcept {
     if (registry_) registry_->releaseHandleSlot(id_);
+}
+
+template <typename T>
+inline const T* ResourceHandle<T>::get() const noexcept {
+    if (!registry_ || !id_.valid()) return nullptr;
+    return registry_->template get<T>(id_);
 }
 
 class Engine;

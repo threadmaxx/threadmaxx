@@ -13,8 +13,19 @@ namespace threadmaxx {
 /// `single` overloads. Allocations are O(1) bump-pointer with no
 /// per-element bookkeeping. There is no `free()`: the engine resets
 /// the arena at the end of each wave, releasing all allocations made
-/// during it. Across waves the underlying slabs are retained, so a
-/// steady-state system pays one allocation amortized.
+/// during it.
+///
+/// @par Lifetime contract (clarified, §3.6.5 batch 15b)
+///      Each arena is owned by a `SystemContextImpl` which is
+///      reconstructed per wave. So in practice an arena's slabs
+///      survive **within** a wave — across multiple `parallelFor` /
+///      `single` calls inside one `update()` — but not across
+///      waves: the SystemContext (and thus its arena vector) is
+///      torn down between waves. The "steady-state pays one
+///      allocation" guarantee therefore applies inside a wave;
+///      across waves the slab vector is re-allocated. For workloads
+///      that need cross-wave persistence, keep a `std::vector` in
+///      the system itself rather than reaching for `ScratchArena`.
 ///
 /// Allocated types must be trivially destructible — the arena does
 /// not call destructors. Use it for POD scratch (neighbor lists,

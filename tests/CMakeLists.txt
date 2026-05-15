@@ -71,6 +71,16 @@ set(THREADMAXX_TESTS
     integration_kitchen_sink_test
     hierarchy_cycle_test
     event_callback_reemit_test
+    renderer_resize_test
+    resource_handle_indirection_test
+    debug_text_owning_test
+    build_render_frame_seconds_test
+    render_pass_ordering_test
+    render_frame_interpolation_test
+    visibility_culling_32_cam_test
+    file_trace_sink_rotation_test
+    stitched_view_concurrency_test
+    concurrency_soak_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

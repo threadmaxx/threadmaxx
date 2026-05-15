@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 69 tests pin the
+minimal; the internals are PImpl'd so they can change. 79 tests pin the
 documented invariants.
 
 ## Highlights
@@ -156,13 +156,18 @@ documented invariants.
   / loader-error messages. Default sink writes warnings to `std::cerr`;
   install your own to route to spdlog / a HUD / a file.
 - **Pluggable renderer.** Implement `IRenderer::submitFrame` against a
-  flat `RenderFrame`. Null renderer = headless.
+  flat `RenderFrame`. Null renderer = headless. `IRenderer::onResize`
+  receives window-resize notifications forwarded by game code through
+  `Engine::notifyResize(w, h)`.
 - **Hierarchical render contract.** `RenderFrame` exposes cameras,
   lights, per-pass draw-item bins (Opaque / Transparent / ShadowCasters
-  / Overlay), and debug geometry alongside the legacy flat instances
-  list. User systems populate it via `ISystem::buildRenderFrame`; the
-  engine merges every system's slice in registration order on the sim
-  thread.
+  / Overlay), debug geometry, and a `prevTransforms` span paired with
+  `instances` so renderers can lerp `prev → current` by `alpha` without
+  maintaining their own per-entity history. `RenderFrame::cameraIndexById`
+  maps a `Camera::id` back to its bit position in `DrawItem::cameraMask`.
+  User systems populate the hierarchical fields via
+  `ISystem::buildRenderFrame`; the engine merges every system's slice in
+  registration order on the sim thread.
 - **Render-side helpers.** `include/threadmaxx/render/` ships
   renderer-neutral POD types (Camera, Light, DrawItem, MeshSkinnedRef,
   AnimationPoseRef, MaterialOverride) plus frustum extraction +
@@ -337,7 +342,7 @@ src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
 bench/                 standalone microbenchmarks (opt-in)
-tests/                 69 no-dependency tests under CTest
+tests/                 79 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

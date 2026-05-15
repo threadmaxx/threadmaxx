@@ -3,6 +3,7 @@
 #include "EngineImpl.hpp"
 #include "WorldImpl.hpp"
 #include "EntityStorage.hpp"
+#include "threadmaxx/Renderer.hpp"
 #include "threadmaxx/Trace.hpp"
 
 #include <algorithm>
@@ -31,6 +32,14 @@ std::size_t Engine::registeredSystemCount() const noexcept {
     return impl_->registeredSystemCount();
 }
 void Engine::setRenderer(IRenderer* r) noexcept { impl_->setRenderer(r); }
+
+void Engine::notifyResize(std::uint32_t w, std::uint32_t h) noexcept {
+    impl_->notifyResize(w, h);
+}
+
+std::uint32_t Engine::workerCount() const noexcept {
+    return impl_->workerCount();
+}
 void Engine::setLogger(ILogger* l) noexcept     { impl_->setLogger(l); }
 ILogger& Engine::logger() const noexcept        { return impl_->logger(); }
 

@@ -5,6 +5,12 @@
 set(THREADMAXX_BENCHMARKS
     commit_bench
     event_channel_bench
+    hierarchy_bench
+    cull_bench
+    foreach_bench
+    resource_handle_bench
+    pack_instances_bench
+    job_stealing_bench
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})

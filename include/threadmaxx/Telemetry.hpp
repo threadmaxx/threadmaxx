@@ -55,6 +55,15 @@ public:
 /// All I/O happens on the sim thread inside @ref onFrame; the sink
 /// is not async. If your `rotationBytes` is tiny and your tick
 /// budget tight, prefer @ref HudTraceSink or a custom async sink.
+///
+/// @par Failure mode (clarified, §3.6.5 batch 15b)
+///      If the path can't be opened (filesystem error, permission
+///      denied, parent directory missing) the sink silently no-ops
+///      its writes: subsequent `onFrame` calls do nothing and
+///      @ref bytesWrittenCurrent stays at zero. The engine never
+///      crashes on a bad path. Game code that needs failure
+///      visibility should check `bytesWrittenCurrent()` after a few
+///      ticks and react if it's still 0.
 class FileTraceSink : public ITraceSink {
 public:
     struct Config {
