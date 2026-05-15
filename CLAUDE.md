@@ -826,3 +826,109 @@ thread channels at setup).
 
 Total test count is 79 after batch 15. Both `build/` and
 `build-werror/` pass `ctest` 100%.
+
+## §3.1 batch 9 — Vulkan reference renderer (example)
+
+First concrete renderer: `examples/vulkan_renderer/`. Ships as a
+static library `threadmaxx::vulkan_renderer` plus a
+build-verification smoke binary `threadmaxx_vulkan_smoke`. Opt-in
+via CMake's `find_package(Vulkan)` + `find_package(glfw3)` +
+`find_program(glslc)`; silently skipped on hosts missing any of
+the three (the same pattern `examples/boids` uses for SDL2).
+Batch 10's RPG demo is the consumer — there is intentionally no
+separate "demo scene" for batch 9 because that would duplicate
+batch 10's content.
+
+**Lib target**: `threadmaxx_vulkan_renderer` exports
+`include/threadmaxx_vk/VulkanRenderer.hpp` (the only public
+header). Everything else under `src/` is private:
+`VulkanContext` (instance / device / queues / debug messenger),
+`VulkanSwapchain` (color images + per-image renderFinished
+semaphores + depth), `VulkanFrameRing` (per-frame cmd pool +
+imageAvailable semaphore + global graphics timeline semaphore),
+`VulkanPipelines` (opaque + debug-line + debug-point pipelines
+under VK_KHR_dynamic_rendering), `MeshLoader` / `TextureLoader` /
+`ShaderLoader` (the three batch-7 asset loader specializations).
+
+**Required device features**: Vulkan 1.3 core
+(`dynamicRendering`, `synchronization2`,
+`shaderDemoteToHelperInvocation`, plus 1.2 `timelineSemaphore`).
+The context's physical-device scorer rejects devices that don't
+support the full set; on a properly-configured 1.3 device they
+all come for free.
+
+**Frame loop**: per-tick (1) wait the slot's timeline value, (2)
+`vkAcquireNextImageKHR` signaling the slot's imageAvailable, (3)
+record cmd buffer with `vkCmdBeginRendering` + multi-camera loop
+(viewport flipped Y so column-major view*proj matches GL
+conventions), (4) `vkQueueSubmit2` signaling both the per-image
+renderFinished and the global timeline, (5) `vkQueuePresentKHR`.
+imageAvailable is per-frame-slot (safe because the slot's
+timeline gate ensures it's idle on re-acquire); renderFinished is
+per-image (validation flags per-slot reuse when frames-in-flight
+< image count).
+
+**Vertex layout**: opaque pipeline binds binding 0 (cube vertex —
+pos[3]+normal[3], 24-byte stride) and binding 1 (per-instance
+InstanceLayoutEntry, 128-byte stride). Locations 0–5 are
+declared on binding 1: `instPos` (vec4), `instOrientation` (quat
+vec4), `instScale` (vec4), `instMatOverride` (vec4). Locations
+6–7 (mesh/material/skel/poseSlot, flags/sort/entityIndex) are
+part of the InstanceLayoutEntry POD but not declared on the
+pipeline until the shader actually consumes them (validation
+errors on attribute-declared-but-unused otherwise). Adding mesh
+id consumption to the shader means re-adding the location-6
+attribute description in `VulkanPipelines.cpp`.
+
+**Auto-instances vs hierarchical DrawItems**: the renderer
+consumes both the Milestone-1 auto-populated `frame.instances`
+lane AND the §3.2 hierarchical `frame.drawItems[Opaque]` bin. The
+former is rendered with the unit-cube fallback mesh and a light
+gray material override; the latter is rendered per-DrawItem with
+its declared mesh/material/orientation. Both share the same
+per-instance VkBuffer in the upload ring.
+
+**Asset loader teardown ordering**: `Engine::shutdown` calls
+`IRenderer::shutdown` BEFORE `IResourceLoader::onShutdown`. The
+loaders track their VkBuffer/VkImage in per-loader vectors and
+expose `releaseGpuResources()`; `VulkanRenderer::shutdown` walks
+`meshLoader_` / `textureLoader_` (raw non-owning pointers stashed
+at registration time) and calls each one's release after
+`vkDeviceWaitIdle` and before tearing down the
+`VulkanContext`. The loader-side `onShutdown` then just drops
+registry handles — by which point the device is gone, but no
+device call needs to fire.
+
+**Hot reload**: `ShaderLoader::markStale` (called by
+`Engine::markResourceStale<Shader>`) queues a reload entry; the
+next `update()` pump re-reads the file via `std::ifstream`,
+installs a new registry entry with `engine.resources().add`, and
+emits `AssetReloaded` on `events<AssetReloaded>()`. v1 ships
+embedded SPIR-V (no file backing), so the reload path is plumbed
+but unexercised by the smoke; batch 10 wires a renderer-side
+subscriber that rebuilds the relevant pipeline when the event
+fires.
+
+**Shader compile**: `add_custom_command` runs
+`glslc --target-env=vulkan1.3 -O` on each `.vert` / `.frag` in
+`shaders/`, then `cmake/EmbedSpv.cmake` packs the binary into a
+`constexpr std::array<std::uint32_t, N>` header keyed by sym
+name. The `threadmaxx_vk_shaders` custom-all target depends on
+every generated header; the static library `add_dependencies`
+the all target so a clean configure-and-build picks up shader
+edits.
+
+**Smoke**: `examples/vulkan_renderer/smoke/main.cpp` opens a GLFW
+1280×720 window, attaches the renderer to a fresh Engine,
+registers one `SceneSystem` that pushes a third-person spinning
+camera + a directional light + a 12-edge debug-line cube every
+tick, and runs for argv[1] ticks (default infinite). Pass
+`THREADMAXX_VK_VALIDATE=1` in the environment to enable Khronos
+validation layers; default off. Used as the build-verification
+gate for batch 9 (a clean run = the entire renderer path booted
+and shut down with no crashes / no validation errors).
+
+**Not yet shipped** (deferred to batch 10): real mesh / texture
+file I/O, shadow pass, skinning pipeline, PBR shader, file-watcher
++ pipeline-rebuild subscriber, debug-text rendering,
+Transparent / ShadowCasters / Overlay passes, cross-platform CI.

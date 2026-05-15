@@ -766,7 +766,7 @@ grows monotonically. The mapping to milestones (§8):
 | ~~6b~~ | ~~`UserComponent<T>` extension hook~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~7~~ | ~~Resource & event maturity~~      | ✅ landed 2026-05-14 — see §2 |
 | ~~8~~ | ~~Render contract expansion~~      | ✅ landed 2026-05-14 — see §2 |
-| 9     | Vulkan reference renderer (example) | M4 — example, not library |
+| ~~9~~ | ~~Vulkan reference renderer (example)~~ | ✅ landed 2026-05-15 — see §2 / §3.1 below |
 | 10    | 3D RPG demo example                | M6 lead-in — example, not library |
 | ~~11~~ | ~~Frame task graph (§6 phase 3)~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~12~~ | ~~Cancellation, budgets, priorities (§6 phase 4)~~ | ✅ landed 2026-05-14 — see §2 |
@@ -786,31 +786,90 @@ land alongside 10 because telemetry quality is best measured under
 a real game's workload. See §3.4–§3.7 for the per-batch scopes and
 the cross-batch sequencing rationale.
 
-### 3.1 Batch 9 — Vulkan reference renderer (Milestone 4)
+### 3.1 Batch 9 — Vulkan reference renderer (Milestone 4)  ✅ landed 2026-05-15
 
-The first concrete renderer that exercises the full §2 batch-8
-contract. **Lives in `examples/vulkan_renderer/`, NOT in the core
-library** — that preserves the renderer-agnostic guarantee. The core
-lib's only Vulkan-aware concession is the optional helpers shipped
-in batch 8.
+The first concrete renderer that exercises the §2 batch-8 render
+contract. Lives in `examples/vulkan_renderer/`, NOT in the core
+library — the renderer-agnostic guarantee on the public surface
+holds.
 
-- **`examples/vulkan_renderer/`.** Vulkan 1.3 (dynamic rendering,
-  timeline semaphores, sync2), GLFW for window/surface. Treated like
-  `examples/boids` — opt-in via CMake, skipped if Vulkan SDK not found.
-- **Implements `IRenderer`** against the hierarchical `RenderFrame`:
-  multi-camera, per-pass binning, instanced mesh draw, skinned pose
-  upload, depth + shadow pass, simple PBR-ish opaque shader, debug
-  overlay.
-- **Asset loaders.** A `MeshLoader` / `TextureLoader` /
-  `ShaderLoader` (compiled SPIR-V at build time via `glslc`) that
-  exercise the batch-7 multi-stage pipeline and refcounted handles.
-- **Hot reload.** Shader edits trigger SPIR-V rebuild and pipeline
-  rebuild via the `AssetReloaded` channel from batch 7.
-- **Cross-platform CI.** Build on Linux + Windows runners. macOS via
-  MoltenVK marked best-effort.
-- **Smoke scene.** Animated character on a lit terrain plane, third-
-  person camera, 1k crowd of instanced meshes — proves batch 8's
-  contracts under load.
+**As-shipped scope** (v1; advanced features deferred to batch 10's
+RPG demo because that's where they have a real consumer):
+
+- `examples/vulkan_renderer/` — Vulkan 1.3 (dynamic rendering,
+  synchronization2, timeline semaphores, shaderDemoteToHelperInvocation),
+  GLFW for window/surface. Opt-in via CMake: silently skipped when
+  any of `Vulkan`, `glfw3`, or `glslc` is missing — same pattern as
+  `examples/boids`.
+- Ships as a **static library** `threadmaxx::vulkan_renderer` plus a
+  build-verification smoke binary `threadmaxx_vulkan_smoke`. The
+  separate Vulkan demo scene was dropped — batch 10's RPG demo is
+  the showcase, and it links against the static library. The smoke
+  is just `engine + renderer + 1 spinning camera + 1 debug-line cube`
+  proving end-to-end boot, multi-camera projection, swapchain
+  resize, and clean shutdown across ~300 ticks.
+- `VulkanRenderer` implements `IRenderer` against the hierarchical
+  `RenderFrame`: multi-camera (`frame.cameras` iterated with
+  `DrawItem::cameraMask` filtering), per-pass binning (only Opaque
+  is drawn in v1; Transparent/ShadowCasters/Overlay are received
+  but not yet emitted), instanced opaque draws (per-instance vertex
+  binding fed from `InstanceLayoutEntry` via `packInstance`), debug
+  line + point pipelines, frame-in-flight ring with timeline
+  semaphores + per-image renderFinished semaphores, swapchain
+  recreate on `onResize`.
+- Asset loaders:
+    - `MeshLoader` — synthesizes a unit-cube fallback. Real mesh
+      I/O (OBJ / glTF) deferred to batch 10.
+    - `TextureLoader` — synthesizes a 1×1 white fallback. Real
+      texture I/O deferred to batch 10.
+    - `ShaderLoader` — accepts embedded SPIR-V (the v1 path) AND
+      file-backed SPIR-V; on `Engine::markResourceStale<Shader>`
+      the loader re-reads bytecode and emits `AssetReloaded` on the
+      typed event channel. The renderer-side subscriber for
+      pipeline rebuild is deferred to batch 10 (v1 ships embedded
+      shaders so there's no triggering condition).
+- Shaders live in `shaders/`: `opaque.vert/frag` (Lambert + ambient,
+  per-instance push-constant view*proj + light dir), `debug_line.vert/frag`
+  and `debug_point.vert/frag` (push-constant view*proj). CMake's
+  `add_custom_command` runs `glslc --target-env=vulkan1.3 -O` then
+  `EmbedSpv.cmake` packs the SPIR-V words into a header so the
+  static library has no runtime file dependency.
+- All three loaders track GPU resources in their own owned-vectors
+  and expose `releaseGpuResources()`. The renderer calls each one
+  from `shutdown()` right after `vkDeviceWaitIdle`, before tearing
+  down the `VulkanContext` — that closes the ordering gap with
+  `Engine::shutdown`'s loader teardown (which fires *after*
+  `IRenderer::shutdown` and would otherwise hit a destroyed device).
+- Validation-clean under the Khronos validation layer (opt in via
+  `THREADMAXX_VK_VALIDATE=1` in the smoke binary).
+- Cross-platform CI is out of scope for this batch — verified on
+  Linux only, with a `find_package`-gated opt-in so CI matrices
+  without Vulkan SDKs build cleanly without it.
+
+**Deferred to batch 10 or follow-ons** (everything the original §3.1
+spec called for that v1 doesn't yet do):
+
+- Depth pre-pass + shadow pass (single depth attachment is in; a
+  light-view shadow map isn't).
+- Skinned mesh pipeline + bone-matrix upload (`MeshSkinnedRef`,
+  `AnimationPoseRef`).
+- PBR-ish opaque shader (v1 is Lambert + ambient; PBR comes when
+  textures are loaded from disk).
+- Real mesh / texture / file-watcher I/O.
+- Pipeline rebuild on `AssetReloaded` (loader-side plumbing is in
+  place; the renderer-side subscribe is the missing piece).
+- DebugText rendering (the public hook exists; a font atlas would
+  be a batch 10 addition).
+- Transparent / ShadowCasters / Overlay passes.
+- Cross-platform CI matrix.
+
+**Why the smoke isn't a full demo scene**: batch 10's RPG demo is
+the showcase the spec called for. Building both a "Vulkan smoke
+scene" AND an "RPG demo on top of the Vulkan renderer" duplicates
+work and gives the library two examples that drift out of sync
+with each other; the smoke is intentionally minimal so it stays
+green as a build-verification gate while batch 10 evolves the
+content.
 
 ### 3.2 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
 

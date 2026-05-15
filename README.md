@@ -184,7 +184,9 @@ documented invariants.
 
 Tested with GCC 16.1 on Linux. No third-party dependencies in the library
 itself. The `examples/boids` target additionally requires SDL2 (skipped if
-not found).
+not found). The `examples/vulkan_renderer` target additionally requires the
+Vulkan 1.3 SDK, GLFW3, and `glslc` (silently skipped if any of the three
+is missing).
 
 ## Build
 
@@ -203,6 +205,22 @@ Run the bundled headless example:
 Expected output: `[frame]` lines every ~60 ticks, instance counts growing
 as the spawner system fires, clean shutdown.
 
+If the Vulkan SDK + GLFW + glslc are installed (the example is otherwise
+silently skipped), the Vulkan reference renderer is at
+`examples/vulkan_renderer/`. Its build-verification smoke binary opens a
+window with a spinning third-person camera and a debug-line cube:
+
+```sh
+./build/examples/vulkan_renderer/threadmaxx_vulkan_smoke        # Ctrl-C / close window to quit
+./build/examples/vulkan_renderer/threadmaxx_vulkan_smoke 300    # run 300 ticks and exit
+THREADMAXX_VK_VALIDATE=1 ./build/examples/vulkan_renderer/threadmaxx_vulkan_smoke 300
+```
+
+The smoke is intentionally minimal — batch 10 (RPG demo) is the showcase
+that exercises mesh I/O, shadows, and PBR shading. The
+`threadmaxx::vulkan_renderer` static library is reusable: link your own
+game against it the same way the smoke does.
+
 Run the test suite:
 
 ```sh
@@ -213,7 +231,7 @@ CMake options:
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `THREADMAXX_BUILD_EXAMPLES` | `ON` | Builds `examples/minimal` and (if SDL2 is found) `examples/boids`. |
+| `THREADMAXX_BUILD_EXAMPLES` | `ON` | Builds `examples/minimal`, (if SDL2 is found) `examples/boids`, and (if Vulkan + GLFW + glslc are found) `examples/vulkan_renderer`. |
 | `THREADMAXX_BUILD_TESTS` | `ON` | Builds and registers the CTest suite under `tests/`. |
 | `THREADMAXX_BUILD_BENCHMARKS` | `OFF` | Builds the standalone microbenchmark binaries under `bench/` (`commit_bench`, `event_channel_bench`). Not registered with CTest; run them by hand. |
 | `THREADMAXX_WARNINGS_AS_ERRORS` | `OFF` | Promotes the project's warning set (incl. `-Wsign-conversion`, `-Wconversion`, `-Wshadow`, `-Wold-style-cast`) to errors. The library compiles clean under it; keep it that way. |
@@ -291,7 +309,8 @@ int main() {
 To plug in a renderer, implement `threadmaxx::IRenderer::submitFrame` —
 you get a `RenderFrame` with a `std::span<const RenderInstance>`. See
 `examples/minimal/ConsoleRenderer.{hpp,cpp}` for the smallest possible
-implementation and `examples/boids/SDLRenderer.{hpp,cpp}` for a real
+implementation, `examples/vulkan_renderer/` for a Vulkan 1.3 reference
+renderer (static lib + smoke binary), and `examples/boids/SDLRenderer.{hpp,cpp}` for a real
 SDL2-backed one.
 
 ## Architecture, briefly
@@ -339,8 +358,9 @@ Roadmap and intentional gaps: [`FUTURE_WORK.md`](FUTURE_WORK.md).
 ```
 include/threadmaxx/    public API (~22 headers)
 src/                   private implementation (PImpl)
-examples/minimal/      headless console example
-examples/boids/        SDL2 boids simulation
+examples/minimal/         headless console example
+examples/boids/           SDL2 boids simulation
+examples/vulkan_renderer/ Vulkan 1.3 reference renderer (static lib + smoke)
 bench/                 standalone microbenchmarks (opt-in)
 tests/                 79 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
