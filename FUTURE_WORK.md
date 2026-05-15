@@ -58,10 +58,11 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Eleven batches plus a prep slice and the batch-13a safety net have
-landed, closing Milestones 1, 2, and 3, the M4 contract, and §6
-phases 3+4 of M5 with the §6 phase 5 deterministic safety net in
-place. Batches 1–3
+Eleven batches plus a prep slice, the batch-13a safety net, and the
+batch-13b sharded commit have landed, closing Milestones 1, 2, and 3,
+the M4 contract, and §6 phases 3+4 of M5 with §6 phase 5 reaching
+its first parallel-commit milestone (batch 13c collects the
+remaining items). Batches 1–3
 brought **Milestone 1** to
 completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
 polish and seeded the tracing maturity batches 5+ build on; batch 5
@@ -472,6 +473,61 @@ behavior bit-for-bit). Closes §6 phase 4.
   across High/Normal/Low; (6) loader `cancel()` fires before
   `update()` and `cancelled` aggregates.
 
+### Batch 13b — Sharded commit phase (Milestone 5, §6 phase 5)
+
+Shipped 2026-05-15, hours after batch 13a — the safety net pre-validated
+the design, so 13b's implementation collapsed to a focused
+three-pass classifier + parallel apply. Effort ~0.5 days.
+
+- **`EngineImpl::commitBuffersSharded`.** Three-pass parallel
+  commit. Pass A: walk all of one system's buffers, build the
+  migrating-entity set (entities touched by any non-value-only
+  command). Pass B: walk again in submission order, hash inline,
+  apply migrate-possible commands and any commands on migrating
+  entities on the sim thread immediately, queue value-only
+  commands (`SetTransform` / `SetVelocity` / `SetAcceleration` /
+  `SetUserData`) on non-migrating entities into per-destination-
+  chunk bins. Pass C: each non-empty bin runs as one
+  `JobSystem` job and the sim thread `latch`-waits.
+  Per-chunk bins write disjoint memory; the four value-only
+  setters look up by `EntityHandle`, so a swap-pop during pass B
+  doesn't break pass C.
+- **`Config::singleThreadedCommit = false`.** Public toggle that
+  selects the sharded path. Default remains `true`; the sharded
+  path is a pure performance opt-in. Wave commits in `step()`
+  dispatch through `commitBuffersSharded` when off; pre/postStep
+  always run through the single-threaded `commitBuffer` (one
+  buffer at a time, classifier wouldn't help).
+- **Shared apply/hash helpers.** `applyCommandImpl(cmd, storage)`
+  and `hashCommandImpl(h, cmd, spawnResult)` factor the variant
+  dispatch so `commitBuffer` and `commitBuffersSharded` use the
+  same mutation/hashing code. The single-threaded path applies-
+  then-hashes inline; the sharded path hashes chunk-local
+  commands at queue time (deterministic inputs) and global
+  commands at apply time (so `CmdSpawn`'s result handle is
+  available). Both produce identical hash sequences by
+  construction.
+- **`stitchedDirty_` is now `std::atomic<bool>`.** Worker threads
+  applying chunk-local commands all flip the dirty flag through
+  the `mut*()` setters; making the flag atomic-relaxed prevents
+  a benign-in-practice data race per the C++ memory model.
+  Single-byte cost, no perf impact.
+- **Test.** `tests/sharded_commit_test.cpp` reruns the batch-13a
+  five scenarios under `singleThreadedCommit = false` on a
+  4-worker engine, hash-compared against the single-threaded
+  reference. Per-tick `commitHash` AND final `WorldSnapshot`
+  hash must agree across paths for every (scenario, tick) pair.
+  Plus: run-vs-run sharded stability, empty-buffer sharded path,
+  stale-handle tolerance in the chunk-local lane. Runtime ~21s.
+- **Doc updates.** README test count 60 → 61. CLAUDE.md gained a
+  §3.6 batch 13b section documenting the classifier rules.
+  `doc/stats_and_profiling.md` notes the `singleThreadedCommit`
+  toggle alongside the `commitHash` field.
+
+The remaining §6 phase 5 items (per-chunk command buffers,
+read-only snapshot, lock-free events) are tracked in §3.6.3 as
+batch 13c.
+
 ### Batch 13a — Commit-hash determinism safety net (Milestone 5, §6 phase 5 prep)
 
 Shipped 2026-05-15. Lands the deterministic-runtime safety net plus
@@ -740,53 +796,107 @@ the moment the sharded path lands, the same suite runs with
 assertions catch any reordering bug as a loud first-tick
 mismatch.
 
-#### 3.6.2 Batch 13b — Sharded commit phase (planned)
+#### 3.6.2 Batch 13b — Sharded commit phase  ✅ landed 2026-05-15
 
-With the safety net in place, batch 13b lands the actual
-parallel commit. Effort ~1.5 weeks.
+Lands the sharded commit path itself. Effort ~0.5 days (the
+batch-13a safety net pre-validated the design, so the implementation
+collapses to a two-pass classifier + parallel apply).
 
-Deliverables:
+Deliverables shipped:
 
-- **Sharded commit phase.** Group commands by destination chunk;
-  commit each group on its own helper thread. Spawn/destroy on
-  disjoint chunks no longer serializes. Gated by
-  `Config::singleThreadedCommit = false`; default stays `true`
-  until the path has soaked.
-- **Per-chunk command buffers.** During wave execution, workers
-  emit commands into a "by destination chunk" thread-local bucket
-  (using the entity's current archetype as the routing key) rather
-  than one global buffer per system. Cross-chunk commands (the
-  rare case: a mask-change that migrates an entity) fall back to
-  the global lane.
-- **Read-only world snapshot per wave.** Systems read through an
-  immutable snapshot pointer rather than the live world reference;
-  the snapshot pointer is rebound between waves. Allows worker
-  jobs to take stable references to chunk data without worrying
-  about concurrent reallocation from another worker spawning.
-- **Append-only event channels.** Replace the existing mutex-
-  protected `emit` with a lock-free MPSC queue per channel. Drain
-  is still on the sim thread at tick boundary.
-- **`tests/sharded_commit_test.cpp`** — reruns the batch 13a
+- **Sharded commit phase.** When `Config::singleThreadedCommit
+  = false`, each system's wave commit runs through
+  `EngineImpl::commitBuffersSharded`, a three-pass classifier:
+  (A) build the migrating-entity set; (B) walk all buffers in
+  submission order, hash inline, apply global commands (anything
+  that may toggle a mask bit) immediately on the sim thread, queue
+  value-only commands (`SetTransform` / `SetVelocity` /
+  `SetAcceleration` / `SetUserData`) on non-migrating entities into
+  per-destination-chunk bins; (C) submit each non-empty bin as one
+  `JobSystem` job and `latch`-wait. Migrate-possible commands stay
+  serial to preserve registration-order semantics. The default
+  remains `singleThreadedCommit = true` until the path soaks.
+- **Shared apply/hash helpers.** `commitBuffer` and
+  `commitBuffersSharded` now both go through the file-local
+  `applyCommandImpl(cmd, storage) -> EntityHandle` (mutation only)
+  and `hashCommandImpl(h, cmd, spawnResult)` (hash only). The
+  single-threaded path applies-then-hashes inline; the sharded
+  path hashes chunk-local commands at queue time and global
+  commands at apply time. Both produce identical hash sequences.
+- **Atomic `stitchedDirty_` in `EntityStorage`.** Worker threads
+  applying chunk-local commands all flip the dirty flag; relaxed
+  atomic store prevents a benign-in-practice data race per the
+  C++ memory model.
+- **`tests/sharded_commit_test.cpp`** — reruns the batch-13a
   scenarios with `singleThreadedCommit = false`, hash-compared
-  against the reference run from `commit_hash_test.cpp`. Both
-  paths must produce identical per-tick `commitHash` and final
-  `WorldSnapshot` hash across every (scenario, tick) pair.
+  against the single-threaded reference path. The five
+  (1k/8k/32k entities × transform / health / static-tag / parent /
+  mixed) scenarios run for 256 ticks each on a 4-worker engine.
+  Per-tick `commitHash` AND final `WorldSnapshot` FNV-1a hash
+  agree across paths for every (scenario, tick) pair. Plus:
+  run-vs-run sharded stability (workers race, results don't);
+  empty-buffer sharded path; stale-handle tolerance in the
+  chunk-local lane.
+
+Deferred to **batch 13c** (the natural next-step batch that closes
+out §6 phase 5):
+
+- **Per-chunk command buffers.** Today's design bins at commit
+  time, after recording. A record-time routing scheme would skip
+  the classifier pass entirely but requires redesigning the
+  `CommandBuffer` recording API. Effort ~1 week; deferred until
+  profiling shows the classifier pass as a measurable bottleneck.
+- **Read-only world snapshot per wave.** Worker jobs today read
+  through `const World&`; an explicit immutable snapshot pointer
+  would let queries cache chunk pointers across multiple
+  `parallelFor` calls. Independent perf opt; deferred for the
+  same reason.
+- **Append-only lock-free event channels.** `EventChannel<T>::emit`
+  still uses a mutex. Replacement with an MPSC queue is a
+  contained internal change; the public API stays unchanged.
+  Deferred to batch 13c so the commit-phase work and the
+  event-channel work can be benchmarked + soaked independently.
 
 #### Risks and mitigations
 
 - **Determinism preservation.** Per-chunk parallel commits must
   produce a state byte-identical to the single-threaded reference.
   Mitigation in three layers: (1) commands within a chunk still
-  apply in submission order; (2) cross-chunk commands fall back
-  to deterministic registration-order serial commit; (3) the
-  per-tick `commitHash` (batch 13a, shipped) provides a runtime
-  safety net. If a divergence is ever discovered in production,
+  apply in submission order (each bin processed by one worker);
+  (2) cross-chunk commands fall back to deterministic
+  registration-order serial commit; (3) the per-tick
+  `commitHash` (batch 13a) provides a runtime safety net. If a
+  divergence is ever discovered in production,
   `Config::singleThreadedCommit = true` is the documented
   immediate fallback — the sharded path is a pure performance
   opt-in.
-- **False sharing.** Per-chunk buffers risk cache-line contention.
-  Mitigation: pad the buffer headers to 64 bytes; standard
-  alignas-based fix.
+- **False sharing.** The current commit-time-bin design uses one
+  `std::vector<Command*>` per chunk, so headers don't sit next to
+  each other in cache. The per-chunk *command buffer* design
+  (batch 13c) will need the alignas-based padding fix.
+
+### 3.6.3 Batch 13c — Storage contention close-out (planned)
+
+Closes §6 phase 5 by collecting the items deferred from batches
+13a/13b into one focused batch. Effort ~1 week.
+
+Deliverables:
+
+- **Per-chunk command buffers.** Record-time routing: workers emit
+  into thread-local buckets keyed on the entity's current
+  archetype. Cross-chunk commands (mask-changes) fall back to the
+  global lane. Skips the commit-time classifier pass, at the cost
+  of `CommandBuffer` recording-API changes.
+- **Read-only world snapshot per wave.** Bind a snapshot pointer
+  between waves so worker jobs can cache chunk pointers across
+  multiple `parallelFor` calls.
+- **Append-only event channels.** Lock-free MPSC queue per
+  channel; drain still on sim thread at tick boundary. Public
+  `EventChannel<T>::emit` signature unchanged.
+- **Soak test.** Benchmark sharded vs. single-threaded paths
+  across the demo and integration test suites; document the
+  break-even point at which the sharded path beats the
+  single-threaded baseline.
 
 ### 3.7 Batch 14 — Telemetry ingestion close-out (Milestone 5, §6 phase 6)
 

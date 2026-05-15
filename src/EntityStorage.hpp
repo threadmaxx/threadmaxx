@@ -4,6 +4,7 @@
 #include "threadmaxx/Components.hpp"
 #include "threadmaxx/Handles.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -177,7 +178,14 @@ private:
     // lazily — every mutation marks the cache dirty; the next public
     // accessor walks the archetype chunks and rebuilds. The cache is
     // mutable so const accessors can refresh it.
-    mutable bool                            stitchedDirty_ = true;
+    //
+    // §3.6 batch 13b — atomic so worker threads applying chunk-local
+    // value-only commands (the sharded commit path) can flip the flag
+    // without a data race. The store is `relaxed`: ordering across
+    // chunks doesn't matter, only that the flag is observed as `true`
+    // before the next `ensureStitched()` runs (which only happens on
+    // the sim thread, after the worker latch).
+    mutable std::atomic<bool>               stitchedDirty_{true};
     mutable std::vector<EntityHandle>       stitchedEntities_;
     mutable std::vector<Transform>          stitchedTransforms_;
     mutable std::vector<Velocity>           stitchedVelocities_;
@@ -196,7 +204,7 @@ private:
     // indexOf to translate a slot's (arch, row) into a stitched index.
     mutable std::vector<std::uint32_t>      archetypeStitchStart_;
 
-    void markDirty() noexcept { stitchedDirty_ = true; }
+    void markDirty() noexcept { stitchedDirty_.store(true, std::memory_order_relaxed); }
     void ensureStitched() const noexcept;
 };
 

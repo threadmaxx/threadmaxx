@@ -334,7 +334,7 @@ const ComponentSet* EntityStorage::tryGetComponentMask(EntityHandle h) const noe
 // ---- stitched views ------------------------------------------------------
 
 void EntityStorage::ensureStitched() const noexcept {
-    if (!stitchedDirty_) return;
+    if (!stitchedDirty_.load(std::memory_order_relaxed)) return;
 
     const auto& chunks = table_.chunks();
     archetypeStitchStart_.assign(chunks.size(), 0);
@@ -395,7 +395,7 @@ void EntityStorage::ensureStitched() const noexcept {
         fill(stitchedBoundingVolumes_, std::span<const BoundingVolume>(c.boundingVolumes), c.mask.has(Component::BoundingVolume),  BoundingVolume{});
         cursor += n;
     }
-    stitchedDirty_ = false;
+    stitchedDirty_.store(false, std::memory_order_relaxed);
 }
 
 std::span<const EntityHandle> EntityStorage::entities() const noexcept {

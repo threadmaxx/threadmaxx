@@ -450,11 +450,81 @@ will hash-compare against — when the sharded path lands, the same
 suite reruns under `singleThreadedCommit = false` and any
 reordering bug surfaces as a loud first-tick mismatch.
 
-Adding a new command variant to `CommandBuffer` requires a matching
-arm in `commitBuffer` that mixes the variant's discriminator +
-entity + value into `commitHashAcc_`. Skipping the hash update will
-not visibly break tests today (the run-vs-run path still sees
-identical state) but will silently mask divergence the moment batch
-13b's sharded path goes live. The recipe is one
-`mixHashBytes(commitHashAcc_, c.entity)` + one per-field
-`mixHashBytes` call below the existing storage mutation.
+Adding a new command variant to `CommandBuffer` requires matching
+arms in both `applyCommandImpl` (storage mutation) and
+`hashCommandImpl` (hash contribution) at the top of `EngineImpl.cpp`.
+The single-threaded `commitBuffer` and the sharded
+`commitBuffersSharded` both go through these helpers, so a missing
+arm fails to compile rather than silently corrupting state.
+
+## §3.6 batch 13b — Sharded commit path
+
+`Config::singleThreadedCommit = false` opts wave commits into the
+parallel-apply path implemented by `EngineImpl::commitBuffersSharded`.
+The default remains `true`; the sharded path is a pure performance
+opt-in. Pre/postStep hooks always run through the single-threaded
+`commitBuffer` (one buffer at a time has no parallelism to exploit).
+
+Three passes per system's wave commit:
+
+1. **Pass A (sim thread, build migrating-entity set).** Walk every
+   buffer in the system's `SystemContext`; for each command that
+   *might* toggle a mask bit (i.e. not one of the four value-only
+   setters), insert the target entity into a `std::unordered_set`.
+   Spawn-with-reserved-handle counts: the reserved handle is added
+   to the set so a value-only write against the same handle
+   elsewhere in the batch falls through to the global lane.
+
+2. **Pass B (sim thread, submission order).** Walk every buffer
+   again. For each command:
+   - **Value-only fast path** (`CmdSetTransform` / `CmdSetVelocity`
+     / `CmdSetAcceleration` / `CmdSetUserData`) targeting an entity
+     **not in** the migrating-entity set: hash the command via
+     `hashCommandImpl`, then push the command pointer onto
+     `chunkBins[storage.locate(entity).archetype]`. Stale handles
+     fall through to the global lane (lookup returns out-of-range
+     archetype index).
+   - **Everything else (global lane):** call `applyCommandImpl`
+     immediately on the sim thread, then hash via
+     `hashCommandImpl`. Migration is applied at this point so
+     later-in-pass-B value-only commands on entities whose chunks
+     reordered (swap-and-pop within the chunk) still resolve
+     correctly via `mut*()` handle lookup.
+
+3. **Pass C (workers, parallel).** Submit one job per non-empty
+   `chunkBins[i]`; each job applies its commands via
+   `applyCommandImpl` in submission order. The sim thread waits
+   on a `std::latch`. Bins write disjoint memory by construction
+   (one chunk per bin), so no inter-bin synchronization is needed.
+
+After Pass C, all source `CommandBuffer`s are cleared.
+
+The classifier rules are the load-bearing invariant: two entities
+e1 and e2 in the same chunk X may interleave only if (a) both are
+absent from the migrating-entity set (so neither's chunk changes
+mid-commit) AND (b) both are visible through `storage.locate`.
+The first rule routes all entity-X-touching commands to the same
+bin; the second filters destroyed handles. Together they let the
+chunkBins partition writes by archetype with no per-entity locks.
+
+Stale `stitchedDirty_` racing under parallel apply: the
+`EntityStorage` flag is now `std::atomic<bool>` (relaxed store), so
+multiple workers flipping it through `mut*()` is race-free per the
+C++ memory model. One-instruction store on x86, no fence.
+
+Test: `tests/sharded_commit_test.cpp` reruns the batch-13a five
+scenarios (1k/8k/32k entities × {transform-only, transform+health,
+transform+statictag, parent-hierarchy, mixed multi-setter}) on a
+4-worker engine, hash-comparing the sharded path against the
+single-threaded reference. Per-tick `commitHash` and final
+`WorldSnapshot` hash must agree across paths for every
+(scenario, tick) pair.
+
+Adding a new command variant: as in batch 13a, extend
+`applyCommandImpl` and `hashCommandImpl`. The new variant
+automatically falls into the global lane (because
+`commandIsMigrating` returns `true` for anything not in the
+four-element value-only list). To opt a new variant into the
+chunk-local fast path, extend the `commandIsMigrating` switch
+explicitly — but only if the variant is genuinely value-only with
+no possible mask toggle, lookup, or cross-entity side effect.

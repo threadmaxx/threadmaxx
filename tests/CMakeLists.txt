@@ -62,6 +62,7 @@ set(THREADMAXX_TESTS
     task_graph_test
     cancellation_test
     commit_hash_test
+    sharded_commit_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

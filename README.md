@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 60 tests pin the
+minimal; the internals are PImpl'd so they can change. 61 tests pin the
 documented invariants.
 
 ## Highlights

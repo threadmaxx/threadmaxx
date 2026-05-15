@@ -64,6 +64,39 @@ The same field is emitted by `writeJsonLines` (as
 `args.commit_hash` — pick whichever sink is cheapest to wire into
 the build.
 
+## Parallel commit — `Config::singleThreadedCommit`
+
+`Config::singleThreadedCommit` defaults to `true`: every command
+buffer's commit runs serially on the sim thread, in registration
+order. Setting it to `false` opts wave commits into a sharded
+parallel apply: the engine routes value-only setter commands
+(`SetTransform` / `SetVelocity` / `SetAcceleration` / `SetUserData`
+on non-migrating entities) into per-destination-chunk bins and runs
+each bin on a worker thread. Migrate-possible commands (anything
+that can toggle a mask bit — spawn, destroy, addTag/removeTag,
+setComponentMask, setHealth/Faction/etc., setParent, setRenderTag,
+add/removeUserComponent) always run on the sim thread to preserve
+registration-order semantics.
+
+Determinism is preserved bit-for-bit by `commitHash`: the same
+inputs yield the same hash whether `singleThreadedCommit` is `true`
+or `false`. If a divergence is ever discovered in production,
+flipping `singleThreadedCommit = true` is the documented immediate
+fallback — the sharded path is a pure performance opt-in.
+
+Two notes on when to flip it on:
+
+- The classifier pass (single-threaded prefix of the sharded path)
+  adds a small fixed cost per command. Workloads dominated by
+  migrate-possible commands (heavy spawn / destroy / tag churn)
+  may see no win or a slight loss; workloads dominated by
+  value-only setters (physics integration writing transforms +
+  velocities across thousands of entities) see the biggest win.
+- The sharded path uses the engine's `JobSystem`. If
+  `workerCount` is 1 (or 0 with one-core hardware), Pass C has
+  nothing to fan out to and the classifier overhead is pure cost.
+  Leave `singleThreadedCommit = true` on single-threaded builds.
+
 ## `JobSystemStats`
 
 ```cpp

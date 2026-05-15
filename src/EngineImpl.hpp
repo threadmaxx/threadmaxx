@@ -200,6 +200,32 @@ private:
     // Applies a command buffer's commands to the world. Single-threaded.
     void commitBuffer(CommandBuffer& cb);
 
+    // §3.6 batch 13b — Sharded commit. Processes an entire system's
+    // buffer set in one pass:
+    //   - Pass A (sim thread): build the migrating-entity set.
+    //   - Pass B (sim thread, submission order): hash each command;
+    //     apply global commands (spawn/destroy/mask-change/migrate-
+    //     possible setX/tag ops/user-component ops) immediately;
+    //     queue value-only commands (SetTransform, SetVelocity,
+    //     SetAcceleration, SetUserData) on non-migrating entities into
+    //     per-destination-chunk bins.
+    //   - Pass C (workers): apply each chunk bin in submission order
+    //     on a separate worker thread. mut*() lookups by entity
+    //     handle remain correct even if the entity moved chunks
+    //     during pass B (migrate-touched entities are filtered out
+    //     by pass A).
+    // Guarantees: bit-for-bit identical world state + `commitHash`
+    // to the single-threaded `commitBuffer` path on the same input.
+    void commitBuffersSharded(std::vector<CommandBuffer>& buffers);
+
+    // Internal helper: apply ONE command's storage mutation. Used by
+    // both the single-threaded path (with inline hashing) and the
+    // sharded path (hashing handled separately by the classifier).
+    // Returns the resulting EntityHandle for `CmdSpawn` (so the
+    // global-lane apply can hash it); kInvalidEntity for all other
+    // command types.
+    EntityHandle applyCommandNoHash(detail::Command& cmd);
+
     // Build the back render frame from current world state, then publish it.
     void buildRenderFrame();
 

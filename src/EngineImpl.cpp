@@ -32,6 +32,7 @@
 #include <latch>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 
 namespace threadmaxx::internal {
@@ -65,8 +66,7 @@ constexpr inline std::uint64_t mixHashByte(std::uint64_t h,
 // Mix the raw byte representation of a trivially-copyable POD. The
 // component PODs (Vec3 / Quat / Transform / …) are tightly packed
 // floats with no internal padding, so this produces stable output
-// across runs and machines. The `mixHashTag` overload below covers
-// the variant-index discriminator.
+// across runs and machines.
 template <typename T>
 inline std::uint64_t mixHashBytes(std::uint64_t h, const T& v) noexcept {
     static_assert(std::is_trivially_copyable_v<T>,
@@ -76,6 +76,235 @@ inline std::uint64_t mixHashBytes(std::uint64_t h, const T& v) noexcept {
         h = mixHashByte(h, static_cast<std::uint8_t>(p[i]));
     }
     return h;
+}
+
+// §3.6 batch 13b — Apply ONE command's storage mutation. No hashing.
+// Returns the resulting `EntityHandle` for `CmdSpawn` so callers can
+// hash it post-apply (the value-vs-reserved spawn paths produce
+// distinguishable handles, which the hash must reflect).
+// `kInvalidEntity` for all other variants.
+EntityHandle applyCommandImpl(detail::Command& cmd,
+                              EntityStorage& storage) noexcept {
+    EntityHandle resultHandle = kInvalidEntity;
+    std::visit([&](auto& c) {
+        using T = std::decay_t<decltype(c)>;
+        if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
+            if (c.reserved.valid()) {
+                // §3.5: spawn into a slot previously taken via
+                // SystemContext::reserveHandle(). Falls back to a
+                // fresh allocation if the reservation was discarded
+                // (e.g. by a competing path that consumed it first).
+                if (storage.materializeReserved(c.reserved,
+                        c.transform, c.velocity, c.render, c.userData,
+                        c.acceleration, c.parent,
+                        c.health, c.faction, c.animationState,
+                        c.physicsBody, c.navAgent, c.boundingVolume,
+                        c.initialMask)) {
+                    resultHandle = c.reserved;
+                } else {
+                    resultHandle = storage.spawn(c.transform, c.velocity,
+                                  c.render, c.userData,
+                                  c.acceleration, c.parent,
+                                  c.health, c.faction, c.animationState,
+                                  c.physicsBody, c.navAgent, c.boundingVolume,
+                                  c.initialMask);
+                }
+            } else {
+                resultHandle = storage.spawn(c.transform, c.velocity,
+                              c.render, c.userData,
+                              c.acceleration, c.parent,
+                              c.health, c.faction, c.animationState,
+                              c.physicsBody, c.navAgent, c.boundingVolume,
+                              c.initialMask);
+            }
+        } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
+            storage.destroy(c.entity);
+        } else if constexpr (std::is_same_v<T, detail::CmdSetTransform>) {
+            if (auto* p = storage.mutTransform(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetVelocity>) {
+            if (auto* p = storage.mutVelocity(c.entity))  *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetRenderTag>) {
+            // Migrate first so the destination chunk has the
+            // RenderTag slot, then write the value. The auto-derive
+            // matches the legacy "RenderTag iff meshId>=0" rule.
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                if (c.value.meshId >= 0) newMask.add(Component::RenderTag);
+                else                     newMask.remove(Component::RenderTag);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutRenderTag(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetUserData>) {
+            if (auto* p = storage.mutUserData(c.entity))  *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetAcceleration>) {
+            if (auto* p = storage.mutAcceleration(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetParent>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                if (c.value.parent.valid()) newMask.add(Component::Parent);
+                else                        newMask.remove(Component::Parent);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutParent(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetHealth>) {
+            // §3.1 batch-5 set* methods: attaching a value attaches
+            // the presence bit. Migrate FIRST so the destination
+            // archetype has a Health slot to write into.
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(Component::Health);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutHealth(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetFaction>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(Component::Faction);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutFaction(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetAnimationState>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(Component::AnimationStateRef);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutAnimationStateRef(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetPhysicsBody>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(Component::PhysicsBodyRef);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutPhysicsBodyRef(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetNavAgent>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(Component::NavAgentRef);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutNavAgentRef(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetBoundingVolume>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(Component::BoundingVolume);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+            if (auto* p = storage.mutBoundingVolume(c.entity)) *p = c.value;
+        } else if constexpr (std::is_same_v<T, detail::CmdSetComponentMask>) {
+            storage.setMaskAndMigrate(c.entity, c.value);
+        } else if constexpr (std::is_same_v<T, detail::CmdAddTag>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(c.tag);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+        } else if constexpr (std::is_same_v<T, detail::CmdRemoveTag>) {
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.remove(c.tag);
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+        } else if constexpr (std::is_same_v<T, detail::CmdAddUserComponent>) {
+            // §3.1 batch 6b: migrate the entity into the
+            // destination archetype (which gets a UserComponentColumn
+            // for this bit during getOrCreateArchetype) and write
+            // the user-supplied blob into the new row. No-op for
+            // stale handles.
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.add(static_cast<Component>(1ull << c.bit));
+                storage.setMaskAndMigrate(c.entity, newMask);
+                const auto loc = storage.locate(c.entity);
+                auto& chunk = storage.archetypes().chunks()[loc.archetype];
+                if (auto* col = chunk.findUserColumn(c.bit)) {
+                    std::memcpy(col->rowPtr(loc.row), c.data(), col->stride);
+                }
+            }
+        } else if constexpr (std::is_same_v<T, detail::CmdRemoveUserComponent>) {
+            // Idempotent: bit absent → migrate is a no-op fast path.
+            if (const auto* m = storage.tryGetComponentMask(c.entity)) {
+                ComponentSet newMask = *m;
+                newMask.remove(static_cast<Component>(1ull << c.bit));
+                storage.setMaskAndMigrate(c.entity, newMask);
+            }
+        }
+    }, cmd);
+    return resultHandle;
+}
+
+// §3.6 batch 13a — Mix one command's full hash contribution into `h`.
+// Includes the variant discriminator AND the per-variant payload
+// bytes. For `CmdSpawn` the caller supplies the result handle (which
+// `applyCommandImpl` returned).
+std::uint64_t hashCommandImpl(std::uint64_t h, const detail::Command& cmd,
+                              EntityHandle spawnResult) noexcept {
+    h = mixHashByte(h, static_cast<std::uint8_t>(cmd.index()));
+    std::visit([&](const auto& c) {
+        using T = std::decay_t<decltype(c)>;
+        if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
+            h = mixHashBytes(h, c);
+            h = mixHashBytes(h, spawnResult);
+        } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
+            h = mixHashBytes(h, c.entity);
+        } else if constexpr (std::is_same_v<T, detail::CmdSetComponentMask>) {
+            h = mixHashBytes(h, c.entity);
+            const std::uint64_t bits = c.value.bits();
+            h = mixHashBytes(h, bits);
+        } else if constexpr (std::is_same_v<T, detail::CmdAddTag> ||
+                             std::is_same_v<T, detail::CmdRemoveTag>) {
+            h = mixHashBytes(h, c.entity);
+            const std::uint64_t tag = static_cast<std::uint64_t>(c.tag);
+            h = mixHashBytes(h, tag);
+        } else if constexpr (std::is_same_v<T, detail::CmdAddUserComponent>) {
+            h = mixHashBytes(h, c.entity);
+            h = mixHashBytes(h, c.bit);
+            const auto* blob = reinterpret_cast<const std::byte*>(c.data());
+            for (std::size_t i = 0; i < c.stride; ++i) {
+                h = mixHashByte(h, static_cast<std::uint8_t>(blob[i]));
+            }
+        } else if constexpr (std::is_same_v<T, detail::CmdRemoveUserComponent>) {
+            h = mixHashBytes(h, c.entity);
+            h = mixHashBytes(h, c.bit);
+        } else {
+            // All remaining Set* variants share the (entity, value) shape.
+            h = mixHashBytes(h, c.entity);
+            h = mixHashBytes(h, c.value);
+        }
+    }, cmd);
+    return h;
+}
+
+// True iff a command type can change the entity's archetype (any
+// mask-toggling op). Used by the sharded commit's pass A to build
+// the migrating-entity set. The four value-only setters
+// (SetTransform/Velocity/Acceleration/UserData) are the chunk-local
+// fast path.
+bool commandIsMigrating(const detail::Command& cmd) noexcept {
+    return std::visit([](const auto& c) {
+        using T = std::decay_t<decltype(c)>;
+        return !(std::is_same_v<T, detail::CmdSetTransform> ||
+                 std::is_same_v<T, detail::CmdSetVelocity> ||
+                 std::is_same_v<T, detail::CmdSetAcceleration> ||
+                 std::is_same_v<T, detail::CmdSetUserData>);
+    }, cmd);
+}
+
+// Returns the target entity of a non-spawn command. For `CmdSpawn`
+// (which creates a new entity), returns the reserved handle if
+// present or `kInvalidEntity` otherwise. The migrating-set tracking
+// in pass A only cares about *existing* entities, so the spawn-with-
+// reservation case is correctly captured (the reserved handle is
+// already live).
+EntityHandle commandTargetEntity(const detail::Command& cmd) noexcept {
+    return std::visit([](const auto& c) -> EntityHandle {
+        using T = std::decay_t<decltype(c)>;
+        if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
+            return c.reserved;
+        } else {
+            return c.entity;
+        }
+    }, cmd);
 }
 
 } // namespace
@@ -502,206 +731,134 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
     auto& storage = world_.impl_().storage;
     commandsThisStep_ += cb.commands().size();
     for (auto& cmd : cb.commands()) {
-        // §3.6 batch 13a — mix the variant discriminator into the
-        // running hash before dispatch. Each arm below mixes the
-        // command's payload (entity handle, new value, spawn result)
-        // into `commitHashAcc_`. Same inputs → same hash.
-        commitHashAcc_ = mixHashByte(commitHashAcc_,
-            static_cast<std::uint8_t>(cmd.index()));
-        std::visit([&](auto& c) {
-            using T = std::decay_t<decltype(c)>;
-            if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
-                EntityHandle resultHandle = kInvalidEntity;
-                if (c.reserved.valid()) {
-                    // §3.5: spawn into a slot previously taken via
-                    // SystemContext::reserveHandle(). Falls back to a
-                    // fresh allocation if the reservation was discarded
-                    // (e.g. by a competing path that consumed it first).
-                    if (storage.materializeReserved(c.reserved,
-                            c.transform, c.velocity, c.render, c.userData,
-                            c.acceleration, c.parent,
-                            c.health, c.faction, c.animationState,
-                            c.physicsBody, c.navAgent, c.boundingVolume,
-                            c.initialMask)) {
-                        resultHandle = c.reserved;
-                    } else {
-                        resultHandle = storage.spawn(c.transform, c.velocity,
-                                      c.render, c.userData,
-                                      c.acceleration, c.parent,
-                                      c.health, c.faction, c.animationState,
-                                      c.physicsBody, c.navAgent, c.boundingVolume,
-                                      c.initialMask);
-                    }
-                } else {
-                    resultHandle = storage.spawn(c.transform, c.velocity,
-                                  c.render, c.userData,
-                                  c.acceleration, c.parent,
-                                  c.health, c.faction, c.animationState,
-                                  c.physicsBody, c.navAgent, c.boundingVolume,
-                                  c.initialMask);
-                }
-                // Hash inputs AND the resulting handle so reservation
-                // vs. fresh-alloc paths produce distinguishable values.
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, resultHandle);
-            } else if constexpr (std::is_same_v<T, detail::CmdDestroy>) {
-                storage.destroy(c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetTransform>) {
-                if (auto* p = storage.mutTransform(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetVelocity>) {
-                if (auto* p = storage.mutVelocity(c.entity))  *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetRenderTag>) {
-                // Migrate first so the destination chunk has the
-                // RenderTag slot, then write the value. The auto-derive
-                // matches the legacy "RenderTag iff meshId>=0" rule.
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    if (c.value.meshId >= 0) newMask.add(Component::RenderTag);
-                    else                     newMask.remove(Component::RenderTag);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutRenderTag(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetUserData>) {
-                if (auto* p = storage.mutUserData(c.entity))  *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetAcceleration>) {
-                if (auto* p = storage.mutAcceleration(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetParent>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    if (c.value.parent.valid()) newMask.add(Component::Parent);
-                    else                        newMask.remove(Component::Parent);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutParent(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetHealth>) {
-                // §3.1 batch-5 set* methods: attaching a value attaches
-                // the presence bit. Migrate FIRST so the destination
-                // archetype has a Health slot to write into.
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(Component::Health);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutHealth(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetFaction>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(Component::Faction);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutFaction(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetAnimationState>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(Component::AnimationStateRef);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutAnimationStateRef(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetPhysicsBody>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(Component::PhysicsBodyRef);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutPhysicsBodyRef(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetNavAgent>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(Component::NavAgentRef);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutNavAgentRef(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetBoundingVolume>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(Component::BoundingVolume);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                if (auto* p = storage.mutBoundingVolume(c.entity)) *p = c.value;
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.value);
-            } else if constexpr (std::is_same_v<T, detail::CmdSetComponentMask>) {
-                storage.setMaskAndMigrate(c.entity, c.value);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                const std::uint64_t bits = c.value.bits();
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, bits);
-            } else if constexpr (std::is_same_v<T, detail::CmdAddTag>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(c.tag);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                const std::uint64_t tag = static_cast<std::uint64_t>(c.tag);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, tag);
-            } else if constexpr (std::is_same_v<T, detail::CmdRemoveTag>) {
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.remove(c.tag);
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                const std::uint64_t tag = static_cast<std::uint64_t>(c.tag);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, tag);
-            } else if constexpr (std::is_same_v<T, detail::CmdAddUserComponent>) {
-                // §3.1 batch 6b: migrate the entity into the
-                // destination archetype (which gets a UserComponentColumn
-                // for this bit during getOrCreateArchetype) and write
-                // the user-supplied blob into the new row. No-op for
-                // stale handles.
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.add(static_cast<Component>(1ull << c.bit));
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                    const auto loc = storage.locate(c.entity);
-                    auto& chunk = storage.archetypes().chunks()[loc.archetype];
-                    if (auto* col = chunk.findUserColumn(c.bit)) {
-                        std::memcpy(col->rowPtr(loc.row), c.data(), col->stride);
-                    }
-                }
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.bit);
-                const auto* blob = reinterpret_cast<const std::byte*>(c.data());
-                for (std::size_t i = 0; i < c.stride; ++i) {
-                    commitHashAcc_ = mixHashByte(commitHashAcc_,
-                        static_cast<std::uint8_t>(blob[i]));
-                }
-            } else if constexpr (std::is_same_v<T, detail::CmdRemoveUserComponent>) {
-                // Idempotent: bit absent → migrate is a no-op fast path.
-                if (const auto* m = storage.tryGetComponentMask(c.entity)) {
-                    ComponentSet newMask = *m;
-                    newMask.remove(static_cast<Component>(1ull << c.bit));
-                    storage.setMaskAndMigrate(c.entity, newMask);
-                }
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.entity);
-                commitHashAcc_ = mixHashBytes(commitHashAcc_, c.bit);
-            }
-        }, cmd);
+        // §3.6 batch 13a — single-threaded reference path. Apply the
+        // command via the shared `applyCommandImpl` helper, then mix
+        // the command's hash contribution into `commitHashAcc_`. For
+        // `CmdSpawn` the helper returns the resulting handle so the
+        // hash includes it (the reserved-vs-fresh-alloc paths produce
+        // distinguishable handles).
+        const EntityHandle spawnResult = applyCommandImpl(cmd, storage);
+        commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmd, spawnResult);
     }
     cb.clear();
+}
+
+EntityHandle EngineImpl::applyCommandNoHash(detail::Command& cmd) {
+    return applyCommandImpl(cmd, world_.impl_().storage);
+}
+
+void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
+    if (buffers.empty()) return;
+    auto& storage = world_.impl_().storage;
+
+    // Count + early-exit on no commands. The empty case is the
+    // steady-state for a wave system that didn't submit anything.
+    std::size_t totalCommands = 0;
+    for (const auto& cb : buffers) totalCommands += cb.commands().size();
+    if (totalCommands == 0) return;
+    commandsThisStep_ += totalCommands;
+
+    // ----- Pass A: build the migrating-entity set ----------------------
+    //
+    // Any entity touched by a non-value-only command anywhere in this
+    // buffer set goes into `migrating`. Subsequent passes route ALL
+    // commands on a migrating entity through the global (sim-thread)
+    // lane so per-entity ordering matches the single-threaded path.
+    //
+    // For `CmdSpawn` with a reserved handle, the reserved entity is
+    // about to be materialized — adding it to `migrating` blocks any
+    // value-only writes against the same handle elsewhere in this
+    // batch from sneaking into a chunk-local bin (where the slot may
+    // not exist yet).
+    std::unordered_set<EntityHandle> migrating;
+    for (const auto& cb : buffers) {
+        for (const auto& cmd : cb.commands()) {
+            if (!commandIsMigrating(cmd)) continue;
+            const EntityHandle e = commandTargetEntity(cmd);
+            if (e.valid()) migrating.insert(e);
+        }
+    }
+
+    // ----- Pass B: classify in submission order, applying global cmds --
+    //
+    // - Update `commitHashAcc_` with every command's contribution in
+    //   submission order, matching the single-threaded reference.
+    // - Apply migrate-possible commands (and any command targeting an
+    //   entity in `migrating`) on the sim thread immediately.
+    // - Queue value-only commands targeting non-migrating entities
+    //   into `chunkBins[storage.locate(entity).archetype]` for the
+    //   parallel pass C below.
+    //
+    // `chunkBins` is sized to the current chunk count and grows on
+    // demand if pass B creates new archetypes via `setMaskAndMigrate`.
+    // Storing raw command pointers is safe: the source `CommandBuffer`
+    // vectors are stable for the duration of this call (we don't
+    // `clear()` until after pass C).
+    std::vector<std::vector<detail::Command*>> chunkBins;
+    chunkBins.resize(storage.archetypes().chunks().size());
+
+    for (auto& cb : buffers) {
+        for (auto& cmd : cb.commands()) {
+            // Value-only chunk-local fast path: bin and hash, no apply yet.
+            bool routedChunkLocal = false;
+            if (!commandIsMigrating(cmd)) {
+                const EntityHandle e = commandTargetEntity(cmd);
+                if (e.valid() && !migrating.contains(e)) {
+                    const auto loc = storage.locate(e);
+                    // locate() returns {max,max} for stale handles —
+                    // bounds check against the live chunk count
+                    // filters those out (they'll fall through to the
+                    // global lane, where applyCommandImpl's mut*()
+                    // safely no-ops on stale handles).
+                    const auto& chunks = storage.archetypes().chunks();
+                    if (loc.archetype < chunks.size()) {
+                        if (loc.archetype >= chunkBins.size()) {
+                            chunkBins.resize(loc.archetype + 1);
+                        }
+                        chunkBins[loc.archetype].push_back(&cmd);
+                        commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                            cmd, kInvalidEntity);
+                        routedChunkLocal = true;
+                    }
+                }
+            }
+            if (!routedChunkLocal) {
+                // Global lane: apply on sim thread, then hash.
+                const EntityHandle spawnResult = applyCommandImpl(cmd, storage);
+                commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmd, spawnResult);
+            }
+        }
+    }
+
+    // ----- Pass C: apply chunk bins in parallel ------------------------
+    //
+    // Each non-empty bin is submitted as one job; bins target disjoint
+    // archetype chunks so their writes never overlap. The mut*()
+    // setters look up by `EntityHandle`, so an entity that was
+    // swap-popped within its chunk by a pass-B global migrate still
+    // resolves correctly.
+    std::size_t activeBins = 0;
+    for (const auto& bin : chunkBins) {
+        if (!bin.empty()) ++activeBins;
+    }
+    if (activeBins == 0) {
+        for (auto& cb : buffers) cb.clear();
+        return;
+    }
+
+    std::latch done(static_cast<std::ptrdiff_t>(activeBins));
+    for (auto& bin : chunkBins) {
+        if (bin.empty()) continue;
+        jobs_->submit([&bin, &done, &storage] {
+            for (auto* cmd : bin) {
+                applyCommandImpl(*cmd, storage);
+            }
+            done.count_down();
+        });
+    }
+    done.wait();
+
+    for (auto& cb : buffers) cb.clear();
 }
 
 void EngineImpl::buildRenderFrame() {
@@ -951,8 +1108,19 @@ void EngineImpl::step() {
         for (std::size_t k = 0; k < wave.size(); ++k) {
             const std::uint64_t commandsBefore = commandsThisStep_;
             const auto commitStart = std::chrono::steady_clock::now();
-            for (auto& cb : ctxs[k]->buffers()) {
-                commitBuffer(cb);
+            // §3.6 batch 13b — sharded commit toggle. Default is the
+            // single-threaded reference path; `singleThreadedCommit
+            // = false` opts into per-chunk parallel apply for the
+            // value-only commands (SetTransform / SetVelocity /
+            // SetAcceleration / SetUserData on non-migrating
+            // entities). Migrate-possible commands always run on the
+            // sim thread to preserve registration-order semantics.
+            if (cfg_.singleThreadedCommit) {
+                for (auto& cb : ctxs[k]->buffers()) {
+                    commitBuffer(cb);
+                }
+            } else {
+                commitBuffersSharded(ctxs[k]->buffers());
             }
             commitSecondsThisStep_ += std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - commitStart).count();
