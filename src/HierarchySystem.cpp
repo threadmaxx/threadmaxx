@@ -108,6 +108,11 @@ public:
 
             std::vector<std::uint32_t> stack;
             stack.reserve(8);
+            // `onStack[i] != 0` means dense index `i` is currently in
+            // `stack` for this start chain. Used to detect cycles
+            // (A → B → A) — without this guard, the inner walk would
+            // loop forever. Reset on each chain.
+            std::vector<std::uint8_t> onStack(count, 0);
             for (std::uint32_t start = 0; start < count; ++start) {
                 if (done[start]) continue;
 
@@ -115,16 +120,28 @@ public:
                 stack.clear();
                 std::uint32_t cur = start;
                 while (!done[cur]) {
+                    if (onStack[cur]) {
+                        // Cycle: cur is already on the current walk
+                        // stack. Treat every entry on the stack as a
+                        // dangling root so the next pass leaves them
+                        // alone — no infinite loop.
+                        for (auto idx : stack) done[idx] = 1;
+                        break;
+                    }
+                    onStack[cur] = 1;
                     stack.push_back(cur);
                     const auto it = denseOf.find(parents[cur].parent);
                     // Pre-pass guaranteed validity here, but defend anyway.
                     if (it == denseOf.end()) {
                         done[cur] = 1;
+                        onStack[cur] = 0;
                         stack.pop_back();
                         break;
                     }
                     cur = it->second;
                 }
+                // Clear the on-stack flags for entries still in stack.
+                for (auto idx : stack) onStack[idx] = 0;
 
                 // Pop top-down: each child's parent is already done.
                 while (!stack.empty()) {

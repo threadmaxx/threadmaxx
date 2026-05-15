@@ -188,6 +188,59 @@ private:
     std::unique_ptr<internal::WorldImpl> impl_ptr_;
 };
 
+/// §3.6 batch 13c — wave-scoped read-only view of world chunk storage.
+///
+/// Within a wave the engine never commits, so the world's chunk count,
+/// chunk pointers, and per-chunk row counts are immutable. `WorldView`
+/// caches that immutability into a flat array of chunk pointers so
+/// systems doing multiple `parallelFor` / `single` passes (or workers
+/// passing the chunk list by value into captures) don't pay repeated
+/// indirection through @ref World::archetypeChunk.
+///
+/// The view is rebuilt by the engine before each wave runs and shared
+/// across all systems in the wave (they all see the same pre-wave
+/// state). Access it via @ref SystemContext::worldView. Outside of
+/// `update()` the view is empty; reading it from `preStep` / `postStep`
+/// / `buildRenderFrame` is undefined.
+///
+/// @par Thread-safety
+///      Read-only after construction. Safe to capture by reference or
+///      copy into worker job lambdas — the underlying chunk pointers
+///      remain valid for the wave's duration.
+class WorldView {
+public:
+    WorldView() = default;
+
+    /// Rebuild from `w`'s current chunk inventory. Cheap: O(num
+    /// archetypes); chunks themselves are not copied.
+    void rebuild(const World& w);
+
+    /// The view's source world. Returns `nullptr` for a default-
+    /// constructed view that was never built against a world.
+    const World* world() const noexcept { return world_; }
+
+    /// Number of distinct chunks in the world at view-construction
+    /// time. Equal to @ref World::archetypeChunkCount.
+    std::size_t chunkCount() const noexcept { return chunks_.size(); }
+
+    /// Flat span of pointers to every chunk in the world. Stable for
+    /// the wave; cheap to capture in a lambda by value (the span itself
+    /// is two words).
+    std::span<const internal::ArchetypeChunk* const> chunks() const noexcept {
+        return std::span<const internal::ArchetypeChunk* const>(
+            chunks_.data(), chunks_.size());
+    }
+
+    /// Total number of live entities, summed across all chunks. Cached
+    /// at view build time; equivalent to @ref World::size.
+    std::size_t entityCount() const noexcept { return entityCount_; }
+
+private:
+    const World*                                  world_       = nullptr;
+    std::vector<const internal::ArchetypeChunk*>  chunks_;
+    std::size_t                                   entityCount_ = 0;
+};
+
 namespace detail {
 
 template <typename T>

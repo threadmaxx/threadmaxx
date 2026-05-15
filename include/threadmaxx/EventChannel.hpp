@@ -2,6 +2,8 @@
 
 #include "Engine.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -104,10 +106,19 @@ private:
 ///      `Engine::events<MyEvent>()`. The same channel is returned across
 ///      calls, including from worker jobs.
 /// @par Thread-safety
-///      `emit` is safe from any thread. `drainTick` is intended for
-///      single-threaded consumption from a system body during `update`
-///      and returns a span into the engine-owned read buffer — copy if
-///      you need to retain it past the tick.
+///      `emit` is safe from any thread and uses a lock-free Treiber-stack
+///      MPSC queue (§3.6 batch 13c) — producers contend only on the
+///      head pointer's CAS, never on a mutex. `drainTick` is intended
+///      for single-threaded consumption from a system body during
+///      `update` and returns a span into the engine-owned read buffer
+///      — copy if you need to retain it past the tick.
+/// @par Ordering
+///      Within a single producer thread, emit order is preserved on
+///      drain. Across producer threads the interleaving is undefined
+///      (it was already racing on the previous mutex-protected
+///      implementation; locks serialize but threads have no way to
+///      observe that order anyway). Subscribers fire in the same order
+///      `drainTick` would yield.
 template <typename Ev>
 class EventChannel {
 public:
@@ -120,18 +131,29 @@ public:
 
     EventChannel() : subscribers_(std::make_shared<SubscriberList>()) {}
 
+    ~EventChannel() {
+        // Free any back-buffer nodes that did not survive to a final
+        // drain (e.g. destruction during shutdown without a tick).
+        Node* h = backHead_.load(std::memory_order_acquire);
+        while (h) {
+            Node* next = h->next;
+            delete h;
+            h = next;
+        }
+    }
+
     EventChannel(const EventChannel&) = delete;
     EventChannel& operator=(const EventChannel&) = delete;
 
     /// Append an event to the back buffer; visible to readers next tick.
-    /// @thread_safety Safe from any thread.
+    /// @thread_safety Safe from any thread. Lock-free CAS prepend.
     void emit(const Ev& ev) {
-        std::lock_guard<std::mutex> lk(backMtx_);
-        back_.push_back(ev);
+        auto* n = new Node{ev, nullptr};
+        prependBack(n);
     }
     void emit(Ev&& ev) {
-        std::lock_guard<std::mutex> lk(backMtx_);
-        back_.push_back(std::move(ev));
+        auto* n = new Node{std::move(ev), nullptr};
+        prependBack(n);
     }
 
     /// Events emitted on the previous tick. Span is stable until the
@@ -152,9 +174,11 @@ public:
     ///         subscription order.
     /// @thread_safety Safe from any thread. The callback itself fires
     ///                on the sim thread during drain and runs to
-    ///                completion before the front/back swap, so a
-    ///                callback that re-emits sees its own events on
-    ///                the next tick.
+    ///                completion before the front/back swap. A
+    ///                callback that re-emits attaches its events to
+    ///                the new tick (the lock-free emit path captures
+    ///                them on `backHead_`, which drain has already
+    ///                cleared).
     SubscriptionId subscribe(Callback cb) {
         std::lock_guard<std::mutex> lk(subscribers_->mtx);
         const SubscriptionId id = ++subscribers_->nextId;
@@ -201,29 +225,43 @@ public:
     /// on the sim thread at tick boundary.
     void drain() {
         // Snapshot subscribers so a callback that mutates the list
-        // (subscribe/unsubscribe) cannot invalidate our iterator.
+        // (subscribe/unsubscribe) cannot invalidate our iteration.
         std::vector<Callback> snapshot;
         {
             std::lock_guard<std::mutex> lk(subscribers_->mtx);
             snapshot.reserve(subscribers_->subs.size());
             for (const auto& s : subscribers_->subs) snapshot.push_back(s.callback);
         }
+
+        // Atomically detach the entire back stack.
+        Node* head = backHead_.exchange(nullptr, std::memory_order_acquire);
+        backCount_.store(0, std::memory_order_relaxed);
+
+        // Walk the LIFO chain, moving events into `front_` and freeing
+        // nodes; then reverse to restore per-thread FIFO emit order.
+        front_.clear();
+        while (head) {
+            Node* next = head->next;
+            front_.push_back(std::move(head->value));
+            delete head;
+            head = next;
+        }
+        std::reverse(front_.begin(), front_.end());
+
+        // Fire subscribers in emit order. Subscribers that re-emit
+        // publish onto the new (currently-empty) back stack — this is
+        // race-free because we already exchanged `backHead_` to null.
         if (!snapshot.empty()) {
-            std::lock_guard<std::mutex> lk(backMtx_);
-            for (const auto& ev : back_) {
+            for (const auto& ev : front_) {
                 for (auto& cb : snapshot) cb(ev);
             }
         }
-        front_.clear();
-        std::lock_guard<std::mutex> lk(backMtx_);
-        front_.swap(back_);
     }
 
     /// Events currently sitting in the back buffer (about to be drained).
-    /// Mostly useful for tests.
+    /// Approximate under concurrent emit; useful for tests and HUDs.
     std::size_t pendingCount() const noexcept {
-        std::lock_guard<std::mutex> lk(backMtx_);
-        return back_.size();
+        return backCount_.load(std::memory_order_relaxed);
     }
 
 private:
@@ -240,6 +278,24 @@ private:
         SubscriptionId          nextId = 0;
     };
 
+    // Lock-free MPSC node. New nodes prepend onto `backHead_`; drain
+    // exchanges the head pointer to nullptr in one atomic op.
+    struct Node {
+        Ev    value;
+        Node* next;
+    };
+
+    void prependBack(Node* n) noexcept {
+        Node* old = backHead_.load(std::memory_order_relaxed);
+        do {
+            n->next = old;
+        } while (!backHead_.compare_exchange_weak(
+            old, n,
+            std::memory_order_release,
+            std::memory_order_relaxed));
+        backCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     // Per-Ev static used by Subscription to detach without templating.
     // Generated once per Ev type by the linker.
     static void unsubscribeImpl_(void* listPtr, SubscriptionId id) noexcept {
@@ -253,9 +309,9 @@ private:
         }
     }
 
-    std::vector<Ev>    front_;       ///< readers consume from here
-    std::vector<Ev>    back_;        ///< writers append here, guarded by backMtx_
-    mutable std::mutex backMtx_;
+    std::vector<Ev>          front_;                ///< sim-thread reader; drained from `backHead_` each tick
+    std::atomic<Node*>       backHead_{nullptr};    ///< MPSC stack head
+    std::atomic<std::size_t> backCount_{0};         ///< approximate pending count for tests/HUDs
 
     std::shared_ptr<SubscriberList> subscribers_;
 };

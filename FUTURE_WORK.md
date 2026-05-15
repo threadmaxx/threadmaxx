@@ -58,11 +58,11 @@ fully usable engine library.
 
 ## 2. Completed batches
 
-Eleven batches plus a prep slice, the batch-13a safety net, and the
-batch-13b sharded commit have landed, closing Milestones 1, 2, and 3,
-the M4 contract, and §6 phases 3+4 of M5 with §6 phase 5 reaching
-its first parallel-commit milestone (batch 13c collects the
-remaining items). Batches 1–3
+Thirteen batches plus a prep slice and three safety-net / close-out
+slices have landed, closing Milestones 1, 2, and 3, the M4 contract,
+and §6 phases 3+4+5+6 of M5. The remaining §3 items are the example
+projects (Vulkan renderer batch 9, RPG demo batch 10) — both
+`examples/...`, neither library-side. Batches 1–3
 brought **Milestone 1** to
 completion on 2026-05-13; batch 4 (2026-05-14) closed out the M1
 polish and seeded the tracing maturity batches 5+ build on; batch 5
@@ -473,6 +473,141 @@ behavior bit-for-bit). Closes §6 phase 4.
   across High/Normal/Low; (6) loader `cancel()` fires before
   `update()` and `cancelled` aggregates.
 
+### Batch 14 — Telemetry ingestion close-out (Milestone 5, §6 phase 6)
+
+Shipped 2026-05-15. Closes §6 phase 6 by shipping the *ingestion*
+side of the telemetry stack — the *primitives* (job histograms,
+Chrome-trace writer, frame snapshots, system stats) all landed in
+batch 4. Five additions, all opt-in (defaults preserve prior
+behavior bit-for-bit):
+
+- **`ITraceSink`.** New public header
+  `include/threadmaxx/Telemetry.hpp`. Engine-streamed per-tick
+  consumer interface: `onFrame(const FrameSnapshot&)` is called
+  on the sim thread after the frame is built and published.
+  Default sink is `nullptr` (zero cost). Install via
+  `Engine::setTraceSink(ITraceSink*)`. Sink owns its buffering
+  and any off-thread I/O; the engine never copies the snapshot.
+  Lifetime: the sink must outlive the engine (mirror of
+  `setRenderer` / `setLogger`).
+- **`FileTraceSink`.** Built-in rolling Chrome-trace JSON sink.
+  Wraps an internal `ChromeTraceWriter`; when the active file
+  crosses `Config::rotationBytes` (default 64 MiB) the sink
+  closes it and opens the next, incrementing the rotation
+  index. `pathTemplate` accepts `%N` substitution or appends
+  `.N.json`. Synchronous I/O on the sim thread inside `onFrame`
+  — keep `rotationBytes` reasonable.
+- **`HudTraceSink`.** Seqlock-protected latest-snapshot sink.
+  `tryGet(LatestTelemetry&)` is lock-free, torn-write-free,
+  callable from any thread. `LatestTelemetry` carries headline
+  numbers only (tick, step_s, avg_s, commit_s, jobs, commands,
+  aliveEntities, commitHash, workerCount, totals). Designed for
+  a renderer/HUD thread polling once per render frame.
+  `alignas(64)` on the sequence counter keeps it off the data
+  cache line.
+- **`FrameBudgetWatcher`.** Built-in `ISystem`. Construct with
+  `FrameBudgetWatcher{&engine, targetSeconds}` and register
+  normally. `postStep` reads `engine.stats().lastStepSeconds`
+  and emits a `BudgetExceeded` event when the just-finished tick
+  exceeded the target. `exceedCount()` reports the lifetime count.
+  Reads / writes empty, so the watcher lands in any wave without
+  contention.
+- **Stall watchdog.** `Engine::setStallTimeout(seconds)` spawns a
+  background watchdog thread (`EngineImpl::watchdogThreadFn_`).
+  The sim thread publishes `(step-start-ns, active-tick)` via
+  relaxed atomics at the top of every `step()`. The watchdog
+  wakes every `0.25 * timeout` and, if the running tick has
+  exceeded the threshold AND no `EngineStall` has been emitted
+  for it yet (CAS-guarded), emits one via
+  `events<EngineStall>()`. Safe to emit from another thread:
+  the lock-free MPSC channel (§3.6 batch 13c) is doing the
+  publishing. `setStallTimeout(0.0)` joins the watchdog;
+  `~EngineImpl` does too. Zero cost when disabled (the default).
+- **Test.** `tests/telemetry_sink_test.cpp` covers all five
+  pieces: fake `ITraceSink` counts `onFrame` calls and verifies
+  the published tick; `FileTraceSink` rotates across 50 ticks
+  under a 512-byte budget; `HudTraceSink` reader thread polls
+  during 220 ticks and observes no torn reads; `FrameBudgetWatcher`
+  with a 1µs target fires `BudgetExceeded` on every tick; stall
+  watchdog catches a deliberately-slow 200ms tick within ~62ms
+  and emits `EngineStall`.
+- **Doc updates.** README test count 61 → 65 (one test per
+  batch-13c & batch-14 deliverable). CLAUDE.md gained a
+  §3.7 batch 14 section. `doc/tracing.md` and
+  `doc/stats_and_profiling.md` documented the sink contract.
+  New `doc/telemetry.md` (cross-linked from `doc/index.md`)
+  collects the runtime/diagnostic surface.
+
+This completes §6 phase 6 — every multi-threading-and-performance
+roadmap phase has landed.
+
+### Batch 13c — Storage contention close-out (Milestone 5, §6 phase 5)
+
+Shipped 2026-05-15. Closes §6 phase 5 by landing the items
+deferred from batches 13a/13b. Three independent pieces; no
+public API breakage:
+
+- **Lock-free MPSC event channels.** `EventChannel<T>::emit` is
+  no longer mutex-protected. The back buffer is now a
+  Treiber-stack-style atomic linked list: `emit` allocates a
+  node and CAS-prepends; `drain` `exchange()`-detaches the
+  entire list, walks it, and reverses into `front_` to restore
+  per-thread FIFO order. Subscriber list still mutex-guarded
+  (low-frequency subscribe / unsubscribe). `pendingCount()` is
+  now an atomic counter — approximate under concurrent emit.
+  Public `subscribe` / `subscribeScoped` / `drainTick` semantics
+  unchanged. Side benefit: the previous mutex's latent
+  self-deadlock on recursive emit-from-callback during drain is
+  gone (the new design captures the back stack before invoking
+  subscribers).
+- **`WorldView`.** New public class in
+  `include/threadmaxx/World.hpp`: a wave-scoped read-only view
+  of the chunk inventory. Caches `(const ArchetypeChunk*)`
+  pointers + total entity count at view-build time; stable for
+  the duration of a wave (commits happen between waves so the
+  view never goes stale mid-wave). Exposed via
+  `SystemContext::worldView() -> const WorldView&`. Engine
+  rebuilds it before each wave and between serial preStep /
+  postStep commits. Game code captures `view.chunks()` (a span)
+  into worker lambdas instead of repeatedly indexing
+  `World::archetypeChunk(i)`. Test:
+  `tests/world_view_test.cpp` — empty world, single archetype,
+  two archetypes; verifies chunk pointer / entity-count
+  consistency and the same view shared across multiple
+  `parallelFor` calls.
+- **Soak test + benchmarks.** `tests/commit_soak_test.cpp` —
+  4096 ticks × two workloads × both commit paths. Asserts
+  per-tick `commitHash` and final `WorldSnapshot` FNV-1a agree
+  across paths under long-horizon load, plus the lock-free
+  event channel survives ~100M events drained. Runtime ~3s.
+  Opt-in benchmark binaries: `bench/commit_bench` (compares
+  single-threaded vs. sharded commit paths across multiple
+  entity counts) and `bench/event_channel_bench` (measures
+  lock-free emit throughput at varying producer counts). Enable
+  via `-DTHREADMAXX_BUILD_BENCHMARKS=ON`. On the workloads
+  tested, the sharded commit path's classifier overhead
+  currently exceeds its parallelism win across all sizes
+  (256 → 131k entities) — the documented recommendation is to
+  keep `singleThreadedCommit = true` as the default. The bench
+  infra exists so this can be re-evaluated as workload shapes
+  shift.
+
+Items still deferred (not blocking phase 5 closure;
+contingent on profiler-confirmed need):
+
+- **Per-chunk command buffers.** Record-time routing into
+  per-chunk buckets would skip the classifier pass entirely but
+  requires `CommandBuffer` recording-API changes. Tracked in
+  §3.6.4 as a future potential batch if commit-time profiling
+  ever flags the classifier as the bottleneck.
+- **Read-only world snapshot pointer caching across waves.**
+  The current `WorldView` is wave-scoped (rebuilt between
+  waves). A multi-wave-cached snapshot would help queries that
+  reuse chunk pointers across waves; deferred for the same
+  profiler-driven reason.
+
+Both are now §3.6.4 candidates rather than active batches.
+
 ### Batch 13b — Sharded commit phase (Milestone 5, §6 phase 5)
 
 Shipped 2026-05-15, hours after batch 13a — the safety net pre-validated
@@ -635,8 +770,9 @@ grows monotonically. The mapping to milestones (§8):
 | 10    | 3D RPG demo example                | M6 lead-in — example, not library |
 | ~~11~~ | ~~Frame task graph (§6 phase 3)~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~12~~ | ~~Cancellation, budgets, priorities (§6 phase 4)~~ | ✅ landed 2026-05-14 — see §2 |
-| 13    | Storage contention reduction (§6 phase 5) | M5             |
-| 14    | Telemetry ingestion (§6 phase 6 close-out) | M5            |
+| ~~13~~ | ~~Storage contention reduction (§6 phase 5)~~ | ✅ landed 2026-05-15 — see §2 |
+| ~~14~~ | ~~Telemetry ingestion (§6 phase 6 close-out)~~ | ✅ landed 2026-05-15 — see §2 |
+| 15    | Audit-driven hygiene + pre-batch-9 API polish | M5 close-out, blocking batch 9 |
 
 §3.8 covers the Vulkan defaulting strategy across batches 8–10.
 
@@ -875,74 +1011,150 @@ out §6 phase 5):
   each other in cache. The per-chunk *command buffer* design
   (batch 13c) will need the alignas-based padding fix.
 
-### 3.6.3 Batch 13c — Storage contention close-out (planned)
+### 3.6.3 Batch 13c — Storage contention close-out  ✅ landed 2026-05-15
 
-Closes §6 phase 5 by collecting the items deferred from batches
-13a/13b into one focused batch. Effort ~1 week.
+See the per-batch entry in §2 for the as-shipped shape. The
+lock-free MPSC event channel and `WorldView` wave-scoped
+snapshot shipped; per-chunk record-time command buffers and a
+read-only cross-wave world snapshot were re-tracked as §3.6.4
+candidates since the microbench data showed the sharded path's
+classifier overhead exceeds its parallelism win at all
+currently-tested workload shapes (so optimizing further is
+premature without a real workload demanding it).
 
-Deliverables:
+### 3.6.4 Batch 15+ — Profiler-driven follow-ons (potential)
 
-- **Per-chunk command buffers.** Record-time routing: workers emit
-  into thread-local buckets keyed on the entity's current
-  archetype. Cross-chunk commands (mask-changes) fall back to the
-  global lane. Skips the commit-time classifier pass, at the cost
-  of `CommandBuffer` recording-API changes.
-- **Read-only world snapshot per wave.** Bind a snapshot pointer
-  between waves so worker jobs can cache chunk pointers across
-  multiple `parallelFor` calls.
-- **Append-only event channels.** Lock-free MPSC queue per
-  channel; drain still on sim thread at tick boundary. Public
-  `EventChannel<T>::emit` signature unchanged.
-- **Soak test.** Benchmark sharded vs. single-threaded paths
-  across the demo and integration test suites; document the
-  break-even point at which the sharded path beats the
-  single-threaded baseline.
+Not scheduled; contingent on real-game profiling once batches 9
+(Vulkan renderer) and 10 (RPG demo) expose end-to-end commit-
+phase pressure. If the sharded commit ever becomes a hot spot:
 
-### 3.7 Batch 14 — Telemetry ingestion close-out (Milestone 5, §6 phase 6)
+- **Per-chunk command buffers.** Record-time routing into
+  thread-local buckets keyed on the entity's current archetype;
+  skips the commit-time classifier pass. Requires
+  `CommandBuffer` recording-API changes.
+- **Read-only cross-wave world snapshot.** Pin a snapshot
+  pointer across multiple waves so query helpers can cache
+  chunk pointers more aggressively than the current per-wave
+  `WorldView`.
 
-§6 phase 6 says "measure everything." Batch 4 shipped the
-*primitives* — job-duration histograms, Chrome-trace writer,
-`writeJsonLines`, system stats, frame snapshot. What's still
-missing is the **ingestion side**: a way for game code to feed
-this data into a HUD, an external monitor, or a CI gate without
-re-implementing the IO pipeline.
+Both items are documented as candidates rather than batches so
+the roadmap doesn't accumulate speculative scope. The
+microbenchmark + correctness suite in batch 13c is the gate.
 
-Gating: this is the natural close-out batch for §6. Best landed
-alongside batch 10 (the RPG demo) because the demo is what
-actually exercises the telemetry end-to-end. Effort ~1 week.
+### 3.6.5 Batch 15 — Audit-driven hygiene + pre-batch-9 API polish (planned)
 
-#### Deliverables
+A focused hardening pass that closes the gaps surfaced by the
+post-batch-14 audit. Scope mirrors the audit report: fix
+remaining concurrency / lifetime bugs, fill API holes the
+Vulkan reference renderer (batch 9) will hit, and seed the
+test/benchmark coverage that matters for production
+readiness. Effort ~1 week, splittable into 15a (bugs +
+critical API gaps that block batch 9) and 15b (broader test
++ bench coverage).
 
-- **`Engine::traceSink(ITraceSink&)`** — install a sink that the
-  engine streams `FrameSnapshot` + per-system trace events to,
-  once per tick, on the sim thread. The sink is responsible for
-  buffering and I/O off-thread. Default sink is null (no cost).
-- **`FileTraceSink`** — built-in implementation that writes a
-  rolling Chrome-trace JSON to disk with automatic file rotation
-  every N MB. Header-only.
-- **`HudTraceSink`** — built-in implementation that exposes a
-  read-only `LatestTelemetry` struct game code polls each frame
-  for HUD rendering. Lock-free single-writer/single-reader.
-- **`FrameBudgetWatcher`** — a built-in `ISystem` that watches
-  `EngineStats::lastStepSeconds` against a target and emits
-  `BudgetExceeded` events when the frame goes over. Pairs nicely
-  with batch 12's budget hint.
-- **`Engine::setStallTimeout(seconds)`** — install a watchdog that
-  fires `EngineStall` events when a tick takes longer than the
-  threshold. The watchdog runs on its own thread; the events
-  drain like any other on the sim thread.
-- **`tests/telemetry_sink_test.cpp`** — verify the file sink
-  rotates, the HUD sink hands the latest snapshot to the reader
-  without tearing, and the watchdog fires on a deliberately
-  stalled tick.
+The HIGH-severity bugs surfaced by the audit shipped as
+hotfixes on 2026-05-15 (not as a batch): hierarchy-cycle
+infinite loop, `EntityStorage::ensureStitched` data race
+under multi-worker reads, `getEventChannelRaw` concurrent-
+insert race vs. the stall-watchdog thread. Tests:
+`tests/hierarchy_cycle_test.cpp`,
+`tests/event_callback_reemit_test.cpp`.
 
-#### Risks and mitigations
+What's left for batch 15:
 
-- **Sink ownership.** A user-installed sink must outlive the
-  engine. Mitigation: sinks are pointer-based (engine doesn't take
-  ownership), mirroring `setRenderer` / `setLogger`.
-- **HUD-sink staleness.** A slow reader might see a stale
-  snapshot. That's fine for a HUD; documented as the contract.
+API polish (blocking batch 9 — Vulkan renderer):
+
+- `IRenderer::onResize(uint32_t w, uint32_t h)` hook + a
+  matching `Engine::notifyResize(w, h)` so the
+  swapchain-bound renderer learns of window changes without
+  back-channels.
+- Built-in "previous transform" stitch on `RenderFrame`.
+  Every renderer ends up reimplementing
+  `unordered_map<EntityHandle, Transform>`; expose the
+  engine's last-frame snapshot directly.
+- Owning-string variant of `DebugText` (or engine-side copy
+  into a per-tick arena) — `std::string_view` lifetime
+  tied to next swap is impractical with `std::format`
+  temporaries.
+- Camera id → index helper. Today
+  `DrawItem::cameraMask` is bitset-indexed; multi-camera
+  game code reinvents the mapping. Expose
+  `RenderFrame::cameraIndexById(id) -> std::optional<u8>`.
+- `ResourceHandle<T>` indirection (`operator->`, `operator*`,
+  or `get()`) so users don't write `*reg.get(h.id())` every
+  time.
+- Public `Engine::workerCount()` accessor (today only via
+  `jobSystemStats().workerCount`).
+- Per-system `buildRenderFrame` cost in `SystemStats`
+  (today bundled into step duration; Vulkan example will
+  want it broken out).
+
+Test coverage:
+
+- `tests/concurrency_soak_test.cpp` — 8 workers ×
+  sharded commit × budget+scripted skips × hot-reload
+  events × RAII subscriptions × stall watchdog × 50k
+  entities × 30s. Catches cross-batch interaction bugs.
+- `tests/stitched_view_concurrency_test.cpp` — TSAN-
+  oriented stress on `world.transforms()` post-commit
+  from multiple worker jobs, validating the §3.6
+  ensureStitched mutex fix continues to hold.
+- `tests/render_pass_ordering_test.cpp` and
+  `tests/render_frame_interpolation_test.cpp` — pre-
+  batch-9 contract coverage.
+- `tests/file_trace_sink_rotation_test.cpp` — focused
+  rotation test with multi-file inspection.
+- `tests/visibility_culling_32_cam_test.cpp` — boundary
+  test for the 32-camera mask cap (Vulkan example
+  with cascaded shadows may approach it).
+
+Benchmarks:
+
+- Hierarchy resolution cost at N=1k/10k/100k × chain
+  depth.
+- `forEachChunk` vs. `forEachWith` vs.
+  `forEachWithCached` comparison.
+- `cullByFrustum` throughput across N cameras × N
+  draw items.
+- `JobSystemStats::stolenJobs / totalJobs` at varying
+  grain × worker count × wave width.
+- `ResourceRegistry` refcounted-acquire/release under
+  contention (refcount churn from streaming asset
+  loaders).
+- `InstanceBufferLayout::packInstances` throughput.
+
+Doc polish:
+
+- `Renderer.hpp` — document the
+  `initialize() → false` contract (engine skips
+  rendering; shutdown is a no-op for a never-
+  initialized renderer).
+- `ScratchArena.hpp` — clarify the "slabs survive
+  across waves" claim (today `SystemContextImpl` is
+  recreated per wave so the arena's lifetime is the
+  wave; this is intentional but the doc reads as
+  if arenas are engine-owned).
+- `Telemetry.hpp::FileTraceSink` — document the
+  silent-no-op behavior when the path can't be
+  opened.
+- `EventChannel.hpp` — explicit "warm channels at
+  setup" rule for cross-thread first calls.
+
+Gating: batch 15 should land BEFORE batch 9 starts so
+the Vulkan example doesn't have to navigate around
+known gaps. Batch 15a (the must-haves) is roughly
+2–3 days; 15b can land alongside or after batch 9.
+
+### 3.7 Batch 14 — Telemetry ingestion close-out  ✅ landed 2026-05-15
+
+See the per-batch entry in §2 for the as-shipped shape. The
+exact API ended up as `Engine::setTraceSink(ITraceSink*)`
+(pointer-based; matches `setRenderer` / `setLogger`) rather than
+the originally-sketched `traceSink(ITraceSink&)`. `FileTraceSink`
+is not header-only (it owns a `ChromeTraceWriter` and an
+`ofstream`); `HudTraceSink` is seqlock-based rather than a true
+SPSC ringbuffer — the snapshot is small enough that a seqlock-
+protected POD is both simpler and faster than a queue.
 
 ### 3.8 Vulkan as the implicit default for M4+
 
@@ -1082,25 +1294,31 @@ per-priority deques; `IResourceLoader::cancel(Engine&)` pumped
 before `update()` each tick + `LoaderStats::cancelled`. Shipped in
 batch 12; details in §2.
 
-### Phase 5 — reduce contention in storage — §3.6 batch 13
+### Phase 5 — reduce contention in storage  ✅ done (batches 13a/13b/13c, 2026-05-15)
 
-Read-only snapshots per wave, sharded commit phase keyed on
-destination chunk, append-only event channels, double/triple
-buffering where useful, plus a per-tick `commitHash` runtime
-determinism guard so any sharding bug surfaces on the first
-divergent tick. The per-worker scratch arena from batch 2 is a
-down payment. Tracked as **batch 13** in §3.6. Builds on batch
-6's chunked storage; independent of 11/12.
+Per-tick `commitHash` runtime determinism guard + `Config::singleThreadedCommit`
+toggle (13a); sharded commit phase keyed on destination chunk
+(13b); lock-free MPSC `EventChannel::emit` and `WorldView`
+wave-scoped chunk-pointer cache (13c). The per-worker scratch
+arena from batch 2 was the down payment. Measured benchmark
+takeaway: the sharded commit path's classifier overhead
+currently exceeds its parallelism win at every tested workload
+shape — keep `singleThreadedCommit = true` as the default and
+re-evaluate when the M4/M6 examples expose real commit-phase
+pressure. Further deferred follow-ons (per-chunk record-time
+buffers, read-only cross-wave snapshot) are tracked in §3.6.4.
 
-### Phase 6 — measure everything — §3.7 batch 14
+### Phase 6 — measure everything  ✅ done (batch 14, 2026-05-15)
 
-Job duration histograms (✅ batch 4), Chrome-trace adapter
-(✅ batch 4) — the *primitives* are all in. **Batch 14** in §3.7
-closes the phase by shipping the *ingestion* side: a pluggable
-`ITraceSink` with a `FileTraceSink` and `HudTraceSink`, a
-`FrameBudgetWatcher` built-in system, an
-`Engine::setStallTimeout` watchdog. Best landed alongside batch
-10 (the RPG demo) for an end-to-end shakedown.
+Job duration histograms + Chrome-trace adapter (✅ batch 4) were
+the *primitives*. Batch 14 (✅) closed the phase by shipping the
+*ingestion* side: `ITraceSink` interface with `FileTraceSink`
+(rolling Chrome-trace JSON) and `HudTraceSink` (seqlock-protected
+latest snapshot for HUDs), `FrameBudgetWatcher` built-in system
+emitting `BudgetExceeded` events, and `Engine::setStallTimeout`
+watchdog thread emitting `EngineStall`. The Vulkan renderer
+(batch 9) and RPG demo (batch 10) will be the first real-game
+consumers.
 
 ## 7. Public API extensions still on deck
 

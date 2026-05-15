@@ -72,6 +72,26 @@ What lands in the file:
 per output file. The output is a valid JSON array; it can be loaded
 mid-write (e.g. for live profiling) only after the destructor runs.
 
+## Streaming via `ITraceSink`
+
+The two-call pattern (`engine.step()` then `writer.emit(...)` in
+user code) works fine for ad-hoc profiling but doesn't compose
+with engine internals — a system that wants to record its own
+diagnostics around the step boundary has no hook. Batch 14
+ships `Engine::setTraceSink(ITraceSink*)` for that: the engine
+calls `onFrame(snap)` on the sim thread after every step and
+before the renderer is invoked.
+
+Two built-in sinks ship with the engine: `FileTraceSink` (rolling
+Chrome-trace JSON with automatic file rotation) and
+`HudTraceSink` (seqlock-protected latest snapshot for HUDs).
+There's also a built-in `FrameBudgetWatcher` `ISystem` that
+emits `BudgetExceeded` events when a tick overruns a target, and
+an `Engine::setStallTimeout(seconds)` watchdog that emits
+`EngineStall` events from a dedicated thread.
+
+See [`telemetry.md`](telemetry.md) for the full surface.
+
 ## Adapting to Tracy
 
 There's no built-in Tracy integration. The typical pattern is to call

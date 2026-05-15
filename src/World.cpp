@@ -171,6 +171,19 @@ ArchetypeLocation World::locate(EntityHandle e) const noexcept {
     return ArchetypeLocation{loc.archetype, loc.row};
 }
 
+void WorldView::rebuild(const World& w) {
+    world_ = &w;
+    const auto& chunks = w.impl_().storage.archetypes().chunks();
+    chunks_.clear();
+    chunks_.reserve(chunks.size());
+    std::size_t total = 0;
+    for (const auto& c : chunks) {
+        chunks_.push_back(&c);
+        total += c.entities.size();
+    }
+    entityCount_ = total;
+}
+
 WorldSnapshot World::snapshot() const {
     const auto& s = impl_ptr_->storage;
     auto copySpan = [](auto& dst, auto src) {

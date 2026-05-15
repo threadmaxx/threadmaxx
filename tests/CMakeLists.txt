@@ -63,6 +63,14 @@ set(THREADMAXX_TESTS
     cancellation_test
     commit_hash_test
     sharded_commit_test
+    event_channel_lockfree_test
+    world_view_test
+    commit_soak_test
+    telemetry_sink_test
+    render_integration_test
+    integration_kitchen_sink_test
+    hierarchy_cycle_test
+    event_callback_reemit_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

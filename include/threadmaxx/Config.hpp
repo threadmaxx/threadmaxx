@@ -35,17 +35,22 @@ struct Config {
     /// Initial entity capacity hint. Storage grows past this on demand.
     std::uint32_t initialEntityCapacity = 1024;
 
-    /// §3.6 batch 13 — When `true`, the commit phase runs on the sim
-    /// thread in submission order (the historical deterministic
-    /// reference path). When `false`, batch 13b's sharded commit
-    /// groups commands by destination chunk and commits them on
-    /// helper threads.
+    /// §3.6 batch 13 — When `true` (the default), the commit phase
+    /// runs on the sim thread in submission order — the deterministic
+    /// reference path. When `false`, batch 13b's sharded commit groups
+    /// value-only commands (`SetTransform` / `SetVelocity` /
+    /// `SetAcceleration` / `SetUserData`) by destination chunk and
+    /// commits them on worker threads; migrate-possible commands stay
+    /// serial.
     ///
-    /// Today (batch 13a) only the single-threaded path is implemented;
-    /// the flag is the public toggle that batch 13b's sharded path
-    /// will key off. Documented as a deterministic fallback knob:
-    /// if a divergence is ever discovered in production, flipping
-    /// this back to `true` restores the reference behavior.
+    /// Both paths produce bit-for-bit identical state — guarded by
+    /// the per-tick `EngineStats::commitHash` (§3.6 batch 13a). On
+    /// the workloads measured so far in `bench/commit_bench` the
+    /// classifier overhead exceeds the parallelism win, so the
+    /// default stays `true`; flip it to `false` only after profiling
+    /// flags commit as the bottleneck. If a divergence is ever
+    /// discovered in production, flipping this back to `true` is the
+    /// documented immediate fallback.
     bool singleThreadedCommit = true;
 
     /// §3.6 batch 13a — Opt-in production diagnostic. When set to

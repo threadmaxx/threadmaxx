@@ -7,7 +7,7 @@ commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
 Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 61 tests pin the
+minimal; the internals are PImpl'd so they can change. 69 tests pin the
 documented invariants.
 
 ## Highlights
@@ -30,8 +30,9 @@ documented invariants.
   buffer in the new three-arg `parallelFor` / `single` overloads —
   zero-allocation steady-state scratch.
 - **Typed event channels.** `Engine::events<T>()` returns a
-  double-buffered queue; safe to emit from worker jobs, drained on
-  tick boundary. Persistent `subscribe`/`unsubscribe` callbacks plus
+  double-buffered queue; safe to emit from worker jobs (lock-free
+  MPSC append since batch 13c), drained on tick boundary.
+  Persistent `subscribe`/`unsubscribe` callbacks plus
   an RAII `Subscription` handle (`subscribeScoped`) that
   auto-detaches on destruction and survives the channel safely.
 - **Pause + time-scale.** `setPaused(true)` freezes the simulation
@@ -121,7 +122,32 @@ documented invariants.
   duration histogram on `JobSystemStats`. `Engine::frameSnapshot()`
   bundles them; `writeJsonLines` spools one newline-terminated JSON
   object per tick; `ChromeTraceWriter` streams a Chrome Trace Event
-  Format file you can open in `chrome://tracing`.
+  Format file you can open in `chrome://tracing`. Every commit now
+  publishes a per-tick FNV-1a-64 `commitHash` so two clients on the
+  same seed can detect divergence on the first wrong tick.
+- **Telemetry sinks** (`<threadmaxx/Telemetry.hpp>`):
+  `Engine::setTraceSink(ITraceSink*)` streams the per-tick
+  `FrameSnapshot` to whatever sink you install. Built-in
+  `FileTraceSink` writes rolling Chrome-trace JSON with file
+  rotation; `HudTraceSink` exposes a seqlock-protected
+  `LatestTelemetry` POD that a HUD thread polls lock-free.
+  `FrameBudgetWatcher` (a built-in `ISystem`) emits
+  `BudgetExceeded` events when a tick exceeds a target;
+  `Engine::setStallTimeout(seconds)` installs a watchdog that
+  emits `EngineStall` events from its own thread.
+- **Sharded commit (opt-in).** Default commit phase is
+  single-threaded and deterministic; set
+  `Config::singleThreadedCommit = false` to fan value-only setters
+  (`SetTransform` / `SetVelocity` / `SetAcceleration` /
+  `SetUserData`) into per-destination-chunk bins that run on
+  worker threads. Migrate-possible commands stay serial. The
+  `commitHash` guarantees bit-for-bit correctness across both
+  paths. Worker microbenchmarks ship in `bench/` (opt-in via
+  `-DTHREADMAXX_BUILD_BENCHMARKS=ON`).
+- **Wave-scoped world view.** `SystemContext::worldView()` returns
+  a `WorldView` caching chunk pointers + entity count for the
+  duration of a wave — capture the span into worker lambdas and
+  reuse across multiple `parallelFor` / `single` calls.
 - **Save/load snapshot.** `World::snapshot()` copies the engine's
   dense arrays into a `WorldSnapshot`. Header-only `serialize` /
   `deserialize` trait pair in `<threadmaxx/Serialization.hpp>` round-
@@ -184,6 +210,7 @@ CMake options:
 | --- | --- | --- |
 | `THREADMAXX_BUILD_EXAMPLES` | `ON` | Builds `examples/minimal` and (if SDL2 is found) `examples/boids`. |
 | `THREADMAXX_BUILD_TESTS` | `ON` | Builds and registers the CTest suite under `tests/`. |
+| `THREADMAXX_BUILD_BENCHMARKS` | `OFF` | Builds the standalone microbenchmark binaries under `bench/` (`commit_bench`, `event_channel_bench`). Not registered with CTest; run them by hand. |
 | `THREADMAXX_WARNINGS_AS_ERRORS` | `OFF` | Promotes the project's warning set (incl. `-Wsign-conversion`, `-Wconversion`, `-Wshadow`, `-Wold-style-cast`) to errors. The library compiles clean under it; keep it that way. |
 
 If Doxygen is installed, the configure step registers an optional `doc`
@@ -305,11 +332,12 @@ Roadmap and intentional gaps: [`FUTURE_WORK.md`](FUTURE_WORK.md).
 ## Repository layout
 
 ```
-include/threadmaxx/    public API (20 headers)
+include/threadmaxx/    public API (~22 headers)
 src/                   private implementation (PImpl)
 examples/minimal/      headless console example
 examples/boids/        SDL2 boids simulation
-tests/                 55 no-dependency tests under CTest
+bench/                 standalone microbenchmarks (opt-in)
+tests/                 69 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)
 Doxyfile               Doxygen config (optional `doc` target)
 CMakeLists.txt

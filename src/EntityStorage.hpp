@@ -183,9 +183,17 @@ private:
     // value-only commands (the sharded commit path) can flip the flag
     // without a data race. The store is `relaxed`: ordering across
     // chunks doesn't matter, only that the flag is observed as `true`
-    // before the next `ensureStitched()` runs (which only happens on
-    // the sim thread, after the worker latch).
+    // before the next `ensureStitched()` runs.
+    //
+    // §3.6 batch 14 fix — the cache-rebuild step itself touches ~14
+    // non-atomic vectors. If two worker jobs in a wave both call a
+    // legacy dense accessor (`world.transforms()` et al.) on a dirty
+    // cache, both enter `ensureStitched` and race on the writes.
+    // `stitchedMtx_` serializes the rebuild; the double-checked
+    // pattern in `ensureStitched()` keeps the steady-state hit
+    // (cache clean) lock-free via the atomic flag.
     mutable std::atomic<bool>               stitchedDirty_{true};
+    mutable std::mutex                      stitchedMtx_;
     mutable std::vector<EntityHandle>       stitchedEntities_;
     mutable std::vector<Transform>          stitchedTransforms_;
     mutable std::vector<Velocity>           stitchedVelocities_;

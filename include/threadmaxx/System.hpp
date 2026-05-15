@@ -3,6 +3,7 @@
 #include "CommandBuffer.hpp"
 #include "ScratchArena.hpp"
 #include "TaskTag.hpp"
+#include "World.hpp"
 #include "render/RenderFrameBuilder.hpp"
 
 #include <cstdint>
@@ -60,6 +61,22 @@ public:
     virtual ~SystemContext() = default;
 
     virtual const World& world() const noexcept = 0;
+
+    /// §3.6 batch 13c — wave-scoped @ref WorldView. The view is rebuilt
+    /// before each wave runs and shared across all systems in the
+    /// wave; it caches chunk-pointer arrays + entity counts so a
+    /// system doing multiple `parallelFor` / `single` passes does not
+    /// pay repeated indirection through @ref World::archetypeChunk.
+    ///
+    /// Within `update()` the view is non-empty and valid for the
+    /// wave's duration. The view's contents are immutable while the
+    /// wave runs — capture by reference or copy the cheap span
+    /// returned by `worldView().chunks()` into worker lambdas.
+    ///
+    /// Reading from `preStep` / `postStep` / `buildRenderFrame`
+    /// returns a view rebuilt against the current world state but is
+    /// not the primary intended use case.
+    virtual const WorldView& worldView() const noexcept = 0;
 
     /// Fixed-step delta in seconds. Equal to `Config::fixedStepSeconds`
     /// multiplied by the engine's current time scale (see

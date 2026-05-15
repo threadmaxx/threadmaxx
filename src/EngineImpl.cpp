@@ -25,6 +25,8 @@
 #include "threadmaxx/Game.hpp"
 #include "threadmaxx/Renderer.hpp"
 #include "threadmaxx/SkipPolicy.hpp"
+#include "threadmaxx/Telemetry.hpp"
+#include "threadmaxx/Trace.hpp"
 
 #include <cstring>
 
@@ -438,11 +440,85 @@ EngineImpl::EngineImpl(const Config& cfg) : cfg_(cfg) {
 
 EngineImpl::~EngineImpl() {
     shutdown();
+    stopWatchdog_();
     // §3.3 channels outlive shutdown so postStep hooks can still pump
     // events. They're owned in raw form (factory/deleter pair); release
     // here, after the worker pool has been torn down.
     for (auto& [type, entry] : eventChannels_) {
         if (entry.deleter && entry.ptr) entry.deleter(entry.ptr);
+    }
+}
+
+// §3.7 batch 14 — stall watchdog plumbing.
+
+void EngineImpl::setStallTimeout(double seconds) noexcept {
+    if (seconds < 0.0) seconds = 0.0;
+    stallTimeoutSeconds_ = seconds;
+    if (seconds > 0.0) {
+        startWatchdog_();
+    } else {
+        stopWatchdog_();
+    }
+}
+
+void EngineImpl::startWatchdog_() {
+    if (watchdog_.joinable()) return;  // already running
+    watchdogRun_.store(true, std::memory_order_release);
+    watchdog_ = std::thread(&EngineImpl::watchdogThreadFn_, this);
+}
+
+void EngineImpl::stopWatchdog_() {
+    watchdogRun_.store(false, std::memory_order_release);
+    if (watchdog_.joinable()) watchdog_.join();
+}
+
+void EngineImpl::watchdogThreadFn_() {
+    using clock = std::chrono::steady_clock;
+    while (watchdogRun_.load(std::memory_order_acquire)) {
+        const double timeout = stallTimeoutSeconds_;
+        if (timeout <= 0.0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        // Sleep at most quarter-period; ensures we detect within 25% of
+        // the configured timeout.
+        const auto pollPeriod = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::duration<double>(timeout * 0.25));
+        std::this_thread::sleep_for(std::max(std::chrono::milliseconds(10), pollPeriod));
+
+        if (!watchdogRun_.load(std::memory_order_acquire)) break;
+
+        const std::uint64_t startNs =
+            watchdogStepStartNs_.load(std::memory_order_relaxed);
+        if (startNs == 0) continue;  // step() has not been called yet
+
+        const auto nowNs = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                clock::now().time_since_epoch()).count());
+        if (nowNs <= startNs) continue;
+        const double elapsedSec = static_cast<double>(nowNs - startNs) / 1e9;
+        if (elapsedSec < timeout) continue;
+
+        // Already announced this tick? Skip until the sim thread clears
+        // the latch in `step()` (after step finishes).
+        bool expected = false;
+        if (!watchdogStallEmitted_.compare_exchange_strong(
+                expected, true,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            continue;
+        }
+
+        // Emit the event on the engine's typed channel. The lock-free
+        // MPSC channel (§3.6 batch 13c) lets us emit from this thread
+        // safely. The event drains on the sim thread at the next
+        // tick boundary.
+        if (publicEngine_) {
+            const std::uint64_t tick = watchdogActiveTick_.load(std::memory_order_relaxed);
+            publicEngine_->events<EngineStall>().emit(EngineStall{
+                tick, elapsedSec
+            });
+        }
     }
 }
 
@@ -980,6 +1056,17 @@ void EngineImpl::step() {
     const double dt = cfg_.fixedStepSeconds * timeScale_;
     const auto stepStart = std::chrono::steady_clock::now();
 
+    // §3.7 batch 14 — publish step-start clock for the stall watchdog.
+    // Relaxed atomics: watchdog only needs an eventually-consistent
+    // read, not a synchronization point.
+    {
+        const std::uint64_t ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                stepStart.time_since_epoch()).count());
+        watchdogStepStartNs_.store(ns, std::memory_order_relaxed);
+        watchdogActiveTick_.store(tick_ + 1, std::memory_order_relaxed);
+    }
+
     commandsThisStep_ = 0;
     commitSecondsThisStep_ = 0.0;
     std::uint64_t jobsThisStep = 0;
@@ -1003,14 +1090,19 @@ void EngineImpl::step() {
     // run before any wave starts so they can pump per-tick input queues
     // or reset scratch state. Commands emitted via ctx.single() are
     // committed immediately so wave systems observe them.
+    // §3.6 batch 13c — rebuild the wave-scoped WorldView before
+    // serial preStep hooks. Hooks commit between each call so the
+    // view stays consistent with the world they observe.
+    worldView_.rebuild(world_);
     for (std::size_t i = 0; i < systems_.size(); ++i) {
-        SystemContextImpl ctx(*this, world_, dt, tick_,
+        SystemContextImpl ctx(*this, world_, worldView_, dt, tick_,
                               systemPreferredGrain(i));
         systems_[i]->preStep(ctx);
         const auto commitStart = std::chrono::steady_clock::now();
         for (auto& cb : ctx.buffers()) commitBuffer(cb);
         commitSecondsThisStep_ += std::chrono::duration<double>(
             std::chrono::steady_clock::now() - commitStart).count();
+        worldView_.rebuild(world_);
     }
 
     // §3.5 batch 12: reset the budget flag at step start. Workers see
@@ -1041,11 +1133,16 @@ void EngineImpl::step() {
     // and reads through `const World&`. Across waves we serialize: a later
     // wave's systems see the previous wave's commits.
     for (const auto& wave : waves_) {
+        // §3.6 batch 13c — refresh the WorldView at the top of every
+        // wave; the previous wave's commits may have changed the
+        // chunk inventory. All systems in this wave share the same
+        // view (they see pre-wave world state).
+        worldView_.rebuild(world_);
         std::vector<std::unique_ptr<SystemContextImpl>> ctxs;
         ctxs.reserve(wave.size());
         for (std::size_t k = 0; k < wave.size(); ++k) {
             ctxs.push_back(std::make_unique<SystemContextImpl>(
-                *this, world_, dt, tick_,
+                *this, world_, worldView_, dt, tick_,
                 systemPreferredGrain(wave[k])));
         }
 
@@ -1165,14 +1262,16 @@ void EngineImpl::step() {
     // commit. Use it to publish per-tick events or finalize accumulators.
     // Commands emitted here are visible to the next tick's preStep, not
     // to this tick's wave systems.
+    worldView_.rebuild(world_);
     for (std::size_t i = 0; i < systems_.size(); ++i) {
-        SystemContextImpl ctx(*this, world_, dt, tick_,
+        SystemContextImpl ctx(*this, world_, worldView_, dt, tick_,
                               systemPreferredGrain(i));
         systems_[i]->postStep(ctx);
         const auto commitStart = std::chrono::steady_clock::now();
         for (auto& cb : ctx.buffers()) commitBuffer(cb);
         commitSecondsThisStep_ += std::chrono::duration<double>(
             std::chrono::steady_clock::now() - commitStart).count();
+        worldView_.rebuild(world_);
     }
 
     // §3.3 resource loaders pump after the last postStep commit and
@@ -1259,6 +1358,22 @@ void EngineImpl::step() {
            << " hash=0x" << std::hex << commitHashAcc_;
         logger().log(LogLevel::Info, os.str());
     }
+
+    // §3.7 batch 14 — sink callback (if any). Snapshot is built from
+    // the just-published stats; identical to what `frameSnapshot()`
+    // would return. Sim thread; sink is expected to be cheap.
+    if (traceSink_) {
+        FrameSnapshot snap{
+            stats_,
+            std::span<const SystemStats>(systemStats_.data(), systemStats_.size()),
+            jobs_->stats(),
+        };
+        traceSink_->onFrame(snap);
+    }
+
+    // §3.7 batch 14 — clear the "stall already emitted" latch so the
+    // next tick can fire its own EngineStall event if it also stalls.
+    watchdogStallEmitted_.store(false, std::memory_order_release);
 }
 
 void EngineImpl::run() {
@@ -1327,6 +1442,13 @@ void* EngineImpl::getEventChannelRaw(std::type_index type,
                                      void* (*factory)(),
                                      void (*deleter)(void*),
                                      void (*drainFn)(void*)) {
+    // Worker jobs and the stall watchdog thread (§3.7 batch 14) both
+    // call `Engine::events<T>()`, which routes here. Guard the map
+    // mutation under a mutex so a concurrent first-call from a
+    // non-sim thread can't race with a sim-thread insertion. Hot
+    // path (lookup hit) still pays only the mutex cost — acceptable
+    // because per-type channels are constructed once.
+    std::lock_guard<std::mutex> lk(eventChannelsMtx_);
     auto it = eventChannels_.find(type);
     if (it != eventChannels_.end()) return it->second.ptr;
     EventChannelEntry entry;

@@ -26,6 +26,7 @@ class IGame;
 class IResourceLoader;
 class ResourceRegistry;
 class ILogger;
+class ITraceSink;
 struct FrameSnapshot;
 template <typename Ev> class EventChannel;
 
@@ -243,6 +244,38 @@ public:
     /// Aggregate worker-pool counters (jobs submitted, own-pops, steals).
     /// Cheap to call; safe from any thread.
     JobSystemStats jobSystemStats() const noexcept;
+
+    /// §3.7 batch 14 — install a per-tick @ref ITraceSink. The engine
+    /// calls @ref ITraceSink::onFrame once per `step()` on the sim
+    /// thread, after the frame is built and published, with the same
+    /// snapshot @ref frameSnapshot would return. Pass `nullptr` to
+    /// detach. The engine never takes ownership — the sink must outlive
+    /// the engine.
+    ///
+    /// Per-tick overhead with no sink installed is zero. With a sink
+    /// installed, the cost is whatever the sink's `onFrame` does on
+    /// the sim thread; budget it accordingly. The included
+    /// @ref FileTraceSink and @ref HudTraceSink are both designed to
+    /// stay under a few microseconds per call.
+    /// @thread_safety Sim thread only.
+    void setTraceSink(ITraceSink* sink) noexcept;
+
+    /// §3.7 batch 14 — install a stall watchdog with the given
+    /// timeout, in seconds. When `seconds > 0` the engine spawns a
+    /// background thread that wakes periodically and checks how long
+    /// the current `step()` has been running; if the running tick has
+    /// exceeded the threshold AND no @ref EngineStall has been emitted
+    /// for it yet, the watchdog emits one through
+    /// `events<EngineStall>()`. Events drain on the sim thread at the
+    /// usual tick boundary.
+    ///
+    /// Pass `0` to disable; the engine joins the watchdog thread.
+    /// Re-calling with a new positive value replaces the old timeout
+    /// without joining/re-spawning. Per-tick overhead when disabled
+    /// (the default) is zero.
+    /// @thread_safety Sim thread only.
+    void setStallTimeout(double seconds) noexcept;
+    double stallTimeout() const noexcept;
 
     /// Reserve an entity handle ahead of any spawn command (§3.5). Use
     /// during `IGame::onSetup` to seed entities whose handles are needed

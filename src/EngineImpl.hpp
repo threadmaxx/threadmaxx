@@ -21,9 +21,11 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
@@ -32,6 +34,7 @@ namespace threadmaxx {
 class Engine;
 class IRenderer;
 class IGame;
+class ITraceSink;
 }
 
 namespace threadmaxx::internal {
@@ -41,14 +44,16 @@ namespace threadmaxx::internal {
 class SystemContextImpl : public SystemContext {
 public:
     SystemContextImpl(class EngineImpl& engine, const World& world,
+                      const WorldView& view,
                       double dt, std::uint64_t tick,
                       std::uint32_t preferredGrain = 0)
-        : engine_(engine), world_(world), dt_(dt), tick_(tick),
+        : engine_(engine), world_(world), view_(view), dt_(dt), tick_(tick),
           preferredGrain_(preferredGrain) {}
 
-    const World& world() const noexcept override { return world_; }
-    double       dt()    const noexcept override { return dt_; }
-    std::uint64_t tick() const noexcept override { return tick_; }
+    const World&     world() const noexcept override { return world_; }
+    const WorldView& worldView() const noexcept override { return view_; }
+    double           dt()    const noexcept override { return dt_; }
+    std::uint64_t    tick()  const noexcept override { return tick_; }
 
     void parallelFor(std::uint32_t count, std::uint32_t grain, JobFn fn) override;
     void parallelFor(std::uint32_t count, std::uint32_t grain, JobFnArena fn) override;
@@ -85,6 +90,7 @@ public:
 private:
     class EngineImpl& engine_;
     const World&      world_;
+    const WorldView&  view_;
     double            dt_;
     std::uint64_t     tick_;
     std::vector<CommandBuffer> buffers_;
@@ -116,6 +122,12 @@ public:
     void setRenderer(IRenderer* renderer) noexcept { renderer_ = renderer; }
 
     void setLogger(ILogger* logger) noexcept { logger_ = logger; }
+
+    // §3.7 batch 14 — telemetry / stall watchdog.
+    void   setTraceSink(::threadmaxx::ITraceSink* sink) noexcept { traceSink_ = sink; }
+    void   setStallTimeout(double seconds) noexcept;
+    double stallTimeout() const noexcept { return stallTimeoutSeconds_; }
+    Engine* publicEngine() noexcept { return publicEngine_; }
     ILogger& logger() noexcept { return logger_ ? *logger_ : defaultLogger_; }
 
     World&        world()        noexcept { return world_; }
@@ -245,6 +257,10 @@ private:
 
     World world_;
 
+    // §3.6 batch 13c — wave-scoped read-only view, rebuilt before each
+    // wave and shared across the wave's SystemContextImpls.
+    WorldView worldView_;
+
     std::vector<std::unique_ptr<ISystem>> systems_;
     // Wave schedule: waves_[w] holds indices into systems_, all of whose
     // declared read/write sets are pairwise non-conflicting. Recomputed when
@@ -260,6 +276,22 @@ private:
     // through whichever is active via the logger() accessor.
     ILogger*      logger_ = nullptr;
     DefaultLogger defaultLogger_;
+
+    // §3.7 batch 14 — telemetry sink + stall watchdog.
+    ::threadmaxx::ITraceSink* traceSink_ = nullptr;
+    // 0.0 = disabled. setStallTimeout() (un)spawns watchdog_ as needed.
+    double                    stallTimeoutSeconds_ = 0.0;
+    std::thread               watchdog_;
+    std::atomic<bool>         watchdogRun_{false};
+    // Sim thread writes these at step start; watchdog reads.
+    std::atomic<std::uint64_t> watchdogStepStartNs_{0};  // steady_clock::now ns
+    std::atomic<std::uint64_t> watchdogActiveTick_{0};
+    // Per-tick "stall already announced" latch so we don't spam events.
+    std::atomic<bool>         watchdogStallEmitted_{false};
+
+    void startWatchdog_();
+    void stopWatchdog_();
+    void watchdogThreadFn_();
 
     std::uint64_t tick_ = 0;
     double simulationTime_ = 0.0;
@@ -283,6 +315,11 @@ private:
         void  (*drain)(void*)   = nullptr;
     };
     std::unordered_map<std::type_index, EventChannelEntry> eventChannels_;
+    // §3.7 batch 14 — worker jobs and the stall watchdog thread can
+    // both trigger first-instantiation of an event channel via
+    // `Engine::events<T>()`. Serialize the map mutation; lookup-hit
+    // is the steady-state hot path and the mutex is uncontended.
+    mutable std::mutex eventChannelsMtx_;
 
     // Double-buffered render-frame storage. We build into back_, then
     // atomically publish the pointer; the renderer reads through front_.

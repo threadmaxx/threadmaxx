@@ -233,3 +233,19 @@ Two serializers live in `<threadmaxx/Trace.hpp>` on top of
   per-system update duration on a stable per-system row.
 
 See [Tracing](tracing.md) for the full surface and examples.
+
+## Engine-streamed telemetry — `ITraceSink` and watchers
+
+The `writeJsonLines` / `ChromeTraceWriter` calls above run on
+*your* schedule (whenever you call them). Batch 14 ships a
+push-based alternative: `Engine::setTraceSink(ITraceSink*)`
+installs a sink that the engine calls once per `step()` with the
+same `FrameSnapshot`. Built-in `FileTraceSink` writes rolling
+Chrome-trace JSON with automatic file rotation; built-in
+`HudTraceSink` exposes a seqlock-protected `LatestTelemetry`
+that a HUD thread polls lock-free. Add `FrameBudgetWatcher` to
+emit `BudgetExceeded` events on over-budget ticks, or
+`Engine::setStallTimeout` to spawn a watchdog thread that emits
+`EngineStall` when a tick hangs.
+
+See [Telemetry sinks](telemetry.md) for the full surface.

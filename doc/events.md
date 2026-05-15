@@ -64,12 +64,27 @@ construction.
 ## Thread safety
 
 `emit` is safe to call from any thread, including parallel worker
-jobs. Internally it locks a single per-channel mutex on the back
-buffer; contention is bounded by emit frequency, which is typically
-small. `drainTick` returns a `span` into the front buffer (no copy);
-the front buffer is single-writer-multi-reader during a tick, so any
+jobs and engine-owned helper threads (the stall watchdog uses it).
+Since batch 13c the back buffer is a **lock-free MPSC Treiber stack**:
+each `emit` allocates a node and CAS-prepends to an atomic head; on
+drain the engine atomically detaches the whole stack and reverses it
+into the read buffer to restore per-thread FIFO order. There is no
+mutex on the hot emit path — concurrent producers contend only on
+the head pointer's CAS, never on a lock.
+
+Ordering: within a single producer thread, emit order is preserved
+across drain. Across producer threads the interleaving is undefined
+— concurrent emitters have no synchronization between them anyway.
+Subscribers fire in the same order `drainTick` would yield.
+
+`drainTick` returns a `span` into the front buffer (no copy); the
+front buffer is single-writer-multi-reader during a tick, so any
 system whose `update` reads via `drainTick` is safe even if other
 systems read the same channel concurrently.
+
+`pendingCount()` is now an atomic counter rather than a vector
+size; it is approximate under concurrent emit and intended for
+tests and HUD readouts, not for hot-path branching.
 
 ## What about the same-tick case?
 

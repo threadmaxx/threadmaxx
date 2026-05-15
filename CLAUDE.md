@@ -528,3 +528,174 @@ four-element value-only list). To opt a new variant into the
 chunk-local fast path, extend the `commandIsMigrating` switch
 explicitly — but only if the variant is genuinely value-only with
 no possible mask toggle, lookup, or cross-entity side effect.
+
+## §3.6 batch 13c — Storage contention close-out
+
+Closes §6 phase 5. Three independent pieces; all opt-in or
+internal, no public API breakage:
+
+**Lock-free MPSC event channels.** `EventChannel<T>::emit` no
+longer holds a mutex. New implementation in
+`include/threadmaxx/EventChannel.hpp`: an atomic Treiber stack
+(`std::atomic<Node*> backHead_`) with CAS prepend on `emit` and
+`exchange(nullptr)` + reverse-on-drain to restore per-thread FIFO
+order. Subscriber list still mutex-guarded (touched only on
+subscribe / unsubscribe — low frequency). The legacy mutex's
+latent self-deadlock during recursive emit-from-callback is gone
+as a side benefit. `pendingCount()` is now an atomic counter
+rather than a vector size, and is approximate under concurrent
+emit. Subscription / drain semantics are bit-for-bit unchanged.
+Test: `tests/event_channel_lockfree_test.cpp` — 8 threads × 10k
+emits each, verifies count + per-thread monotonic sequence
+preservation + post-drain pendingCount reset.
+
+**`WorldView`.** Wave-scoped read-only view of chunk storage
+(`include/threadmaxx/World.hpp`). Caches chunk pointers + entity
+counts into a flat array at wave start; same view shared across
+every system in the wave. Accessed via `SystemContext::worldView()
+-> const WorldView&`. The engine rebuilds it between waves
+(commits happen there, so chunk inventory may shift). Within
+`update()` the view is stable for the wave's duration — capture
+it (cheaply, by reference) and reuse across multiple
+`parallelFor` / `single` calls without paying repeated indirection
+through `World::archetypeChunk(i)`. Test:
+`tests/world_view_test.cpp`. EngineImpl rebuilds `worldView_`
+inside `step()` immediately before preStep, between preStep
+commits, at the top of every wave, and between postStep commits.
+
+**Benchmarks.** Opt-in via `-DTHREADMAXX_BUILD_BENCHMARKS=ON`.
+`bench/commit_bench.cpp` compares `singleThreadedCommit={true,
+false}` across multiple entity counts and command mixes;
+`bench/event_channel_bench.cpp` measures lock-free emit throughput
+at varying contention. On the workloads tested so far (transform-
+only and mixed value-only + occasional tag flips, 256 →131k
+entities) the sharded commit path's classifier overhead exceeds
+its parallelism win — keep `singleThreadedCommit = true` as the
+default. The sharded path is the documented immediate fallback
+under profiler-confirmed contention; the bench infra and 65-test
+correctness suite mean we can re-evaluate whenever workload
+shapes shift.
+
+**Soak test.** `tests/commit_soak_test.cpp` — 4096 ticks across
+two workloads × two commit paths. Asserts per-tick `commitHash`
+and final `WorldSnapshot` FNV-1a agree across paths, plus the
+lock-free event channel doesn't lose any of the ~100M events
+drained.
+
+Items still deferred (low-priority follow-ons that the
+microbenchmark proved unnecessary at current workload shapes):
+per-chunk command buffers (record-time routing) and read-only
+world snapshot pointer caching across waves. Both are tracked
+in §3.6.4 as potential future batches if profiling ever flags
+them.
+
+## §3.7 batch 14 — Telemetry ingestion close-out
+
+Closes §6 phase 6. New public header
+`include/threadmaxx/Telemetry.hpp`; implementation in
+`src/Telemetry.cpp`. Five additions, all opt-in (defaults
+preserve prior behavior bit-for-bit):
+
+**`ITraceSink`.** Engine-streamed per-tick consumer interface.
+`onFrame(const FrameSnapshot&)` is called once per `Engine::step`
+on the sim thread after the frame is built and published. Sink
+owns any buffering / off-thread I/O. `onShutdown()` is called by
+the engine at teardown (today: the user is expected to call it on
+their own sink — the engine has no ownership of the sink and
+`Engine::shutdown()` does not propagate; the included sinks'
+destructors handle final flushing). Install via
+`Engine::setTraceSink(ITraceSink*)`. Default null = zero cost.
+The engine never takes ownership; sink must outlive the engine.
+
+**`FileTraceSink`.** Built-in rolling Chrome-trace JSON sink.
+Each `onFrame` call delegates to an internal `ChromeTraceWriter`;
+when the active file exceeds `Config::rotationBytes` (default
+64 MiB) the writer is destroyed (closing the JSON array with
+`]`), a new file is opened with `[`, and the rotation index
+increments. `pathTemplate` may contain `%N` (replaced with
+rotation index) or just a path stem (".N.json" is appended).
+All I/O is on the sim thread inside `onFrame` — keep
+`rotationBytes` reasonable. Test exercises rotation with a tiny
+512-byte budget so multiple files are emitted across 50 ticks.
+
+**`HudTraceSink`.** Seqlock-protected latest-snapshot sink.
+`onFrame` writes `LatestTelemetry` (headline numbers only:
+tick, step_s, avg_s, commit_s, jobs, commands, aliveEntities,
+commitHash, workerCount, totals). `tryGet(out)` is lock-free
+and torn-write-free; returns false until the first `onFrame`.
+Designed for a renderer or HUD thread polling once per render
+frame. Sequence layout: even = stable, odd = writer in progress.
+The cache-line alignment (`alignas(64)`) on `seq_` keeps the
+counter out of contention with `data_` writes.
+
+**`FrameBudgetWatcher`.** Built-in `ISystem`. `postStep` reads
+`engine.stats().lastStepSeconds` and emits a `BudgetExceeded`
+event via `engine.events<BudgetExceeded>()` if it exceeded the
+configured target. `exceedCount()` reports lifetime count. Reads
+/ writes empty, so it lands in any wave without conflict.
+Construct with `FrameBudgetWatcher{&engine, targetSeconds}` and
+register normally. Note: `postStep` runs in registration order
+after the last wave, so it observes the just-finished tick;
+subscribers drain the event on the next tick boundary.
+
+**Stall watchdog.** `Engine::setStallTimeout(seconds)` spawns a
+background thread (`EngineImpl::watchdogThreadFn_`) that wakes
+every `0.25 * timeout` and compares the current wall-clock
+against the sim-thread-published step-start timestamp. If the
+running tick has exceeded the timeout AND the watchdog hasn't
+already announced for this tick (CAS-guarded
+`watchdogStallEmitted_` latch), it emits an `EngineStall` event
+via `events<EngineStall>()`. Safe because the lock-free MPSC
+channel (§3.6 batch 13c) lets a non-sim thread emit. The
+watchdog joins on `setStallTimeout(0.0)` or on `~EngineImpl`.
+Per-tick overhead when disabled (the default) is zero.
+
+Adding telemetry from new engine subsystems: emit a typed event
+through `events<MyTelemetryEvent>()` and instruct sinks to
+subscribe. The sinks shipped in `Telemetry.hpp` are intentionally
+narrow (FrameSnapshot-shaped); for richer telemetry, subscribe
+your own listener and aggregate.
+
+## Post-batch-14 audit fixes (2026-05-15)
+
+Three HIGH-severity bugs surfaced in the post-batch-14 codebase
+audit landed as hotfixes alongside batch 14 rather than as a
+separate batch (atomic in scope, not enough to warrant a new
+batch number — full set of audit-driven follow-ons is tracked in
+§3.6.5 as batch 15):
+
+- **`HierarchySystem` infinite loop on cycles.** The chain-walk
+  in `src/HierarchySystem.cpp` had no visited-set guard; a
+  cycle (A→B→A) caused the pop-stack inner loop to grow
+  unbounded. Fix: track `onStack[]` per chain and break out on
+  re-entry, marking the cycle's entries as dangling so the
+  pop-down pass leaves them at their stored transforms. Test:
+  `tests/hierarchy_cycle_test.cpp` (2/3/5-entity cycles, 5-second
+  watchdog around `engine.step()` so a regression fails the
+  test instead of hanging CTest).
+
+- **`EntityStorage::ensureStitched` data race.** The lazy
+  stitched-cache rebuild touches ~14 non-atomic vectors;
+  multiple worker jobs hitting a dirty cache simultaneously
+  via `world.transforms()` (et al.) raced on the writes. Fix:
+  added a `mutable std::mutex stitchedMtx_` and a
+  double-checked-locking pattern — fast path (cache clean) still
+  pays only the atomic-acquire on `stitchedDirty_`; slow path
+  (rebuild) is serialized.
+
+- **`EngineImpl::getEventChannelRaw` map-insert race.** The
+  stall watchdog (batch 14) is the first cross-thread user of
+  `Engine::events<T>()`; if `events<EngineStall>()` is called
+  for the first time from the watchdog thread, the
+  `unordered_map::emplace` could race a concurrent sim-thread
+  insert. Fix: added a `mutable std::mutex eventChannelsMtx_`
+  guarding the map. Steady-state lookup-hit still pays only
+  the mutex acquisition; per-type channels are constructed
+  once.
+
+The remaining audit items (API polish for batch 9, broader
+soak/concurrency tests, hierarchy / forEach* / culling
+benchmarks, doc clarifications) are tracked as **batch 15** in
+§3.6.5 of `FUTURE_WORK.md`. They aren't blocking and should
+land in a focused pass before batch 9 (Vulkan reference
+renderer) starts.

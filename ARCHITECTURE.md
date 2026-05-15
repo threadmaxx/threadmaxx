@@ -275,10 +275,17 @@ typed double-buffered queue surfaced via `Engine::events<T>()`.
 Storage is type-erased on `EngineImpl::eventChannels_`
 (`std::unordered_map<std::type_index, EventChannelEntry>`), with
 function-pointer hooks for the deleter and the drainer. Per-channel
-state is a `std::mutex`-guarded back buffer plus a stable front
-buffer; `drain()` swaps them at tick boundary. `emit` is mutex-
-protected so worker jobs can produce safely; `drainTick` returns a
-span into the front buffer.
+state since batch 13c is a **lock-free MPSC Treiber stack** (atomic
+`Node*` head) for the back buffer plus a stable front buffer; `drain()`
+atomically detaches the stack, walks it into `front_`, and reverses
+to restore per-thread FIFO order. `emit` is lock-free (CAS prepend)
+so worker jobs can produce without contending on a mutex; `drainTick`
+returns a span into the front buffer. The subscriber list is still
+mutex-guarded — it's touched only on subscribe/unsubscribe, low
+frequency. Side benefit: the older mutex-protected emit had a latent
+self-deadlock when a subscriber callback re-emitted during drain;
+the new design captures the back stack before invoking subscribers,
+so recursive emit lands on the next tick safely.
 
 ## Pause and time-scale
 

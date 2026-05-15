@@ -334,7 +334,16 @@ const ComponentSet* EntityStorage::tryGetComponentMask(EntityHandle h) const noe
 // ---- stitched views ------------------------------------------------------
 
 void EntityStorage::ensureStitched() const noexcept {
-    if (!stitchedDirty_.load(std::memory_order_relaxed)) return;
+    // Fast path: cache clean → no synchronization. The release in
+    // the publish-side store below ensures every cache update is
+    // visible by the time `stitchedDirty_` is observed as `false`.
+    if (!stitchedDirty_.load(std::memory_order_acquire)) return;
+
+    // Slow path: serialize the rebuild so two workers hitting a
+    // dirty cache simultaneously don't both write into the
+    // stitched vectors. Double-checked under the mutex.
+    std::lock_guard<std::mutex> lk(stitchedMtx_);
+    if (!stitchedDirty_.load(std::memory_order_acquire)) return;
 
     const auto& chunks = table_.chunks();
     archetypeStitchStart_.assign(chunks.size(), 0);
@@ -395,7 +404,7 @@ void EntityStorage::ensureStitched() const noexcept {
         fill(stitchedBoundingVolumes_, std::span<const BoundingVolume>(c.boundingVolumes), c.mask.has(Component::BoundingVolume),  BoundingVolume{});
         cursor += n;
     }
-    stitchedDirty_.store(false, std::memory_order_relaxed);
+    stitchedDirty_.store(false, std::memory_order_release);
 }
 
 std::span<const EntityHandle> EntityStorage::entities() const noexcept {

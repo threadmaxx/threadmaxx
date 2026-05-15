@@ -9,6 +9,7 @@ project(threadmaxx
 # --------------------------------------------------------------------------
 option(THREADMAXX_BUILD_EXAMPLES "Build the bundled minimal example" ON)
 option(THREADMAXX_BUILD_TESTS "Build and register the test suite" ON)
+option(THREADMAXX_BUILD_BENCHMARKS "Build the standalone benchmark binaries" OFF)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -45,6 +46,7 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/Game.hpp
     include/threadmaxx/SpatialHash.hpp
     include/threadmaxx/Trace.hpp
+    include/threadmaxx/Telemetry.hpp
     include/threadmaxx/World.hpp
     include/threadmaxx/Engine.hpp
 )
@@ -61,6 +63,7 @@ set(THREADMAXX_SOURCES
     src/ResourceRegistry.cpp
     src/ScratchArena.cpp
     src/Trace.cpp
+    src/Telemetry.cpp
     src/UserComponentRegistry.cpp
 )
 
@@ -119,6 +122,13 @@ endif()
 if (THREADMAXX_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# --------------------------------------------------------------------------
+# Benchmarks (opt-in: -DTHREADMAXX_BUILD_BENCHMARKS=ON)
+# --------------------------------------------------------------------------
+if (THREADMAXX_BUILD_BENCHMARKS)
+    add_subdirectory(bench)
 endif()
 
 # --------------------------------------------------------------------------

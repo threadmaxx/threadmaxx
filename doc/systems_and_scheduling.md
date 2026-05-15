@@ -42,6 +42,15 @@ ctx.single([&](Range, CommandBuffer& cb) {
 `SystemContext` also exposes:
 
 - `world()` — const reference to the world for read-only access.
+- `worldView()` — wave-scoped `const WorldView&` caching chunk
+  pointers + entity count (§3.6 batch 13c). Cheap to capture into
+  worker lambdas — the engine rebuilds the view between waves so
+  its contents are stable for the duration of a single `update()`.
+  Use `view.chunks()` (a `std::span` of chunk pointers) to iterate
+  archetypes without paying repeated indirection through
+  `world.archetypeChunk(i)`; use `view.entityCount()` instead of
+  `world.size()` when both must be consistent across multiple
+  `parallelFor` calls.
 - `dt()` — fixed-step delta in seconds.
 - `tick()` — monotonically increasing tick counter.
 
