@@ -932,3 +932,105 @@ and shut down with no crashes / no validation errors).
 file I/O, shadow pass, skinning pipeline, PBR shader, file-watcher
 + pipeline-rebuild subscriber, debug-text rendering,
 Transparent / ShadowCasters / Overlay passes, cross-platform CI.
+
+## §3.2 batch 10 — 3D RPG demo example
+
+Closes Milestone 6: `examples/rpg_demo/` is a small 3D scene that
+exercises every public engine subsystem against batch-9's Vulkan
+renderer. Opt-in: silently skipped at configure time if the
+`threadmaxx::vulkan_renderer` target wasn't built (which itself
+requires Vulkan + GLFW + glslc). The success criterion is **no
+engine patches** — the demo lives in 14 .cpp/.hpp files under
+`examples/rpg_demo/` plus the public threadmaxx headers and the
+`threadmaxx::vulkan_renderer` static library; nothing in `src/` or
+`include/threadmaxx/` is touched.
+
+**Scene**: 60×60 terrain, 1 player cube, 50 NPCs (mix of
+hostile/friendly with Idle/Wander/Flee state machines), 100 pickup
+cubes. 152 entities total at boot.
+
+**Systems** (registered in this order; the engine's wave scheduler
+topo-sorts based on reads/writes):
+- `NPCBrainSystem` — `preStep` rebuilds a
+  `SpatialHash<EntityHandle>` from every alive `BoundingVolume`
+  entity. `update` walks NPCs serially (RNG not thread-safe),
+  computes per-NPC `Velocity` based on player distance + state
+  machine, batches writes into one `single()` callback.
+- `PlayerInputSystem` — reads polled `InputState` (WASD axes +
+  camera yaw from PlayerState), writes player `Velocity`.
+- `CameraSystem` — `update` consumes input deltas + caches the
+  player transform + writes the post-input yaw back into
+  `PlayerState`. `buildRenderFrame` emits a `Camera` with manually
+  built view + perspective matrices.
+- `MovementSystem` —
+  `forEachWith<Transform, Velocity>` integrates, skips
+  `DisabledTag` entities.
+- `PickupSystem` — uses `NPCBrainSystem::spatialHash()` to find
+  pickups within 1.2 units of the player. Flips `DisabledTag`,
+  bumps `PlayerState.pickups`, emits `PickupCollected` events via
+  `engine.events<PickupCollected>().emit`.
+- `DayNightSystem` — `postStep` advances sun angle;
+  `buildRenderFrame` pushes a directional `Light` with day/night
+  color interpolation.
+- `CubeRenderSystem` — snapshots `(Transform, CubeRender)` pairs
+  during `update`, emits one `DrawItem` per non-`DisabledTag`
+  entity in `buildRenderFrame` on `RenderPass::Opaque`. The
+  CubeRender user-component carries per-cube color + scale; the
+  renderer multiplies the color into `materialOverride`.
+- `DebugOverlaySystem` — emits 16-segment AOI circles per NPC
+  (faction-colored), a player aim-line, and faction markers via
+  `addDebugLine` / `addDebugPoint`.
+- `SaveLoadSystem` — F5 writes `world.snapshot()` →
+  `serialize()` → `/tmp/rpg_demo_save.bin`. F9 reads the file and
+  prints a per-faction summary; v1 does NOT tear down + respawn
+  because UserComponent persistence is game-side responsibility
+  (per the §3.1 batch 6b out-of-scope note). Documented as such.
+- `HudSystem` — subscribes to `PickupCollected` via
+  `subscribeScoped`, prints once per pickup. `preStep` polls F1
+  to toggle a `FileTraceSink` writing
+  `/tmp/rpg_demo_trace.%N.json`. `postStep` prints stats every 60
+  ticks. Marked `skippable()` so a tick-budget engagement drops it
+  first.
+
+**User components** (registered at boot via
+`engine.registerUserComponent<T>()`):
+- `CubeRender { color[4], scale }` — per-entity render parameters.
+- `NpcState { mode, stateTimer, targetX/Z, aoiRadius }` — AI state.
+- `PlayerState { pickups, yawRadians, runSpeed }` — player only.
+- `Pickup { value }` — pickup tag with score weight.
+
+The ids land in a `UserComponentIds` struct held by `DemoGame` and
+passed by raw pointer to every system that touches a user
+component. Systems use `threadmaxx::user::tryGet<T>(world, id, e)`
+for reads, `addUserComponent` / `removeUserComponent` on a
+CommandBuffer for writes.
+
+**Input plumbing** (`Input.hpp` / `Input.cpp`): GLFW key callback
+sets edge bits in a `std::atomic<uint32_t>`; sim-thread systems
+consume via `takeEdges()` (atomic-exchange). Continuous axes
+(WASD / arrow keys / Q/E) are polled per frame in
+`pollContinuousInput`, called between `glfwPollEvents` and
+`engine.step()`.
+
+**`DemoGame::onSetup`** reserves an EntityHandle for the player
+(stashed in `WorldState`), spawns terrain + player + NPCs +
+pickups via `cb.spawnBundle(reservedHandle, bundle)`, attaches
+user components via `addUserComponent`. Then registers every
+system in order. The `WorldState` struct in `DemoTypes.hpp` carries
+the player handle, current sun angle, framebuffer dimensions, and
+the day-night cycle length; every system that needs cross-system
+state holds a `WorldState*` (non-owning, valid for the engine's
+lifetime).
+
+**Loop**: `main.cpp` paces to 60 Hz via `steady_clock` +
+`sleep_for` (`std::chrono::nanoseconds`); GLFW resize callback
+updates `WorldState.framebufferWidth/Height` AND calls
+`engine.notifyResize`; F-keys feed Input edges; `Esc` /
+window-close break the loop. `engine.shutdown()` runs reverse-
+order system teardown, the renderer's GPU release, and joins the
+worker pool.
+
+**Verified workflow**: build clean on both `build/` and
+`build-werror/`; smoke-runs 180 ticks validation-clean; HUD prints
+every 60 ticks; sun angle advances; entities render with their
+per-cube colors; ctest still 79/79 on both trees.

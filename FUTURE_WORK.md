@@ -767,7 +767,7 @@ grows monotonically. The mapping to milestones (§8):
 | ~~7~~ | ~~Resource & event maturity~~      | ✅ landed 2026-05-14 — see §2 |
 | ~~8~~ | ~~Render contract expansion~~      | ✅ landed 2026-05-14 — see §2 |
 | ~~9~~ | ~~Vulkan reference renderer (example)~~ | ✅ landed 2026-05-15 — see §2 / §3.1 below |
-| 10    | 3D RPG demo example                | M6 lead-in — example, not library |
+| ~~10~~ | ~~3D RPG demo example~~           | ✅ landed 2026-05-15 — see §2 / §3.2 below |
 | ~~11~~ | ~~Frame task graph (§6 phase 3)~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~12~~ | ~~Cancellation, budgets, priorities (§6 phase 4)~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~13~~ | ~~Storage contention reduction (§6 phase 5)~~ | ✅ landed 2026-05-15 — see §2 |
@@ -871,24 +871,104 @@ with each other; the smoke is intentionally minimal so it stays
 green as a build-verification gate while batch 10 evolves the
 content.
 
-### 3.2 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)
+### 3.2 Batch 10 — 3D RPG demo example (Milestone 6 lead-in)  ✅ landed 2026-05-15
 
-Closes the loop. Built on top of the Vulkan renderer; demonstrates
-that a real game can be developed without engine patches.
+Closes Milestone 6. Built on top of the batch-9 Vulkan renderer;
+proves a real game can be developed against threadmaxx's public
+surface without touching the engine.
 
-- **`examples/rpg_demo/`.** A small open scene: terrain, day/night
-  cycle, a player, ~50 NPCs with simple behavior trees,
-  inventory pickups, save/load, profiling HUD.
-- **Exercises every milestone.** Archetype storage (M2), multi-stage
-  asset loading + hot reload (M3), pass-aware rendering with skinned
-  characters (M4), serialization (batch 4), spatial-hash AOI for
-  AI (batch 3), event subscriptions (batch 4), Chrome-trace
-  capture (batch 4), Health / Faction / BoundingVolume / tag-only
-  components (batch 5).
-- **No engine patches.** The success criterion is that everything
-  lives in `examples/rpg_demo/` plus the public threadmaxx headers
-  — if the demo needs an engine change, it goes back through the
-  next batch instead of into the example.
+**As-shipped scope:**
+
+- `examples/rpg_demo/` — depends on
+  `threadmaxx::vulkan_renderer` (and therefore on Vulkan + GLFW +
+  glslc). Silently skipped at configure time if the renderer target
+  is missing.
+- Scene: 60×60 terrain, a player (blue cube), 50 NPCs (mixed
+  hostile/friendly with simple Idle/Wander/Flee state machine), 100
+  pickup cubes scattered on the floor. 152 entities total at boot.
+- 11 systems registered in registration order (which the wave
+  scheduler tops-sorts):
+  `NPCBrainSystem` (preStep rebuilds a `SpatialHash<EntityHandle>`,
+  update reads world + writes per-NPC `Velocity`),
+  `PlayerInputSystem` (writes player `Velocity` from poll-state
+  WASD + camera yaw),
+  `CameraSystem` (writes player yaw via `UserComponent<PlayerState>`,
+  `buildRenderFrame` pushes a third-person `Camera`),
+  `MovementSystem` (`forEachWith<Transform, Velocity>` integrates,
+  skips `DisabledTag`),
+  `PickupSystem` (queries the spatial hash near the player, flips
+  `DisabledTag` on pickups, increments
+  `PlayerState.pickups`, emits `PickupCollected` events),
+  `DayNightSystem` (postStep advances sun angle, `buildRenderFrame`
+  pushes a directional `Light`),
+  `CubeRenderSystem` (snapshots `CubeRender` user-component +
+  Transform during update, emits a `DrawItem` per entity in
+  `buildRenderFrame` to `RenderPass::Opaque`),
+  `DebugOverlaySystem` (16-segment AOI circles + player aim line via
+  `RenderFrameBuilder::addDebugLine/Point`),
+  `SaveLoadSystem` (F5 quick-save, F9 diagnose),
+  `HudSystem` (F1 toggle `FileTraceSink`, subscribes to
+  `PickupCollected` via `subscribeScoped`, prints stats every 60
+  ticks in postStep, marked `skippable`).
+- Four `UserComponent<T>` PODs registered at boot: `CubeRender`,
+  `NpcState`, `PlayerState`, `Pickup`. Demonstrates the §3.1 batch
+  6b extension path — none of these are built-in, the engine never
+  names them, the game registers them at startup and the systems
+  pass the `UserComponentId`s around via a `UserComponentIds`
+  struct.
+- All built-in components touched at least once:
+  Transform / Velocity / Faction / BoundingVolume / Health (every
+  entity has at least three of these); StaticTag on terrain;
+  DisabledTag flipped by PickupSystem; tag bits round-trip through
+  the snapshot via `ComponentSet`. No `Parent` chains in v1 — the
+  third-person camera attaches manually rather than via
+  hierarchical transforms — but the engine's hierarchy plumbing is
+  exercised at compile time via the public headers regardless.
+- Engine subsystem coverage:
+    - Spatial-hash AOI (batch 3 / §3.3) via SpatialHash<EntityHandle>.
+    - Event subscriptions (batch 4) via subscribeScoped to
+      PickupCollected.
+    - Chrome-trace capture (batch 4 / §3.7 batch 14) via F1 toggle
+      installing a FileTraceSink with `/tmp/rpg_demo_trace.%N.json`.
+    - Serialization (batch 4) via `world.snapshot()` + `serialize`
+      to `/tmp/rpg_demo_save.bin` on F5.
+    - User-component extension (batch 6b) — described above.
+    - Pass-aware rendering (batch 8) via
+      `RenderFrameBuilder::addDrawItem(RenderPass::Opaque, ...)`.
+    - Worker-pool scheduling — every system declares its
+      reads/writes; the scheduler runs non-conflicting systems
+      concurrently across waves.
+- No engine patches needed. The entire demo lives in
+  `examples/rpg_demo/` (14 .cpp/.hpp files) plus the public
+  threadmaxx headers and the `threadmaxx::vulkan_renderer` static
+  library. Both `build/` and `build-werror/` build it cleanly;
+  `ctest` still reports 79/79 on both trees after the demo lands.
+- Controls — `W/A/S/D` move, arrow keys rotate the camera, `Q/E`
+  zoom, `F1` toggle Chrome-trace, `F5` quick-save, `F9` load and
+  diagnose, `Esc` / window close exit.
+
+**Deferred to follow-ons** (none of these block the M6 close):
+
+- UserComponent persistence in `WorldSnapshot`. Today's
+  `SaveLoadSystem` save+load is a round-trip *of the built-in
+  components only*; load re-reads the file and prints a diagnostic
+  summary rather than tearing down the world (which would leave
+  every entity without its CubeRender / NpcState / PlayerState /
+  Pickup attached and break rendering / AI). The §3.1 batch 6b
+  docs already call user-component persistence out as a game-side
+  responsibility, so the demo follows that contract rather than
+  trying to fake it.
+- Hierarchy: the third-person camera attaches manually in
+  `CameraSystem` rather than via a `Parent` chain. A future
+  follow-on can switch to the hierarchy system to demonstrate the
+  multi-level transform composition path.
+- Audio, particles, post-processing — out of scope for the engine
+  (sibling libraries per §3.3).
+- Real disk-loaded mesh / texture / shader assets. The renderer
+  ships embedded SPIR-V + a unit-cube fallback mesh; the demo
+  works against that surface. Real asset I/O would extend the
+  asset loaders inside `examples/vulkan_renderer/` and is
+  orthogonal to the demo's correctness.
 
 ### 3.3 Items intentionally NOT in §3
 

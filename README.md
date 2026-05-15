@@ -216,10 +216,20 @@ window with a spinning third-person camera and a debug-line cube:
 THREADMAXX_VK_VALIDATE=1 ./build/examples/vulkan_renderer/threadmaxx_vulkan_smoke 300
 ```
 
-The smoke is intentionally minimal — batch 10 (RPG demo) is the showcase
-that exercises mesh I/O, shadows, and PBR shading. The
+The 3D RPG demo at `examples/rpg_demo/` is the full Milestone-6 showcase:
+60×60 terrain, 1 player, 50 NPCs with simple AI, 100 pickup cubes,
+day/night cycle, save/load, Chrome-trace toggle, HUD. Built on top of
+the Vulkan renderer (same opt-in gates).
+
+```sh
+./build/examples/rpg_demo/threadmaxx_rpg_demo            # Esc / window close to quit
+./build/examples/rpg_demo/threadmaxx_rpg_demo 600        # bounded: 600 ticks then exit
+```
+
+Controls: WASD move, arrow keys rotate camera, Q/E zoom, F1 toggle
+Chrome-trace capture, F5 quick-save, F9 diagnose save. The
 `threadmaxx::vulkan_renderer` static library is reusable: link your own
-game against it the same way the smoke does.
+game against it the same way both examples do.
 
 Run the test suite:
 
@@ -231,7 +241,7 @@ CMake options:
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `THREADMAXX_BUILD_EXAMPLES` | `ON` | Builds `examples/minimal`, (if SDL2 is found) `examples/boids`, and (if Vulkan + GLFW + glslc are found) `examples/vulkan_renderer`. |
+| `THREADMAXX_BUILD_EXAMPLES` | `ON` | Builds `examples/minimal`, (if SDL2 is found) `examples/boids`, and (if Vulkan + GLFW + glslc are found) `examples/vulkan_renderer` and `examples/rpg_demo`. |
 | `THREADMAXX_BUILD_TESTS` | `ON` | Builds and registers the CTest suite under `tests/`. |
 | `THREADMAXX_BUILD_BENCHMARKS` | `OFF` | Builds the standalone microbenchmark binaries under `bench/` (`commit_bench`, `event_channel_bench`). Not registered with CTest; run them by hand. |
 | `THREADMAXX_WARNINGS_AS_ERRORS` | `OFF` | Promotes the project's warning set (incl. `-Wsign-conversion`, `-Wconversion`, `-Wshadow`, `-Wold-style-cast`) to errors. The library compiles clean under it; keep it that way. |
@@ -361,6 +371,7 @@ src/                   private implementation (PImpl)
 examples/minimal/         headless console example
 examples/boids/           SDL2 boids simulation
 examples/vulkan_renderer/ Vulkan 1.3 reference renderer (static lib + smoke)
+examples/rpg_demo/        Milestone-6 3D RPG demo on top of the Vulkan renderer
 bench/                 standalone microbenchmarks (opt-in)
 tests/                 79 no-dependency tests under CTest
 doc/                   user guide (Markdown, also ingested by Doxygen)

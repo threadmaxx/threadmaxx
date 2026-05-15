@@ -115,6 +115,7 @@ if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/minimal)
     add_subdirectory(examples/boids)
     add_subdirectory(examples/vulkan_renderer)
+    add_subdirectory(examples/rpg_demo)
 endif()
 
 # --------------------------------------------------------------------------
