@@ -7,11 +7,13 @@
 #include "World.hpp"
 #include "internal/Archetype.hpp"
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace threadmaxx {
 
@@ -88,6 +90,69 @@ void invokeAt(F& fn, EntityHandle e, const Spans& spans,
     fn(e, std::get<Is>(spans)[i]..., cb);
 }
 
+template <typename C>
+auto getChunkSpan(const internal::ArchetypeChunk& c) noexcept {
+    if constexpr (std::is_same_v<C, Transform>)              return std::span<const Transform>(c.transforms);
+    else if constexpr (std::is_same_v<C, Velocity>)          return std::span<const Velocity>(c.velocities);
+    else if constexpr (std::is_same_v<C, RenderTag>)         return std::span<const RenderTag>(c.renderTags);
+    else if constexpr (std::is_same_v<C, UserData>)          return std::span<const UserData>(c.userData);
+    else if constexpr (std::is_same_v<C, Acceleration>)      return std::span<const Acceleration>(c.accelerations);
+    else if constexpr (std::is_same_v<C, Parent>)            return std::span<const Parent>(c.parents);
+    else if constexpr (std::is_same_v<C, Health>)            return std::span<const Health>(c.healths);
+    else if constexpr (std::is_same_v<C, Faction>)           return std::span<const Faction>(c.factions);
+    else if constexpr (std::is_same_v<C, AnimationStateRef>) return std::span<const AnimationStateRef>(c.animationStates);
+    else if constexpr (std::is_same_v<C, PhysicsBodyRef>)    return std::span<const PhysicsBodyRef>(c.physicsBodies);
+    else if constexpr (std::is_same_v<C, NavAgentRef>)       return std::span<const NavAgentRef>(c.navAgents);
+    else if constexpr (std::is_same_v<C, BoundingVolume>)    return std::span<const BoundingVolume>(c.boundingVolumes);
+    else static_assert(sizeof(C) == 0,
+        "forEachChunk/forEachWith: component type must be one of the built-in "
+        "data components — Transform, Velocity, RenderTag, UserData, "
+        "Acceleration, Parent, Health, Faction, AnimationStateRef, "
+        "PhysicsBodyRef, NavAgentRef, BoundingVolume.");
+}
+
+/// §3.9.2 batch 17 — Inline-buffered list of matching-chunk indices.
+///
+/// Most worlds have under 32 archetype chunks, so a small array is
+/// the common case. We spill into a heap vector only when the world
+/// grows past that. Used by both @ref forEachWith and @ref forEachChunk
+/// so the common case pays zero allocations per call.
+class ChunkMatchList {
+public:
+    static constexpr std::size_t kInlineCap = 32;
+
+    void push(std::size_t idx) {
+        if (overflow_) {
+            heap_.push_back(idx);
+            return;
+        }
+        if (inlineSize_ < kInlineCap) {
+            inline_[inlineSize_++] = idx;
+            return;
+        }
+        // Spill to heap. Move the inline storage over so iteration
+        // semantics stay simple (heap_ owns everything once overflowed).
+        heap_.reserve(kInlineCap * 2);
+        heap_.assign(inline_.begin(), inline_.begin() + inlineSize_);
+        heap_.push_back(idx);
+        overflow_ = true;
+    }
+
+    std::size_t size() const noexcept {
+        return overflow_ ? heap_.size() : inlineSize_;
+    }
+    bool empty() const noexcept { return size() == 0; }
+    std::size_t operator[](std::size_t i) const noexcept {
+        return overflow_ ? heap_[i] : inline_[i];
+    }
+
+private:
+    std::array<std::size_t, kInlineCap> inline_{};
+    std::size_t                         inlineSize_ = 0;
+    std::vector<std::size_t>            heap_;
+    bool                                overflow_   = false;
+};
+
 } // namespace detail
 
 /// Parallel iteration over all live entities.
@@ -125,30 +190,56 @@ void forEach(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
 
 /// Presence-filtered variant of @ref forEach.
 ///
-/// Same callable shape, but only invokes it for entities whose mask
-/// has all of the requested component bits set. The mask is checked
-/// once per entity inside each chunk; job sizing is identical to
-/// `forEach`. Use this in place of sentinel checks like `meshId < 0`.
+/// Same callable shape, but only invokes for entities whose archetype
+/// mask carries all requested component bits.
+///
+/// §3.9.2 batch 17 — internal path walks the `WorldView`'s cached
+/// chunk pointers, skipping the stitched `componentMasks()` view AND
+/// the per-entity mask check inside the hot loop. The chunk's mask is
+/// checked **once per chunk** during the matching-list build; rows
+/// inside a matching chunk are visited unconditionally. Public
+/// behavior is identical to the pre-batch-17 implementation; the
+/// callable still receives `(EntityHandle, const C0&, ..., CommandBuffer&)`.
 template <typename... Components, typename F>
-void forEachWith(SystemContext& ctx, F&& fn, std::uint32_t grain = 0) {
+void forEachWith(SystemContext& ctx, F&& fn, std::uint32_t /*grain*/ = 0) {
     static_assert(sizeof...(Components) > 0,
                   "forEachWith requires at least one required Component");
     const auto& world = ctx.world();
-    const auto entities = world.entities();
-    const auto count = static_cast<std::uint32_t>(entities.size());
-    if (count == 0) return;
-
-    auto spans = std::make_tuple(detail::getSpan<Components>(world)...);
-    const auto masks = world.componentMasks();
     constexpr ComponentSet required = detail::requiredMask<Components...>();
 
-    ctx.parallelFor(count, grain,
-        [entities, masks, spans, required, fn = std::forward<F>(fn)]
+    const auto chunks = ctx.worldView().chunks();
+    detail::ChunkMatchList matching;
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+        const auto* c = chunks[i];
+        if (c == nullptr || c->entities.empty()) continue;
+        if (!c->mask.hasAll(required)) continue;
+        matching.push(i);
+    }
+    if (matching.empty()) return;
+
+    const auto matchCount = static_cast<std::uint32_t>(matching.size());
+    // Copy the match list into a stable per-call vector so the worker
+    // lambda can capture it by value without dangling on the inline
+    // buffer's storage. The vector is allocated only once per call and
+    // is bounded by archetype count (typically a few dozen).
+    std::vector<std::size_t> matchIndices;
+    matchIndices.reserve(matchCount);
+    for (std::uint32_t k = 0; k < matchCount; ++k) matchIndices.push_back(matching[k]);
+
+    ctx.parallelFor(matchCount, /*grain*/ 1,
+        [chunks, matchIndices = std::move(matchIndices),
+         fn = std::forward<F>(fn)]
         (Range r, CommandBuffer& cb) mutable {
-            for (std::uint32_t i = r.begin; i < r.end; ++i) {
-                if (!masks[i].hasAll(required)) continue;
-                detail::invokeAt(fn, entities[i], spans, cb, i,
-                                 std::index_sequence_for<Components...>{});
+            for (std::uint32_t k = r.begin; k < r.end; ++k) {
+                const auto* c = chunks[matchIndices[k]];
+                const auto& entities = c->entities;
+                auto chunkSpans = std::make_tuple(
+                    detail::getChunkSpan<Components>(*c)...);
+                const auto n = static_cast<std::uint32_t>(entities.size());
+                for (std::uint32_t i = 0; i < n; ++i) {
+                    detail::invokeAt(fn, entities[i], chunkSpans, cb, i,
+                                     std::index_sequence_for<Components...>{});
+                }
             }
         });
 }
@@ -220,6 +311,18 @@ public:
     /// Drop the cached indices but keep the allocation.
     void clear() noexcept { indices_.clear(); }
 
+    /// §3.9.2 batch 17: pre-warm the index storage so the first
+    /// @ref rebuild call after this point does not reallocate. Useful
+    /// for systems that know the expected match count up front (e.g.
+    /// "this query matches every entity in the world; reserve
+    /// world.size()"). Subsequent rebuilds with capacity already in
+    /// place are a `vector::clear` + `push_back` loop — no heap touch
+    /// in steady state.
+    void reserve(std::size_t cap) { indices_.reserve(cap); }
+
+    /// Current backing-storage capacity, in elements.
+    std::size_t capacity() const noexcept { return indices_.capacity(); }
+
 private:
     std::vector<std::uint32_t> indices_;
     ComponentSet               required_;
@@ -268,31 +371,6 @@ void forEachWithCached(SystemContext& ctx, const MaskCache& cache,
         });
 }
 
-namespace detail {
-
-template <typename C>
-auto getChunkSpan(const internal::ArchetypeChunk& c) noexcept {
-    if constexpr (std::is_same_v<C, Transform>)              return std::span<const Transform>(c.transforms);
-    else if constexpr (std::is_same_v<C, Velocity>)          return std::span<const Velocity>(c.velocities);
-    else if constexpr (std::is_same_v<C, RenderTag>)         return std::span<const RenderTag>(c.renderTags);
-    else if constexpr (std::is_same_v<C, UserData>)          return std::span<const UserData>(c.userData);
-    else if constexpr (std::is_same_v<C, Acceleration>)      return std::span<const Acceleration>(c.accelerations);
-    else if constexpr (std::is_same_v<C, Parent>)            return std::span<const Parent>(c.parents);
-    else if constexpr (std::is_same_v<C, Health>)            return std::span<const Health>(c.healths);
-    else if constexpr (std::is_same_v<C, Faction>)           return std::span<const Faction>(c.factions);
-    else if constexpr (std::is_same_v<C, AnimationStateRef>) return std::span<const AnimationStateRef>(c.animationStates);
-    else if constexpr (std::is_same_v<C, PhysicsBodyRef>)    return std::span<const PhysicsBodyRef>(c.physicsBodies);
-    else if constexpr (std::is_same_v<C, NavAgentRef>)       return std::span<const NavAgentRef>(c.navAgents);
-    else if constexpr (std::is_same_v<C, BoundingVolume>)    return std::span<const BoundingVolume>(c.boundingVolumes);
-    else static_assert(sizeof(C) == 0,
-        "forEachChunk: component type must be one of the built-in data "
-        "components — Transform, Velocity, RenderTag, UserData, "
-        "Acceleration, Parent, Health, Faction, AnimationStateRef, "
-        "PhysicsBodyRef, NavAgentRef, BoundingVolume.");
-}
-
-} // namespace detail
-
 /// Parallel iteration over archetype chunks whose mask is a superset of
 /// `required<Required...>()` (§3.1 batch 6).
 ///
@@ -331,31 +409,38 @@ template <typename... Required, typename F>
 void forEachChunk(SystemContext& ctx, F&& fn) {
     static_assert(sizeof...(Required) > 0,
                   "forEachChunk requires at least one required Component");
-    const auto& world = ctx.world();
     constexpr ComponentSet req = detail::requiredMask<Required...>();
-    const auto chunkCount = world.archetypeChunkCount();
 
-    // Build the matching-chunk index list serially (cheap — typical
-    // archetype counts are a few dozen). Then fan out over the matching
-    // set so each worker processes a whole chunk.
-    std::vector<std::size_t> matching;
-    matching.reserve(chunkCount);
-    for (std::size_t i = 0; i < chunkCount; ++i) {
-        const auto& c = world.archetypeChunk(i);
-        if (c.entities.empty()) continue;
-        if (!c.mask.hasAll(req)) continue;
-        matching.push_back(i);
+    // §3.9.2 batch 17 — read chunk pointers from the wave-scoped
+    // `WorldView` instead of going through `World::archetypeChunk(i)`,
+    // and stage the matching list in `ChunkMatchList` (small-buffer
+    // optimized; no heap touch for the typical archetype counts).
+    const auto chunks = ctx.worldView().chunks();
+    detail::ChunkMatchList matching;
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+        const auto* c = chunks[i];
+        if (c == nullptr || c->entities.empty()) continue;
+        if (!c->mask.hasAll(req)) continue;
+        matching.push(i);
     }
     if (matching.empty()) return;
 
     const auto matchCount = static_cast<std::uint32_t>(matching.size());
+    // One `std::vector<size_t>` per call is the price of capturing the
+    // matching list by value into the worker lambda; bounded by
+    // archetype count, allocates ≤ 1 page on every real workload.
+    std::vector<std::size_t> matchIndices;
+    matchIndices.reserve(matchCount);
+    for (std::uint32_t k = 0; k < matchCount; ++k) matchIndices.push_back(matching[k]);
+
     ctx.parallelFor(matchCount, /*grain*/ 1,
-        [&world, matching, fn = std::forward<F>(fn)]
+        [chunks, matchIndices = std::move(matchIndices),
+         fn = std::forward<F>(fn)]
         (Range r, CommandBuffer& cb) mutable {
             for (std::uint32_t k = r.begin; k < r.end; ++k) {
-                const auto& c = world.archetypeChunk(matching[k]);
-                fn(std::span<const EntityHandle>(c.entities),
-                   detail::getChunkSpan<Required>(c)...,
+                const auto* c = chunks[matchIndices[k]];
+                fn(std::span<const EntityHandle>(c->entities),
+                   detail::getChunkSpan<Required>(*c)...,
                    cb);
             }
         });

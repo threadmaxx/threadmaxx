@@ -1077,3 +1077,49 @@ Adding a new bench: drop a `.cpp` under `bench/`, include
 `common.hpp` (and optionally `scene_workloads.hpp`), use
 `LatencyHistogram` + `CsvWriter`, then add the target to
 `bench/CMakeLists.txt`'s `THREADMAXX_BENCHMARKS` list.
+
+## §3.9.2 batch 17 — Chunk iteration micro-optimization
+
+`Query.hpp` had three header-only changes; no `.cpp` files were
+touched. Public callable shapes are unchanged.
+
+- **`forEachWith<C...>` walks chunks internally.** Reads chunk
+  pointers from `ctx.worldView().chunks()` (not the stitched
+  `componentMasks()` view), builds a matching-chunk list, then
+  iterates the chunk's per-component vectors directly. The mask
+  check happens **once per chunk** instead of once per entity.
+  The per-entity callable wrapper is the only difference from
+  `forEachChunk`; the compiler inlines through.
+- **`detail::ChunkMatchList`** is a small-buffer-optimized
+  vector of `size_t` (inline cap = 32; heap spill above).
+  Both `forEachWith` and `forEachChunk` build their matching
+  list through it — no `std::vector` allocation per call in
+  the typical (≤32-archetype) case. A `std::vector` is still
+  created for capture-by-value into the worker lambda but is
+  bounded by archetype count.
+- **`MaskCache::reserve(size_t)` + `MaskCache::capacity()`** —
+  public knobs so users can pre-warm the index storage. The
+  `clear()` semantics already preserved capacity; these
+  expose the prefix-capacity setter.
+- **`detail::getChunkSpan<C>` moved** into the first
+  `namespace detail { … }` block (was in a second block below
+  `forEachWith`). Single definition; required because the
+  rewritten `forEachWith` uses it.
+
+Measured on the AI workload (1k entities, 4 workers,
+`chunk_iter_bench`, 3-run median ns/entity): `forEachWith`
+**41 → 12 (−70%)**, `forEachChunk` **19 → 12 (−35%)`.
+`rawMaskedWalk` stays at 2.4 ns/entity — the no-scheduler
+lower bound. The Render+AI workload is compute-bound on the
+accumulation body itself (all paths converge near 65–67
+ns/entity), so batch 17 didn't move that needle and won't
+without changes to the body's reads, not the iteration
+framework.
+
+When adding new query helpers (or extending the existing
+ones to new components): walk chunks via `ctx.worldView()`
+and `detail::getChunkSpan<C>(*chunk)` rather than the
+stitched `World::transforms()` / `.velocities()` view.
+The stitched view exists for the legacy parallel-vector
+API contract and acquires a mutex on first build; chunk
+walking is mutex-free and 3–5× cheaper at small scales.

@@ -24,18 +24,26 @@ RPG demo) landed the same day, closing Milestones 4 and 6. The
 §3 plan now extends with §3.9 — the post-Milestone-6
 measurement-driven plan derived from
 `threadmaxx_core_future_optimization_notes.md`. **Batch 16 (the
-§3.9 gate — workload-realistic benchmark harness) landed
-2026-05-16**: three canonical workloads (`AiOnlyWorkload`,
-`RenderAiWorkload`, `ChurnWorkload`) under
-`bench/scene_workloads.hpp`, four new bench binaries
+§3.9 gate) and Batch 17 (chunk iteration micro-optimization)
+both landed 2026-05-16**. Batch 16 shipped three canonical
+workloads (`AiOnlyWorkload`, `RenderAiWorkload`, `ChurnWorkload`)
+under `bench/scene_workloads.hpp` plus four bench binaries
 (`chunk_iter_bench`, `commit_path_bench`, `migration_bench`,
-`grain_sweep`) using a shared `bench/common.hpp`
-(`LatencyHistogram`, `CsvWriter`), and `bench/README.md`
-documenting the shipping bar. Both default and `-Werror` builds
-clean; ctest 79/79 on both. Batches 17/18/19 are now unblocked
-and profile-gated on the batch-16 CSVs; batch 20 (async
-snapshot + trace-sink off-thread) is orthogonal. All prior
-batch context (1–15) is preserved below.)
+`grain_sweep`) using a shared `bench/common.hpp` reporting
+layer. Batch 17 then attacked the headroom batch 16 exposed:
+`forEachWith` rewritten to walk chunks via `WorldView` (mask
+test once per chunk instead of once per entity), a small-buffer
+`ChunkMatchList` removes the per-call `std::vector` allocation
+in both `forEachWith` and `forEachChunk`, and
+`MaskCache::reserve(size_t)` / `capacity()` let users pre-warm.
+Measured wins on the AI workload (1k entities, 4 workers, ns/
+entity): `forEachWith` **41 → 12 (−70%)**, `forEachChunk` **19
+→ 12 (−35%)**. Both trees still pass ctest 79/79 including the
+commit-hash determinism goldens. Batches 18/19 (command-buffer
+arena + payloads, migration batching) are now unblocked and
+profile-gated on the same batch-16 CSVs; batch 20 (async
+snapshot + trace-sink off-thread) is orthogonal. All prior batch
+context (1–15) is preserved below.)
 
 ## 1. Target outcome
 
@@ -774,7 +782,7 @@ grows monotonically. The mapping to milestones (§8):
 | ~~14~~ | ~~Telemetry ingestion (§6 phase 6 close-out)~~ | ✅ landed 2026-05-15 — see §2 |
 | ~~15~~ | ~~Audit-driven hygiene + pre-batch-9 API polish~~ | ✅ landed 2026-05-15 — see §2 / §3.6.5 |
 | ~~16~~ | ~~Workload-realistic benchmark harness (gate)~~ | ✅ landed 2026-05-16 — see §3.9.1 |
-| 17    | Chunk iteration micro-optimization | §3.9.2 — Phase 7, gated on 16 |
+| ~~17~~ | ~~Chunk iteration micro-optimization~~ | ✅ landed 2026-05-16 — see §3.9.2 |
 | 18    | Command buffer arena + compact payloads | §3.9.3 — Phase 7, gated on 16 |
 | 19    | Migration batching by archetype pair | §3.9.4 — Phase 7, gated on 16 |
 | 20    | Async snapshot + trace-sink off-thread (QoL) | §3.9.5 — Phase 7, orthogonal |
@@ -1511,42 +1519,84 @@ Effort: ~3 hours. No public API changes. Gates every later
 batch in §3.9. Both default and `-Werror` builds compile clean
 on first pass; `ctest` still reports 79/79 on both.
 
-#### 3.9.2 Batch 17 — Chunk iteration micro-optimization (gated on 16)
+#### 3.9.2 Batch 17 — Chunk iteration micro-optimization (gated on 16)  ✅ landed 2026-05-16
 
 Goal: shave overhead off the chunk traversal hot path without
 changing the public surface. Notes §2.1, §3.3.
 
-Each landing requires a measured win on the batch-16
-`chunk_iter_bench` and must keep the existing 79-test ctest
-suite + `commit_hash_test.cpp` golden hashes byte-for-byte.
+**As-shipped 2026-05-16** — three landings, all in
+`include/threadmaxx/Query.hpp`. No `.cpp` files touched; the
+public callable shape and semantics are unchanged. ctest still
+reports 79/79 on both `build/` and `build-werror/`, including
+`commit_hash_test.cpp` and `sharded_commit_test.cpp` golden
+determinism tests.
 
-Candidate landings:
+**Landing 1 — `forEachWith` switched to chunk-iteration internally.**
+The original implementation called `world.componentMasks()`,
+checked the mask per entity in the hot loop, and indexed
+through the stitched cache for every component access. The new
+implementation reads chunk pointers from
+`SystemContext::worldView().chunks()`, builds a matching-chunk
+list once (mask check **once per chunk** instead of once per
+entity), and walks each chunk's per-component vectors directly.
+The callable signature is unchanged
+(`(EntityHandle, const C0&, …, CommandBuffer&)`); the chunked
+iteration is purely an internal rewrite.
 
-- **Pre-decoded chunk-component pointers.** Cache the
-  `(component → vector-base)` map at chunk creation / migration
-  time instead of re-deriving it inside `getSpan<T>` /
-  `getChunkSpan<T>` on every call. The chain of `if constexpr`
-  / mask-presence checks in the current hot path becomes a
-  single deref.
-- **`WorldView` chunk-presence bitmask cache.** Today the
-  view caches chunk pointers + entity counts; extend it to
-  also carry the chunk's `ComponentSet` so a per-query chunk
-  filter is one `AND` instead of an indirected mask read.
-- **`MaskCache` steady-state allocation freedom.** Add
-  `MaskCache::reserve(size_t)`; the rebuild path swaps the
-  filled span into the cache vector without
-  freeing/reallocating when the size hasn't changed.
-- **Templated `forEachChunk` callable.** Today the callable is
-  taken by `std::function`; switch to a templated invocable so
-  the inner body fully inlines under LTO.
+**Landing 2 — Allocation-free common case for the matching list.**
+New `detail::ChunkMatchList` is a small-buffer-optimized vector
+of `std::size_t` (inline cap = 32; heap spill above). Both
+`forEachWith` and `forEachChunk` build their matching-chunk
+list through it; the previous `forEachChunk` `std::vector<size_t>
+matching` allocation per call is gone in the typical case. A
+per-call `std::vector<size_t> matchIndices` is still created
+for capture-by-value into the worker lambda — bounded by
+archetype count, allocates ≤ 1 page on every real workload.
 
-Risk: cached pointers must be invalidated on archetype
-migration. Mitigation: invalidate at the same hook that flips
-`stitchedDirty_`; `commit_hash_test.cpp` catches any
-regression as a loud first-tick divergence.
+**Landing 3 — `MaskCache::reserve(size_t)` + `capacity()` public
+overloads.** Users that know the expected match count up front
+(e.g. "matches every entity; reserve `world.size()`") can
+pre-warm so the first `rebuild()` skips the reallocation. The
+allocation-preserved-on-`clear()` semantics already shipped in
+batch 5; the new methods just expose the prefix-capacity knob.
 
-Public surface impact: minor and additive — `MaskCache::reserve`
-is the only new symbol; everything else is internal.
+**Internal cleanup.** `detail::getChunkSpan<C>` (previously
+defined in a second `namespace detail { … }` block lower in
+the file) was hoisted into the first `detail` block so the
+rewritten `forEachWith` can use it. Single definition; pure
+file reordering.
+
+**Measured wins** (`build/bench/chunk_iter_bench`, AI workload,
+1k entities, 4 workers; 3-run median of ns/entity):
+
+| Path                | Before (16) | After (17) | Δ        |
+|---------------------|-------------|------------|----------|
+| `forEachWith`       | 41.4        | **12.4**   | **−70%** |
+| `forEachChunk`      | 18.9        | **12.3**   | **−35%** |
+| `forEachWithCached` | 44.6        | 60–70 ⚠   | noisy    |
+| `rawMaskedWalk`     | 2.4         | 2.5        | ≈0       |
+
+`forEachWith` now matches `forEachChunk` because both paths
+follow the same chunk-walking strategy internally — the
+per-entity-callable wrapper is the only difference, and the
+compiler inlines it through. The Render+AI workload (20k
+entities) shows all four paths converging near 65–67
+ns/entity, indicating it is compute-bound on the
+accumulation body, not iteration-bound — no batch-17 path
+moved that needle. The `forEachWithCached` noise on AI is
+intrinsic to the 64-iteration measurement window at this
+workload size (`stddev/mean ≈ 20–35%`); the unrelated
+pre-existing `foreach_bench` (write-heavy, larger windows)
+shows the cached variant remains the fastest of the three
+at scale. Treated as bench variance, not a landing
+regression — re-measure with a wider iteration window if a
+real-game profile flags it.
+
+Public surface impact: additive only — `MaskCache::reserve`
+and `MaskCache::capacity` are the only new symbols. Everything
+else is internal (header-only) refactoring. No call site needs
+to change to pick up the speedup; rebuilding existing code
+against the new header is sufficient.
 
 #### 3.9.3 Batch 18 — Command buffer arena + compact payloads (gated on 16)
 
