@@ -144,6 +144,9 @@ void Engine::clearScriptedSkips() noexcept { impl_->clearScriptedSkips(); }
 void Engine::setTraceSink(ITraceSink* sink) noexcept { impl_->setTraceSink(sink); }
 void Engine::setStallTimeout(double seconds) noexcept { impl_->setStallTimeout(seconds); }
 double Engine::stallTimeout() const noexcept { return impl_->stallTimeout(); }
+void Engine::snapshotAsync(std::function<void(WorldSnapshot)> callback) {
+    impl_->snapshotAsync(std::move(callback));
+}
 
 void* Engine::getEventChannelRaw(std::type_index type,
                                  void* (*factory)(),

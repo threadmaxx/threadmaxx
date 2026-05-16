@@ -24,6 +24,7 @@
 #include "threadmaxx/EventChannel.hpp"
 #include "threadmaxx/Game.hpp"
 #include "threadmaxx/Renderer.hpp"
+#include "threadmaxx/Serialization.hpp"
 #include "threadmaxx/SkipPolicy.hpp"
 #include "threadmaxx/Telemetry.hpp"
 #include "threadmaxx/Trace.hpp"
@@ -474,6 +475,7 @@ EngineImpl::EngineImpl(const Config& cfg) : cfg_(cfg) {
 EngineImpl::~EngineImpl() {
     shutdown();
     stopWatchdog_();
+    stopSnapshotWorker_();
     // §3.3 channels outlive shutdown so postStep hooks can still pump
     // events. They're owned in raw form (factory/deleter pair); release
     // here, after the worker pool has been torn down.
@@ -569,6 +571,74 @@ void EngineImpl::watchdogThreadFn_() {
             });
         }
     }
+}
+
+// §3.9.5 batch 20 — async snapshot writer thread. Lazily spawned by
+// the first `snapshotAsync` call; joined in `shutdown`.
+
+void EngineImpl::startSnapshotWorker_() {
+    if (snapshotWorker_.joinable()) return;
+    snapshotStop_.store(false, std::memory_order_release);
+    snapshotWorker_ = std::thread([this] {
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock<std::mutex> lk(snapshotMtx_);
+                snapshotCv_.wait(lk, [&] {
+                    return snapshotStop_.load(std::memory_order_acquire) ||
+                           !snapshotQueue_.empty();
+                });
+                if (snapshotQueue_.empty()) {
+                    if (snapshotStop_.load(std::memory_order_acquire)) return;
+                    continue;
+                }
+                job = std::move(snapshotQueue_.front());
+                snapshotQueue_.pop_front();
+            }
+            // Outside the lock — the user's callback can take however
+            // long it wants without blocking the producer (sim thread).
+            if (job) job();
+        }
+    });
+}
+
+void EngineImpl::stopSnapshotWorker_() {
+    if (!snapshotWorker_.joinable()) return;
+    {
+        std::lock_guard<std::mutex> lk(snapshotMtx_);
+        snapshotStop_.store(true, std::memory_order_release);
+    }
+    snapshotCv_.notify_all();
+    snapshotWorker_.join();
+    // Drain any remaining queued callbacks synchronously on the
+    // calling thread. This is conservative — most callers call
+    // `shutdown()` from the sim thread, so the callbacks land there.
+    while (!snapshotQueue_.empty()) {
+        auto job = std::move(snapshotQueue_.front());
+        snapshotQueue_.pop_front();
+        if (job) job();
+    }
+}
+
+void EngineImpl::snapshotAsync(std::function<void(WorldSnapshot)> callback) {
+    if (!callback) return;
+    // Sim-thread side: capture the snapshot synchronously. The dense
+    // arrays are vector copies — fast even at 100k entities — and
+    // safe because no commits run concurrently with snapshotAsync
+    // (the caller is on the sim thread, between steps or inside a
+    // pre/post-step hook).
+    WorldSnapshot snap = world_.snapshot();
+
+    if (!snapshotWorker_.joinable()) startSnapshotWorker_();
+
+    {
+        std::lock_guard<std::mutex> lk(snapshotMtx_);
+        snapshotQueue_.emplace_back(
+            [s = std::move(snap), cb = std::move(callback)]() mutable {
+                cb(std::move(s));
+            });
+    }
+    snapshotCv_.notify_one();
 }
 
 bool EngineImpl::initialize(IGame& game, Engine& publicEngine) {
@@ -852,18 +922,111 @@ void EngineImpl::rebuildWaves() {
     (void)edgeIsTagOnly;
 }
 
+// §3.9.4 batch 19 — peek at the entity's current archetype mask. Used
+// by the pre-reservation heuristic in commitBuffer; returns the empty
+// ComponentSet for stale handles so the caller's predicted dst
+// silently mismatches and the reserve hint is skipped.
+ComponentSet currentMaskOf(EntityStorage& storage, EntityHandle h) noexcept {
+    if (!storage.alive(h)) return {};
+    const auto loc = storage.locate(h);
+    if (loc.archetype >= storage.archetypes().chunks().size()) return {};
+    return storage.archetypes().chunks()[loc.archetype].mask;
+}
+
 void EngineImpl::commitBuffer(CommandBuffer& cb) {
     auto& storage = world_.impl_().storage;
-    commandsThisStep_ += cb.commands().size();
-    for (auto& cmd : cb.commands()) {
-        // §3.6 batch 13a — single-threaded reference path. Apply the
-        // command via the shared `applyCommandImpl` helper, then mix
-        // the command's hash contribution into `commitHashAcc_`. For
-        // `CmdSpawn` the helper returns the resulting handle so the
-        // hash includes it (the reserved-vs-fresh-alloc paths produce
-        // distinguishable handles).
-        const EntityHandle spawnResult = applyCommandImpl(cmd, storage);
-        commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmd, spawnResult);
+    auto& cmds = cb.commands();
+    commandsThisStep_ += cmds.size();
+
+    // §3.9.4 batch 19 — adjacent migration pre-reservation. When a run
+    // of consecutive commands toggles the same mask bit, we predict
+    // the destination archetype from the first entity's current mask
+    // and pre-reserve enough rows in the destination chunk to absorb
+    // the entire run without triggering geometric `vector::push_back`
+    // growth on every component vector. Wrong predictions are safe —
+    // `reserveChunkRows` is a capacity hint, never a content change.
+    // The commit hash is computed in submission order, unchanged.
+    //
+    // The detection only handles CmdAddTag, CmdRemoveTag, and the four
+    // most common §3.1 batch-5 setters that always attach a presence
+    // bit (CmdSetHealth, CmdSetFaction, CmdSetBoundingVolume,
+    // CmdSetAnimationState). Other migration commands fall through to
+    // the per-cmd path.
+    constexpr std::size_t kRunThreshold = 8;
+
+    auto tryReservePeek = [&](std::size_t startIdx, std::size_t runLen,
+                              auto predictDst) {
+        if (runLen < kRunThreshold) return;
+        // Predict from the first entity's current archetype.
+        const auto& first = cmds[startIdx];
+        const auto e = commandTargetEntity(first);
+        const ComponentSet srcMask = currentMaskOf(storage, e);
+        if (srcMask == ComponentSet{}) return;  // stale handle
+        const ComponentSet dstMask = predictDst(srcMask);
+        if (dstMask == srcMask) return;          // not actually migrating
+        storage.archetypes().reserveChunkRows(dstMask, runLen);
+    };
+
+    std::size_t i = 0;
+    while (i < cmds.size()) {
+        std::size_t runEnd = i + 1;
+        const auto& head = cmds[i];
+
+        if (auto* addP = std::get_if<detail::CmdAddTag>(&head)) {
+            const Component tag = addP->tag;
+            while (runEnd < cmds.size()) {
+                auto* q = std::get_if<detail::CmdAddTag>(&cmds[runEnd]);
+                if (!q || q->tag != tag) break;
+                ++runEnd;
+            }
+            tryReservePeek(i, runEnd - i, [tag](ComponentSet src) {
+                ComponentSet d = src; d.add(tag); return d;
+            });
+        } else if (auto* remP = std::get_if<detail::CmdRemoveTag>(&head)) {
+            const Component tag = remP->tag;
+            while (runEnd < cmds.size()) {
+                auto* q = std::get_if<detail::CmdRemoveTag>(&cmds[runEnd]);
+                if (!q || q->tag != tag) break;
+                ++runEnd;
+            }
+            tryReservePeek(i, runEnd - i, [tag](ComponentSet src) {
+                ComponentSet d = src; d.remove(tag); return d;
+            });
+        } else if (std::holds_alternative<detail::CmdSetHealth>(head)) {
+            while (runEnd < cmds.size() &&
+                   std::holds_alternative<detail::CmdSetHealth>(cmds[runEnd])) {
+                ++runEnd;
+            }
+            tryReservePeek(i, runEnd - i, [](ComponentSet src) {
+                ComponentSet d = src; d.add(Component::Health); return d;
+            });
+        } else if (std::holds_alternative<detail::CmdSetFaction>(head)) {
+            while (runEnd < cmds.size() &&
+                   std::holds_alternative<detail::CmdSetFaction>(cmds[runEnd])) {
+                ++runEnd;
+            }
+            tryReservePeek(i, runEnd - i, [](ComponentSet src) {
+                ComponentSet d = src; d.add(Component::Faction); return d;
+            });
+        } else if (std::holds_alternative<detail::CmdSetBoundingVolume>(head)) {
+            while (runEnd < cmds.size() &&
+                   std::holds_alternative<detail::CmdSetBoundingVolume>(cmds[runEnd])) {
+                ++runEnd;
+            }
+            tryReservePeek(i, runEnd - i, [](ComponentSet src) {
+                ComponentSet d = src; d.add(Component::BoundingVolume); return d;
+            });
+        }
+        // else: single-cmd path — fall through with runEnd == i + 1.
+
+        // Apply each command in submission order. The commit hash mixes
+        // in step with the apply — never deferred — so the per-tick
+        // hash matches the pre-batch-19 reference byte-for-byte.
+        for (std::size_t j = i; j < runEnd; ++j) {
+            const EntityHandle spawnResult = applyCommandImpl(cmds[j], storage);
+            commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmds[j], spawnResult);
+        }
+        i = runEnd;
     }
     cb.clear();
 }
@@ -1557,6 +1720,11 @@ void EngineImpl::shutdown() {
            << stats_.totalCommandsCommitted << " command(s) committed";
         logger().log(LogLevel::Info, os.str());
     }
+
+    // §3.9.5 batch 20 — drain any pending async snapshot callbacks
+    // before tearing down storage. The worker is joined here; any
+    // queued callbacks run synchronously on the sim thread.
+    stopSnapshotWorker_();
 
     // Drain any in-flight jobs before we start tearing things down.
     if (jobs_) jobs_->waitIdle();

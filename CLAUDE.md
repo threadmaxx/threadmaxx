@@ -1163,3 +1163,73 @@ under 48 bytes if at all possible. If it would push the
 variant over 64 B, follow the `CmdSpawnPtr` pattern —
 `std::unique_ptr<NewCmd>` in the variant, dereference in
 the visit branches.
+
+## §3.9.4 batch 19 — Migration pre-reservation
+
+`ArchetypeTable::reserveChunkRows(dstMask, extra)` is a
+capacity hint that pre-allocates `current + extra` rows in
+the destination chunk's per-component vectors. The bytes
+written by subsequent migrations are unchanged; only
+`vector::capacity()` moves. Commit semantics and the
+per-tick `commitHash` are bit-for-bit identical with or
+without the hint.
+
+`EngineImpl::commitBuffer` calls this automatically when it
+detects a run of ≥ 8 consecutive commands toggling the same
+mask bit. The five command variants it currently recognizes:
+`CmdAddTag(tag)`, `CmdRemoveTag(tag)`, `CmdSetHealth`,
+`CmdSetFaction`, `CmdSetBoundingVolume`. To extend coverage,
+add another `std::holds_alternative` branch in
+`commitBuffer`'s run detection.
+
+The bigger refactor the original spec called for (bucket
+commands by `(srcArch, dstArch)`, custom bulk-push +
+bulk-swap-pop in `ArchetypeTable`) is intentionally **not**
+shipped — the existing `migrate()` is at ~158 ns/migration
+(memcpy-bound), and the smaller hint captured the headline
+amortization win (~12–26% on the low-density tail) without
+touching the tested swap-pop sequencing.
+
+`commitBuffersSharded` (the opt-in `singleThreadedCommit =
+false` path, §3.6.3 batch 13c) was NOT updated — that path is
+slower on every measured workload and the same hint would be
+moot. Add the hint there only if `commitBuffersSharded`
+itself starts winning a benchmark.
+
+## §3.9.5 batch 20 — Async snapshot + trace-sink
+
+Two opt-in additions for off-the-sim-thread I/O. Both default
+to synchronous behavior (pre-batch-20 semantics preserved).
+
+- **`FileTraceSink::setAsync(bool)`** spawns an internal
+  writer thread + `std::deque<OwnedFrameSnapshot>` queue +
+  mutex/CV. `onFrame` copies the borrowed `FrameSnapshot`
+  span into owned storage, enqueues, returns. The writer
+  thread drains and calls `writeSyncLocked`. Joined on
+  `setAsync(false)`, `onShutdown`, or destruction. The
+  borrowed `FrameSnapshot::systems` span must be deep-copied
+  before crossing the thread boundary — `OwnedFrameSnapshot`
+  in `Telemetry.cpp` is the bridge.
+- **`Engine::snapshotAsync(callback)`** captures
+  `world().snapshot()` synchronously on the sim thread (~ms
+  for 100k entities — dense vector copies), then posts the
+  user's callback onto a dedicated engine-owned background
+  thread (`EngineImpl::snapshotWorker_`). The worker is
+  lazily spawned on the first call; joined in
+  `EngineImpl::shutdown` and `~EngineImpl`.
+
+The snapshot consistency contract: snapshots reflect the
+state at the moment `snapshotAsync` was called (the last
+committed wave). Commits after that don't retroactively
+appear. Game callbacks must not call back into the engine's
+mutation API.
+
+Note: the spec called for the snapshot itself to run on a
+worker thread, but that would race mid-snapshot commits —
+`WorldView` caches chunk *pointers*, not *contents*. The
+shipped design correctly puts the sync snapshot copy on the
+sim thread and the user's I/O off-thread.
+
+When adding new async I/O sinks, follow the same pattern:
+deep-copy the borrowed FrameSnapshot span into owned storage,
+enqueue, drain on a dedicated worker thread, join in dtor.

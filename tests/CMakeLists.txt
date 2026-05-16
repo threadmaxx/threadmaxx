@@ -81,6 +81,7 @@ set(THREADMAXX_TESTS
     file_trace_sink_rotation_test
     stitched_view_concurrency_test
     concurrency_soak_test
+    async_snapshot_test
 )
 
 foreach(test ${THREADMAXX_TESTS})

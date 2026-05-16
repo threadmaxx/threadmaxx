@@ -86,6 +86,31 @@ void ArchetypeTable::reserveFirstChunk(std::size_t n) {
     c.masks.reserve(n);
 }
 
+void ArchetypeTable::reserveChunkRows(ComponentSet dstMask, std::size_t extra) {
+    if (extra == 0) return;
+    const std::uint32_t arch = getOrCreateArchetype(dstMask);
+    auto& c = chunks_[arch];
+    const std::size_t target = c.entities.size() + extra;
+    c.denseToSlot.reserve(target);
+    c.entities.reserve(target);
+    c.masks.reserve(target);
+    // Only the component vectors whose bits are in the mask are
+    // physically allocated; reserving the others is a no-op cost-wise
+    // because they stay zero-sized.
+    if (dstMask.has(Component::Transform))          c.transforms.reserve(target);
+    if (dstMask.has(Component::Velocity))           c.velocities.reserve(target);
+    if (dstMask.has(Component::RenderTag))          c.renderTags.reserve(target);
+    if (dstMask.has(Component::UserData))           c.userData.reserve(target);
+    if (dstMask.has(Component::Acceleration))       c.accelerations.reserve(target);
+    if (dstMask.has(Component::Parent))             c.parents.reserve(target);
+    if (dstMask.has(Component::Health))             c.healths.reserve(target);
+    if (dstMask.has(Component::Faction))            c.factions.reserve(target);
+    if (dstMask.has(Component::AnimationStateRef))  c.animationStates.reserve(target);
+    if (dstMask.has(Component::PhysicsBodyRef))     c.physicsBodies.reserve(target);
+    if (dstMask.has(Component::NavAgentRef))        c.navAgents.reserve(target);
+    if (dstMask.has(Component::BoundingVolume))     c.boundingVolumes.reserve(target);
+}
+
 std::uint32_t ArchetypeTable::insert(std::uint32_t archetypeIndex,
                                      EntityHandle handle,
                                      std::uint32_t slotIndex,

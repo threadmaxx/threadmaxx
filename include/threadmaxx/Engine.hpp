@@ -28,6 +28,7 @@ class ResourceRegistry;
 class ILogger;
 class ITraceSink;
 struct FrameSnapshot;
+struct WorldSnapshot;
 template <typename Ev> class EventChannel;
 
 namespace internal { class EngineImpl; }
@@ -301,6 +302,35 @@ public:
     /// @thread_safety Sim thread only.
     void setStallTimeout(double seconds) noexcept;
     double stallTimeout() const noexcept;
+
+    /// §3.9.5 batch 20 — capture the world snapshot synchronously on
+    /// the sim thread, then invoke @p callback on a dedicated
+    /// background writer thread. The sim thread keeps ticking; the
+    /// callback's I/O (typically `serialize(...)` to a file) is off
+    /// the per-tick budget.
+    ///
+    /// The snapshot copy itself is the only sim-thread work — bounded
+    /// by dense-array size (~ a few ms for 100k entities). Use this
+    /// for quick-saves under tight tick budgets where the synchronous
+    /// `world().snapshot()` + `serialize(...)` flow would risk a
+    /// `FrameBudgetWatcher` alert.
+    ///
+    /// @par Consistency contract
+    ///      The snapshot reflects the state at the moment this
+    ///      method was called (i.e. the last committed wave). Commits
+    ///      that happen after this method returns do not retroactively
+    ///      appear in the snapshot. Same model as
+    ///      @ref RenderFrame double-buffering.
+    ///
+    /// @par Lifetime
+    ///      The background writer is engine-owned, lazily spawned on
+    ///      the first call, joined in @ref shutdown. Multiple in-flight
+    ///      callbacks queue in submission order. The user's callback
+    ///      runs on the writer thread; it must not call back into the
+    ///      engine's mutation API.
+    ///
+    /// @thread_safety Sim thread only.
+    void snapshotAsync(std::function<void(WorldSnapshot)> callback);
 
     /// Reserve an entity handle ahead of any spawn command (§3.5). Use
     /// during `IGame::onSetup` to seed entities whose handles are needed

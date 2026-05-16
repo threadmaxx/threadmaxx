@@ -197,6 +197,18 @@ public:
     /// `initialEntityCapacity`).
     void reserveFirstChunk(std::size_t n);
 
+    /// §3.9.4 batch 19 — hint: reserve `extra` additional rows in the
+    /// chunk for @p dstMask, creating the chunk if needed. Called by
+    /// `commitBuffer` when it detects a run of consecutive mask-toggling
+    /// commands whose entities are about to migrate into the same
+    /// destination archetype. Amortizes the geometric vector growth
+    /// inside the destination chunk's per-component vectors.
+    ///
+    /// The bytes written by the subsequent migrations are unchanged;
+    /// only `vector::capacity()` moves. Commit semantics + commit-hash
+    /// are bit-for-bit identical with or without the hint.
+    void reserveChunkRows(ComponentSet dstMask, std::size_t extra);
+
 private:
     std::vector<ArchetypeChunk> chunks_;
     // Mask -> chunk index. Hash is just the mask's bits — there's no

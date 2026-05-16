@@ -11,19 +11,48 @@
 #include "threadmaxx/EventChannel.hpp"
 #include "threadmaxx/Stats.hpp"
 
-#include <algorithm>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 namespace threadmaxx {
 
 // ---------- FileTraceSink ------------------------------------------------
 
+// §3.9.5 batch 20 — owned copy of a FrameSnapshot. `FrameSnapshot::systems`
+// is a borrowed span; for off-thread consumption we materialize the
+// systems into a `std::vector` so the writer thread can outlive the
+// sim-thread span.
+struct OwnedFrameSnapshot {
+    EngineStats              engine;
+    std::vector<SystemStats> systems;
+    JobSystemStats           jobs;
+
+    FrameSnapshot view() const noexcept {
+        return FrameSnapshot{engine, std::span<const SystemStats>(systems), jobs};
+    }
+};
+
 struct FileTraceSink::Impl {
-    std::ofstream         out;
+    std::ofstream                      out;
     std::unique_ptr<ChromeTraceWriter> writer;
+
+    // §3.9.5 batch 20 — async writer plumbing. `worker` is empty in
+    // sync mode; spawned by `setAsync(true)`. `queue` is producer→writer
+    // FIFO; mutex/cv guard the boundary. The default-constructed state
+    // is sync mode = legacy behavior.
+    std::mutex                         queueMtx;
+    std::condition_variable            queueCv;
+    std::deque<OwnedFrameSnapshot>     queue;
+    bool                               stopRequested = false;
+    std::thread                        worker;
 };
 
 namespace {
@@ -48,13 +77,31 @@ FileTraceSink::FileTraceSink(Config cfg)
 }
 
 FileTraceSink::~FileTraceSink() {
-    if (impl_ && impl_->writer) {
+    if (!impl_) return;
+    // §3.9.5 batch 20 — if the async writer thread is still running,
+    // stop it and drain any pending work before closing the file.
+    if (impl_->worker.joinable()) {
+        setAsync(false);
+    }
+    if (impl_->writer) {
         impl_->writer.reset();   // writes closing ']'
         impl_->out.close();
     }
 }
 
-void FileTraceSink::onFrame(const FrameSnapshot& snap) {
+namespace {
+
+OwnedFrameSnapshot copySnapshot(const FrameSnapshot& snap) {
+    OwnedFrameSnapshot copy;
+    copy.engine  = snap.engine;
+    copy.systems.assign(snap.systems.begin(), snap.systems.end());
+    copy.jobs    = snap.jobs;
+    return copy;
+}
+
+} // namespace
+
+void FileTraceSink::writeSyncLocked(const FrameSnapshot& snap) {
     if (!impl_ || !impl_->writer) return;
 
     const auto before = impl_->out.tellp();
@@ -77,8 +124,79 @@ void FileTraceSink::onFrame(const FrameSnapshot& snap) {
     }
 }
 
+void FileTraceSink::onFrame(const FrameSnapshot& snap) {
+    if (!impl_) return;
+    if (impl_->worker.joinable()) {
+        // §3.9.5 batch 20 — async mode. Copy the snapshot's borrowed
+        // span into owned storage and enqueue; the writer thread does
+        // the file I/O. Producer side is one short critical section
+        // plus a notify; cheap to call from the sim thread.
+        OwnedFrameSnapshot copy = copySnapshot(snap);
+        {
+            std::lock_guard<std::mutex> lk(impl_->queueMtx);
+            impl_->queue.push_back(std::move(copy));
+        }
+        impl_->queueCv.notify_one();
+        return;
+    }
+    writeSyncLocked(snap);
+}
+
+void FileTraceSink::setAsync(bool enable) {
+    if (!impl_) return;
+    const bool currentlyAsync = impl_->worker.joinable();
+    if (enable == currentlyAsync) return;
+
+    if (enable) {
+        impl_->stopRequested = false;
+        impl_->worker = std::thread([this] {
+            for (;;) {
+                OwnedFrameSnapshot job;
+                {
+                    std::unique_lock<std::mutex> lk(impl_->queueMtx);
+                    impl_->queueCv.wait(lk, [&] {
+                        return impl_->stopRequested || !impl_->queue.empty();
+                    });
+                    if (impl_->queue.empty()) {
+                        if (impl_->stopRequested) return;
+                        continue;
+                    }
+                    job = std::move(impl_->queue.front());
+                    impl_->queue.pop_front();
+                }
+                // Outside the lock — file I/O is the long pole.
+                writeSyncLocked(job.view());
+            }
+        });
+    } else {
+        {
+            std::lock_guard<std::mutex> lk(impl_->queueMtx);
+            impl_->stopRequested = true;
+        }
+        impl_->queueCv.notify_all();
+        impl_->worker.join();
+        // Drain any remaining queued frames synchronously so the user
+        // sees a clean handoff back to sync mode.
+        while (!impl_->queue.empty()) {
+            auto job = std::move(impl_->queue.front());
+            impl_->queue.pop_front();
+            writeSyncLocked(job.view());
+        }
+    }
+}
+
+bool FileTraceSink::isAsync() const noexcept {
+    return impl_ && impl_->worker.joinable();
+}
+
 void FileTraceSink::onShutdown() {
-    if (impl_ && impl_->writer) {
+    if (!impl_) return;
+    // Stop the async writer (if any) and drain any pending work
+    // synchronously before tearing down the file handle.
+    if (impl_->worker.joinable()) {
+        setAsync(false);
+    }
+    if (impl_->writer) {
         impl_->writer.reset();
         impl_->out.close();
     }

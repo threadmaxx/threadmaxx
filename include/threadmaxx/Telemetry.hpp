@@ -80,6 +80,27 @@ public:
     void onFrame(const FrameSnapshot& snap) override;
     void onShutdown() override;
 
+    /// §3.9.5 batch 20 — opt-in background-thread mode. When `true`,
+    /// `onFrame` copies the snapshot's headline data into an internal
+    /// queue and returns immediately; a dedicated writer thread drains
+    /// the queue and performs the actual file I/O. When `false`
+    /// (default), `onFrame` writes synchronously on the calling
+    /// (typically sim) thread — bit-for-bit the pre-batch-20 behavior.
+    ///
+    /// Toggle once at setup; the call is not safe to interleave with
+    /// `onFrame` from another thread. Setting `true` spawns the
+    /// writer thread; setting back to `false` joins it. Toggling
+    /// flushes any queued work before changing modes.
+    ///
+    /// @par Lifetime
+    ///      The writer thread is joined on destructor / `onShutdown`,
+    ///      whichever fires first.
+    void setAsync(bool enable);
+
+    /// True iff @ref setAsync(true) is active and the writer thread
+    /// is running.
+    bool isAsync() const noexcept;
+
     /// 0-based rotation index of the currently-open file.
     std::uint32_t rotationIndex() const noexcept { return rotationIndex_; }
     /// Bytes written into the current file (approximate; updated after
@@ -88,6 +109,13 @@ public:
 
 private:
     struct Impl;
+    /// §3.9.5 batch 20 — single synchronous write step. Shared by the
+    /// legacy sync `onFrame` path AND the async writer thread spawned
+    /// by `setAsync(true)`. Touches `impl_`, `rotationIndex_`, and
+    /// `bytesCurrent_`; not safe to call without the queue lock held
+    /// in async mode.
+    void writeSyncLocked(const FrameSnapshot& snap);
+
     std::unique_ptr<Impl> impl_;
     Config        cfg_;
     std::uint32_t rotationIndex_ = 0;

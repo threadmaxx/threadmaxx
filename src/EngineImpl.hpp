@@ -18,7 +18,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -35,6 +37,7 @@ class Engine;
 class IRenderer;
 class IGame;
 class ITraceSink;
+struct WorldSnapshot;
 }
 
 namespace threadmaxx::internal {
@@ -299,6 +302,22 @@ private:
     void startWatchdog_();
     void stopWatchdog_();
     void watchdogThreadFn_();
+
+public:
+    // §3.9.5 batch 20 — async snapshot writer. The public Engine
+    // forwards `snapshotAsync` here; the worker is lazily spawned on
+    // the first call and joined in `shutdown`.
+    void snapshotAsync(std::function<void(::threadmaxx::WorldSnapshot)> callback);
+
+private:
+    std::thread                                snapshotWorker_;
+    std::mutex                                 snapshotMtx_;
+    std::condition_variable                    snapshotCv_;
+    std::deque<std::function<void()>>          snapshotQueue_;
+    std::atomic<bool>                          snapshotStop_{false};
+
+    void startSnapshotWorker_();
+    void stopSnapshotWorker_();
 
     std::uint64_t tick_ = 0;
     double simulationTime_ = 0.0;
