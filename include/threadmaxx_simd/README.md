@@ -1,8 +1,8 @@
-# `threadmaxx/simd` — sibling SIMD helper library
+# `threadmaxx_simd` — sibling SIMD helper library
 
 ## 1. Purpose
 
-`threadmaxx/simd` provides **optional vectorized batch kernels** for data already stored in contiguous chunk arrays by `threadmaxx`.
+`threadmaxx_simd` provides **optional vectorized batch kernels** for data already stored in contiguous chunk arrays by `threadmaxx`.
 
 It is for:
 
@@ -36,8 +36,8 @@ It is **not** for:
 ## 3. Package layout
 
 ```text
-include/threadmaxx/simd/
-  simd.hpp            // umbrella include
+include/threadmaxx_simd/
+  threadmaxx_simd.hpp // umbrella include
   config.hpp          // feature detection and dispatch
   traits.hpp          // trivially-copyable / layout checks
   views.hpp           // span adapters for core PODs
@@ -273,7 +273,7 @@ Do **not** change `threadmaxx::Vec3`, `Quat`, or `Transform` to make SIMD easier
 Instead:
 
 * keep those as engine PODs for layout compatibility,
-* let `threadmaxx/simd` adapt them,
+* let `threadmaxx_simd` adapt them,
 * allow games that already use another math library to keep using it,
 * avoid forcing a single “engine math style” on everyone. 
 

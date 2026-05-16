@@ -113,18 +113,22 @@ void CommandBuffer::destroy(EntityHandle e) {
 }
 void CommandBuffer::setTransform(EntityHandle e, const Transform& t) {
     commands_.emplace_back(detail::CmdSetTransform{e, t});
+    ++valueOnlyCount_;
 }
 void CommandBuffer::setVelocity(EntityHandle e, const Velocity& v) {
     commands_.emplace_back(detail::CmdSetVelocity{e, v});
+    ++valueOnlyCount_;
 }
 void CommandBuffer::setRenderTag(EntityHandle e, const RenderTag& r) {
     commands_.emplace_back(detail::CmdSetRenderTag{e, r});
 }
 void CommandBuffer::setUserData(EntityHandle e, const UserData& u) {
     commands_.emplace_back(detail::CmdSetUserData{e, u});
+    ++valueOnlyCount_;
 }
 void CommandBuffer::setAcceleration(EntityHandle e, const Acceleration& a) {
     commands_.emplace_back(detail::CmdSetAcceleration{e, a});
+    ++valueOnlyCount_;
 }
 void CommandBuffer::setParent(EntityHandle e, const Parent& p) {
     commands_.emplace_back(detail::CmdSetParent{e, p});

@@ -72,91 +72,96 @@ public:
     }
 
     void update(SystemContext& ctx) override {
-        const World& world = ctx.world();
-        const bool propagateScale = cfg_.propagateScale;
-        ctx.single([&world, propagateScale](Range, CommandBuffer& out) {
+        // §3.10.2 batch 22 — F3 fix. Previously this body allocated a
+        // fresh unordered_map + four std::vectors per tick (DDoSing
+        // the allocator at 60 Hz for any world with Parent entities).
+        // Scratch state is now system-owned and reused across ticks;
+        // `clear()` preserves the allocations.
+        ctx.single([this, &ctx](Range, CommandBuffer& out) {
+            const World& world = ctx.world();
             const auto entities   = world.entities();
             const auto transforms = world.transforms();
             const auto parents    = world.parents();
             const auto masks      = world.componentMasks();
             const auto count = entities.size();
             if (count == 0) return;
+            (void)ctx;
 
-            // Handle → dense index map, built once per tick. Hierarchies
-            // span the entire entity set in the worst case, so the O(N)
+            // Handle → dense index map, kept across ticks. Hierarchies
+            // span the entire entity set in the worst case so the O(N)
             // map build is unavoidable; subsequent lookups are O(1).
-            std::unordered_map<EntityHandle, std::uint32_t> denseOf;
-            denseOf.reserve(count);
+            denseOf_.clear();
+            denseOf_.reserve(count);
             for (std::uint32_t i = 0; i < count; ++i) {
-                denseOf.emplace(entities[i], i);
+                denseOf_.emplace(entities[i], i);
             }
 
             // worldT[i] is the in-progress world transform for dense i.
             // Starts as the stored Transform — correct for roots, will be
-            // overwritten for parented entities below.
-            std::vector<Transform> worldT(transforms.begin(), transforms.end());
-            std::vector<std::uint8_t> done(count, 0);
+            // overwritten for parented entities below. `assign` reuses
+            // capacity from previous ticks.
+            worldT_.assign(transforms.begin(), transforms.end());
+            done_.assign(count, 0);
 
             // Roots: not Parent-tagged, or Parent handle is invalid or stale.
             for (std::uint32_t i = 0; i < count; ++i) {
-                if (!masks[i].has(Component::Parent)) { done[i] = 1; continue; }
+                if (!masks[i].has(Component::Parent)) { done_[i] = 1; continue; }
                 const auto pH = parents[i].parent;
-                if (!pH.valid() || denseOf.find(pH) == denseOf.end()) {
-                    done[i] = 1;  // dangling parent → treat as root
+                if (!pH.valid() || denseOf_.find(pH) == denseOf_.end()) {
+                    done_[i] = 1;  // dangling parent → treat as root
                 }
             }
 
-            std::vector<std::uint32_t> stack;
-            stack.reserve(8);
+            stack_.clear();
             // `onStack[i] != 0` means dense index `i` is currently in
             // `stack` for this start chain. Used to detect cycles
             // (A → B → A) — without this guard, the inner walk would
             // loop forever. Reset on each chain.
-            std::vector<std::uint8_t> onStack(count, 0);
+            onStack_.assign(count, 0);
             for (std::uint32_t start = 0; start < count; ++start) {
-                if (done[start]) continue;
+                if (done_[start]) continue;
 
                 // Walk up the chain, pushing entries until we hit a done node.
-                stack.clear();
+                stack_.clear();
                 std::uint32_t cur = start;
-                while (!done[cur]) {
-                    if (onStack[cur]) {
+                while (!done_[cur]) {
+                    if (onStack_[cur]) {
                         // Cycle: cur is already on the current walk
                         // stack. Treat every entry on the stack as a
                         // dangling root so the next pass leaves them
                         // alone — no infinite loop.
-                        for (auto idx : stack) done[idx] = 1;
+                        for (auto idx : stack_) done_[idx] = 1;
                         break;
                     }
-                    onStack[cur] = 1;
-                    stack.push_back(cur);
-                    const auto it = denseOf.find(parents[cur].parent);
+                    onStack_[cur] = 1;
+                    stack_.push_back(cur);
+                    const auto it = denseOf_.find(parents[cur].parent);
                     // Pre-pass guaranteed validity here, but defend anyway.
-                    if (it == denseOf.end()) {
-                        done[cur] = 1;
-                        onStack[cur] = 0;
-                        stack.pop_back();
+                    if (it == denseOf_.end()) {
+                        done_[cur] = 1;
+                        onStack_[cur] = 0;
+                        stack_.pop_back();
                         break;
                     }
                     cur = it->second;
                 }
                 // Clear the on-stack flags for entries still in stack.
-                for (auto idx : stack) onStack[idx] = 0;
+                for (auto idx : stack_) onStack_[idx] = 0;
 
                 // Pop top-down: each child's parent is already done.
-                while (!stack.empty()) {
-                    const std::uint32_t child = stack.back();
-                    stack.pop_back();
+                while (!stack_.empty()) {
+                    const std::uint32_t child = stack_.back();
+                    stack_.pop_back();
 
-                    const std::uint32_t pIdx = denseOf.find(parents[child].parent)->second;
-                    const Transform& parentWorld = worldT[pIdx];
+                    const std::uint32_t pIdx = denseOf_.find(parents[child].parent)->second;
+                    const Transform& parentWorld = worldT_[pIdx];
                     const Transform& local       = parents[child].localOffset;
 
                     Transform w;
                     w.position    = parentWorld.position
                                   + rotate(parentWorld.orientation, local.position);
                     w.orientation = mul(parentWorld.orientation, local.orientation);
-                    if (propagateScale) {
+                    if (cfg_.propagateScale) {
                         // Opt-in component-wise scale chain. Useful for
                         // attached props/sockets that should inherit the
                         // parent's scaling factor.
@@ -166,8 +171,8 @@ public:
                     } else {
                         w.scale = local.scale;  // not chained — see Parent doc
                     }
-                    worldT[child] = w;
-                    done[child] = 1;
+                    worldT_[child] = w;
+                    done_[child] = 1;
 
                     if (!transformsEqual(transforms[child], w)) {
                         out.setTransform(entities[child], w);
@@ -179,6 +184,14 @@ public:
 
 private:
     HierarchyConfig cfg_;
+
+    // §3.10.2 batch 22 — per-tick scratch state, reused across ticks
+    // so steady-state pays zero allocations after the first tick.
+    std::unordered_map<EntityHandle, std::uint32_t> denseOf_;
+    std::vector<Transform>                          worldT_;
+    std::vector<std::uint8_t>                       done_;
+    std::vector<std::uint32_t>                      stack_;
+    std::vector<std::uint8_t>                       onStack_;
 };
 
 } // namespace

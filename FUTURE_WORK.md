@@ -17,11 +17,14 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-16 (Milestones 1–6 are all closed. The
-§3 plan now extends with §3.9 — the post-Milestone-6
-measurement-driven plan derived from
-`threadmaxx_core_future_optimization_notes.md`. **All five
-§3.9 batches (16, 17, 18, 19, 20) landed 2026-05-16.** Batch
+Last refreshed: 2026-05-16 (Milestones 1–6 are all closed.
+§3.9 (post-Milestone-6 perf plan) and §3.10.1–§3.10.2
+(sharded-commit deep-dive + audit-driven hygiene) all landed
+2026-05-16. §3.10.3 (ergonomics + polish) remains the next
+planned tranche. §3.11 (RPG-demo-driven library exercise
+plan) kicked off 2026-05-16 with batch D1 (combat +
+hierarchy + damage events) landed. **Batches 16–22 + D1 all
+landed 2026-05-16.** Batch
 16 (gate) shipped three canonical workloads + four bench
 binaries + shared `bench/common.hpp`. Batch 17 (chunk
 iteration micro-optimization) rewrote `forEachWith` to walk
@@ -1856,6 +1859,614 @@ Public surface impact: **additive**.
 
 No existing call sites need to change. Synchronous behavior
 is unchanged when `setAsync(false)` (the default).
+
+### 3.10 Post-§3.9 follow-ons (current)
+
+§3.9 closed; §3.10 captures the next sweep of work. Three
+parallel tracks, sequenced for ROI:
+
+- **§3.10.1 Batch 21** — sharded-commit overhead deep-dive
+  (gated on `commit_path_bench` regressions exposed by §3.9).
+- **§3.10.2 Batch 22** — audit-driven hygiene (post-§3.9
+  codebase sweep; HIGH-severity findings only).
+- **§3.10.3 Batch 23** — ergonomics + polish (lower-severity
+  audit findings + missing-feature requests from
+  `examples/rpg_demo/`).
+
+#### 3.10.1 Batch 21 — Sharded-commit overhead reduction  ✅ landed 2026-05-16
+
+The §3.6.3 batch 13c microbench takeaway was "sharded commit
+slower than single-threaded on every measured workload."
+Batch 21 traces the overhead to four roots and ships fast
+paths that turn the addRemoveTag regression into a tie and
+shave 5–11% off the value-only sharded paths.
+
+**Root-cause analysis** (`commit_path_bench` on Churn 100k):
+
+1. `commandIsMigrating(cmd)` + `commandTargetEntity(cmd)`
+   both go through `std::visit` (~5 ns each). Pass A and
+   Pass B each call them once per command → 4 visits × 5 ns
+   × 100k = **2 ms of pure dispatch overhead**.
+2. `std::unordered_set<EntityHandle>` for the migrating set
+   — 100k inserts ≈ ~10 ms of hashing + heap allocations.
+3. `storage.locate(e)` per command in Pass B for the
+   chunk-bin routing — 100k × ~30 ns = **3 ms of slot
+   indirection**.
+4. Single-archetype workloads: only one chunk → at most one
+   parallel job in Pass C → **no parallelism win** but full
+   overhead paid.
+
+The addRemoveTag workload hit all four failure modes at
+once: every command migrates, so the migrating set fills to
+100k AND no value-only fast-path commands exist AND we still
+walked the buffers twice. Result: **274 ns/cmd** vs 145
+ns/cmd single-threaded.
+
+**Shipped 2026-05-16** — four changes:
+
+- **Per-buffer value-only counter**
+  (`CommandBuffer::valueOnlyCount()`,
+  `include/threadmaxx/CommandBuffer.hpp` +
+  `src/CommandBuffer.cpp`). The four value-only recording
+  methods (`setTransform` / `setVelocity` / `setUserData` /
+  `setAcceleration`) bump a per-buffer counter. The commit
+  phase sums these without re-scanning the variant stream.
+- **Three pre-condition fast paths** in
+  `EngineImpl::commitBuffersSharded`. Any one failure falls
+  through to `commitBuffer` per source buffer:
+    - `totalCommands < 256` — overhead exceeds win at small
+      batches.
+    - `totalValueOnly == 0` — every command migrates,
+      Pass C would be empty.
+    - `chunks().size() < 2` — only one archetype, no
+      parallelism possible.
+- **Engine-owned migrating bitmap** replacing the
+  `std::unordered_set<EntityHandle>`. `EngineImpl` now owns
+  `shardMigratingBitmap_` (`std::vector<uint8_t>` keyed by
+  `EntityHandle::index`) + `shardMigratingIndices_` (the
+  indices touched this call, for fast-clear at the end).
+  Preserved across commits so the steady state pays zero
+  allocations. Lookups are 1-byte indexed reads; inserts
+  are `bitmap[idx] = 1` + a parallel push_back to the
+  index list.
+- **Engine-owned chunkBins reuse**. `EngineImpl` now owns
+  `shardChunkBins_`; the commit clears each bin's contents
+  (preserving allocations) and resizes the outer vector
+  only when chunks have grown.
+- **New `EntityStorage::slotCount()` accessor** so the
+  bitmap can be pre-sized to the safe upper bound.
+- **New `MultiArch` workload in `commit_path_bench`** —
+  four distinct archetype shapes × 25k entities each, with
+  setTransform commands spread evenly. Used to test whether
+  sharded can *win* on a multi-archetype workload.
+
+**Measured wins** (3-run median ns/cmd, Churn 100k):
+
+| Variant       | B18 sharded | B21 sharded | Δ        |
+|---------------|-------------|-------------|----------|
+| `setTransform`| 138.4       | **131.0**   | −5.4%    |
+| `setVelocity` | 109.5       | **97.6**    | **−10.9%** |
+| `addRemoveTag`| 274.2       | **134.7**   | **−50.9%** |
+| `spawnDestroy`| 1696        | **1635**    | −3.6%    |
+
+The **addRemoveTag −51% win** is the headline: the
+fall-through kicks in (all migrating, single chunk in §3.10.1
+runs), so sharded now matches the single-threaded path
+instead of paying 2× for nothing. The value-only paths gain
+modestly from the bitmap + reused storage.
+
+**Finding: sharded cannot beat single-threaded on tested
+workloads.** The MultiArch sweep (4 archetypes, 25k each):
+single 109 ns/cmd vs sharded 137 ns/cmd. Sharded still
+loses by ~25%. Root cause: even with 4 parallel jobs, the
+serial Pass A + Pass B classifier overhead (~130 ns/cmd of
+visits + locate + hash) exceeds what 4-way parallelism can
+recover on a 50 ns/cmd applyCommandImpl path. The hash itself
+(~70 ns/cmd of FNV-1a byte-by-byte over the 48-byte
+`CmdSetTransform`) is on the serial path and is fixed by the
+determinism contract.
+
+**Conclusion: sharded commit is a fallback, not a default.**
+The current implementation is the most we can do without
+structural changes (record-time chunk routing, parallel hash
+reduction, or a different determinism contract — all parked).
+`singleThreadedCommit = true` remains the default; the
+sharded path is the documented immediate fallback if any
+divergence is ever observed in production AND a workload
+emerges where per-cmd apply >> classifier overhead.
+
+**Verification:** both `build/` and `build-werror/` compile
+clean; ctest still reports **80/80** on both trees, including
+all the commit-hash determinism goldens.
+
+#### 3.10.2 Batch 22 — Audit-driven hygiene  ✅ landed 2026-05-16
+
+Post-§3.9 codebase audit surfaced 15 findings (HIGH +
+MEDIUM + LOW). Batch 22 shipped four HIGH/MEDIUM fixes
+plus one ergonomic add and one documentation fix. F8
+investigated then reverted on safety grounds.
+
+**As-shipped 2026-05-16:**
+
+- **F1 (HIGH) — Wave-parallel system updates via JobSystem.**
+  `EngineImpl.cpp` was spawning raw `std::thread`s for each
+  concurrent system in a wave, joined at end-of-wave. At
+  60 Hz with multi-system waves that's hundreds of
+  `std::thread` creations per second. The fix routes the
+  wave's non-tail systems through `jobs_->submit` + a
+  `std::latch`; the tail continues to run on the sim thread
+  to avoid a wasted submit + wait round-trip. Workers are
+  already parked on a CV, so wakeup is sub-µs instead of
+  multi-ms `thread` create. No public API change; preserved
+  determinism + 80/80 ctest.
+- **F3 (HIGH) — HierarchySystem allocation hygiene.**
+  `HierarchySystem.cpp` was allocating one `unordered_map`,
+  four `std::vector`s, and a full-population `worldT` copy
+  per tick (per call inside `ctx.single()`). Promoted all
+  scratch state to system-member fields; `clear()` /
+  `assign()` reuse the allocations across ticks. Steady
+  state pays zero allocations after the first tick with a
+  given entity count.
+- **F4 (HIGH-doc) — Stitched-view + sharded-commit contract.**
+  Added a 25-line `@par Stitched-view contract` block to
+  `World.hpp` explaining the safe consumption patterns for
+  `world.transforms()` / `velocities()` / etc. during a
+  sharded commit's Pass C. The contract documents three
+  safe consumption modes (inside a wave from a non-writing
+  worker, between waves with single-threaded commit, or via
+  the chunked path / `has<T>` / `get<T>`) and one unsafe
+  mode (reading the stitched view from a non-sim thread
+  during a sharded commit Pass C in flight).
+- **F7 (MEDIUM) — prevTransformMap → flat vector.**
+  `EngineImpl::prevTransformMap_` was a freshly-cleared
+  `unordered_map<EntityHandle, Transform>` rebuilt every
+  tick. Replaced with two flat vectors keyed by
+  `EntityHandle::index` — `prevTransformByIndex_`
+  (Transform) and `prevTransformGenByIndex_` (the
+  generation guard). The read path checks `gen[idx] ==
+  handle.generation` to filter stale entries; the write
+  path `resize`s on demand. Zero-allocation steady state
+  after the first frame.
+- **F10 (MEDIUM) — `Bundle::with<T>(value)` builder.**
+  Added a chainable method to the `Bundle` POD that sets
+  the per-field value AND attaches the matching presence
+  bit in `initialMask` in one call. Composes for
+  `Bundle{}.with(Transform{...}).with(Velocity{...}).with(Health{...})`
+  — much harder to forget the mask half than the
+  field-and-mask split. Decided to keep the
+  `bundle(Transform{}, Velocity{}, …)` factory too, since
+  it remains the simplest path for "value-only" cases.
+
+**F8 (MEDIUM) investigated then reverted.** The initial
+implementation used a `thread_local static EventChannel<Ev>*
+cachedChannel` with `Engine*` validity guard to skip the
+`eventChannelsMtx_` on hot-path `events<T>()` calls. It
+broke `commit_soak_test` and `concurrency_soak_test` because
+back-to-back engine creation/destruction in tests can land a
+fresh engine at the recycled address of a destroyed one —
+the cached channel pointer then dangles. A correct
+implementation needs a per-engine version counter alongside
+the cached pointer, which is more bookkeeping than the
+~30 ns mutex acquire is worth. Reverted with an explicit
+comment in `EventChannel.hpp::Engine::events()`; the public
+"warm channels at setup" documentation stands as the
+recommended workaround for cross-thread emit hot paths.
+
+**To-defer (§3.10.3 ergonomics + polish, planned):**
+
+- F11 — `Engine::userComponent<T>()` token lookup.
+- F12 — bulk-spawn helper.
+- F13 — `World::forEachChunkOf` introspection helper.
+
+**To-defer (lower priority, profile-driven):**
+
+- F2 — `ResourceRegistry::get<T>()` raw-pointer aliasing
+  with the legacy `add`/`remove` path. Already documented;
+  the refcounted path is the recommended replacement.
+- F5 — `RenderFrameBuilder` debug-text string-view fragility.
+  Currently fine; would only fire under a future refactor.
+- F6 — `commandIsMigrating` double-visit in sharded commit.
+  Already addressed by batch 21's bitmap (now visited once
+  in Pass A, lookup is bitmap-indexed in Pass B).
+- F8 — proper event-channel cache requires per-engine
+  version counter; deferred until profile data justifies it.
+- F9 — `aggregateLoaderStats` virtual-call churn. Per-tick
+  diagnostic; cache only if profiling flags it.
+- F14 — `CmdAddUserComponent::size` field encoding. Internal
+  detail; rename only on a deliberate batch.
+- F15 — `EventChannel::subscriberCount` mutex acquisition.
+  HUD-only, single-digit ns; rename only if observed in
+  trace data.
+
+**Verification:** both `build/` and `build-werror/` compile
+clean on first pass; ctest **80/80** on both. The rpg_demo
+runs validation-clean for 120 ticks. The `commit_hash_test`
+and `sharded_commit_test` goldens remain byte-identical to
+the pre-batch-22 reference — no behavior change observable
+from the engine's external surface.
+
+Public surface impact:
+- **Additive**: `Bundle::with<T>(value)` template method.
+- **Documentation-only**: `World.hpp` stitched-view contract
+  block.
+- **Internal**: F1 / F3 / F7 are pure refactors with no
+  visible behavior change.
+
+#### 3.10.3 Batch 23 — Ergonomics + polish (planned)
+
+Defers from §3.10.2 plus the missing-feature requests from
+`examples/rpg_demo/`. Likely to ship interleaved with §3.11
+demo batches (a §3.11 batch that hits an ergonomics gap
+schedules the corresponding §3.10.3 sub-fix on the spot).
+
+### 3.11 RPG-demo-driven library exercise plan
+
+§3.11 takes the opposite stance to §3.9–§3.10: instead of
+"measure → optimize", it's "build a real game → discover
+gaps → fix the library." The premise is that `rpg_demo` as
+of batch 10 ships ~152 entities, 10 systems, and 4 user
+components — it covers the public-API basics but leaves
+many engine features unexercised against real workloads.
+
+Each §3.11 batch adds **one game-shaped feature** to
+`rpg_demo` and is allowed to schedule **one core library
+follow-on** if implementation surfaces a library gap. The
+core follow-ons go into §3.10.3 (ergonomics) or §3.12+ (new
+perf / structural work) depending on shape.
+
+Each batch must:
+
+1. **Add a real game feature** — not a contrived test path.
+2. **Cite the engine subsystems it exercises** — the
+   per-batch as-shipped block lists them so readers know
+   what was tested.
+3. **Run validation-clean for ≥ 300 ticks** on both build
+   trees, including under `THREADMAXX_VK_VALIDATE=1`.
+4. **Keep ctest 80/80** — any newly-introduced library
+   change ships with a test.
+5. **Stay within the engine's public API** unless a core
+   batch is scheduled — patches to `include/threadmaxx/` or
+   `src/` outside the per-batch core follow-on are not
+   allowed.
+
+#### 3.11.1 Batch D1 — Combat + hierarchy + damage events  ✅ landed 2026-05-16
+
+**Game feature:** Player can swing a sword (F key). The
+sword is a `Parent`-attached child entity of the player,
+positioned at hip-front via `Parent::localOffset` and
+propagated each tick by the engine's `HierarchySystem`. On
+swing-start (rising-edge detection on `PlayerState.swordSwingTimer`),
+the `CombatSystem` queries the spatial hash within
+`kSwordTipRadius` of the sword tip and emits `DamageDealt`
+events for every hostile NPC found. NPCs in `Fight` mode
+charge the player; on HP < 30% they enter `Retreat` and
+flee at `kRetreatSpeed`. Killed NPCs flip `DisabledTag`
+(visibly disappear) and drop a 2× pickup at their death
+location. HUD shows live kill counter; floating "HP: 18/60"
+labels appear over every damaged NPC, color-coded by
+health fraction (white > 66%, yellow 33–66%, red < 33%).
+
+**As-shipped 2026-05-16** — six new files +
+extensions to four existing systems:
+
+- **`CombatSystem.{hpp,cpp}`** — reads the sword's
+  hierarchy-propagated world transform, computes tip
+  position via quaternion rotation of `(0,0,length)`,
+  queries the spatial hash, emits `DamageDealt` events.
+  Rising-edge detection (`prevSwingTimer_ < 0 && curr > 0`)
+  guarantees one damage burst per swing.
+- **`DamageSystem.{hpp,cpp}`** — `preStep` drains the
+  `DamageDealt` channel into a per-target accumulator
+  (multiple hits in one tick compose into one Health write).
+  `update` applies the HP changes via `cb.setHealth`
+  (preserving each entity's `max` from the pre-hit snapshot)
+  and emits `EntityDied` on the kill blow.
+- **`RespawnSystem.{hpp,cpp}`** — `preStep` drains
+  `EntityDied`, reserves a fresh pickup handle via
+  `engine.reserveEntityHandle()` per kill. `update` adds
+  `DisabledTag` to the corpse and spawns the gold pickup
+  at the death position with `Pickup{2u}` value.
+- **`HealthBarSystem.{hpp,cpp}`** — runs in
+  `buildRenderFrame` (not `update`), iterates chunks
+  carrying `Health + Transform - DisabledTag`, emits one
+  `DebugText` per damaged entity via the **owning-string
+  overload** added in §3.6.5 batch 15a. Color choice based
+  on HP fraction.
+- **`DemoTypes.hpp` extensions** — five new types:
+  `SwordTag` user-component (sword length), `DamageDealt`
+  event, `EntityDied` event, plus `NpcState::Fight` and
+  `NpcState::Retreat` enum values, plus
+  `PlayerState::swordSwingTimer` and `swordKills` fields.
+  New constants: `kSwordSwingSeconds`, `kSwordDamage`,
+  `kSwordTipRadius`, `kPlayerMaxHP`, `kHostileMaxHP`,
+  `kFriendlyMaxHP`.
+- **`PlayerInputSystem` extension** — now reads the F-key
+  attack edge via `takeEdges()`, decrements
+  `swordSwingTimer` by `ctx.dt()` each tick, arms a new
+  swing when the edge fires AND the timer is at 0. Writes
+  via `addUserComponent` (overwrite semantics for an
+  already-present user component).
+- **`NPCBrainSystem` extension** — added `Fight` and
+  `Retreat` states. Hostile NPCs switch from `Idle` /
+  `Wander` straight to `Fight` (instead of `Flee`) when
+  the player enters AoI. `Fight` charges at the player at
+  `kChargeSpeed`, stopping at `kFightStopDist` so they
+  don't overshoot. Low-HP transition to `Retreat`; runs
+  for `kRetreatDur` at `kRetreatSpeed`. Friendly NPCs keep
+  the pre-D1 `Flee` behavior.
+- **`HudSystem` extension** — subscribes to `EntityDied`
+  via `subscribeScoped` (a second `threadmaxx::Subscription`
+  member); each emit increments `WorldState::totalKills`.
+  HUD line now reads
+  `[hud] tick=N entities=M pickups=P kills=K sun=S`.
+- **`DemoGame.cpp` extensions** — registers `SwordTag`
+  user-component; pre-warms `PickupCollected` /
+  `DamageDealt` / `EntityDied` channels on the sim thread
+  per the documented "warm channels at setup" rule; spawns
+  the sword as a `Parent`-attached child of the reserved
+  player handle (initialMask = Transform + Parent +
+  BoundingVolume); inserts `makeHierarchySystem()` between
+  `MovementSystem` and `CombatSystem` so the sword
+  transform is propagated before combat reads it.
+
+**Engine subsystems exercised** (none in the demo
+pre-D1):
+
+- `Parent` component + `HierarchySystem` (sword
+  attachment).
+- `EventChannel<DamageDealt>` + `EventChannel<EntityDied>`
+  with persistent subscribe + RAII `Subscription`.
+- `SpatialHash::forEachInRadius` (existing path,
+  exercised at a new query position each swing).
+- Owning-string `RenderFrameBuilder::addDebugText` from
+  batch 15a.
+- `Engine::reserveEntityHandle` (per-death loot drop).
+- `cb.setHealth` + `cb.addTag(DisabledTag)`.
+- `World::tryGetHealth` + `World::tryGetTransform` +
+  `World::tryGetFaction`.
+- `Engine::events<T>()` warm-at-setup pattern.
+
+**Library gaps surfaced:** **none.** Implementation
+stayed entirely within the public API; no core batch
+scheduled. (The conservative-expansion policy held.)
+
+**Verification:** both `build/` and `build-werror/` compile
+clean on first pass; ctest still 80/80 on both trees;
+`rpg_demo` runs validation-clean
+(`THREADMAXX_VK_VALIDATE=1`) for 300 ticks on werror.
+Entity count post-spawn is 153 (was 152; +1 for the sword).
+
+**Effort:** ~3 hours actual; ~7 new + 5 modified files.
+
+#### 3.11.2 Batch D2 — Multi-camera + frustum culling
+
+**Game feature:** Three live cameras — main third-person,
+top-down mini-map (corner overlay), and an over-the-shoulder
+aim camera that activates when the player draws their sword.
+The mini-map shows all entities; the aim camera narrows
+field of view; the main camera does what it does today.
+
+**Engine subsystems exercised:**
+
+- `RenderFrame::cameras` — up to 32-camera array (the
+  `kMaxCameras` cap from batch 15a).
+- `DrawItem::cameraMask` — per-item camera bitset
+  filtering. Aim camera shows only NPCs within a cone;
+  mini-map shows everything but with a fixed top-down
+  projection.
+- `RenderFrame::cameraIndexById` — map camera ids back to
+  bit positions.
+- `extractFrustum` + `cullByFrustum` — main camera culls
+  off-screen entities; mini-map skips culling.
+- Multiple `CameraSystem` instances or one system with
+  three cameras emitted from `buildRenderFrame`.
+
+**Expected library gaps:** the Vulkan renderer (batch 9)
+draws to one viewport at a time. Multi-camera within one
+swapchain image means either a viewport-loop in
+`VulkanRenderer::recordFrame` or a separate render target
+for the mini-map. Likely a renderer-side change in
+`examples/vulkan_renderer/`.
+
+**Effort:** ~2 days (split: 1 day demo, 1 day renderer
+viewport loop).
+
+#### 3.11.3 Batch D3 — Save / load with user components
+
+**Game feature:** F5 quick-save now persists the **full**
+game state, including user components (CubeRender, NpcState,
+PlayerState, Pickup). F9 actually restores the world —
+entities respawn at their saved positions, AI state machine
+state survives, pickup collection counter restores. F8 is a
+new "save-while-running" non-blocking save that uses
+`Engine::snapshotAsync` (batch 20) to write off-thread.
+
+**Engine subsystems exercised:**
+
+- `WorldSnapshot` + `serialize` / `deserialize`.
+- `Engine::snapshotAsync` (batch 20).
+- `FileTraceSink::setAsync` (batch 20) for the
+  concurrent trace capture.
+- `cb.destroy` of every entity, then `cb.spawnBundle` of
+  every entity from the snapshot in `IGame::onSetup`-shaped
+  rebuild flow.
+- `engine.registerUserComponent<T>` re-registration
+  after load (idempotent per spec).
+
+**Expected library gaps:** user-component persistence is
+documented as game-side responsibility (§3.1 batch 6b). The
+demo will define its own per-user-component
+serialize/deserialize and prove the round-trip. If the
+serialization pattern is verbose, schedule a §3.10.3 batch
+to add a `UserComponentSerializer<T>` helper that handles
+the chunked-column → byte-stream → chunked-column round
+trip generically.
+
+**Effort:** ~1.5 days.
+
+#### 3.11.4 Batch D4 — Quest system + scripted scenarios
+
+**Game feature:** Two quests — "Collect 25 pickups" and
+"Defeat all hostile NPCs." Quest progress shown in HUD; new
+quests unlock at progress milestones. A `--scripted` mode
+replays a captured input sequence + entity-spawn schedule
+deterministically, used as the regression test bed for the
+combat system.
+
+**Engine subsystems exercised:**
+
+- `EventChannel<PickupCollected>` (existing) +
+  `EventChannel<QuestProgressed>` (new).
+- `Engine::setSkipPolicy(SkipPolicy::Scripted)` +
+  `pushScriptedSkip` — for deterministic replay.
+- `EngineStats::commitHash` — replay verification: same
+  scripted input must produce identical commit hashes
+  across runs.
+- `WorldSnapshot` save / restore (batch D3 plumbing).
+- `Engine::setTimeScale` — replay at 4× speed.
+
+**Expected library gaps:** the scripted-skip log is
+currently captured in code; the demo wants to read it from a
+file. Schedule a §3.10.3 batch to add
+`Engine::serializeSkipLog` / `Engine::deserializeSkipLog`
+helpers, OR document the recommended user-side recording
+pattern.
+
+**Effort:** ~1.5 days.
+
+#### 3.11.5 Batch D5 — Scale stress + tick budget HUD
+
+**Game feature:** Spawn 10k NPCs + 50k pickups. Tick budget
+`1/60s = 16.67ms` enforced; `FrameBudgetWatcher` shows a red
+"TICK OVER BUDGET" notice in the HUD when exceeded; the HUD
+itself becomes skippable so a saturated frame drops the HUD
+first (other systems stay live).
+
+**Engine subsystems exercised:**
+
+- `Engine::setTickBudget` + `SkipPolicy::Budget`.
+- `ISystem::skippable()` returning true for HUD,
+  DebugOverlay, DayNight.
+- `SystemSkipped` event drain in HUD — log entries to
+  `[hud] skipped:HudSystem tick=...`.
+- `JobPriority::High` for combat + brain;
+  `JobPriority::Low` for cosmetic systems.
+- Cancellation: `SystemContext::shouldYield()` in
+  NPCBrain's serial loop bails out early when over
+  budget.
+- `MaskCache` + `forEachWithCached` — combat range
+  queries against 60k entities (where the per-tick
+  rebuild cost matters).
+- `EntityStorage::reserveHandles` batch form for the
+  10k NPC bulk spawn.
+
+**Expected library gaps:** 60k entities through a single
+`SpatialHash` rebuild every tick may show up as a hot spot;
+maybe schedule a §3.10.3 lazy-rebuild API, OR
+`SpatialHash::rebuildIncremental` that only touches entries
+whose position changed.
+
+**Effort:** ~2 days.
+
+#### 3.11.6 Batch D6 — Animations + skinning
+
+**Game feature:** NPCs visibly "walk" via a procedural pose
+(simple sine-wave bob, parameterized by velocity magnitude).
+The player has a swing animation when attacking. Animation
+state survives save/load.
+
+**Engine subsystems exercised:**
+
+- `AnimationStateRef` + `AnimationPoseRef` engine slots
+  (currently unused).
+- `RenderInstance::skeleton` / `pose` — Vulkan renderer
+  uploads pose data to the GPU.
+- `UploadRing` (batch 8) for pose buffer streaming.
+- `Engine::registerUserComponent<AnimState>` for the
+  per-entity animation parameters.
+
+**Expected library gaps:** the Vulkan renderer doesn't
+currently support skinning (batch 9 deferred it). This
+batch likely requires a real renderer-side addition:
+descriptor set for pose buffer, vertex shader skinning math,
+animation upload pipeline. Could become a `batch 9b — skinning
+pipeline` core batch.
+
+**Effort:** ~3 days (split: 1 day demo, 2 days renderer
+skinning).
+
+#### 3.11.7 Batch D7 — Real assets + hot reload
+
+**Game feature:** NPCs, player, pickups load actual `.obj`
+files instead of using the unit-cube fallback mesh. Shaders
+on disk (no longer embedded); F12 triggers a shader edit →
+reload → pipeline rebuild cycle in real time.
+
+**Engine subsystems exercised:**
+
+- `MeshLoader` / `TextureLoader` / `ShaderLoader` (real
+  file I/O, not the unit-cube / 1×1-white fallbacks).
+- `Engine::markResourceStale<Shader>` +
+  `EventChannel<AssetReloaded>` subscriber on the
+  renderer side rebuilding pipelines.
+- `Engine::preloadUntil` at boot — blocks the splash
+  screen until all assets ready.
+- `ResourceHandle<Mesh>` refcount (batch 7) — meshes
+  released when no entity uses them.
+- `IResourceLoader::stats()` aggregated in HUD.
+
+**Expected library gaps:** the renderer-side
+`AssetReloaded` subscriber is the missing piece from batch 9
+(`asset reloaded → rebuild pipeline`). Schedule it as part
+of this batch. The actual `.obj` parsing belongs in
+`examples/rpg_demo/` (sibling-library territory per §3.3),
+not in the engine.
+
+**Effort:** ~3 days (split: 1 day OBJ loader, 2 days
+renderer reload subscriber).
+
+#### 3.11.8 Recommended ordering
+
+Suggested sequence (each batch shippable independently):
+
+```
+D1 → D3 → D2 → D5 → D4 → D6 → D7
+combat  save  cams  scale  quest anim   assets
+```
+
+Rationale:
+- **D1 first**: combat is the smallest scope; introduces
+  damage / death loops that D3 (save/load) and D4 (quests)
+  both need.
+- **D3 second**: save/load lets every subsequent batch
+  test "does this survive a quick-save/load cycle?" as a
+  regression gate.
+- **D2 third**: multi-camera is mostly demo-side; the
+  renderer change is contained.
+- **D5 fourth**: scale stress exposes real perf
+  characteristics before we add expensive features (D6
+  skinning, D7 asset loading).
+- **D4 fifth**: quests sit on top of D1/D3/D5
+  foundations.
+- **D6/D7 last**: both require renderer-side work that
+  benefits from the demo being stable + scale-tested
+  first.
+
+#### 3.11.9 Definition of done for §3.11
+
+§3.11 is closed when:
+- All seven batches have landed with their as-shipped
+  blocks documented.
+- `rpg_demo` runs at 60 Hz with 60k entities (D5 budget)
+  validation-clean for 600 ticks on both build trees.
+- A full play-loop is demonstrable: boot → preload (D7) →
+  spawn → combat (D1) → quest progression (D4) →
+  save (D3) → load → resume → exit.
+- The library has absorbed every gap the demo surfaced,
+  either as a §3.10.3 batch or a fresh §3.12+ batch.
+
+Further engine work past §3.11 (if any) starts its own
+§3.x section against fresh real-game evidence.
 
 #### 3.9.6 Out of scope for §3.9
 

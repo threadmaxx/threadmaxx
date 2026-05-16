@@ -21,7 +21,12 @@ public:
         return threadmaxx::ComponentSet{threadmaxx::Component::Transform};
     }
     threadmaxx::ComponentSet writes() const noexcept override {
-        return threadmaxx::ComponentSet{threadmaxx::Component::Velocity};
+        // §3.11.1 batch D1: now also writes the PlayerState user
+        // component (to update swordSwingTimer on attack press +
+        // decrement it every tick). ComponentSet::all forces serial
+        // ordering with the other PlayerState writers — matches the
+        // pattern used by PickupSystem / CameraSystem.
+        return threadmaxx::ComponentSet::all();
     }
     void update(threadmaxx::SystemContext& ctx) override;
 

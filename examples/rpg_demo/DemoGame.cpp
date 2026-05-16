@@ -1,19 +1,24 @@
 #include "DemoGame.hpp"
 
 #include "CameraSystem.hpp"
+#include "CombatSystem.hpp"
 #include "CubeRenderSystem.hpp"
+#include "DamageSystem.hpp"
 #include "DayNightSystem.hpp"
 #include "DebugOverlaySystem.hpp"
+#include "HealthBarSystem.hpp"
 #include "HudSystem.hpp"
 #include "MovementSystem.hpp"
 #include "NPCBrainSystem.hpp"
 #include "PickupSystem.hpp"
 #include "PlayerInputSystem.hpp"
+#include "RespawnSystem.hpp"
 #include "SaveLoadSystem.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Components.hpp>
 #include <threadmaxx/Engine.hpp>
+#include <threadmaxx/System.hpp>
 #include <threadmaxx/UserComponent.hpp>
 
 #include <cstdint>
@@ -50,6 +55,15 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     ids_.npcState    = engine.registerUserComponent<NpcState>();
     ids_.playerState = engine.registerUserComponent<PlayerState>();
     ids_.pickup      = engine.registerUserComponent<Pickup>();
+    ids_.swordTag    = engine.registerUserComponent<SwordTag>();
+
+    // §3.11.1 batch D1 — pre-warm typed event channels on the sim
+    // thread so worker emits don't pay the eventChannelsMtx_ insert
+    // contention on first-use from a non-sim thread. Matches the
+    // documented "warm channels at setup" pattern.
+    (void)engine.events<PickupCollected>();
+    (void)engine.events<DamageDealt>();
+    (void)engine.events<EntityDied>();
 
     // ---- Reserve handles up front -------------------------------------------
     // We need the player's handle before commits to stash in WorldState.
@@ -63,7 +77,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         b.transform.scale    = {1.0f, 1.8f, 1.0f};
         b.faction.id         = kFactionPlayer;
         b.boundingVolume     = cubeAABB({0, 1, 0}, 0.9f);
-        b.health             = threadmaxx::Health{100.0f, 100.0f};
+        b.health             = threadmaxx::Health{kPlayerMaxHP, kPlayerMaxHP};
         b.initialMask        = threadmaxx::ComponentSet{
             threadmaxx::Component::Transform,
             threadmaxx::Component::Velocity,
@@ -76,6 +90,35 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         threadmaxx::addUserComponent(seed, ids_.cubeRender, playerH,
             CubeRender{{0.30f, 0.50f, 1.0f, 1.0f}, 1.0f});
         threadmaxx::addUserComponent(seed, ids_.playerState, playerH, PlayerState{});
+    }
+
+    // ---- Sword (player's child, propagated by HierarchySystem) --------------
+    // §3.11.1 batch D1: demonstrates the Parent component + hierarchy
+    // propagation against a real game asset. The sword's local offset
+    // hangs in front of and slightly to the right of the player; the
+    // HierarchySystem composes player.world × sword.local each tick.
+    {
+        const auto swordH = engine.reserveEntityHandle();
+        worldState_.sword = swordH;
+        threadmaxx::Parent p;
+        p.parent              = playerH;
+        p.localOffset.position = {0.5f, 0.8f, -0.8f};  // ~hip-front
+        p.localOffset.scale    = {0.18f, 0.18f, 1.4f};
+        threadmaxx::Bundle b = {};
+        b.transform.position  = {0, 1, 0};  // overwritten by hierarchy
+        b.transform.scale     = {0.18f, 0.18f, 1.4f};
+        b.parent              = p;
+        b.boundingVolume      = cubeAABB({0, 1, 0}, 0.3f);
+        b.initialMask         = threadmaxx::ComponentSet{
+            threadmaxx::Component::Transform,
+            threadmaxx::Component::Parent,
+            threadmaxx::Component::BoundingVolume,
+        };
+        seed.spawnBundle(swordH, b);
+        threadmaxx::addUserComponent(seed, ids_.cubeRender, swordH,
+            CubeRender{{0.85f, 0.85f, 0.95f, 1.0f}, 1.0f, {0,0,0}});
+        threadmaxx::addUserComponent(seed, ids_.swordTag, swordH,
+            SwordTag{1.4f});
     }
 
     // ---- Terrain ------------------------------------------------------------
@@ -115,7 +158,9 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         b.transform.scale    = {0.8f, 1.6f, 0.8f};
         b.faction.id         = fac;
         b.boundingVolume     = cubeAABB(pos, 0.8f);
-        b.health             = threadmaxx::Health{60.0f, 60.0f};
+        b.health             = threadmaxx::Health{
+            hostile ? kHostileMaxHP : kFriendlyMaxHP,
+            hostile ? kHostileMaxHP : kFriendlyMaxHP};
         b.initialMask        = threadmaxx::ComponentSet{
             threadmaxx::Component::Transform,
             threadmaxx::Component::Velocity,
@@ -170,9 +215,20 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::make_unique<PlayerInputSystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<CameraSystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<MovementSystem>());
+    // §3.11.1 batch D1 — hierarchy propagates the sword's world
+    // transform AFTER MovementSystem updates the player's position.
+    // CombatSystem reads the propagated sword transform, so its
+    // registration must come after the hierarchy.
+    engine.registerSystem(threadmaxx::makeHierarchySystem());
+    engine.registerSystem(std::make_unique<CombatSystem>(
+        &engine, &worldState_, &ids_, brain_));
+    engine.registerSystem(std::make_unique<DamageSystem>(&engine, &ids_));
+    engine.registerSystem(std::make_unique<RespawnSystem>(
+        &engine, &worldState_, &ids_));
     engine.registerSystem(std::make_unique<PickupSystem>(&engine, &worldState_, &ids_, brain_));
     engine.registerSystem(std::make_unique<DayNightSystem>(&worldState_));
     engine.registerSystem(std::make_unique<CubeRenderSystem>(&ids_));
+    engine.registerSystem(std::make_unique<HealthBarSystem>());
     engine.registerSystem(std::make_unique<DebugOverlaySystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<SaveLoadSystem>(
         &worldState_, &ids_, std::filesystem::path("/tmp/rpg_demo_save.bin")));

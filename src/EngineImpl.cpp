@@ -35,7 +35,6 @@
 #include <latch>
 #include <sstream>
 #include <thread>
-#include <unordered_set>
 #include <utility>
 
 namespace threadmaxx::internal {
@@ -1039,71 +1038,108 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     if (buffers.empty()) return;
     auto& storage = world_.impl_().storage;
 
-    // Count + early-exit on no commands. The empty case is the
-    // steady-state for a wave system that didn't submit anything.
+    // Count totals using each buffer's `valueOnlyCount` tally so we
+    // can take an early decision without scanning the variant stream.
     std::size_t totalCommands = 0;
-    for (const auto& cb : buffers) totalCommands += cb.commands().size();
+    std::size_t totalValueOnly = 0;
+    for (const auto& cb : buffers) {
+        totalCommands  += cb.commands().size();
+        totalValueOnly += cb.valueOnlyCount();
+    }
     if (totalCommands == 0) return;
     commandsThisStep_ += totalCommands;
 
+    // §3.9.6 batch 21 — three pre-conditions for the sharded path to
+    // be worth its classifier overhead. Any one failing falls through
+    // to the single-threaded commit (same correctness, less overhead).
+    //
+    // (1) `totalCommands < kShardedMinCommands` — small batches can't
+    //     amortize the two-pass overhead.
+    // (2) `totalValueOnly == 0` — every command migrates, so Pass C
+    //     would be empty. Doing Pass A + Pass B for nothing.
+    // (3) `chunks().size() < 2` — only one archetype exists, so even
+    //     the value-only commands would all bin into one job; no
+    //     parallelism possible.
+    //
+    // The migration-heavy workload (`addRemoveTag` in commit_path_bench)
+    // is the killer — it hit all three failure modes simultaneously
+    // and paid ~2× the single-threaded cost in classifier overhead.
+    constexpr std::size_t kShardedMinCommands = 256;
+    const std::size_t chunkCount = storage.archetypes().chunks().size();
+    if (totalCommands < kShardedMinCommands ||
+        totalValueOnly == 0 ||
+        chunkCount < 2) {
+        for (auto& cb : buffers) commitBuffer(cb);
+        return;
+    }
+
     // ----- Pass A: build the migrating-entity set ----------------------
     //
-    // Any entity touched by a non-value-only command anywhere in this
-    // buffer set goes into `migrating`. Subsequent passes route ALL
-    // commands on a migrating entity through the global (sim-thread)
-    // lane so per-entity ordering matches the single-threaded path.
-    //
-    // For `CmdSpawn` with a reserved handle, the reserved entity is
-    // about to be materialized — adding it to `migrating` blocks any
-    // value-only writes against the same handle elsewhere in this
-    // batch from sneaking into a chunk-local bin (where the slot may
-    // not exist yet).
-    std::unordered_set<EntityHandle> migrating;
-    for (const auto& cb : buffers) {
-        for (const auto& cmd : cb.commands()) {
-            if (!commandIsMigrating(cmd)) continue;
-            const EntityHandle e = commandTargetEntity(cmd);
-            if (e.valid()) migrating.insert(e);
+    // §3.9.6 batch 21 — replaced `std::unordered_set<EntityHandle>`
+    // with an engine-owned `std::vector<uint8_t>` bitmap keyed by
+    // `EntityHandle::index`. Set + lookup are now single-byte indexed
+    // reads; the buffer is preserved across calls so the steady-state
+    // pays zero allocations after the first tick. Indices we touched
+    // this call are recorded in `shardMigratingIndices_` so we can
+    // clear them at the end without zeroing the whole bitmap.
+    const std::size_t slotCap = storage.slotCount();
+    if (shardMigratingBitmap_.size() < slotCap) {
+        shardMigratingBitmap_.resize(slotCap, 0);
+    }
+    shardMigratingIndices_.clear();
+
+    auto markMigrating = [&](const detail::Command& cmd) {
+        const EntityHandle e = commandTargetEntity(cmd);
+        if (!e.valid() || e.index >= shardMigratingBitmap_.size()) return;
+        if (shardMigratingBitmap_[e.index] == 0) {
+            shardMigratingBitmap_[e.index] = 1;
+            shardMigratingIndices_.push_back(e.index);
+        }
+    };
+
+    // Skip the migrating-set scan entirely when every command is
+    // value-only (totalValueOnly == totalCommands). The bitmap stays
+    // empty and Pass B's `migrating[idx]` check always reads 0.
+    if (totalValueOnly < totalCommands) {
+        for (const auto& cb : buffers) {
+            for (const auto& cmd : cb.commands()) {
+                if (commandIsMigrating(cmd)) markMigrating(cmd);
+            }
         }
     }
 
     // ----- Pass B: classify in submission order, applying global cmds --
     //
-    // - Update `commitHashAcc_` with every command's contribution in
-    //   submission order, matching the single-threaded reference.
-    // - Apply migrate-possible commands (and any command targeting an
-    //   entity in `migrating`) on the sim thread immediately.
-    // - Queue value-only commands targeting non-migrating entities
-    //   into `chunkBins[storage.locate(entity).archetype]` for the
-    //   parallel pass C below.
-    //
-    // `chunkBins` is sized to the current chunk count and grows on
-    // demand if pass B creates new archetypes via `setMaskAndMigrate`.
-    // Storing raw command pointers is safe: the source `CommandBuffer`
-    // vectors are stable for the duration of this call (we don't
-    // `clear()` until after pass C).
-    std::vector<std::vector<detail::Command*>> chunkBins;
-    chunkBins.resize(storage.archetypes().chunks().size());
+    // §3.9.6 batch 21 — `shardChunkBins_` is engine-owned; we clear
+    // the per-archetype bins (preserving their allocations) and resize
+    // up to the current chunk count.
+    if (shardChunkBins_.size() < chunkCount) {
+        shardChunkBins_.resize(chunkCount);
+    }
+    for (auto& bin : shardChunkBins_) bin.clear();
 
+    const auto& chunks = storage.archetypes().chunks();
     for (auto& cb : buffers) {
         for (auto& cmd : cb.commands()) {
             // Value-only chunk-local fast path: bin and hash, no apply yet.
             bool routedChunkLocal = false;
             if (!commandIsMigrating(cmd)) {
                 const EntityHandle e = commandTargetEntity(cmd);
-                if (e.valid() && !migrating.contains(e)) {
+                const bool isMigrating =
+                    e.valid() && e.index < shardMigratingBitmap_.size() &&
+                    shardMigratingBitmap_[e.index] != 0;
+                if (e.valid() && !isMigrating) {
                     const auto loc = storage.locate(e);
                     // locate() returns {max,max} for stale handles —
                     // bounds check against the live chunk count
                     // filters those out (they'll fall through to the
                     // global lane, where applyCommandImpl's mut*()
                     // safely no-ops on stale handles).
-                    const auto& chunks = storage.archetypes().chunks();
                     if (loc.archetype < chunks.size()) {
-                        if (loc.archetype >= chunkBins.size()) {
-                            chunkBins.resize(loc.archetype + 1);
+                        if (loc.archetype >= shardChunkBins_.size()) {
+                            shardChunkBins_.resize(loc.archetype + 1);
                         }
-                        chunkBins[loc.archetype].push_back(&cmd);
+                        shardChunkBins_[loc.archetype].push_back(&cmd);
                         commitHashAcc_ = hashCommandImpl(commitHashAcc_,
                             cmd, kInvalidEntity);
                         routedChunkLocal = true;
@@ -1126,16 +1162,18 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     // swap-popped within its chunk by a pass-B global migrate still
     // resolves correctly.
     std::size_t activeBins = 0;
-    for (const auto& bin : chunkBins) {
+    for (const auto& bin : shardChunkBins_) {
         if (!bin.empty()) ++activeBins;
     }
     if (activeBins == 0) {
         for (auto& cb : buffers) cb.clear();
+        // Clear the migrating bitmap entries we set this call.
+        for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
         return;
     }
 
     std::latch done(static_cast<std::ptrdiff_t>(activeBins));
-    for (auto& bin : chunkBins) {
+    for (auto& bin : shardChunkBins_) {
         if (bin.empty()) continue;
         jobs_->submit([&bin, &done, &storage] {
             for (auto* cmd : bin) {
@@ -1147,6 +1185,9 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     done.wait();
 
     for (auto& cb : buffers) cb.clear();
+    // §3.9.6 batch 21 — bitmap fast clear: only zero the indices we
+    // actually touched this call, leaving the rest at 0.
+    for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
 }
 
 void EngineImpl::buildRenderFrame() {
@@ -1188,10 +1229,17 @@ void EngineImpl::buildRenderFrame() {
             // map yet) get their current transform, giving a
             // clean lerp(prev, current, alpha) with no special
             // case on first-frame spawn.
-            auto it = prevTransformMap_.find(c.entities[i]);
-            const Transform& prevT = (it != prevTransformMap_.end())
-                                     ? it->second : c.transforms[i];
-            prev.push_back(RenderInstancePrev{c.entities[i], prevT});
+            //
+            // §3.10.2 batch 22 — F7 fix. Vector lookup by entity
+            // index + generation guard, no hash-map overhead.
+            const auto handle = c.entities[i];
+            const Transform* prevT = nullptr;
+            if (handle.index < prevTransformByIndex_.size() &&
+                prevTransformGenByIndex_[handle.index] == handle.generation) {
+                prevT = &prevTransformByIndex_[handle.index];
+            }
+            prev.push_back(RenderInstancePrev{
+                handle, prevT ? *prevT : c.transforms[i]});
         }
     }
 
@@ -1245,13 +1293,22 @@ void EngineImpl::buildRenderFrame() {
 
     // §3.6.5 batch 15a — refresh the previous-transform map from this
     // tick's instances. Next tick's `buildRenderFrame` will use this
-    // as the "prev" for its own instances. Entities that no longer
-    // carry RenderTag fall out automatically because we clear+rebuild
-    // (no stale entries linger past a tick of invisibility).
-    prevTransformMap_.clear();
-    prevTransformMap_.reserve(dst.size());
+    // as the "prev" for its own instances.
+    //
+    // §3.10.2 batch 22 — F7 fix. Flat vector keyed by entity index +
+    // a parallel generation vector for the (index, generation)
+    // sentinel. Stale entries from prior ticks (entities that no
+    // longer carry RenderTag, or have been destroyed and re-spawned
+    // with a new generation) are filtered by the generation check on
+    // read — no clear/rebuild dance, no hash-map allocations.
     for (const auto& inst : dst) {
-        prevTransformMap_[inst.entity] = inst.transform;
+        const auto idx = inst.entity.index;
+        if (idx >= prevTransformByIndex_.size()) {
+            prevTransformByIndex_.resize(idx + 1);
+            prevTransformGenByIndex_.resize(idx + 1, 0);
+        }
+        prevTransformByIndex_[idx] = inst.transform;
+        prevTransformGenByIndex_[idx] = inst.entity.generation;
     }
 
     frontIndex_.store(back, std::memory_order_release);
@@ -1409,15 +1466,23 @@ void EngineImpl::step() {
         if (wave.size() == 1) {
             runIndex(0);
         } else {
-            // Spawn helper threads for all but the last system in the wave;
-            // run the tail on this thread to avoid a wasted join.
-            std::vector<std::thread> helpers;
-            helpers.reserve(wave.size() - 1);
+            // §3.10.2 batch 22 — F1 fix. Previously this branch spawned
+            // one raw `std::thread` per concurrent system per wave per
+            // tick (~240 thread creations/sec at 60 Hz with 4-system
+            // waves). Now the wave's parallel system bodies dispatch
+            // through the existing `JobSystem` — workers are already
+            // parked on a CV, so wakeup is sub-µs instead of multi-ms
+            // thread create. The tail still runs on the sim thread to
+            // avoid a wasted submit + wait round-trip.
+            std::latch waveDone(static_cast<std::ptrdiff_t>(wave.size() - 1));
             for (std::size_t k = 0; k + 1 < wave.size(); ++k) {
-                helpers.emplace_back([&runIndex, k] { runIndex(k); });
+                jobs_->submit([&runIndex, &waveDone, k] {
+                    runIndex(k);
+                    waveDone.count_down();
+                });
             }
             runIndex(wave.size() - 1);
-            for (auto& t : helpers) t.join();
+            waveDone.wait();
         }
 
         // Emit SystemSkipped events for any skipped slot. Drained at the

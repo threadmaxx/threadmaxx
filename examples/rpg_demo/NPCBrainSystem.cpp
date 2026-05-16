@@ -11,11 +11,17 @@ namespace rpg {
 
 namespace {
 
-constexpr float kCellSize    = 4.0f;
-constexpr float kWanderDur   = 2.5f;
-constexpr float kIdleDur     = 1.5f;
-constexpr float kFleeSpeed   = 4.5f;
-constexpr float kWanderSpeed = 2.0f;
+constexpr float kCellSize     = 4.0f;
+constexpr float kWanderDur    = 2.5f;
+constexpr float kIdleDur      = 1.5f;
+constexpr float kFleeSpeed    = 4.5f;
+constexpr float kWanderSpeed  = 2.0f;
+// §3.11.1 batch D1 — combat-state tuning.
+constexpr float kChargeSpeed  = 3.5f;
+constexpr float kRetreatSpeed = 5.0f;
+constexpr float kRetreatDur   = 4.0f;
+constexpr float kRetreatHpFrac = 0.30f;
+constexpr float kFightStopDist = 1.0f;  // don't overshoot the player
 
 inline float distanceXZ(const threadmaxx::Vec3& a, const threadmaxx::Vec3& b) {
     const float dx = a.x - b.x;
@@ -83,10 +89,19 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
         next.stateTimer += dt;
         threadmaxx::Vec3 vel{0, 0, 0};
 
+        // §3.11.1 batch D1 — hostile NPCs transition to Fight on
+        // sight, then Retreat when HP drops below 30%. Friendly NPCs
+        // keep their pre-batch-D1 Flee-on-sight behavior.
+        const bool hostile = (fac.id == kFactionHostile);
+        const threadmaxx::Health* hp = w.tryGetHealth(e);
+        const bool lowHp = hp && hp->max > 0.0f &&
+                           (hp->current / hp->max) < kRetreatHpFrac;
+
         switch (next.mode) {
         case NpcState::Idle:
             if (distToPlayer < next.aoiRadius) {
-                next.mode       = NpcState::Flee;
+                next.mode       = hostile ? NpcState::Fight
+                                          : NpcState::Flee;
                 next.stateTimer = 0.0f;
             } else if (next.stateTimer >= kIdleDur) {
                 std::uniform_real_distribution<float> ang(-3.14159f, 3.14159f);
@@ -105,7 +120,7 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
             const float dz = next.targetZ - tr.position.z;
             const float d  = std::sqrt(dx * dx + dz * dz);
             if (distToPlayer < next.aoiRadius) {
-                next.mode = NpcState::Flee;
+                next.mode = hostile ? NpcState::Fight : NpcState::Flee;
                 next.stateTimer = 0.0f;
             } else if (next.stateTimer >= kWanderDur || d < 0.5f) {
                 next.mode = NpcState::Idle;
@@ -127,6 +142,50 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
             } else if (d > 0.01f) {
                 vel.x = (dx / d) * kFleeSpeed;
                 vel.z = (dz / d) * kFleeSpeed;
+            }
+            break;
+        }
+
+        // §3.11.1 batch D1 — charge the player. Retreat on low HP or
+        // player out of aggro range.
+        case NpcState::Fight: {
+            if (lowHp) {
+                next.mode = NpcState::Retreat;
+                next.stateTimer = 0.0f;
+            } else if (distToPlayer > next.aoiRadius * 1.8f) {
+                next.mode = NpcState::Wander;
+                next.stateTimer = 0.0f;
+                // Wander toward player so we re-engage.
+                next.targetX = pp.x; next.targetZ = pp.z;
+            } else if (distToPlayer > kFightStopDist) {
+                const float dx = pp.x - tr.position.x;
+                const float dz = pp.z - tr.position.z;
+                const float d  = std::sqrt(dx * dx + dz * dz);
+                if (d > 0.01f) {
+                    vel.x = (dx / d) * kChargeSpeed;
+                    vel.z = (dz / d) * kChargeSpeed;
+                }
+            }
+            break;
+        }
+
+        // §3.11.1 batch D1 — flee fast until the timer expires;
+        // re-enter Wander to give the player breathing room.
+        case NpcState::Retreat: {
+            if (next.stateTimer >= kRetreatDur) {
+                next.mode = NpcState::Wander;
+                next.stateTimer = 0.0f;
+                // Pick a fresh wander target away from the player.
+                next.targetX = tr.position.x + (tr.position.x - pp.x);
+                next.targetZ = tr.position.z + (tr.position.z - pp.z);
+            } else {
+                const float dx = tr.position.x - pp.x;
+                const float dz = tr.position.z - pp.z;
+                const float d  = std::sqrt(dx * dx + dz * dz);
+                if (d > 0.01f) {
+                    vel.x = (dx / d) * kRetreatSpeed;
+                    vel.z = (dz / d) * kRetreatSpeed;
+                }
             }
             break;
         }

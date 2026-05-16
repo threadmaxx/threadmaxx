@@ -64,7 +64,35 @@ struct Bundle {
     /// passed to @ref bundle. The engine writes this verbatim into the
     /// new entity's per-entity mask.
     ComponentSet initialMask  = {};
+
+    /// §3.10.2 batch 22 — F10 fix. Builder-style helper that sets the
+    /// per-field value AND attaches the matching presence bit in
+    /// `initialMask`, in one call. Composes for chaining
+    /// `Bundle{}.with(Transform{...}).with(Velocity{...}).with(Health{...})`.
+    /// Equivalent to writing `b.field = v; b.initialMask |= bit;` but
+    /// declarative and harder to forget the mask half.
+    ///
+    /// @returns `*this` for chaining.
+    template <typename T>
+    Bundle& with(const T& v) noexcept;
 };
+
+namespace detail {
+
+template <typename T>
+constexpr Component bundleComponentBit() noexcept;
+
+template <typename T>
+constexpr void bundleStore(Bundle& b, const T& v) noexcept;
+
+} // namespace detail
+
+template <typename T>
+inline Bundle& Bundle::with(const T& v) noexcept {
+    detail::bundleStore(*this, v);
+    initialMask |= ComponentSet{detail::bundleComponentBit<T>()};
+    return *this;
+}
 
 namespace detail {
 
@@ -359,9 +387,17 @@ public:
     void removeComponent(EntityHandle entity);
 
     void reserve(std::size_t n)        { commands_.reserve(n); }
-    void clear() noexcept              { commands_.clear(); }
+    void clear() noexcept              { commands_.clear(); valueOnlyCount_ = 0; }
     std::size_t size() const noexcept  { return commands_.size(); }
     bool empty() const noexcept        { return commands_.empty(); }
+
+    /// §3.9.6 batch 21 — number of value-only commands recorded so far
+    /// (`setTransform` / `setVelocity` / `setUserData` /
+    /// `setAcceleration`). The commit phase uses this to short-circuit
+    /// the sharded classifier when zero value-only commands are
+    /// present (no parallelism possible) without a full pre-pass over
+    /// the variant list.
+    std::size_t valueOnlyCount() const noexcept { return valueOnlyCount_; }
 
     /// @internal Used internally by the commit phase.
     const std::vector<detail::Command>& commands() const noexcept { return commands_; }
@@ -370,6 +406,10 @@ public:
 
 private:
     std::vector<detail::Command> commands_;
+    /// §3.9.6 batch 21 — bumped by the four value-only recording
+    /// methods so the sharded commit can take a fast path without
+    /// scanning the variant tag stream.
+    std::size_t                  valueOnlyCount_ = 0;
 };
 
 template <typename T>

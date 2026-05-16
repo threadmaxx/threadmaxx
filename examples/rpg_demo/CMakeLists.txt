@@ -22,6 +22,11 @@ add_executable(threadmaxx_rpg_demo
     DebugOverlaySystem.cpp
     SaveLoadSystem.cpp
     HudSystem.cpp
+    # §3.11.1 batch D1 — combat + hierarchy + damage events
+    CombatSystem.cpp
+    DamageSystem.cpp
+    RespawnSystem.cpp
+    HealthBarSystem.cpp
 )
 
 target_link_libraries(threadmaxx_rpg_demo PRIVATE threadmaxx::vulkan_renderer)

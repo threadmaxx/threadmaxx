@@ -318,6 +318,17 @@ private:
 
 template <typename Ev>
 EventChannel<Ev>& Engine::events() {
+    // §3.10.2 batch 22 — F8 considered, NOT shipped. A `thread_local`
+    // pointer cache here looked attractive (skip the engine's
+    // `eventChannelsMtx_` on every call), but the implementation
+    // broke under test workloads that create and destroy engines
+    // back-to-back: the cached pointer dangles when a fresh engine
+    // happens to land at the same address as a destroyed one. The
+    // safe variants (per-instance version counter, per-thread map
+    // keyed by `this`) are more bookkeeping than the ~30 ns mutex
+    // acquire is worth. Documented as "warm channels at setup" on
+    // the public API instead — see `Engine::events` comment.
+    //
     // Stateless captureless lambdas decay to function pointers; the
     // engine stores those alongside the type-erased channel pointer
     // and uses them for ~Engine() teardown and per-tick drain.

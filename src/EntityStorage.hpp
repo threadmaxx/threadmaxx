@@ -75,6 +75,13 @@ public:
 
     bool alive(EntityHandle h) const noexcept;
 
+    /// §3.9.6 batch 21 — upper bound for `EntityHandle::index` over
+    /// every slot the storage has ever allocated. The slot vector
+    /// only grows, so the returned value is a safe upper bound for
+    /// sizing index-keyed scratch arrays (e.g. the sharded commit's
+    /// migrating-entity bitmap).
+    std::size_t slotCount() const noexcept { return slots_.size(); }
+
     /// Stitched-view dense index for the entity, or `UINT32_MAX` if not
     /// alive. The returned index is valid into the stitched dense
     /// vectors returned by @ref entities / @ref transforms / etc.,

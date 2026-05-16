@@ -1233,3 +1233,78 @@ sim thread and the user's I/O off-thread.
 When adding new async I/O sinks, follow the same pattern:
 deep-copy the borrowed FrameSnapshot span into owned storage,
 enqueue, drain on a dedicated worker thread, join in dtor.
+
+## §3.10.1 batch 21 — Sharded-commit fast paths
+
+`commitBuffersSharded` falls through to single-threaded
+`commitBuffer` when any of three pre-conditions hold:
+- `totalCommands < 256` — overhead exceeds win.
+- `totalValueOnly == 0` — every command migrates (no
+  parallelism possible).
+- `archetypeChunkCount() < 2` — single chunk, no
+  parallelism.
+
+The pre-check uses each CommandBuffer's `valueOnlyCount()`
+tally (incremented by the four value-only setters during
+recording: `setTransform`, `setVelocity`, `setUserData`,
+`setAcceleration`).
+
+When sharded *does* run, the migrating-entity set is an
+engine-owned `std::vector<std::uint8_t>` bitmap keyed by
+`EntityHandle::index` (the `shardMigratingBitmap_` /
+`shardMigratingIndices_` pair in `EngineImpl`) rather than
+a fresh `std::unordered_set<EntityHandle>` per call.
+Preserved across commits — steady state pays zero
+allocations. Fast-clear at end-of-call uses
+`shardMigratingIndices_` to zero only the bytes that were
+set.
+
+The `shardChunkBins_` (the per-chunk command-pointer
+bins) is also engine-owned and reused.
+
+**Conclusion: sharded never beats single-threaded on
+current workloads.** Even on a 4-archetype 25k-entity-each
+test, sharded loses by ~25% to single (137 vs 109
+ns/cmd) because the serial classifier overhead (~130
+ns/cmd of visits + locate + hash) exceeds what 4-way
+parallel apply can recover at 50 ns/cmd. The hash is
+fixed by the determinism contract. `singleThreadedCommit
+= true` remains the default.
+
+## §3.10.2 batch 22 — Audit-driven hygiene
+
+Five fixes from the post-§3.9 codebase audit:
+
+- **Wave-parallel system updates** route through
+  `jobs_->submit` + `std::latch` instead of spawning raw
+  `std::thread`s. Was creating ~240 threads/sec at 60 Hz
+  with multi-system waves.
+- **`HierarchySystem` scratch state** (denseOf map +
+  worldT/done/stack/onStack vectors) is now system-member
+  state, reused across ticks. `clear()` / `assign()`
+  preserves capacity.
+- **`prevTransformByIndex_` + `prevTransformGenByIndex_`**
+  replace the old `unordered_map<EntityHandle, Transform>
+  prevTransformMap_`. Flat vectors keyed by entity index;
+  generation guard on read filters stale entries from
+  destroyed entities.
+- **`Bundle::with<T>(value)` builder method** sets the
+  field AND the matching presence bit in one call.
+  Composable: `Bundle{}.with(Transform{...}).with(Health{...})`.
+- **`World.hpp` stitched-view contract block** documents
+  when `world.transforms()` / etc. are safe to read from
+  non-sim threads (always with `singleThreadedCommit =
+  true` between waves; unsafe during a sharded Pass C).
+
+**F8 (event-channel thread_local cache) considered then
+reverted.** Cache dangled when engines were created /
+destroyed back-to-back at the same address. A correct
+implementation needs a per-engine version counter;
+deferred until profile data justifies it. Public API
+documents "warm channels at setup" as the workaround.
+
+When adding new perf-critical hot paths: prefer flat
+vectors keyed by entity index over hash maps; reuse
+allocations across ticks via clear() / assign(); avoid
+`std::thread` creation in steady-state code (dispatch
+through `jobs_->submit` instead).

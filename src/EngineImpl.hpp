@@ -319,6 +319,14 @@ private:
     void startSnapshotWorker_();
     void stopSnapshotWorker_();
 
+    // §3.9.6 batch 21 — engine-owned scratch buffers for the sharded
+    // commit's classifier passes. Sized lazily; preserved across
+    // commits so the steady state pays zero allocations after the
+    // first tick.
+    std::vector<std::uint8_t>                  shardMigratingBitmap_;
+    std::vector<std::uint32_t>                 shardMigratingIndices_;
+    std::vector<std::vector<detail::Command*>> shardChunkBins_;
+
     std::uint64_t tick_ = 0;
     double simulationTime_ = 0.0;
 
@@ -359,7 +367,13 @@ private:
     // published frame, ready to be consumed as "prev" on the next
     // tick.
     std::array<std::vector<RenderInstancePrev>, 2> renderInstancePrev_;
-    std::unordered_map<EntityHandle, Transform> prevTransformMap_;
+    // §3.10.2 batch 22 — F7 fix. Was `unordered_map<EntityHandle,
+    // Transform>` cleared + rebuilt each tick (allocator churn at 60
+    // Hz). Now a flat vector keyed by `EntityHandle::index`, with a
+    // parallel generation vector for the (index, generation) sentinel
+    // check. Steady state pays zero allocations after the first frame.
+    std::vector<Transform>     prevTransformByIndex_;
+    std::vector<std::uint32_t> prevTransformGenByIndex_;
     // §3.2 batch 8: per-frame merged storage backing the hierarchical
     // RenderFrame spans (cameras, lights, per-pass draw items, debug
     // geometry). Double-buffered alongside renderInstanceBuffers_; the

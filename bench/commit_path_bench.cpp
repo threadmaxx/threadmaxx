@@ -130,6 +130,40 @@ private:
     std::uint32_t spawnPerTick_;
 };
 
+// §3.9.6 batch 21 — multi-archetype seed: spawns 100k entities split
+// across many distinct masks so the sharded commit's chunk-bin path
+// has real parallelism to exploit. 4 archetype shapes × 25k entities
+// each: Transform-only, +Velocity, +Velocity+Health, +Velocity+Health+
+// BoundingVolume. The setTransform workload then has commands spread
+// evenly across all 4 chunks, so a 4-worker engine can run all four
+// bins in parallel.
+struct MultiArchWorkload : threadmaxx::IGame {
+    std::uint32_t count = kChurnCount;
+
+    void onSetup(Engine&, World&, CommandBuffer& cb) override {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            Bundle b{};
+            b.transform.position.x = static_cast<float>(i);
+            b.initialMask = ComponentSet{Component::Transform};
+            const std::uint32_t kind = i & 3u;
+            if (kind >= 1u) {
+                b.velocity.linear.x = 1.0f;
+                b.initialMask = b.initialMask | ComponentSet{Component::Velocity};
+            }
+            if (kind >= 2u) {
+                b.health = Health{50.0f, 50.0f};
+                b.initialMask = b.initialMask | ComponentSet{Component::Health};
+            }
+            if (kind >= 3u) {
+                b.boundingVolume = BoundingVolume{{-1,-1,-1},{1,1,1}};
+                b.initialMask = b.initialMask |
+                    ComponentSet{Component::BoundingVolume};
+            }
+            cb.spawnBundle(b);
+        }
+    }
+};
+
 template <typename Factory>
 LatencyHistogram measure(bool sharded, std::uint32_t workers,
                          int warmup, int iters, Factory factory) {
@@ -141,6 +175,29 @@ LatencyHistogram measure(bool sharded, std::uint32_t workers,
         return {};
     }
 
+    std::vector<EntityHandle> seeded;
+    {
+        const auto s = engine.world().entities();
+        seeded.assign(s.begin(), s.end());
+    }
+    engine.registerSystem(factory(seeded));
+
+    LatencyHistogram h;
+    runIters(h, warmup, iters, [&] { engine.step(); });
+    engine.shutdown();
+    return h;
+}
+
+template <typename Factory>
+LatencyHistogram measureMultiArch(bool sharded, std::uint32_t workers,
+                                  int warmup, int iters, Factory factory) {
+    Config cfg = benchConfig(workers, kChurnCount, sharded);
+    Engine engine(cfg);
+    MultiArchWorkload workload;
+    if (!engine.initialize(workload)) {
+        std::printf("  init failed\n");
+        return {};
+    }
     std::vector<EntityHandle> seeded;
     {
         const auto s = engine.world().entities();
@@ -215,6 +272,35 @@ int main(int argc, char** argv) {
                     static_cast<std::uint32_t>(kSpawnPerTick));
             });
         emit(csv, "spawnDestroy", sharded, kWorkers, kChurnCount, h4, kSpawnPerTick);
+    }
+
+    // §3.9.6 batch 21 — multi-archetype workload. 4 distinct chunks,
+    // 25k entities each. setTransform commands distribute evenly so
+    // the sharded path can dispatch 4 parallel jobs.
+    for (bool sharded : {false, true}) {
+        const auto h = measureMultiArch(sharded, kWorkers, kWarmup, kIters,
+            [](std::vector<EntityHandle> e) {
+                return std::make_unique<SetTransformChurn>(std::move(e));
+            });
+        BenchRow r;
+        r.label    = "setTransform";
+        r.workload = sharded ? "MultiArch/sharded" : "MultiArch/single";
+        r.entities = kChurnCount;
+        r.workers  = kWorkers;
+        r.mean_ns  = h.meanNs();
+        r.stddev   = h.stddev();
+        r.p50_ns   = h.p50Ns();
+        r.p95_ns   = h.p95Ns();
+        r.p99_ns   = h.p99Ns();
+        if (h.meanNs() > 0.0 && kPerTick > 0) {
+            r.throughput =
+                static_cast<double>(kPerTick) / (h.meanNs() / 1e9);
+        }
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "ns_per_cmd=%.2f",
+                      h.meanNs() / static_cast<double>(kPerTick));
+        r.note = buf;
+        csv.row(r);
     }
     return 0;
 }

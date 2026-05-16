@@ -116,6 +116,34 @@ public:
     /// @name Dense iteration
     /// Parallel jobs index into these contiguous arrays. The i-th element
     /// of every span corresponds to the i-th live entity.
+    ///
+    /// @par Stitched-view contract (§3.10.2 batch 22 — F4 doc)
+    ///      Internally these spans are backed by a lazy *stitched
+    ///      cache* that concatenates per-chunk vectors. The cache is
+    ///      mutex-guarded for parallel readers (batch-15a fix), but
+    ///      the contract for **the sharded commit phase**
+    ///      (`Config::singleThreadedCommit = false`) is subtle:
+    ///      Pass-C worker jobs invoke `mut*()` to write into chunk
+    ///      vectors, which flips `stitchedDirty_` while the writers
+    ///      are still in flight. A reader on another thread that
+    ///      polls e.g. `world.transforms()` *during* a sharded
+    ///      Pass C will see either the pre-commit snapshot or
+    ///      trigger a rebuild that reads chunks the workers are
+    ///      concurrently writing — undefined behavior.
+    ///
+    ///      The safe consumption pattern is:
+    ///        - **Inside a wave** (`update()` / `parallelFor` body):
+    ///          read the stitched view freely from worker jobs that
+    ///          do not also write through `mut*()`. The chunked
+    ///          path (`forEachChunk` / `worldView()`) is preferred
+    ///          and pays no stitched-view cost.
+    ///        - **From a non-sim thread between waves**: only when
+    ///          `Config::singleThreadedCommit = true` (the default),
+    ///          or when no sharded commit is in flight.
+    ///        - **For game-code introspection**: the
+    ///          `World::has<T>` / `World::get<T>` and the
+    ///          `forEachChunk<T...>` paths are mutex-free and
+    ///          always safe.
     /// @{
     std::span<const EntityHandle>      entities()        const noexcept;
     std::span<const Transform>         transforms()      const noexcept;

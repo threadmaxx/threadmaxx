@@ -36,6 +36,8 @@ private:
     WorldState*                worldState_ = nullptr;
     UserComponentIds*          ids_        = nullptr;
     threadmaxx::Subscription   pickupSub_;
+    /// §3.11.1 batch D1 — kill counter.
+    threadmaxx::Subscription   deathSub_;
     std::unique_ptr<threadmaxx::FileTraceSink> trace_;
     std::uint64_t              lastLoggedTick_ = 0;
 };

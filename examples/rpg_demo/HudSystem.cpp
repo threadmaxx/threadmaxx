@@ -18,6 +18,13 @@ HudSystem::HudSystem(threadmaxx::Engine* engine,
         [](const PickupCollected& ev) {
             std::printf("[hud] pickup collected — total=%u\n", ev.totalPickups);
         });
+    // §3.11.1 batch D1 — kill tracker. Increment the worldState
+    // counter so postStep can surface it in the HUD.
+    deathSub_ = engine_->events<EntityDied>().subscribeScoped(
+        [worldState](const EntityDied& ev) {
+            (void)ev;
+            ++worldState->totalKills;
+        });
 }
 
 HudSystem::~HudSystem() = default;
@@ -57,10 +64,11 @@ void HudSystem::postStep(threadmaxx::SystemContext& ctx) {
         if (ps) pickups = ps->pickups;
     }
 
-    std::printf("[hud] tick=%llu entities=%zu pickups=%u sun=%.2f%s\n",
+    std::printf("[hud] tick=%llu entities=%zu pickups=%u kills=%u sun=%.2f%s\n",
                 static_cast<unsigned long long>(tick),
                 w.entities().size(),
                 pickups,
+                worldState_->totalKills,
                 worldState_->sunAngle,
                 trace_ ? "  [TRACING]" : "");
 }
