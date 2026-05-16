@@ -41,12 +41,25 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
         threadmaxx::user::tryGet<SwordTag>(w, ids_->swordTag, sword);
     const float length = tag ? tag->length : 1.4f;
 
-    // Rotate (0, 0, length) by swordT->orientation. Standard quat
-    // vector rotation; matches the HierarchySystem composition rule.
+    // §3.11 batch D-audit fix: sword tip extends in the player's
+    // local FORWARD direction, which in this demo's convention
+    // (camera math, see CameraSystem) is the -Z axis. The earlier
+    // (0, 0, +length) version put the tip BEHIND the player —
+    // combat was unreachable. We rotate (0, 0, -length) by the
+    // sword's world orientation; with identity orientation (the
+    // player's default), tip = pivot + (0, 0, -length), squarely
+    // in front of the player.
     const auto& q = swordT->orientation;
-    const float vx = 2.0f * (q.x * q.z + q.w * q.y) * length;
-    const float vy = 2.0f * (q.y * q.z - q.w * q.x) * length;
-    const float vz = (1.0f - 2.0f * (q.x * q.x + q.y * q.y)) * length;
+    const float dirX = 0.0f, dirY = 0.0f, dirZ = -length;
+    const float vx = 2.0f * (q.x * q.z + q.w * q.y) * dirZ
+                   + (1.0f - 2.0f * (q.y * q.y + q.z * q.z)) * dirX
+                   + 2.0f * (q.x * q.y - q.w * q.z) * dirY;
+    const float vy = 2.0f * (q.y * q.z - q.w * q.x) * dirZ
+                   + 2.0f * (q.x * q.y + q.w * q.z) * dirX
+                   + (1.0f - 2.0f * (q.x * q.x + q.z * q.z)) * dirY;
+    const float vz = (1.0f - 2.0f * (q.x * q.x + q.y * q.y)) * dirZ
+                   + 2.0f * (q.x * q.z - q.w * q.y) * dirX
+                   + 2.0f * (q.y * q.z + q.w * q.x) * dirY;
     const threadmaxx::Vec3 tip{
         swordT->position.x + vx,
         swordT->position.y + vy,

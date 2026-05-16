@@ -41,6 +41,10 @@ private:
     float            yaw_       = 0.0f;
     float            pitch_     = 0.45f;   // look slightly down
     float            distance_  = 8.0f;
+    /// §3.11.2 batch D2 — true iff PlayerState.swordSwingTimer > 0
+    /// at the last `update`. `buildRenderFrame` checks this to decide
+    /// whether to push the aim-PIP camera into the render frame.
+    bool             drawAimPipThisFrame_ = false;
 };
 
 } // namespace rpg

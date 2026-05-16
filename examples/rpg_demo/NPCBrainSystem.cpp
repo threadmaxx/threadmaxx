@@ -63,6 +63,13 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
     // Walk entities serially because we mutate per-NPC user-component
     // state inline (the state machine RNG isn't thread-safe). The total
     // NPC count is small (≤ 50) so parallelism isn't worth it here.
+    //
+    // §3.11.5 batch D5: in stress mode (10k NPCs) this loop alone can
+    // blow the per-tick budget. We check `ctx.shouldYield()` every
+    // 512 NPCs and bail early — the unprocessed NPCs keep their
+    // previous velocities for one tick (visually stutter-free thanks
+    // to the engine's interpolated render frame). The skipped slice
+    // is logged once per occurrence.
     const auto entities = w.entities();
     const auto masks    = w.componentMasks();
 
@@ -71,7 +78,14 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                            NpcState>> pendingWrites;
     pendingWrites.reserve(64);
 
+    bool yielded = false;
+    std::size_t yieldedAt = 0;
     for (std::size_t i = 0; i < entities.size(); ++i) {
+        if ((i & 0x1FFu) == 0 && ctx.shouldYield()) {
+            yielded = true;
+            yieldedAt = i;
+            break;
+        }
         if (!masks[i].has(threadmaxx::Component::Faction))    continue;
         if (masks[i].has(threadmaxx::Component::DisabledTag)) continue;
 
@@ -192,6 +206,14 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
         }
 
         pendingWrites.emplace_back(e, threadmaxx::Velocity{vel, {0, 0, 0}}, next);
+    }
+
+    if (yielded) {
+        // One-line diagnostic so the test (and a human player) can see
+        // when the brain bails out. Cheap printf at most once per tick.
+        std::fprintf(stderr,
+                     "[npc-brain] yielded at %zu / %zu (over budget)\n",
+                     yieldedAt, entities.size());
     }
 
     auto* ids = ids_;

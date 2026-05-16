@@ -21,6 +21,10 @@ public:
     threadmaxx::ComponentSet writes() const noexcept override {
         return threadmaxx::ComponentSet::none();
     }
+    /// §3.11.5 batch D5 — cosmetic, droppable under tick-budget
+    /// pressure. The engine emits `SystemSkipped` for this slot when
+    /// `SkipPolicy::Budget` says so; HudSystem aggregates the count.
+    bool skippable() const noexcept override { return true; }
 
     void update(threadmaxx::SystemContext& ctx) override;
     void buildRenderFrame(threadmaxx::RenderFrameBuilder& b) override;

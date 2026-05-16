@@ -13,6 +13,27 @@ enum class ProjectionMode : std::uint8_t {
     Orthographic = 1,
 };
 
+/// §3.11.2 batch D2 — normalized viewport rect for multi-camera
+/// rendering. Renderers map these (0..1) coordinates to a pixel
+/// rect using the active swapchain extent. Default = full-screen
+/// `{0, 0, 1, 1}`; pre-batch-D2 single-camera setups keep their
+/// behavior bit-for-bit.
+///
+/// Y is "from the top": `{0, 0}` is the top-left corner, `{1, 1}` is
+/// the bottom-right corner, matching CSS / GLFW window-coords
+/// conventions. The Vulkan renderer flips Y for NDC internally as
+/// before; this field is purely about subdividing the swapchain.
+///
+/// Cameras with overlapping viewports render in array order — later
+/// cameras overdraw earlier ones in their viewport rect. Use this for
+/// picture-in-picture HUDs / mini-maps.
+struct Viewport {
+    float x      = 0.0f;
+    float y      = 0.0f;
+    float width  = 1.0f;
+    float height = 1.0f;
+};
+
 /// Render-side camera description.
 ///
 /// Plain POD; the engine does not store cameras in @ref EntityStorage.
@@ -83,6 +104,12 @@ struct Camera {
     /// chain image / target. The engine never interprets this value;
     /// game code chooses the encoding (e.g. a hash of camera name).
     std::uint32_t id = 0;
+
+    /// §3.11.2 batch D2 — normalized viewport rect within the active
+    /// render target. Default = full-screen. Multi-camera setups (HUD
+    /// mini-maps, picture-in-picture aim cameras) override this so
+    /// each camera lands in its own swapchain region.
+    Viewport viewport = {};
 };
 
 } // namespace threadmaxx

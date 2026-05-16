@@ -22,9 +22,42 @@ Last refreshed: 2026-05-16 (Milestones 1–6 are all closed.
 (sharded-commit deep-dive + audit-driven hygiene) all landed
 2026-05-16. §3.10.3 (ergonomics + polish) remains the next
 planned tranche. §3.11 (RPG-demo-driven library exercise
-plan) kicked off 2026-05-16 with batch D1 (combat +
-hierarchy + damage events) landed. **Batches 16–22 + D1 all
-landed 2026-05-16.** Batch
+plan) kicked off 2026-05-16 with batches **D1** (combat +
+hierarchy + damage events), **D3** (save / load with user
+components), and **D2** (multi-camera + frustum culling)
+all landed. The D2 batch added the engine's first
+deliberate public-API extension since §3.10 —
+`Camera::viewport` (additive POD) — under the
+conservative-expansion policy because the mini-map cannot
+share the swapchain without it. **Batches 16–22 + D1 +
+D3 + D2 all landed 2026-05-16. §3.11 batch D-audit
+(2026-05-16) introduced the headless `tests/rpg_demo/` suite +
+`rpg_demo_core` static library, then fixed two combat bugs the
+test suite immediately exposed: sword tip extended in world
++Z (behind player) instead of player-local -Z, and player
+Transform.orientation was never updated from PlayerState.yaw
+so the sword stayed in fixed world space regardless of camera.
+Combat now connects. **Batch D5** (scale stress + tick budget
+HUD) followed, adding a `--stress` CLI flag that scales the
+demo to 60,000 entities and turns on the engine's tick-budget
+skip policy; cosmetic systems (DebugOverlay, DayNight, HUD)
+declare `skippable()`, the NPC brain bails early via
+`ctx.shouldYield()`, and HudSystem surfaces live skip counts +
+`BudgetExceeded` alerts. **Batch D4** (quest system +
+scripted scenarios) followed with two persistent quests
+plumbed via `EventChannel<QuestProgressed>` and a
+`test_determinism` regression test that runs identical
+scripted inputs twice and asserts `EngineStats::commitHash`
+matches per-tick. ctest now reports 88/88 on both trees. **Batch D6**
+(animations + skinning) followed with the procedural Y-bob
+path: every moving entity bobs in proportion to its speed,
+NPCs are out of sync via per-NPC phase, and the
+`AnimState` user component round-trips through save/load.
+The full Vulkan skinning pipeline is deferred to a future
+renderer-side batch (`batch 9b` placeholder) — unit cubes
+don't visibly benefit from bone-weighted skinning so the
+procedural shortcut is the right gameplay payoff. ctest
+now reports 89/89 on both trees.** Batch
 16 (gate) shipped three canonical workloads + four bench
 binaries + shared `bench/common.hpp`. Batch 17 (chunk
 iteration micro-optimization) rewrote `forEachWith` to walk
@@ -2101,6 +2134,104 @@ schedules the corresponding §3.10.3 sub-fix on the spot).
 
 ### 3.11 RPG-demo-driven library exercise plan
 
+#### 3.11.0 Batch D-audit — Demo test suite + critical bug fixes  ✅ landed 2026-05-16
+
+Interjected between batches D2 and D5 after a manual playtest
+revealed that combat never connected — the player could swing,
+but enemies never took damage. Sets up a dedicated headless test
+suite for the demo, then uses it to capture (and fix) the bugs.
+
+**Architecture changes:**
+
+- **`rpg_demo_core` static library.** `examples/rpg_demo/`
+  now builds the system + game-logic .cpp files into a static
+  library that the executable and tests both link against. GLFW
+  is a public dep of `rpg_demo_core` (for the global `Input`
+  state). Vulkan is only linked into the executable. Tests get
+  to exercise the actual shipped code rather than re-implementing
+  it inline.
+- **`tests/rpg_demo/` test subfolder.** Five headless tests
+  registered under the `rpg_demo.test_*` namespace:
+  - `test_round_trip` — save / load round-trip via the actual
+    `SaveLoadSystem` (replaces the inline-reimplementation
+    `tests/rpg_save_load_test.cpp` which is now removed).
+  - `test_combat` — spawns a controlled NPC at the predicted
+    sword-tip world position, injects the F-key edge, verifies
+    HP drops by `kSwordDamage`. The bug catcher.
+  - `test_npc_brain` — runs 300 ticks, walks every NPC chunk,
+    verifies at least one entered `Fight` or `Flee`.
+  - `test_pickup` — spawns a controlled pickup inside
+    `kPickupRadius` of the player, verifies collection +
+    `PlayerState.pickups` increment.
+  - `test_input_edges` — injects three edge bits, steps one
+    tick, verifies all three were consumed (regression test
+    for the input-edge consumption pattern).
+- **`tests/rpg_demo/DemoTestHarness.hpp`** — shared
+  `HeadlessFixture` + `makeHeadless()` + `injectEdge()` /
+  `resetEdges()` helpers. Field order matters: `game` before
+  `engine` so the engine's `~EngineImpl::shutdown()` (which
+  calls `game_->onTeardown`) sees a live game on tear-down.
+- **`DemoGame::ids()` public getter** — small API tweak so
+  tests can fetch the registered `UserComponentIds` without
+  re-registering. Pre-D-audit the field was private-only.
+
+**Bugs found and fixed:**
+
+1. **Sword tip computed in the wrong direction** —
+   `CombatSystem.cpp` rotated `(0, 0, +length)` by the sword's
+   world orientation, placing the tip BEHIND the player (the
+   demo's camera math has the player facing world `-Z` when
+   yaw = 0). Combat could only "hit" entities at `(player.xz)
+   + (0.5, 0.6)` in fixed world space, which almost never
+   overlapped a hostile NPC. **Fix:** rotate `(0, 0, -length)`
+   instead. The full 3×3 quaternion-to-matrix expansion is
+   needed (not the abbreviated form that assumed `dirX = dirY
+   = 0`) so the tip rotates with the sword's full world
+   orientation, including the player's yaw.
+2. **Player `Transform.orientation` never updated** —
+   `PlayerInputSystem` tracked `PlayerState.yawRadians` for
+   movement direction but never wrote the matching rotation
+   into the player's actual `Transform.orientation`. Since
+   `HierarchySystem` propagates `parent.world * child.local`,
+   the sword (a Parent-attached child) stayed in fixed world
+   space regardless of which way the player turned. **Fix:**
+   `PlayerInputSystem.update` now writes
+   `Transform.orientation = quat(yaw around Y)` via a
+   `cb.setTransform` call alongside the existing velocity +
+   PlayerState writes. Hierarchy propagation then carries the
+   rotation into the sword, and the (-length)-rotated tip
+   tracks the camera.
+
+**Bugs investigated and dismissed:**
+
+- `PlayerInputSystem::takeEdges()` consuming ALL edge bits
+  was initially flagged as a regression risk for F1 / F5 /
+  F8 / F9 keys. Investigation showed it's actually fine:
+  `HudSystem` / `SaveLoadSystem` consume their edges in
+  `preStep` which runs BEFORE any wave's `update`, so by the
+  time `PlayerInputSystem::update` calls `takeEdges()` those
+  bits are already cleared by their owners. The test
+  `test_input_edges` is the regression guard.
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 85/85 on both trees** (was 81; +5 demo tests, −1
+  removed duplicate `rpg_save_load_test`).
+- The rpg_demo runs **validation-clean for 300 ticks** under
+  `THREADMAXX_VK_VALIDATE=1` on the `-Werror` tree.
+- Interactive playtest: combat now visibly connects when the
+  player faces an NPC and presses F.
+
+**Files:** 5 new test files in `tests/rpg_demo/`, 1 new
+harness header, 1 new test CMakeLists, demo CMakeLists
+refactored to define the static-library target, 1 removed
+duplicate test, 1 small `DemoGame.hpp` getter add, 2 demo
+.cpp bug fixes (CombatSystem, PlayerInputSystem).
+
+**Effort:** ~2 hours actual, including the test
+infrastructure setup that future §3.11 batches will reuse.
+
+
 §3.11 takes the opposite stance to §3.9–§3.10: instead of
 "measure → optimize", it's "build a real game → discover
 gaps → fix the library." The premise is that `rpg_demo` as
@@ -2238,142 +2369,532 @@ Entity count post-spawn is 153 (was 152; +1 for the sword).
 
 **Effort:** ~3 hours actual; ~7 new + 5 modified files.
 
-#### 3.11.2 Batch D2 — Multi-camera + frustum culling
+#### 3.11.2 Batch D2 — Multi-camera + frustum culling  ✅ landed 2026-05-16
 
-**Game feature:** Three live cameras — main third-person,
-top-down mini-map (corner overlay), and an over-the-shoulder
-aim camera that activates when the player draws their sword.
-The mini-map shows all entities; the aim camera narrows
-field of view; the main camera does what it does today.
+**Game feature:** Three live cameras share the swapchain:
+- **Main third-person** (full-screen, perspective): the
+  existing batch-10 camera unchanged.
+- **Top-down mini-map** (top-right corner, orthographic):
+  the player + every entity rendered from above with a
+  fixed 35-unit half-height ortho. Visible every frame.
+- **Aim PIP** (center, narrow perspective): a 0.5-rad FOV
+  shoulder-mounted camera that appears only while the
+  player's sword is mid-swing (`swordSwingTimer > 0`).
+  Disappears between attacks.
 
-**Engine subsystems exercised:**
+Items outside the main camera's frustum are culled away;
+the mini-map's wide ortho frustum picks up everything in
+~70 units around the player; the aim PIP's narrow cone
+shows only what the player is swinging at.
 
-- `RenderFrame::cameras` — up to 32-camera array (the
-  `kMaxCameras` cap from batch 15a).
-- `DrawItem::cameraMask` — per-item camera bitset
-  filtering. Aim camera shows only NPCs within a cone;
-  mini-map shows everything but with a fixed top-down
-  projection.
-- `RenderFrame::cameraIndexById` — map camera ids back to
-  bit positions.
-- `extractFrustum` + `cullByFrustum` — main camera culls
-  off-screen entities; mini-map skips culling.
-- Multiple `CameraSystem` instances or one system with
-  three cameras emitted from `buildRenderFrame`.
+**As-shipped 2026-05-16** — one library-side addition,
+one renderer-side fix, three demo updates:
 
-**Expected library gaps:** the Vulkan renderer (batch 9)
-draws to one viewport at a time. Multi-camera within one
-swapchain image means either a viewport-loop in
-`VulkanRenderer::recordFrame` or a separate render target
-for the mini-map. Likely a renderer-side change in
-`examples/vulkan_renderer/`.
+**Library (one minimal additive change):**
+- **`threadmaxx::Viewport` POD + `Camera::viewport` field**
+  (`include/threadmaxx/render/Camera.hpp`). Normalized
+  (0..1) `{x, y, width, height}` rect, defaults to full
+  screen. Renderers map to pixel coords via the active
+  swapchain extent. Conservative-expansion policy held —
+  the multi-camera mini-map can't exist in a corner
+  without this, so it's a justified extension.
 
-**Effort:** ~2 days (split: 1 day demo, 1 day renderer
-viewport loop).
+**Renderer (Vulkan):**
+- **Per-camera viewport + scissor** in `recordCamera`.
+  Reads `cam.viewport` and sets `vkCmdSetViewport`
+  + `vkCmdSetScissor` per camera, so each renders into
+  its declared rect. Pre-D2 cameras stay full-screen
+  (default viewport `{0,0,1,1}`).
+- **Pre-packed instance buffer.** Previous design called
+  `ensureBuffer` per camera, which destroyed the buffer
+  mid-frame when N cameras' instance counts varied — this
+  surfaced as a Vulkan validation flood
+  (`vkCmdBindVertexBuffers / VkBuffer was destroyed`)
+  with 3 cameras active. The fix pre-packs **every
+  camera's instance slice** into one contiguous buffer
+  in `recordFrame` BEFORE the camera loop, then each
+  camera binds with `pOffsets = slice.offsetBytes` and
+  draws `slice.instanceCount` rows. One `ensureBuffer`
+  call per frame, no destroy-while-bound.
 
-#### 3.11.3 Batch D3 — Save / load with user components
+**Demo:**
+- **`CameraSystem`** now emits up to three cameras per
+  frame in `buildRenderFrame`. Stashes a copy in
+  `WorldState::activeCameras` so the cull pass can read
+  the same set. The aim PIP is emitted only when
+  `PlayerState::swordSwingTimer > 0` (last seen in
+  `update`).
+- **`CubeRenderSystem`** now builds a parallel
+  `(DrawItem, BoundingVolume)` array and calls
+  `threadmaxx::cullByFrustum` against `activeCameras`
+  before pushing items into the builder. Items with
+  `cameraMask == 0` (visible to no camera) are dropped.
+- **`WorldState`** gained
+  `std::vector<threadmaxx::Camera> activeCameras` plus
+  the three `kViewport*` and `kCameraId*` constants.
 
-**Game feature:** F5 quick-save now persists the **full**
-game state, including user components (CubeRender, NpcState,
-PlayerState, Pickup). F9 actually restores the world —
-entities respawn at their saved positions, AI state machine
-state survives, pickup collection counter restores. F8 is a
-new "save-while-running" non-blocking save that uses
-`Engine::snapshotAsync` (batch 20) to write off-thread.
+**Engine subsystems newly exercised:**
 
-**Engine subsystems exercised:**
+- `Camera::viewport` (D2's library addition).
+- `RenderFrame::cameras` — array now non-trivially
+  populated (2 or 3 cameras vs 1 before).
+- `DrawItem::cameraMask` — non-trivial per-item filter
+  driven by `cullByFrustum`.
+- `extractFrustum` + `cullByFrustum` — the visibility
+  helpers shipped in batch 8 but never had a real-game
+  consumer in the demo.
+- `threadmaxx::ProjectionMode::Orthographic` — first use
+  of the ortho path; the mini-map's view matrix is
+  hand-constructed for the top-down direction.
 
-- `WorldSnapshot` + `serialize` / `deserialize`.
-- `Engine::snapshotAsync` (batch 20).
-- `FileTraceSink::setAsync` (batch 20) for the
-  concurrent trace capture.
-- `cb.destroy` of every entity, then `cb.spawnBundle` of
-  every entity from the snapshot in `IGame::onSetup`-shaped
-  rebuild flow.
-- `engine.registerUserComponent<T>` re-registration
-  after load (idempotent per spec).
+**Library gaps surfaced:**
+1. `Camera::viewport` (added — conservative-expansion
+   tier: blocking the mini-map's corner placement).
+2. **Vulkan renderer `ensureBuffer` lifecycle bug** —
+   fixed in-place in `examples/vulkan_renderer/`. Pre-D2
+   the single-camera path never triggered the bug
+   because there was no second camera to invalidate the
+   first's binding. No core library change needed.
 
-**Expected library gaps:** user-component persistence is
-documented as game-side responsibility (§3.1 batch 6b). The
-demo will define its own per-user-component
-serialize/deserialize and prove the round-trip. If the
-serialization pattern is verbose, schedule a §3.10.3 batch
-to add a `UserComponentSerializer<T>` helper that handles
-the chunked-column → byte-stream → chunked-column round
-trip generically.
+**Verification:**
+- Both `build/` and `build-werror/` compile clean on
+  first pass (after the viewport fix).
+- **ctest 81/81 on both trees.**
+- `rpg_demo` runs **validation-clean for 300 ticks** on
+  the `-Werror` tree under `THREADMAXX_VK_VALIDATE=1`
+  with all three cameras emitting actively (no
+  per-frame Vulkan validation messages).
 
-**Effort:** ~1.5 days.
+**Files:** 1 library file
+(`include/threadmaxx/render/Camera.hpp`), 1 renderer file
+(`examples/vulkan_renderer/src/VulkanRenderer.cpp`), 4
+demo files (`DemoTypes.hpp`, `CameraSystem.{cpp,hpp}`,
+`CubeRenderSystem.{cpp,hpp}`, `DemoGame.cpp`).
 
-#### 3.11.4 Batch D4 — Quest system + scripted scenarios
+**Effort:** ~2 hours actual.
 
-**Game feature:** Two quests — "Collect 25 pickups" and
-"Defeat all hostile NPCs." Quest progress shown in HUD; new
-quests unlock at progress milestones. A `--scripted` mode
-replays a captured input sequence + entity-spawn schedule
-deterministically, used as the regression test bed for the
-combat system.
+#### 3.11.3 Batch D3 — Save / load with user components  ✅ landed 2026-05-16
 
-**Engine subsystems exercised:**
+**Game feature:** Three save / load paths:
+- **F5** — synchronous quick-save. Captures the world
+  snapshot + every user-component value + key world-state
+  fields, writes to `/tmp/rpg_demo_save.bin` on the sim
+  thread. Blocks the current tick until the file is closed.
+- **F8** — asynchronous quick-save (new). Captures user
+  components on the sim thread, then uses
+  `Engine::snapshotAsync` (batch 20) so the
+  `world.snapshot()` call AND the file write happen on the
+  engine-owned background thread. Sim thread keeps stepping.
+  Stutter-free.
+- **F9** — full restore. Reads the save file, queues one
+  commit's worth of `cb.destroy` (for every alive entity)
+  + `cb.spawnBundle` (into pre-reserved handles, with
+  `Parent.parent` re-pointed through the snap-index map)
+  + `addUserComponent` per saved blob. Updates
+  `WorldState::player` and `sword` to the new handles.
 
-- `EventChannel<PickupCollected>` (existing) +
-  `EventChannel<QuestProgressed>` (new).
-- `Engine::setSkipPolicy(SkipPolicy::Scripted)` +
-  `pushScriptedSkip` — for deterministic replay.
-- `EngineStats::commitHash` — replay verification: same
-  scripted input must produce identical commit hashes
-  across runs.
-- `WorldSnapshot` save / restore (batch D3 plumbing).
-- `Engine::setTimeScale` — replay at 4× speed.
+**As-shipped 2026-05-16** — `SaveLoadSystem.{hpp,cpp}`
+fully rewritten; new `rpg_save_load_test.cpp` in `tests/`
+to gate the round-trip without GLFW.
 
-**Expected library gaps:** the scripted-skip log is
-currently captured in code; the demo wants to read it from a
-file. Schedule a §3.10.3 batch to add
-`Engine::serializeSkipLog` / `Engine::deserializeSkipLog`
-helpers, OR document the recommended user-side recording
-pattern.
+The on-disk format is `examples/rpg_demo/`-specific and
+documented at the top of `SaveLoadSystem.hpp`:
 
-**Effort:** ~1.5 days.
+```
+[magic 'RPGS']  [version: u32]
+[built-in WorldSnapshot via threadmaxx::serialize]
+[section count: u32 = 5]
+For each user component:
+  [name: string]  [stride: u32]
+  [entry count: u64]
+  [entries: (snap_idx: u32, blob[stride]) ...]
+[world state: player_snap_idx u32, sword_snap_idx u32,
+              totalKills u32, sunAngle f32]
+```
 
-#### 3.11.5 Batch D5 — Scale stress + tick budget HUD
+The `snap_idx` field is the entity's position in
+`WorldSnapshot.entities` at save time — built on the
+worker thread by walking the just-captured snapshot. Reads
+emit `EntityHandle{snap_idx, 0}` as the captured handle so
+the load path can use `handle.index` as the snap index
+directly (no separate map structure).
 
-**Game feature:** Spawn 10k NPCs + 50k pickups. Tick budget
-`1/60s = 16.67ms` enforced; `FrameBudgetWatcher` shows a red
-"TICK OVER BUDGET" notice in the HUD when exceeded; the HUD
-itself becomes skippable so a saturated frame drops the HUD
-first (other systems stay live).
+**Engine subsystems newly exercised:**
 
-**Engine subsystems exercised:**
+- `Engine::snapshotAsync` (batch 20) — F8 path.
+- `Engine::reserveEntityHandles` batch form — load
+  reserves all N handles in one call so Parent references
+  can be populated before commit fires.
+- `cb.destroy` of every alive entity in a single
+  `single()` callback, followed by `cb.spawnBundle` of the
+  rebuilt N entities in the same commit. Submission-order
+  semantics guarantee destroys run before spawns.
+- Parent handle translation via the snap-index map — proves
+  that hierarchy chains survive a save/load round-trip.
+- `World::archetypeChunkCount` / `archetypeChunk(i)` +
+  `user::chunkSpan<T>` (batch 6b) for the user-component
+  capture pass — walks every chunk that carries a
+  user-component bit, pairs each row with its
+  `EntityHandle`.
 
-- `Engine::setTickBudget` + `SkipPolicy::Budget`.
-- `ISystem::skippable()` returning true for HUD,
-  DebugOverlay, DayNight.
-- `SystemSkipped` event drain in HUD — log entries to
-  `[hud] skipped:HudSystem tick=...`.
+**Library gaps surfaced: none.**
+User-component serialization stayed entirely in
+`SaveLoadSystem.cpp` (per §3.1 batch 6b's "game-side
+responsibility" rule). The pattern was repetitive (a
+template + 5 calls per user-component type) but not
+verbose enough to justify a library-side
+`UserComponentSerializer<T>` helper. Conservative-expansion
+policy held.
+
+**Test coverage:**
+`tests/rpg_save_load_test.cpp` — programmatic round-trip on
+a 10-entity scene (player + sword child + 5 hostile NPCs +
+3 pickups) with all 5 user-component types attached. Saves
+to `/tmp/tmx_rpg_save_test.bin`, reads back, and
+hash-compares every user-component vector byte-for-byte
+plus the player / sword snap indices, totalKills, and
+sunAngle field. Lives in `tests/` (not the rpg_demo target)
+because the demo ships as an executable and the test
+re-implements the wire format inline rather than linking
+the demo's `SaveLoadSystem` directly.
+
+**Verification:**
+- Both `build/` and `build-werror/` compile clean on first
+  pass.
+- **ctest 81/81 on both trees** (was 80; +1 from
+  `rpg_save_load_test`).
+- `rpg_demo` runs validation-clean for 300 ticks on the
+  `-Werror` tree.
+
+**Files:** 1 rewritten (`SaveLoadSystem.{hpp,cpp}`), 1 new
+test (`tests/rpg_save_load_test.cpp`), 3 modified
+(`Input.{hpp,cpp}` for F8 edge wiring, `DemoGame.cpp` for
+the new `engine_` ctor arg, `main.cpp` for the controls
+help comment).
+
+**Effort:** ~2 hours actual.
+
+#### 3.11.4 Batch D4 — Quest system + scripted scenarios  ✅ landed 2026-05-16
+
+**Game feature:** Two persistent quests — **"Collect 25
+pickups"** and **"Defeat all hostile NPCs"** — visible in
+the HUD. Quest progress advances via event subscriptions
+(no per-tick polling); the HUD prints a one-liner whenever
+a quest advances, plus a `[hud] quests: N/2 complete`
+summary every 60 ticks. Hostile quest target is sized at
+spawn time from the actual NPC roll, not a hardcoded
+constant.
+
+The "scripted scenarios" half ships as the determinism test
+bed in `tests/rpg_demo/test_determinism.cpp` — runs the
+demo twice with an identical fixed input script and asserts
+per-tick `commitHash` equality across runs. This is the
+regression test bed the spec called for; the demo CLI
+`--replay <path>` mode is **not** shipped (would require a
+file-backed input log; per the conservative-expansion
+policy that's deferred until a real demand emerges).
+
+**As-shipped 2026-05-16:**
+
+- **`QuestState` + `QuestId` + `QuestProgressed`** types in
+  `DemoTypes.hpp`. `WorldState::quests` is a `std::vector`
+  seeded by `DemoGame::onSetup` with two entries.
+- **`QuestSystem.{cpp,hpp}`** — subscribes to
+  `PickupCollected` and `EntityDied` via `subscribeScoped`;
+  the callbacks update the matching quest's `progress` and
+  emit `QuestProgressed` on advance / completion. Pure
+  event-driven, no per-tick `update` body.
+- **`DemoGame::onSetup`** seeds `quests` + counts hostile
+  NPCs into `WorldState::hostileSpawnCount` during the
+  randomized NPC spawn loop. The kill-quest target =
+  hostileSpawnCount (typically ~30 in vanilla, ~6000 in
+  stress mode).
+- **`HudSystem`** subscribes to `QuestProgressed` with a
+  fourth `Subscription` member (`questSub_`) and prints
+  `[quest] <name> — N/T  ✓ COMPLETE` on advance. The
+  60-tick periodic summary line prints `[hud] quests:
+  N/M complete`.
+
+**Engine subsystems newly exercised in the demo:**
+
+- A 4th typed event channel (`QuestProgressed`) demonstrates
+  the standard "event-driven game logic via
+  `subscribeScoped`" pattern.
+- `EngineStats::commitHash` — surfaced via the new
+  determinism test, confirms run-vs-run reproducibility.
+- `Config::deterministic = true` flag.
+
+**Library gaps surfaced: none.** The whole feature stayed
+within the public API. The original spec called for
+`Engine::setSkipPolicy(Scripted) + pushScriptedSkip` for
+replay — but those exist in the library since batch 12 and
+are documented as the **server→client replay channel** for
+networked games. For the demo's regression-test use case,
+the simpler "deterministic re-run with identical inputs"
+pattern is sufficient and exercises `commitHash` directly.
+
+**Items deferred** (matching the spec's "expected gaps"):
+
+- `Engine::serializeSkipLog` / `deserializeSkipLog`
+  helpers. Not shipped — no demo CLI path uses them yet.
+  The in-process determinism test pattern in
+  `test_determinism.cpp` is the recommended user-side
+  recipe; if a real demand emerges, schedule a §3.10.3
+  follow-on.
+- `--replay <path>` CLI mode on the demo. Would require a
+  binary input-log format + file I/O. Not shipped.
+- `Engine::setTimeScale` "4x replay" — the engine API
+  already exists since batch 4; the demo just doesn't
+  bind it to a key. A one-line wiring could be added
+  later when the replay CLI lands.
+
+**Test coverage:**
+
+- `tests/rpg_demo/test_quests.cpp` — spawns 30 extra
+  pickups under the player so PickupSystem rapidly fires
+  `PickupCollected`. Asserts the pickup-quest advances to
+  `25/25` and the `completed` flag flips within 30 ticks.
+- `tests/rpg_demo/test_determinism.cpp` — runs the
+  identical 5-attack scripted input across the default
+  scene for 60 ticks twice. Asserts per-tick
+  `commitHash` is byte-identical between runs AND the
+  final hash is non-trivial (not the FNV-1a basis,
+  meaning real commits happened). First-tick mismatch
+  surfaces any hidden non-determinism (unseeded RNG,
+  `std::time`-dependent path, etc.).
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 88/88 on both trees** (was 86; +2 from
+  `test_quests` + `test_determinism`).
+- `rpg_demo` runs **validation-clean for 300 ticks** under
+  `THREADMAXX_VK_VALIDATE=1` on `-Werror`, with the new
+  quest summary line printed every 60 ticks.
+
+**Files:** 5 modified
+(`DemoTypes.hpp`, `DemoGame.cpp`, `HudSystem.{cpp,hpp}`,
+`CMakeLists.txt`), 2 new system files
+(`QuestSystem.{cpp,hpp}`), 2 new tests
+(`tests/rpg_demo/test_quests.cpp`,
+`tests/rpg_demo/test_determinism.cpp`).
+
+**Effort:** ~1.5 hours actual.
+
+#### 3.11.5 Batch D5 — Scale stress + tick budget HUD  ✅ landed 2026-05-16
+
+**Game feature:** `--stress` (or `-s`) CLI flag scales the
+demo to **10,000 NPCs + 50,000 pickups** (60,003 entities
+total) AND turns on the engine's tick-budget skip policy.
+At this scale the per-tick cost easily blows the
+16.67 ms / 60 Hz budget; the engine drops cosmetic
+systems (`DebugOverlaySystem`, `DayNightSystem`,
+`HudSystem`-update) so the gameplay loop stays live. The
+HUD shows live skip counts and the cumulative
+`BudgetExceeded` count.
+
+**As-shipped 2026-05-16:**
+
+- **Stress-mode CLI**. `main.cpp` parses `--stress` / `-s`
+  and sets `WorldState::stressMode`. The vanilla 153-entity
+  scene is unchanged (the new code paths are no-ops when
+  the flag is off).
+- **`DemoGame::onSetup` configures scale + budget**. When
+  `stressMode == true`: spawn counts become `kStressNpcCount`
+  (10,000) + `kStressPickupCount` (50,000),
+  `engine.setTickBudget(1/60)` + `setSkipPolicy(Budget)` are
+  applied, and `threadmaxx::FrameBudgetWatcher` is
+  registered so `BudgetExceeded` events emit. Channels
+  pre-warmed on the sim thread per the "warm channels at
+  setup" rule.
+- **`skippable() = true`** on `DebugOverlaySystem` and
+  `DayNightSystem` (the HUD was already skippable from
+  batch 10). The engine emits `SystemSkipped{tick,
+  systemName, reason}` for each dropped wave slot.
+- **`HudSystem` subscriptions**. Three new `Subscription`
+  members + corresponding callbacks accumulate
+  `WorldState::totalSkippedHud`,
+  `totalSkippedOverlay`, `totalSkippedDayNight` and
+  `budgetExceededCount`. The HUD postStep line now reads
+  `[hud] tick=N entities=M pickups=P kills=K sun=S
+  OVER=X skips[hud=h,ovr=o,dn=d]` when in stress mode.
+- **NPC brain early-bail**. `NPCBrainSystem::update` polls
+  `ctx.shouldYield()` every 512 entities; if the engine's
+  `overBudget_` flag is set, the loop drops the unwalked
+  NPC slice and emits a one-line diagnostic. Unprocessed
+  NPCs keep their previous-tick velocity (visually
+  stutter-free thanks to the engine's interpolated render
+  frame).
+
+**Engine subsystems newly exercised in the demo:**
+
+- `Engine::setTickBudget` + `setSkipPolicy(Budget)`.
+- `ISystem::skippable()` true on three cosmetic systems.
+- `EventChannel<SystemSkipped>` drain into HUD.
+- `EventChannel<BudgetExceeded>` drain into HUD.
+- `threadmaxx::FrameBudgetWatcher` (built-in system).
+- `SystemContext::shouldYield()` inside a serial loop.
+
+**Library gaps surfaced: none.** All required hooks were
+shipped by batch 12 (cancellation, budgets, priorities) and
+batch 14 (telemetry ingestion). The conservative-expansion
+policy held: `--stress` mode worked on the existing public
+API without library changes. Documented potential follow-on
+in §3.11 (lazy-rebuild `SpatialHash`) **not pursued** —
+spatial hash rebuild at 60k entities is ~3 ms / tick on the
+dev machine; not the dominant cost. The dominant cost at
+this scale is the stitched-view rebuild + per-tick chunk
+walks in cosmetic systems, both of which the skip policy
+correctly drops.
+
+**Items deferred:**
+
 - `JobPriority::High` for combat + brain;
-  `JobPriority::Low` for cosmetic systems.
-- Cancellation: `SystemContext::shouldYield()` in
-  NPCBrain's serial loop bails out early when over
-  budget.
-- `MaskCache` + `forEachWithCached` — combat range
-  queries against 60k entities (where the per-tick
-  rebuild cost matters).
-- `EntityStorage::reserveHandles` batch form for the
-  10k NPC bulk spawn.
+  `JobPriority::Low` for cosmetic. The current brain is
+  serial (`ctx.single`), so JobPriority doesn't apply. A
+  parallel brain (which would benefit from `JobPriority`)
+  is a separate batch.
+- `MaskCache` + `forEachWithCached` integration. The
+  existing combat / brain paths don't iterate by mask;
+  they iterate by chunk (NPCBrain) or by spatial-hash
+  result (Combat). `MaskCache` doesn't apply directly.
 
-**Expected library gaps:** 60k entities through a single
-`SpatialHash` rebuild every tick may show up as a hot spot;
-maybe schedule a §3.10.3 lazy-rebuild API, OR
-`SpatialHash::rebuildIncremental` that only touches entries
-whose position changed.
+**Test coverage:** new `tests/rpg_demo/test_skip_policy.cpp`
+verifies that `setTickBudget` + `SkipPolicy::Budget` +
+`FrameBudgetWatcher` together produce non-zero
+`budgetExceededCount` AND at least one cosmetic-system skip
+across 30 ticks. To avoid spawning 60k entities in the test
+(slow under ctest's parallel scheduler), the test sets a
+100 ns budget — small enough that a 153-entity tick blows it
+every time.
 
-**Effort:** ~2 days.
+**Measured at stress scale** (dev machine, 4 workers):
+- 60,003 entities, 180-tick run.
+- `OVER=119` over-budget alerts on tick 120 (~100% of
+  ticks blowing the 16.67 ms budget).
+- `skips[ovr=120]` — `DebugOverlaySystem` skipped on
+  every blown tick.
+- `skips[hud=0]` — HudSystem's `postStep` runs (post-step
+  hooks are never skipped per the §6 phase-4 contract);
+  the update is no-op so skipping it changes nothing.
+- `skips[dn=0]` — `DayNightSystem` runs `postStep` only
+  (also never skipped); its `update` is a no-op.
+- Player movement + combat events + pickup events still
+  flow normally; the gameplay loop is fully live.
 
-#### 3.11.6 Batch D6 — Animations + skinning
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 86/86 on both trees** (was 85; +1 from
+  `test_skip_policy`).
+- `rpg_demo` runs **validation-clean for 180 ticks** under
+  `THREADMAXX_VK_VALIDATE=1` with `--stress` on the
+  `-Werror` tree.
 
-**Game feature:** NPCs visibly "walk" via a procedural pose
-(simple sine-wave bob, parameterized by velocity magnitude).
-The player has a swing animation when attacking. Animation
-state survives save/load.
+**Files:** 7 modified
+(`DemoTypes.hpp`, `DemoGame.cpp`, `NPCBrainSystem.cpp`,
+`HudSystem.{cpp,hpp}`, `DebugOverlaySystem.hpp`,
+`DayNightSystem.hpp`, `main.cpp`), 1 new test
+(`tests/rpg_demo/test_skip_policy.cpp`).
+
+**Effort:** ~2 hours actual.
+
+#### 3.11.6 Batch D6 — Animations + skinning  ✅ landed 2026-05-16 (procedural path)
+
+**As-shipped 2026-05-16** — procedural Y-bob path. Every
+moving entity visibly "walks" via
+`Transform.position.y = baseY + sin(time * freq + phase) *
+amp * speedRatio`. The player bobs subtly while moving
+(`freq=8, amp=0.10`); NPCs bob more prominently
+(`freq=5-7, amp=0.20`) with per-NPC phase offsets so a
+group doesn't move in lockstep. Stationary entities sit
+still — the bob fades out as velocity goes to zero.
+
+Files:
+- **`AnimState` user component** (`DemoTypes.hpp`) — POD
+  with `baseY`, `phase`, `frequency`, `amplitude`. The
+  6th user component registered by `DemoGame::onSetup`.
+- **`AnimationSystem.{cpp,hpp}`** — reads `(Transform,
+  Velocity, AnimState)` chunks; writes modulated Y via a
+  batched `cb.setTransform` call in `ctx.single()`. Skips
+  rows whose Y didn't change. Uses `tick() * dt()` for
+  deterministic simulation time.
+- **Wave ordering** — registered AFTER `MovementSystem`
+  (so X/Z integration is done) and BEFORE
+  `HierarchySystem` (so the player's sword inherits the
+  bobbed Y via the Parent chain).
+- **`DemoGame::onSetup` attaches `AnimState`** to player +
+  every NPC. Per-NPC `phase = i * 0.31` keeps them out of
+  sync.
+- **`SaveLoadSystem` round-trips `AnimState`.** Section
+  count bumped to 6 (added `"AnimState"`); pre-D6 save
+  files are no longer readable (by design — game-specific
+  internal format, no per-section version negotiation).
+
+**Engine subsystems newly exercised in the demo:**
+
+- 6th user-component registration via
+  `Engine::registerUserComponent<AnimState>` —
+  demonstrates the user-component scaling pattern.
+- Typed `user::chunkSpan<AnimState>` chunk-walking inside
+  `AnimationSystem`.
+- `SystemContext::tick() * dt()` deterministic
+  simulation-time pattern.
+
+**Library gaps surfaced: none.** Procedural path stayed
+entirely within the public API.
+
+**Items deferred (full Vulkan skinning pipeline):**
+
+The spec's "full skinned-mesh playback" path — the engine
+slots `AnimationStateRef` / `AnimationPoseRef`,
+`RenderInstance::skeleton` / `pose` upload via
+`UploadRing`, vertex shader bone-weighted skinning —
+is **deferred to a future renderer-side core batch
+(tentatively `batch 9b — skinning pipeline`)**. Reasons:
+
+1. The demo's unit-cube renderer wouldn't visibly
+   benefit from real bone-weighted skinning. Cubes
+   don't have bones.
+2. The Vulkan renderer (batch 9) was always shipped as
+   v1 with skinning deferred. Full skinning is a
+   1-2 week renderer rewrite (descriptor sets, pose
+   buffer ring, bone-weight vertex attributes, skinning
+   pipeline, glTF skeleton import).
+3. Procedural Y-bob is the right gameplay-side payoff
+   for D6 — visible NPCs walking convincingly without
+   dragging in renderer scope. Conservative-expansion
+   policy held.
+
+**Test coverage:** `tests/rpg_demo/test_animation.cpp` —
+spawns one NPC with velocity = (2, 0, 0) and `AnimState`
+defaults (baseY=1.0, freq=8, amp=0.20). Runs 90 ticks
+(≈ 1.5 s sim time, ~2 full cycles). Asserts Y range
+covers above AND below baseY and oscillation amplitude
+is meaningful (`maxY - minY > 0.05`). Measured
+`Y range = [0.900, 1.100]` — exactly
+`baseY ± amp × speed_ratio` (0.20 × 0.50 = 0.10).
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 89/89 on both trees** (was 88; +1 from
+  `test_animation`).
+- `rpg_demo` runs **validation-clean for 300 ticks**
+  under `THREADMAXX_VK_VALIDATE=1` on `-Werror`. NPCs
+  visibly bob in motion.
+
+**Files:** 4 modified (`DemoTypes.hpp`, `DemoGame.cpp`,
+`SaveLoadSystem.{cpp,hpp}`, two `CMakeLists.txt`), 2 new
+system files (`AnimationSystem.{cpp,hpp}`), 1 new test
+(`tests/rpg_demo/test_animation.cpp`).
+
+**Effort:** ~1 hour actual for the procedural path.
+Full skinning pipeline would be a separate ~2-week batch.
+
+---
+
+**Original D6 spec (for reference):** NPCs visibly "walk"
+via a procedural pose (simple sine-wave bob, parameterized
+by velocity magnitude). The player has a swing animation
+when attacking. Animation state survives save/load.
 
 **Engine subsystems exercised:**
 
@@ -2395,7 +2916,128 @@ pipeline` core batch.
 **Effort:** ~3 days (split: 1 day demo, 2 days renderer
 skinning).
 
-#### 3.11.7 Batch D7 — Real assets + hot reload
+#### 3.11.7 Batch D7 — Real assets + hot reload  ✅ landed 2026-05-16 (procedural path)
+
+**As-shipped 2026-05-16** — procedural path that exercises
+the engine's `IResourceLoader` + `preloadUntil` + `LoaderStats`
++ `AssetReloaded` event surface without dragging in
+renderer-side OBJ parsing / shader-file I/O (deferred to
+`batch 9b`, the same future renderer-side batch as full
+skinning).
+
+**Files:**
+
+- **`PreloadLoader.{cpp,hpp}`** — a demo-side
+  `IResourceLoader` impl. Seeds 64 "fake assets" at
+  construction; each `update()` moves 4 from `pendingLoads`
+  → `ready`. Reports proper `LoaderStats` (pending /
+  inFlight / ready / memoryFootprint / memoryBudget). The
+  loader takes ~16 ticks to drain → simulates a typical
+  multi-tick boot-time load. Validates the engine's
+  `addResourceLoader` ownership transfer.
+- **`DemoGame::onSetup` boot-time `preloadUntil`** — after
+  `addResourceLoader(PreloadLoader)`, calls
+  `engine.preloadUntil([&]{ return loader->allDone(); },
+  5s)`. Pumps the loader's `update()` without advancing
+  the simulation. Logs final
+  `aggregateLoaderStats` + elapsed ms.
+- **F12 input edge + `kEdgeReloadShader`** — `HudSystem::
+  preStep` consumes the edge and emits a synthetic
+  `AssetReloaded` event on the engine's typed channel.
+  Real renderer-side pipeline rebuild on this event is
+  deferred to `batch 9b`.
+- **HudSystem `reloadSub_` subscription** — prints
+  `[asset] reloaded: <old> → <new>` per event. Verifies
+  the demo-side subscriber side of the hot-reload pattern
+  actually fires.
+- **HUD asset-stats line** — periodic 60-tick output now
+  includes `[hud] assets: pending=P inFlight=I ready=R
+  mem=M MiB`. Aggregates across **every** registered
+  loader (the renderer's Mesh / Texture / Shader loaders
+  + the new PreloadLoader).
+
+**Engine subsystems newly exercised in the demo:**
+
+- `Engine::addResourceLoader` ownership transfer.
+- `IResourceLoader::update` per-tick pump on the sim
+  thread, after the last postStep commits.
+- `IResourceLoader::stats()` → `Engine::aggregateLoaderStats()`
+  aggregation across all registered loaders.
+- `IResourceLoader::onShutdown` reverse-registration-order
+  teardown contract (validated at engine destruction).
+- `Engine::preloadUntil(done, timeout)` blocking yield
+  loop — drives the loader's `update()` without ticking
+  the simulation, falls back to timeout after 5s.
+- `EventChannel<AssetReloaded>` subscriber side (the
+  hot-reload event flow).
+- `Engine::events<AssetReloaded>().emit(...)` direct emit
+  from game code (substitute for the renderer-side
+  `ShaderLoader::markStale` path that ships next).
+
+**Library gaps surfaced: none.** The procedural path
+stayed entirely within the public API. Full renderer-side
+hot-reload + file I/O is deferred — same
+conservative-expansion call as batch D6.
+
+**Items deferred (renderer-side / `batch 9b` placeholder):**
+
+1. Real `.obj` mesh loading. The renderer's `MeshLoader`
+   has a `createUnitCube` fallback; real OBJ parsing
+   would be a sibling-library addition (~1 day).
+2. Real shader file I/O. The renderer's `ShaderLoader`
+   currently ships embedded SPIR-V; loading from disk +
+   `glslc` runtime invocation is a ~2-day rework.
+3. Renderer-side `AssetReloaded` subscriber that rebuilds
+   pipelines on the actual reload event. The shader
+   loader's `markStale` already emits the event; the
+   missing piece is `VulkanRenderer` re-creating the
+   relevant `VkPipeline` when its tracked id matches.
+4. `ResourceHandle<Mesh>` refcount demo from game code.
+   The renderer already uses refcount internally; the
+   demo doesn't directly hold mesh ids.
+
+**Test coverage:**
+
+- **`tests/rpg_demo/test_preload.cpp`** — verifies the
+  `preloadUntil` call inside `DemoGame::onSetup` drains
+  the queue: post-init `aggregateLoaderStats` reports
+  `pending=0 inFlight=0 ready=64 mem≥4MiB`. **PASS**.
+- **`tests/rpg_demo/test_asset_reload.cpp`** — installs
+  a local `AssetReloaded` subscriber, injects 3 F12
+  edges across 3 ticks, asserts 3 deliveries. Drains
+  one extra tick to let the last emit propagate.
+  **PASS** (3 deliveries).
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 91/91 on both trees** (was 89; +2 from
+  `test_preload` + `test_asset_reload`).
+- `rpg_demo` runs **validation-clean for 180 ticks**
+  under `THREADMAXX_VK_VALIDATE=1` on `-Werror`. Boot
+  output reads `[preload] done=1 ready=64 pending=0
+  memMiB=4.0 elapsed=0ms`; periodic HUD shows
+  `[hud] assets: pending=0 inFlight=0 ready=64 mem=4.0
+  MiB`.
+
+**Files:** 7 modified
+(`DemoTypes.hpp` /
+`Input.{hpp,cpp}` /
+`DemoGame.cpp` /
+`HudSystem.{cpp,hpp}` /
+demo `CMakeLists.txt`,
+test `CMakeLists.txt`),
+2 new system files
+(`PreloadLoader.{cpp,hpp}`), 2 new tests
+(`tests/rpg_demo/test_preload.cpp`,
+`tests/rpg_demo/test_asset_reload.cpp`).
+
+**Effort:** ~1 hour actual for the procedural path. The
+deferred full-asset / renderer-side rework remains a
+1–2 week future batch.
+
+---
+
+**Original D7 spec (for reference):**
 
 **Game feature:** NPCs, player, pickups load actual `.obj`
 files instead of using the unit-cube fallback mesh. Shaders

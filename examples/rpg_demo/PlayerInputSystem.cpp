@@ -48,10 +48,30 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     if (attackPressed && updated.swordSwingTimer <= 0.0f) {
         updated.swordSwingTimer = kSwordSwingSeconds;
     }
+    // §3.11 batch D-audit fix: write the player's world
+    // `Transform.orientation` from the camera yaw. Pre-fix the
+    // player's orientation was never updated, so the sword
+    // (Parent-attached child) extended in a fixed world direction
+    // regardless of which way the player was facing — combat could
+    // only "hit" entities at one specific world point. With this
+    // write, HierarchySystem propagates the rotation into the sword,
+    // and CombatSystem's tip computation rotates with the camera.
+    //
+    // Yaw rotation around the world Y axis: q = (0, sin(yaw/2), 0,
+    // cos(yaw/2)).
+    const auto& currentT = w.get<threadmaxx::Transform>(player);
+    threadmaxx::Transform newT = currentT;
+    const float half = yaw * 0.5f;
+    newT.orientation.x = 0.0f;
+    newT.orientation.y = std::sin(half);
+    newT.orientation.z = 0.0f;
+    newT.orientation.w = std::cos(half);
+
     const auto idsPS = ids_->playerState;
-    ctx.single([player, vx, vz, updated, idsPS]
+    ctx.single([player, vx, vz, updated, idsPS, newT]
                (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
         cb.setVelocity(player, threadmaxx::Velocity{{vx, 0.0f, vz}, {0, 0, 0}});
+        cb.setTransform(player, newT);
         threadmaxx::addUserComponent(cb, idsPS, player, updated);
     });
 }

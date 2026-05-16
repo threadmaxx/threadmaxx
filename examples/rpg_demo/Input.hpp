@@ -9,10 +9,12 @@ namespace rpg {
 
 /// Edge-triggered input bits — one tick per press, cleared on consume.
 enum : std::uint32_t {
-    kEdgeSaveQuick = 1u << 0,   // F5
-    kEdgeLoadQuick = 1u << 1,   // F9
-    kEdgeTrace     = 1u << 2,   // F1
-    kEdgeAttack    = 1u << 3,   // F
+    kEdgeSaveQuick    = 1u << 0,   // F5  — sync save
+    kEdgeLoadQuick    = 1u << 1,   // F9  — load
+    kEdgeTrace        = 1u << 2,   // F1  — toggle Chrome-trace
+    kEdgeAttack       = 1u << 3,   // F   — sword swing
+    kEdgeSaveAsync    = 1u << 4,   // F8  — async save (batch D3)
+    kEdgeReloadShader = 1u << 5,   // F12 — emit AssetReloaded (batch D7)
 };
 
 /// Polled-per-tick analog inputs + edge bits. Filled in by the main

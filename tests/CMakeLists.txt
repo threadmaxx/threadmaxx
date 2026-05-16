@@ -82,6 +82,9 @@ set(THREADMAXX_TESTS
     stitched_view_concurrency_test
     concurrency_soak_test
     async_snapshot_test
+    # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
+    # (batch D-audit) which exercises the actual SaveLoadSystem rather
+    # than re-implementing the wire format.
 )
 
 foreach(test ${THREADMAXX_TESTS})
@@ -99,3 +102,11 @@ foreach(test ${THREADMAXX_TESTS})
     endif()
     add_test(NAME ${test} COMMAND ${test})
 endforeach()
+
+# §3.11 batch D-audit — RPG demo test suite. Lives in a separate
+# subfolder + links the rpg_demo_core static library so the actual
+# shipped systems are exercised (rather than test-side re-implementations).
+# Skipped when the rpg_demo's optional Vulkan deps are missing.
+if (TARGET rpg_demo_core)
+    add_subdirectory(rpg_demo)
+endif()

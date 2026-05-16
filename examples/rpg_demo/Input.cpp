@@ -21,6 +21,8 @@ void keyCallback(GLFWwindow* /*window*/, int key, int /*scancode*/,
         case GLFW_KEY_F9: bit = kEdgeLoadQuick; break;
         case GLFW_KEY_F1: bit = kEdgeTrace; break;
         case GLFW_KEY_F:  bit = kEdgeAttack; break;
+        case GLFW_KEY_F8: bit = kEdgeSaveAsync; break;
+        case GLFW_KEY_F12: bit = kEdgeReloadShader; break;
         default: return;
     }
     g_input.edges.fetch_or(bit, std::memory_order_release);

@@ -38,6 +38,13 @@ private:
     threadmaxx::Subscription   pickupSub_;
     /// §3.11.1 batch D1 — kill counter.
     threadmaxx::Subscription   deathSub_;
+    /// §3.11.5 batch D5 — skip / budget telemetry.
+    threadmaxx::Subscription   skippedSub_;
+    threadmaxx::Subscription   budgetSub_;
+    /// §3.11.4 batch D4 — quest progress tracker.
+    threadmaxx::Subscription   questSub_;
+    /// §3.11.7 batch D7 — asset reload + reload counter.
+    threadmaxx::Subscription   reloadSub_;
     std::unique_ptr<threadmaxx::FileTraceSink> trace_;
     std::uint64_t              lastLoggedTick_ = 0;
 };

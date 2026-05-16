@@ -113,10 +113,18 @@ struct VulkanRenderer::Impl {
     bool recreateSwapchain();
     void recordFrame(VkCommandBuffer cmd, std::uint32_t imageIndex,
                      const threadmaxx::RenderFrame& frame, PerFrame& pf);
+    // §3.11.2 batch D2 — per-camera slice into the pre-packed
+    // instance buffer. Offset is bytes from the buffer base; count is
+    // the number of `InstanceLayoutEntry` records for that camera.
+    struct CameraSlice {
+        VkDeviceSize  offsetBytes  = 0;
+        std::uint32_t instanceCount = 0;
+    };
     void recordCamera(VkCommandBuffer cmd, const threadmaxx::Camera& cam,
                       std::uint32_t cameraIndex,
                       const threadmaxx::RenderFrame& frame,
-                      PerFrame& pf);
+                      PerFrame& pf,
+                      const CameraSlice& slice);
 };
 
 // ---------------------------------------------------------------------------
@@ -447,10 +455,66 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
         // clear color above is the only visible output. This is the
         // smoke / first-tick state.
     } else {
-        for (std::size_t i = 0; i < frame.cameras.size() && i < 32; ++i) {
+        // §3.11.2 batch D2 — pre-pack every camera's instance slice
+        // into one contiguous buffer BEFORE the camera loop starts,
+        // so per-camera `ensureBuffer` calls can't destroy a buffer
+        // that an earlier camera already bound. Each camera gets its
+        // own `(offset, count)` window into the packed buffer; the
+        // bind uses `pOffsets` so the shader's instance index 0 maps
+        // to the camera's first entry.
+        std::vector<threadmaxx::InstanceLayoutEntry> packed;
+        std::vector<CameraSlice> slices(frame.cameras.size());
+        const std::size_t cameraCount =
+            std::min<std::size_t>(frame.cameras.size(), 32);
+        for (std::size_t i = 0; i < cameraCount; ++i) {
+            const std::uint32_t bit = (1u << i);
+            const VkDeviceSize off = sizeof(threadmaxx::InstanceLayoutEntry) *
+                                     packed.size();
+            // Auto-instance lane (Milestone-1 contract): always visible.
+            for (const auto& inst : frame.instances) {
+                threadmaxx::DrawItem virt = {};
+                virt.entity = inst.entity;
+                virt.transform = inst.transform;
+                virt.meshId = inst.meshId;
+                virt.materialId = inst.materialId;
+                virt.flags = inst.flags;
+                if (inst.meshId < 0 || inst.materialId < 0) {
+                    virt.materialOverride.params = {0.85f, 0.85f, 0.88f, 1.0f};
+                } else {
+                    virt.materialOverride.params = {1.0f, 1.0f, 1.0f, 1.0f};
+                }
+                packed.push_back(threadmaxx::packInstance(virt));
+            }
+            // Camera-mask-filtered opaque items.
+            const auto opaqueItems = frame.drawItems[threadmaxx::passIndex(
+                threadmaxx::RenderPass::Opaque)];
+            for (const auto& di : opaqueItems) {
+                if ((di.cameraMask & bit) == 0) continue;
+                packed.push_back(threadmaxx::packInstance(di));
+            }
+            const std::size_t after = packed.size();
+            slices[i].offsetBytes  = off;
+            slices[i].instanceCount = static_cast<std::uint32_t>(
+                after - off / sizeof(threadmaxx::InstanceLayoutEntry));
+        }
+
+        if (!packed.empty()) {
+            const VkDeviceSize bytes =
+                sizeof(threadmaxx::InstanceLayoutEntry) * packed.size();
+            ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                         pf.instanceBuffer, pf.instanceMemory,
+                         pf.instanceCapacity);
+            void* p = nullptr;
+            VK_CHECK(vkMapMemory(ctx.device(), pf.instanceMemory, 0,
+                                 bytes, 0, &p));
+            std::memcpy(p, packed.data(), bytes);
+            vkUnmapMemory(ctx.device(), pf.instanceMemory);
+        }
+
+        for (std::size_t i = 0; i < cameraCount; ++i) {
             recordCamera(cmd, frame.cameras[i],
                          static_cast<std::uint32_t>(i),
-                         frame, pf);
+                         frame, pf, slices[i]);
         }
     }
 
@@ -468,7 +532,37 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
                                         const threadmaxx::Camera& cam,
                                         std::uint32_t cameraIndex,
                                         const threadmaxx::RenderFrame& frame,
-                                        PerFrame& pf) {
+                                        PerFrame& pf,
+                                        const CameraSlice& slice) {
+    // §3.11.2 batch D2 — set per-camera viewport + scissor from
+    // `Camera::viewport`. Defaults to full-screen so pre-D2 cameras
+    // behave bit-for-bit as before. Y is flipped here (height < 0)
+    // so the engine's column-major view*proj output matches the
+    // GL/OpenGL NDC convention the shaders expect.
+    {
+        const VkExtent2D ext = swapchain.extent();
+        const float fw = static_cast<float>(ext.width);
+        const float fh = static_cast<float>(ext.height);
+        const float vx = cam.viewport.x      * fw;
+        const float vy = cam.viewport.y      * fh;
+        const float vw = cam.viewport.width  * fw;
+        const float vh = cam.viewport.height * fh;
+        VkViewport vp = {};
+        vp.x = vx;
+        vp.y = vy + vh;       // top of rect + flipped height
+        vp.width  =  vw;
+        vp.height = -vh;      // flip Y
+        vp.minDepth = 0.0f;
+        vp.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        VkRect2D sc = {};
+        sc.offset.x = static_cast<std::int32_t>(vx);
+        sc.offset.y = static_cast<std::int32_t>(vy);
+        sc.extent.width  = static_cast<std::uint32_t>(vw);
+        sc.extent.height = static_cast<std::uint32_t>(vh);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+    }
+
     // Compute view*proj column-major.
     float vp[16];
     {
@@ -486,52 +580,15 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
         }
     }
 
-    const std::uint32_t cameraBit = (cameraIndex < 32) ? (1u << cameraIndex) : 0u;
+    (void)cameraIndex;
 
     // ---- Opaque pass --------------------------------------------------------
-    const auto opaqueItems = frame.drawItems[threadmaxx::passIndex(
-        threadmaxx::RenderPass::Opaque)];
-
-    // Pack instances visible to this camera.
-    std::vector<threadmaxx::InstanceLayoutEntry> instances;
-    instances.reserve(opaqueItems.size() + frame.instances.size());
-
-    // The auto-populated `frame.instances` lane (Milestone-1 contract):
-    // every RenderTag entity becomes a unit-cube draw. Camera mask is
-    // implicitly "all cameras" for these.
-    for (const auto& inst : frame.instances) {
-        threadmaxx::DrawItem virt = {};
-        virt.entity = inst.entity;
-        virt.transform = inst.transform;
-        virt.meshId = inst.meshId;
-        virt.materialId = inst.materialId;
-        virt.flags = inst.flags;
-        if (inst.meshId < 0 || inst.materialId < 0) {
-            virt.materialOverride.params = {0.85f, 0.85f, 0.88f, 1.0f};
-        } else {
-            virt.materialOverride.params = {1.0f, 1.0f, 1.0f, 1.0f};
-        }
-        instances.push_back(threadmaxx::packInstance(virt));
-    }
-    for (const auto& di : opaqueItems) {
-        if (cameraBit && (di.cameraMask & cameraBit) == 0) continue;
-        instances.push_back(threadmaxx::packInstance(di));
-    }
-
-    if (!instances.empty() && cubeHandle.valid()) {
+    // §3.11.2 batch D2 — instances were pre-packed in recordFrame;
+    // we just bind the camera's slice via `pOffsets`. No per-camera
+    // ensureBuffer that could invalidate already-bound buffers.
+    if (slice.instanceCount > 0 && cubeHandle.valid()) {
         const Mesh* mesh = cubeHandle.get();
         if (mesh && mesh->gpuReady) {
-            const VkDeviceSize bytes =
-                sizeof(threadmaxx::InstanceLayoutEntry) * instances.size();
-            ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                         pf.instanceBuffer, pf.instanceMemory,
-                         pf.instanceCapacity);
-            void* p = nullptr;
-            VK_CHECK(vkMapMemory(ctx.device(), pf.instanceMemory, 0,
-                                 bytes, 0, &p));
-            std::memcpy(p, instances.data(), bytes);
-            vkUnmapMemory(ctx.device(), pf.instanceMemory);
-
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.opaquePipe());
 
             OpaquePushConstants pc = {};
@@ -548,12 +605,15 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
                                0, sizeof(pc), &pc);
 
             VkBuffer vbufs[2] = {mesh->vertexBuffer, pf.instanceBuffer};
-            VkDeviceSize voffs[2] = {0, 0};
+            // §3.11.2 batch D2 — binding 1 (per-instance) uses this
+            // camera's slice offset. The shader's gl_InstanceIndex 0
+            // maps to the first record of the slice.
+            VkDeviceSize voffs[2] = {0, slice.offsetBytes};
             vkCmdBindVertexBuffers(cmd, 0, 2, vbufs, voffs);
             vkCmdBindIndexBuffer(cmd, mesh->indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
             vkCmdDrawIndexed(cmd, mesh->indexCount,
-                             static_cast<std::uint32_t>(instances.size()),
+                             slice.instanceCount,
                              0, 0, 0);
         }
     }

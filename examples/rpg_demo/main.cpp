@@ -6,12 +6,20 @@
 //   Arrow keys      yaw / pitch the camera
 //   Q / E           zoom in / out
 //   F1              toggle Chrome-trace capture (/tmp/rpg_demo_trace.*.json)
-//   F5              quick-save world snapshot (built-in components)
-//   F9              load and diagnose the saved snapshot
-//   F               (reserved for a future melee attack)
+//   F5              synchronous quick-save (built-ins + user comps)
+//   F8              asynchronous quick-save (off-thread file write)
+//   F9              load and restore from the saved file
+//   F               sword swing (combat — batch D1)
 //   Esc / window-close exits cleanly.
 //
-// Run with no args for unbounded; an integer argv[1] caps total ticks.
+// CLI: `[--stress|-s] [tick_count]`
+//   --stress / -s  — §3.11.5 batch D5: scale up to 10k NPCs + 50k
+//                    pickups AND enable the engine's tick-budget
+//                    skip policy (16.67ms/tick). HudSystem,
+//                    DebugOverlaySystem, and DayNightSystem are
+//                    `skippable()`; the brain bails early via
+//                    `ctx.shouldYield()`.
+//   tick_count     — integer cap (default 0 = unbounded).
 
 #include "DemoGame.hpp"
 #include "Input.hpp"
@@ -28,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <string_view>
 #include <thread>
 
 namespace {
@@ -55,9 +64,16 @@ void framebufferSizeCallback(GLFWwindow* win, int width, int height) {
 } // namespace
 
 int main(int argc, char** argv) {
-    std::uint64_t maxTicks = 0;
-    if (argc >= 2) {
-        maxTicks = static_cast<std::uint64_t>(std::strtoull(argv[1], nullptr, 10));
+    std::uint64_t maxTicks   = 0;
+    bool          stressMode = false;
+    // §3.11.5 batch D5 — `--stress` flag enables the 10k NPC + 50k
+    // pickup scene + the engine's tick-budget skip policy. Any
+    // remaining numeric arg is the tick cap (0 = unbounded).
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        if (a == "--stress") { stressMode = true; continue; }
+        if (a == "-s")       { stressMode = true; continue; }
+        maxTicks = static_cast<std::uint64_t>(std::strtoull(argv[i], nullptr, 10));
     }
 
     if (!glfwInit()) {
@@ -87,6 +103,10 @@ int main(int argc, char** argv) {
     rpg::DemoGame game;
     game.worldState().framebufferWidth  = kWidth;
     game.worldState().framebufferHeight = kHeight;
+    // §3.11.5 batch D5 — propagate the CLI flag into the game's
+    // setup so DemoGame::onSetup uses the stress spawn counts AND
+    // enables the engine's tick budget + skip policy.
+    game.worldState().stressMode        = stressMode;
 
     threadmaxx_vk::VulkanRenderer::Config vrcfg;
     vrcfg.width  = kWidth;

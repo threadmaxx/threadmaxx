@@ -12,7 +12,8 @@ namespace rpg {
 /// unit-cube mesh for any DrawItem without a real mesh asset.
 class CubeRenderSystem : public threadmaxx::ISystem {
 public:
-    explicit CubeRenderSystem(UserComponentIds* ids) : ids_(ids) {}
+    CubeRenderSystem(UserComponentIds* ids, const WorldState* worldState)
+        : ids_(ids), worldState_(worldState) {}
 
     const char* name() const noexcept override { return "cube-render"; }
     threadmaxx::ComponentSet reads() const noexcept override {
@@ -33,8 +34,9 @@ private:
         threadmaxx::EntityHandle entity;
     };
 
-    UserComponentIds*     ids_ = nullptr;
-    std::vector<Snapshot> snapshot_;
+    UserComponentIds*       ids_        = nullptr;
+    const WorldState*       worldState_ = nullptr;
+    std::vector<Snapshot>   snapshot_;
 };
 
 } // namespace rpg

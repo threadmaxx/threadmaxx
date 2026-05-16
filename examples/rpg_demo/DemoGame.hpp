@@ -23,6 +23,12 @@ public:
     WorldState&       worldState()       noexcept { return worldState_; }
     const WorldState& worldState() const noexcept { return worldState_; }
 
+    /// §3.11 batch D-audit — exposes the registered user-component
+    /// ids. Tests use this to read / write user components without
+    /// re-registering them. Pre-batch-D-audit this was internal-only.
+    UserComponentIds&       ids()       noexcept { return ids_; }
+    const UserComponentIds& ids() const noexcept { return ids_; }
+
 private:
     WorldState        worldState_;
     UserComponentIds  ids_;

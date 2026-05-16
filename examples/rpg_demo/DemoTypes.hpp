@@ -3,8 +3,10 @@
 #include <threadmaxx/Components.hpp>
 #include <threadmaxx/Handles.hpp>
 #include <threadmaxx/UserComponent.hpp>
+#include <threadmaxx/render/Camera.hpp>
 
 #include <cstdint>
+#include <vector>
 
 namespace rpg {
 
@@ -112,6 +114,34 @@ struct EntityDied {
     float                    posZ = 0.0f;
 };
 
+/// §3.11.4 batch D4: persistent quest state. Two slots are seeded in
+/// `DemoGame::onSetup`:
+///   [0] "Collect 25 pickups"      (target = 25)
+///   [1] "Defeat all hostiles"     (target = hostile-NPC spawn count)
+/// `QuestSystem` updates `progress` from event subscribes and emits
+/// `QuestProgressed` whenever it advances (with `completed = true` on
+/// the final tick).
+enum class QuestId : std::uint32_t {
+    CollectPickups = 0,
+    KillHostiles   = 1,
+};
+
+struct QuestState {
+    QuestId       id        = QuestId::CollectPickups;
+    std::uint32_t progress  = 0;
+    std::uint32_t target    = 0;
+    bool          completed = false;
+};
+
+struct QuestProgressed {
+    QuestId       id;
+    std::uint32_t progress;
+    std::uint32_t target;
+    bool          completed;
+};
+
+constexpr std::uint32_t kPickupQuestTarget = 25u;
+
 /// Bundle of user-component ids. Registered once at startup; passed to
 /// every system that needs to read or write a UserComponent. Stored in
 /// the engine's resource registry so systems can fetch it lazily without
@@ -123,6 +153,29 @@ struct UserComponentIds {
     threadmaxx::UserComponentId pickup;
     /// §3.11.1 batch D1 — marks the player's attached sword.
     threadmaxx::UserComponentId swordTag;
+    /// §3.11.6 batch D6 — procedural-animation parameters.
+    threadmaxx::UserComponentId animState;
+};
+
+/// §3.11.6 batch D6 — procedural animation parameters.
+///
+/// The library's `AnimationStateRef` + `AnimationPoseRef` engine
+/// slots are reserved for **real** skinned-mesh playback (which the
+/// Vulkan renderer doesn't yet implement). For the demo we use a
+/// cheap procedural Y-bob: when an entity is moving (XZ-speed > a
+/// small threshold), `AnimationSystem` modulates `Transform.position.y`
+/// by `sin(time * frequency + phase) * amplitude * speedRatio`. Each
+/// entity carries its own `phase` so a group of NPCs doesn't bob in
+/// lockstep.
+///
+/// `baseY` is the entity's resting Y position — the bob oscillates
+/// around it. Set at spawn time to match the entity's initial Y.
+struct AnimState {
+    float baseY     = 1.0f;
+    float phase     = 0.0f;     // initial offset in radians
+    float frequency = 6.0f;     // rad/sec
+    float amplitude = 0.18f;    // world units of bob at full speed
+    float pad       = 0.0f;     // align to 16 bytes
 };
 
 /// Game-wide state shared across systems via the resource registry.
@@ -141,6 +194,39 @@ struct WorldState {
     std::uint32_t framebufferHeight = 720;
     /// §3.11.1 batch D1 — cumulative kill count, surfaced in the HUD.
     std::uint32_t totalKills = 0;
+    /// §3.11.2 batch D2 — cameras populated by CameraSystem each tick;
+    /// CubeRenderSystem reads them in `buildRenderFrame` to call
+    /// `cullByFrustum`. Array order matches the bit position in
+    /// `DrawItem::cameraMask`:
+    ///   0 = main third-person  (full screen)
+    ///   1 = mini-map top-down  (top-right corner)
+    ///   2 = aim PIP            (center, only when sword is drawn)
+    std::vector<threadmaxx::Camera> activeCameras;
+
+    /// §3.11.5 batch D5 — stress-mode configuration. `stressMode` is
+    /// set by main.cpp from the `--stress` CLI flag; DemoGame consults
+    /// it during onSetup to scale up the spawn counts. Tests leave it
+    /// false. The actual entity counts use the constants below.
+    bool          stressMode      = false;
+    std::uint32_t npcCount        = 0;   // chosen by DemoGame::onSetup
+    std::uint32_t pickupCount     = 0;   // chosen by DemoGame::onSetup
+    /// §3.11.5 batch D5 — `FrameBudgetWatcher` reports per-tick alerts
+    /// on this counter; HudSystem surfaces it.
+    std::uint32_t budgetExceededCount = 0;
+    /// §3.11.5 batch D5 — `SystemSkipped` event drain bumps these so
+    /// HudSystem can report skip rates per cosmetic system. Indexed by
+    /// system name (free-form string).
+    std::uint32_t totalSkippedHud       = 0;
+    std::uint32_t totalSkippedOverlay   = 0;
+    std::uint32_t totalSkippedDayNight  = 0;
+
+    /// §3.11.4 batch D4 — active quests. `DemoGame::onSetup` seeds two
+    /// entries; `QuestSystem` updates them via event subscriptions.
+    std::vector<QuestState> quests;
+    /// §3.11.4 batch D4 — hostile NPC count cached at spawn time so
+    /// the "Defeat all hostiles" quest knows its target. Filled by
+    /// `DemoGame::onSetup`.
+    std::uint32_t hostileSpawnCount = 0;
 };
 
 /// §3.11.1 batch D1 — gameplay tuning constants.
@@ -150,5 +236,22 @@ constexpr float kSwordTipRadius     = 0.7f;
 constexpr float kPlayerMaxHP        = 100.0f;
 constexpr float kHostileMaxHP       =  60.0f;
 constexpr float kFriendlyMaxHP      =  80.0f;
+
+/// §3.11.5 batch D5 — scale-stress entity counts. Tuned so the
+/// rpg_demo intentionally pushes the engine past 16.67ms/tick on
+/// modest hardware, exercising `SkipPolicy::Budget`.
+constexpr std::uint32_t kStressNpcCount       = 10000u;
+constexpr std::uint32_t kStressPickupCount    = 50000u;
+constexpr std::uint32_t kNormalNpcCount       = 50u;
+constexpr std::uint32_t kNormalPickupCount    = 100u;
+constexpr double        kTickBudgetSeconds    = 1.0 / 60.0;
+
+/// §3.11.2 batch D2 — multi-camera layout (normalized viewport coords).
+constexpr threadmaxx::Viewport kViewportMain    = {0.0f, 0.0f, 1.0f, 1.0f};
+constexpr threadmaxx::Viewport kViewportMinimap = {0.78f, 0.02f, 0.20f, 0.30f};
+constexpr threadmaxx::Viewport kViewportAimPip  = {0.35f, 0.10f, 0.30f, 0.25f};
+constexpr std::uint32_t kCameraIdMain    = 1;
+constexpr std::uint32_t kCameraIdMinimap = 2;
+constexpr std::uint32_t kCameraIdAim     = 3;
 
 } // namespace rpg
