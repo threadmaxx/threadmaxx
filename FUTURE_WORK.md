@@ -17,33 +17,32 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-16 (Milestones 1–6 are all closed. Batch
-15 (audit-driven hygiene + pre-batch-9 API polish) landed
-2026-05-15, batch 9 (Vulkan reference renderer) and batch 10 (3D
-RPG demo) landed the same day, closing Milestones 4 and 6. The
+Last refreshed: 2026-05-16 (Milestones 1–6 are all closed. The
 §3 plan now extends with §3.9 — the post-Milestone-6
 measurement-driven plan derived from
-`threadmaxx_core_future_optimization_notes.md`. **Batch 16 (the
-§3.9 gate) and Batch 17 (chunk iteration micro-optimization)
-both landed 2026-05-16**. Batch 16 shipped three canonical
-workloads (`AiOnlyWorkload`, `RenderAiWorkload`, `ChurnWorkload`)
-under `bench/scene_workloads.hpp` plus four bench binaries
-(`chunk_iter_bench`, `commit_path_bench`, `migration_bench`,
-`grain_sweep`) using a shared `bench/common.hpp` reporting
-layer. Batch 17 then attacked the headroom batch 16 exposed:
-`forEachWith` rewritten to walk chunks via `WorldView` (mask
-test once per chunk instead of once per entity), a small-buffer
-`ChunkMatchList` removes the per-call `std::vector` allocation
-in both `forEachWith` and `forEachChunk`, and
-`MaskCache::reserve(size_t)` / `capacity()` let users pre-warm.
-Measured wins on the AI workload (1k entities, 4 workers, ns/
-entity): `forEachWith` **41 → 12 (−70%)**, `forEachChunk` **19
-→ 12 (−35%)**. Both trees still pass ctest 79/79 including the
-commit-hash determinism goldens. Batches 18/19 (command-buffer
-arena + payloads, migration batching) are now unblocked and
-profile-gated on the same batch-16 CSVs; batch 20 (async
-snapshot + trace-sink off-thread) is orthogonal. All prior batch
-context (1–15) is preserved below.)
+`threadmaxx_core_future_optimization_notes.md`. **Batches 16,
+17, and 18 all landed 2026-05-16.** Batch 16 (gate) shipped
+three canonical workloads under `bench/scene_workloads.hpp`
+plus four bench binaries (`chunk_iter_bench`,
+`commit_path_bench`, `migration_bench`, `grain_sweep`) and a
+shared `bench/common.hpp` reporting layer. Batch 17 (chunk
+iteration micro-optimization) rewrote `forEachWith` to walk
+chunks via `WorldView` and introduced a small-buffer
+`ChunkMatchList` — AI-workload `forEachWith` dropped from
+**41 → 12 ns/entity (−70%)**, `forEachChunk` from
+**19 → 12 ns/entity (−35%)**. Batch 18 (command buffer arena
++ compact payloads) moved `CmdSpawn` and `CmdAddUserComponent`
+to `std::unique_ptr`-backed variant alternatives, shrinking
+`sizeof(detail::Command)` from **256 B → 64 B** (4×) — Churn
+workload `setTransform`/`setVelocity`/`addRemoveTag` improved
+**7–11%** on the single-threaded path and **3–9%** on the
+sharded path; `spawnDestroy` paid a small +10% regression
+(rare, acceptable). All three batches preserved the
+`commit_hash_test.cpp` byte-identical golden. Both trees still
+pass ctest 79/79. Batch 19 (migration batching by archetype
+pair) is the remaining profile-gated landing; batch 20 (async
+snapshot + trace-sink off-thread) is orthogonal. All prior
+batch context (1–15) is preserved below.)
 
 ## 1. Target outcome
 
@@ -783,7 +782,7 @@ grows monotonically. The mapping to milestones (§8):
 | ~~15~~ | ~~Audit-driven hygiene + pre-batch-9 API polish~~ | ✅ landed 2026-05-15 — see §2 / §3.6.5 |
 | ~~16~~ | ~~Workload-realistic benchmark harness (gate)~~ | ✅ landed 2026-05-16 — see §3.9.1 |
 | ~~17~~ | ~~Chunk iteration micro-optimization~~ | ✅ landed 2026-05-16 — see §3.9.2 |
-| 18    | Command buffer arena + compact payloads | §3.9.3 — Phase 7, gated on 16 |
+| ~~18~~ | ~~Command buffer arena + compact payloads~~ | ✅ landed 2026-05-16 — see §3.9.3 |
 | 19    | Migration batching by archetype pair | §3.9.4 — Phase 7, gated on 16 |
 | 20    | Async snapshot + trace-sink off-thread (QoL) | §3.9.5 — Phase 7, orthogonal |
 
@@ -1598,37 +1597,95 @@ else is internal (header-only) refactoring. No call site needs
 to change to pick up the speedup; rebuilding existing code
 against the new header is sufficient.
 
-#### 3.9.3 Batch 18 — Command buffer arena + compact payloads (gated on 16)
+#### 3.9.3 Batch 18 — Command buffer arena + compact payloads (gated on 16)  ✅ landed 2026-05-16
 
 Goal: cut allocations and variant overhead in command
 recording. Notes §2.2, §3.1.
 
-Each landing requires a measured win on the batch-16
-`commit_path_bench` and must keep every commit-hash test
-agreeing byte-for-byte.
+**As-shipped 2026-05-16.** The investigation surfaced a sharper
+diagnosis than the original spec: the dominant inefficiency was
+not the `std::vector<Command>` regrowth pattern (which already
+benefits from `reserve()`), but the **variant size** itself.
+`std::variant<CmdSpawn, CmdSetTransform, …>` was 256 B because
+`CmdSpawn` (248 B) and `CmdAddUserComponent` (112 B) dwarfed
+every other alternative — a `vector<Command>` of 100k value-only
+commands consumed ~25 MB with ~80 % padding. The right cut
+turned out to be smaller than the spec called for: move the two
+oversize variants to heap-backed `std::unique_ptr` wrappers,
+leaving the variant at the next-largest size
+(`CmdSetTransform` at 48 B → variant at 64 B).
 
-Candidate landings:
+Three files changed; public API unchanged:
 
-- **Slab-arena storage.** `CommandBuffer` internal storage
-  becomes a chained slab arena similar to `ScratchArena` — zero
-  allocations after the first tick at steady state, even under
-  spawn-heavy frames.
-- **Tagged-union payload.** Replace `std::variant<Cmd…>` with a
-  1-byte tag + ≤23-byte inline payload (covers the four
-  high-frequency value setters in place) plus a heap-pointer
-  fallback for oversize payloads (user-component blobs above
-  the inline cap, mirroring the current `CmdAddUserComponent`
-  buffer-vs-heap split).
-- **Branch-light apply / hash.** `applyCommandImpl` and
-  `hashCommandImpl` migrate to iterate the arena directly; the
-  per-command tag dispatch becomes a small switch instead of a
-  visitor.
+- **`CommandBuffer.hpp`** — new type aliases
+  `detail::CmdSpawnPtr = std::unique_ptr<CmdSpawn>` and
+  `detail::CmdAddUserComponentPtr = std::unique_ptr<CmdAddUserComponent>`.
+  The `Command` variant lists these two alternatives in place of
+  the old POD versions; every other alternative is unchanged.
+  `<memory>` is the only new include.
+- **`CommandBuffer.cpp`** — all six `spawn` overloads + both
+  `spawnBundle` overloads use `std::make_unique<detail::CmdSpawn>(...)`.
+  No other recording method changed; the four value-only setters
+  stay one `emplace_back` of a small POD.
+- **`UserComponent.hpp`** — `addUserComponent<T>` constructs
+  via `auto c = std::make_unique<detail::CmdAddUserComponent>()`
+  and stores the inline / heap payload via `c->`.
+- **`EngineImpl.cpp`** — `applyCommandImpl` /
+  `hashCommandImpl` / `commandTargetEntity` use a small `unwrap`
+  helper that dereferences the `unique_ptr` for the two
+  pointer-backed alternatives and returns the variant alternative
+  by reference otherwise. The bodies of the visit branches stay
+  byte-for-byte the same; the helper just gives them a single
+  uniform `c.field` access pattern. The hash function is
+  unchanged — the same FNV-1a-64 bytes are mixed in the same
+  order, just sourced from `*ptr` instead of inline storage.
 
-Public surface: zero. The arena lives entirely inside
-`CommandBuffer`; the visible API (`spawn`, `setTransform`, …)
-is unchanged. Per-chunk record-time routing (the §3.6.4
-candidate) stays parked — the arena form has to fall short on
-benchmarks before we redesign the recording API.
+The choice deliberately *avoided* the spec's "1-byte tag +
+≤23-byte inline payload" wire format. That layout would have
+needed a custom byte-arena, a hand-rolled visitor, and a refactor
+of every `applyCommandImpl` branch — and the math doesn't work:
+`CmdSetTransform` already needs 48 bytes (EntityHandle +
+Transform), which doesn't fit in 23. The smaller change
+accomplishes the same headline goal (small variant, low memory
+pressure) with a fraction of the blast radius. Per-chunk
+record-time routing (the §3.6.4 candidate) remains parked.
+
+**Measured wins** (`build/bench/commit_path_bench`, Churn workload
+100k entities, 4 workers, 3-run median ns/cmd):
+
+| Variant       | Single (B16 → B18)        | Sharded (B16 → B18)       |
+|---------------|----------------------------|----------------------------|
+| `setTransform`| 125.6 → **117.1 (−7%)**    | 152.0 → **138.4 (−9%)**    |
+| `setVelocity` | 95.7  → **88.1 (−8%)**     | 114.5 → **109.5 (−4%)**    |
+| `addRemoveTag`| 145.4 → **129.5 (−11%)**   | 283.6 → **274.2 (−3%)**    |
+| `spawnDestroy`| 1442  → 1599 (+10% ⚠)      | 1680  → 1696 (+1%)         |
+
+Clean wins on every high-frequency value setter. The
+`spawnDestroy` regression is expected — each spawn pays one
+extra `new` for the `CmdSpawn` payload. Worth the trade because
+spawn is rare in real workloads (~1% of commands in `rpg_demo`),
+while `setTransform` and `setVelocity` happen every tick on
+every moving entity.
+
+**Memory:** `sizeof(detail::Command)` dropped from **256 B to
+64 B** (4×). A 100k-entry `std::vector<Command>` now holds ~6.4 MB
+instead of ~25.6 MB. Batch-17's chunk iteration numbers stayed
+intact (`forEachWith` 13.8 ns/entity, `forEachChunk` 10.0
+ns/entity on AI workload).
+
+**Verification:** both `build/` and `build-werror/` compile clean
+on first pass; `ctest` still reports 79/79 on both, including
+`commit_hash_test.cpp` and `sharded_commit_test.cpp` — proving
+the per-tick `commitHash` is **byte-identical** to the
+pre-batch-18 reference. The `unwrap` helper is the load-bearing
+piece: by dereferencing the `unique_ptr` before the
+`mixHashBytes` call, the hash sees the same POD bytes it always
+did.
+
+Public surface impact: **zero**. Recording API (`spawn`,
+`setTransform`, `addUserComponent<T>`, …) is unchanged; the
+variant alternatives in `detail::Command` differ but that
+namespace is internal-only.
 
 #### 3.9.4 Batch 19 — Migration batching by archetype pair (gated on 16)
 

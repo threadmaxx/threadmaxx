@@ -1123,3 +1123,43 @@ stitched `World::transforms()` / `.velocities()` view.
 The stitched view exists for the legacy parallel-vector
 API contract and acquires a mutex on first build; chunk
 walking is mutex-free and 3–5× cheaper at small scales.
+
+## §3.9.3 batch 18 — Command buffer variant compaction
+
+`detail::Command` (the variant in `CommandBuffer.hpp`) was
+256 B because `CmdSpawn` (248 B) and `CmdAddUserComponent`
+(112 B) dwarfed every other alternative — a
+`std::vector<Command>` of 100k value-only commands wasted
+~80% as padding. Batch 18 moves those two payloads behind
+`std::unique_ptr` wrappers; the variant is now 64 B
+(dominated by `CmdSetTransform` at 48 B + variant overhead).
+
+New type aliases in `detail`:
+
+- `detail::CmdSpawnPtr = std::unique_ptr<CmdSpawn>`
+- `detail::CmdAddUserComponentPtr = std::unique_ptr<CmdAddUserComponent>`
+
+The `Command` variant lists these two alternatives in place
+of the old POD versions; everything else is unchanged.
+
+When extending the apply / hash paths in
+`EngineImpl::commitBuffer` / `commitBuffersSharded`: the
+`unwrap` helper at the top of `applyCommandImpl` /
+`hashCommandImpl` / `commandTargetEntity` dereferences the
+`unique_ptr` for the two pointer-backed alternatives and
+returns the variant alternative by reference otherwise.
+After the unwrap, `decltype(c)` is the raw POD type, so
+the `if constexpr (std::is_same_v<T, detail::CmdSpawn>)`
+branches read the same field names as before.
+
+The hash function is unchanged: same FNV-1a-64 bytes mixed
+in the same order, sourced from `*ptr` instead of inline
+storage. `commit_hash_test.cpp` is the byte-identity guard;
+any change to the variant layout or to how `unwrap`
+dereferences must keep that test passing.
+
+When adding a new variant alternative: keep the payload
+under 48 bytes if at all possible. If it would push the
+variant over 64 B, follow the `CmdSpawnPtr` pattern —
+`std::unique_ptr<NewCmd>` in the variant, dereference in
+the visit branches.

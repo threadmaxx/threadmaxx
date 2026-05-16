@@ -88,7 +88,22 @@ inline std::uint64_t mixHashBytes(std::uint64_t h, const T& v) noexcept {
 EntityHandle applyCommandImpl(detail::Command& cmd,
                               EntityStorage& storage) noexcept {
     EntityHandle resultHandle = kInvalidEntity;
-    std::visit([&](auto& c) {
+    // §3.9.3 batch 18 — CmdSpawn and CmdAddUserComponent live behind a
+    // `std::unique_ptr` to keep the variant size small (256 B → 56 B).
+    // The `unwrap` helper transparently dereferences for those two
+    // alternatives so the rest of the visit branches use the same
+    // field shape as before.
+    auto unwrap = [](auto& cv) -> auto& {
+        using TT = std::decay_t<decltype(cv)>;
+        if constexpr (std::is_same_v<TT, detail::CmdSpawnPtr> ||
+                      std::is_same_v<TT, detail::CmdAddUserComponentPtr>) {
+            return *cv;
+        } else {
+            return cv;
+        }
+    };
+    std::visit([&](auto& cv) {
+        auto& c = unwrap(cv);
         using T = std::decay_t<decltype(c)>;
         if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
             if (c.reserved.valid()) {
@@ -242,7 +257,20 @@ EntityHandle applyCommandImpl(detail::Command& cmd,
 std::uint64_t hashCommandImpl(std::uint64_t h, const detail::Command& cmd,
                               EntityHandle spawnResult) noexcept {
     h = mixHashByte(h, static_cast<std::uint8_t>(cmd.index()));
-    std::visit([&](const auto& c) {
+    // §3.9.3 batch 18 — Dereference the unique_ptr-backed variants so
+    // the hash bytes match the pre-batch-18 layout: the inner POD's
+    // bytes are mixed, not the wrapper's pointer.
+    auto unwrap = [](const auto& cv) -> const auto& {
+        using TT = std::decay_t<decltype(cv)>;
+        if constexpr (std::is_same_v<TT, detail::CmdSpawnPtr> ||
+                      std::is_same_v<TT, detail::CmdAddUserComponentPtr>) {
+            return *cv;
+        } else {
+            return cv;
+        }
+    };
+    std::visit([&](const auto& cv) {
+        const auto& c = unwrap(cv);
         using T = std::decay_t<decltype(c)>;
         if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
             h = mixHashBytes(h, c);
@@ -301,7 +329,12 @@ bool commandIsMigrating(const detail::Command& cmd) noexcept {
 EntityHandle commandTargetEntity(const detail::Command& cmd) noexcept {
     return std::visit([](const auto& c) -> EntityHandle {
         using T = std::decay_t<decltype(c)>;
-        if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
+        // §3.9.3 batch 18 — unique_ptr-backed variants need a deref.
+        if constexpr (std::is_same_v<T, detail::CmdSpawnPtr>) {
+            return c->reserved;
+        } else if constexpr (std::is_same_v<T, detail::CmdAddUserComponentPtr>) {
+            return c->entity;
+        } else if constexpr (std::is_same_v<T, detail::CmdSpawn>) {
             return c.reserved;
         } else {
             return c.entity;

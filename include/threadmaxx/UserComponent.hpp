@@ -60,17 +60,19 @@ inline void addUserComponent(CommandBuffer& cb, UserComponentId id,
         "addUserComponent<T>: T must be trivially copyable.");
     assert(id.valid() && "addUserComponent: UserComponentId not valid — register first");
     assert(id.stride == sizeof(T) && "addUserComponent: stride mismatch — wrong T for this id");
-    detail::CmdAddUserComponent c;
-    c.entity = entity;
-    c.bit    = id.bit;
-    c.stride = id.stride;
-    if (sizeof(T) <= c.inline_.size()) {
-        std::memcpy(c.inline_.data(), &value, sizeof(T));
-        c.size = static_cast<std::uint32_t>(sizeof(T));
+    // §3.9.3 batch 18 — heap-allocate `CmdAddUserComponent` so the
+    // 112-byte payload doesn't bloat every other variant alternative.
+    auto c = std::make_unique<detail::CmdAddUserComponent>();
+    c->entity = entity;
+    c->bit    = id.bit;
+    c->stride = id.stride;
+    if (sizeof(T) <= c->inline_.size()) {
+        std::memcpy(c->inline_.data(), &value, sizeof(T));
+        c->size = static_cast<std::uint32_t>(sizeof(T));
     } else {
-        c.heap.resize(sizeof(T));
-        std::memcpy(c.heap.data(), &value, sizeof(T));
-        c.size = 0;
+        c->heap.resize(sizeof(T));
+        std::memcpy(c->heap.data(), &value, sizeof(T));
+        c->size = 0;
     }
     cb.commands().emplace_back(std::move(c));
 }

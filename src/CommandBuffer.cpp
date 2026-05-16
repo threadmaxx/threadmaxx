@@ -35,69 +35,78 @@ ComponentSet defaultSpawnMask(const RenderTag& r, const Parent& p) noexcept {
 
 } // namespace
 
+// §3.9.3 batch 18 — heap-allocate `CmdSpawn`. Saves ~200 B / command
+// in the `std::vector<Command>` storage; spawn itself is rare so the
+// extra allocation per call is a clean trade.
 void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
                           const Acceleration& a, const Parent& p) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p,
-                                            Health{}, Faction{},
-                                            AnimationStateRef{},
-                                            PhysicsBodyRef{}, NavAgentRef{},
-                                            BoundingVolume{},
-                                            defaultSpawnMask(r, p),
-                                            kInvalidEntity});
+    commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
+        detail::CmdSpawn{t, v, r, u, a, p,
+                         Health{}, Faction{},
+                         AnimationStateRef{},
+                         PhysicsBodyRef{}, NavAgentRef{},
+                         BoundingVolume{},
+                         defaultSpawnMask(r, p),
+                         kInvalidEntity}));
 }
 void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
                           const Acceleration& a,
                           const Parent& p, ComponentSet initialMask) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p,
-                                            Health{}, Faction{},
-                                            AnimationStateRef{},
-                                            PhysicsBodyRef{}, NavAgentRef{},
-                                            BoundingVolume{},
-                                            initialMask,
-                                            kInvalidEntity});
+    commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
+        detail::CmdSpawn{t, v, r, u, a, p,
+                         Health{}, Faction{},
+                         AnimationStateRef{},
+                         PhysicsBodyRef{}, NavAgentRef{},
+                         BoundingVolume{},
+                         initialMask,
+                         kInvalidEntity}));
 }
 void CommandBuffer::spawn(EntityHandle reserved,
                           const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
                           const Acceleration& a, const Parent& p) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p,
-                                            Health{}, Faction{},
-                                            AnimationStateRef{},
-                                            PhysicsBodyRef{}, NavAgentRef{},
-                                            BoundingVolume{},
-                                            defaultSpawnMask(r, p),
-                                            reserved});
+    commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
+        detail::CmdSpawn{t, v, r, u, a, p,
+                         Health{}, Faction{},
+                         AnimationStateRef{},
+                         PhysicsBodyRef{}, NavAgentRef{},
+                         BoundingVolume{},
+                         defaultSpawnMask(r, p),
+                         reserved}));
 }
 void CommandBuffer::spawn(EntityHandle reserved,
                           const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
                           const Acceleration& a,
                           const Parent& p, ComponentSet initialMask) {
-    commands_.emplace_back(detail::CmdSpawn{t, v, r, u, a, p,
-                                            Health{}, Faction{},
-                                            AnimationStateRef{},
-                                            PhysicsBodyRef{}, NavAgentRef{},
-                                            BoundingVolume{},
-                                            initialMask,
-                                            reserved});
+    commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
+        detail::CmdSpawn{t, v, r, u, a, p,
+                         Health{}, Faction{},
+                         AnimationStateRef{},
+                         PhysicsBodyRef{}, NavAgentRef{},
+                         BoundingVolume{},
+                         initialMask,
+                         reserved}));
 }
 void CommandBuffer::spawnBundle(const Bundle& b) {
-    commands_.emplace_back(detail::CmdSpawn{
-        b.transform, b.velocity, b.renderTag, b.userData,
-        b.acceleration, b.parent,
-        b.health, b.faction, b.animationState,
-        b.physicsBody, b.navAgent, b.boundingVolume,
-        b.initialMask, kInvalidEntity});
+    commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
+        detail::CmdSpawn{
+            b.transform, b.velocity, b.renderTag, b.userData,
+            b.acceleration, b.parent,
+            b.health, b.faction, b.animationState,
+            b.physicsBody, b.navAgent, b.boundingVolume,
+            b.initialMask, kInvalidEntity}));
 }
 void CommandBuffer::spawnBundle(EntityHandle reserved, const Bundle& b) {
-    commands_.emplace_back(detail::CmdSpawn{
-        b.transform, b.velocity, b.renderTag, b.userData,
-        b.acceleration, b.parent,
-        b.health, b.faction, b.animationState,
-        b.physicsBody, b.navAgent, b.boundingVolume,
-        b.initialMask, reserved});
+    commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
+        detail::CmdSpawn{
+            b.transform, b.velocity, b.renderTag, b.userData,
+            b.acceleration, b.parent,
+            b.health, b.faction, b.animationState,
+            b.physicsBody, b.navAgent, b.boundingVolume,
+            b.initialMask, reserved}));
 }
 void CommandBuffer::destroy(EntityHandle e) {
     commands_.emplace_back(detail::CmdDestroy{e});

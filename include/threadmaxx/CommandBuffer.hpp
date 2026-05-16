@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -172,8 +173,26 @@ struct CmdSetComponentMask   { EntityHandle entity; ComponentSet      value; };
 struct CmdAddTag             { EntityHandle entity; Component         tag;   };
 struct CmdRemoveTag          { EntityHandle entity; Component         tag;   };
 
+/// §3.9.3 batch 18 — Heap-backed wrapper for the two oversize command
+/// variants. Keeping `CmdSpawn` (248 B) and `CmdAddUserComponent`
+/// (112 B) as direct variant alternatives padded every `Command`
+/// instance to 256 B regardless of which variant it actually held, so
+/// a `std::vector<Command>` of 100k value-only commands consumed
+/// ~25 MB with ~80 % padding. Heap-allocating the two oversize
+/// variants keeps the variant size at the inline-friendly 56 B
+/// (dominated by `CmdSetTransform` at 48 B) — the four high-frequency
+/// value setters live in place; spawn / addUserComponent pay one
+/// allocation each but those are rare.
+///
+/// The heap-pointer field is the *only* difference. Hash bytes,
+/// commit semantics, and visit dispatch are unchanged once the
+/// pointer is dereferenced (see `EngineImpl::applyCommandImpl` /
+/// `hashCommandImpl`).
+using CmdSpawnPtr            = std::unique_ptr<CmdSpawn>;
+using CmdAddUserComponentPtr = std::unique_ptr<CmdAddUserComponent>;
+
 using Command = std::variant<
-    CmdSpawn,
+    CmdSpawnPtr,
     CmdDestroy,
     CmdSetTransform,
     CmdSetVelocity,
@@ -190,7 +209,7 @@ using Command = std::variant<
     CmdSetComponentMask,
     CmdAddTag,
     CmdRemoveTag,
-    CmdAddUserComponent,
+    CmdAddUserComponentPtr,
     CmdRemoveUserComponent>;
 
 } // namespace detail
