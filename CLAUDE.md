@@ -1034,3 +1034,46 @@ worker pool.
 `build-werror/`; smoke-runs 180 ticks validation-clean; HUD prints
 every 60 ticks; sun angle advances; entities render with their
 per-cube colors; ctest still 79/79 on both trees.
+
+## §3.9.1 batch 16 — Workload-realistic benchmark harness
+
+`bench/` ships the §3.9 gate: four scene-shaped end-to-end
+benchmarks atop three canonical seeded workloads. Opt-in via
+`-DTHREADMAXX_BUILD_BENCHMARKS=ON`; not registered with CTest.
+
+- **Workloads** (`bench/scene_workloads.hpp`): `AiOnlyWorkload`
+  (1,024 entities, mixed Transform/Velocity/BoundingVolume±Health),
+  `RenderAiWorkload` (20,000, rpg_demo-shaped),
+  `ChurnWorkload` (100,000, mass-spawn / destroy / mask-flip
+  pressure). All seeded with deterministic `std::mt19937`.
+  `benchConfig(workers, n, sharded=false)` returns a `Config`
+  configured for clean benches (no sleep pacing, deterministic).
+- **Common reporting** (`bench/common.hpp`): `Stopwatch` (start /
+  elapsed-ns), `LatencyHistogram` (mean / p50 / p95 / p99 /
+  stddev, sort-on-finalize), `BenchRow` POD, `CsvWriter`
+  (stdout always; also writes to `argv[1]` if provided). Every
+  §3.9 bench emits the same column order so two runs can be
+  diff'd directly.
+- **`chunk_iter_bench`** — `forEachWith` /
+  `forEachWithCached` / `forEachChunk` / `rawMaskedWalk` (a
+  manual `world.transforms()` + `componentMasks()` walk used as
+  the no-scheduler lower bound).
+- **`commit_path_bench`** — per-variant `setTransform` /
+  `setVelocity` / `addRemoveTag` / `spawnDestroy` cost on the
+  Churn workload, under both `singleThreadedCommit={true,false}`.
+- **`migration_bench`** — `setHealth` ↔ `removeTag` alternating
+  to drive migrations between two archetypes. Density sweep
+  (fixed scene, vary mig/tick) + scene sweep (fixed 50%
+  density, vary N).
+- **`grain_sweep`** — sweeps `ISystem::preferredGrain` across
+  {8, 16, 32, 64, 128, 256, 512}; `parallelFor(grain=0)` so the
+  engine picks up the hint. Reports `stolenJobs / totalJobs`
+  alongside the percentile breakdown.
+
+`bench/README.md` documents inventory, output format, how to diff
+two runs, and the shipping bar §3.9.x batches must clear.
+
+Adding a new bench: drop a `.cpp` under `bench/`, include
+`common.hpp` (and optionally `scene_workloads.hpp`), use
+`LatencyHistogram` + `CsvWriter`, then add the target to
+`bench/CMakeLists.txt`'s `THREADMAXX_BENCHMARKS` list.

@@ -11,6 +11,11 @@ set(THREADMAXX_BENCHMARKS
     resource_handle_bench
     pack_instances_bench
     job_stealing_bench
+    # §3.9.1 batch 16 — workload-realistic harness (the gate)
+    chunk_iter_bench
+    commit_path_bench
+    migration_bench
+    grain_sweep
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})

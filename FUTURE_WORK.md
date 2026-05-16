@@ -17,25 +17,25 @@ Three things live here:
 
 Sections §4–§11 are unchanged scope/process/principles material.
 
-Last refreshed: 2026-05-14 (Milestone 2 closed and the first two
-Milestone-5 slices landed. Batch 6b shipped the user-extensible
-dense-component hook. Batch 11 shipped the frame task graph
-(`TaskTag`, `ISystem::dependencies` / `provides` /
-`preferredGrain`, DAG-aware `rebuildWaves` with cycle detection,
-`Engine::taskGraphSnapshot()`). Batch 12 shipped cancellation,
-budgets, and priorities — `Engine::setTickBudget`,
-`SystemContext::shouldYield()`, `ISystem::skippable()`,
-`Engine::setSkipPolicy(Budget|Scripted)` +
-`EventChannel<SystemSkipped>` for deterministic networked replay,
-`JobPriority` (High/Normal/Low) on `parallelFor` with per-worker
-per-priority deques, and `IResourceLoader::cancel(Engine&)` pumped
-before `update()` each tick + `LoaderStats::cancelled`. All five
-pieces are opt-in; defaults preserve existing behavior
-bit-for-bit. Batches 5, 6, 6a, 7, 8 remain ✅ (see prior refresh
-notes below). The §3 plan continues with batches 9 (Vulkan
-reference renderer) and 10 (RPG demo) for Milestones 4 and 6, plus
-the remaining perf batches 13 (storage contention) and 14
-(telemetry ingestion) — see §3.6 and §3.7.).
+Last refreshed: 2026-05-16 (Milestones 1–6 are all closed. Batch
+15 (audit-driven hygiene + pre-batch-9 API polish) landed
+2026-05-15, batch 9 (Vulkan reference renderer) and batch 10 (3D
+RPG demo) landed the same day, closing Milestones 4 and 6. The
+§3 plan now extends with §3.9 — the post-Milestone-6
+measurement-driven plan derived from
+`threadmaxx_core_future_optimization_notes.md`. **Batch 16 (the
+§3.9 gate — workload-realistic benchmark harness) landed
+2026-05-16**: three canonical workloads (`AiOnlyWorkload`,
+`RenderAiWorkload`, `ChurnWorkload`) under
+`bench/scene_workloads.hpp`, four new bench binaries
+(`chunk_iter_bench`, `commit_path_bench`, `migration_bench`,
+`grain_sweep`) using a shared `bench/common.hpp`
+(`LatencyHistogram`, `CsvWriter`), and `bench/README.md`
+documenting the shipping bar. Both default and `-Werror` builds
+clean; ctest 79/79 on both. Batches 17/18/19 are now unblocked
+and profile-gated on the batch-16 CSVs; batch 20 (async
+snapshot + trace-sink off-thread) is orthogonal. All prior
+batch context (1–15) is preserved below.)
 
 ## 1. Target outcome
 
@@ -772,9 +772,16 @@ grows monotonically. The mapping to milestones (§8):
 | ~~12~~ | ~~Cancellation, budgets, priorities (§6 phase 4)~~ | ✅ landed 2026-05-14 — see §2 |
 | ~~13~~ | ~~Storage contention reduction (§6 phase 5)~~ | ✅ landed 2026-05-15 — see §2 |
 | ~~14~~ | ~~Telemetry ingestion (§6 phase 6 close-out)~~ | ✅ landed 2026-05-15 — see §2 |
-| 15    | Audit-driven hygiene + pre-batch-9 API polish | M5 close-out, blocking batch 9 |
+| ~~15~~ | ~~Audit-driven hygiene + pre-batch-9 API polish~~ | ✅ landed 2026-05-15 — see §2 / §3.6.5 |
+| ~~16~~ | ~~Workload-realistic benchmark harness (gate)~~ | ✅ landed 2026-05-16 — see §3.9.1 |
+| 17    | Chunk iteration micro-optimization | §3.9.2 — Phase 7, gated on 16 |
+| 18    | Command buffer arena + compact payloads | §3.9.3 — Phase 7, gated on 16 |
+| 19    | Migration batching by archetype pair | §3.9.4 — Phase 7, gated on 16 |
+| 20    | Async snapshot + trace-sink off-thread (QoL) | §3.9.5 — Phase 7, orthogonal |
 
 §3.8 covers the Vulkan defaulting strategy across batches 8–10.
+§3.9 covers the post-Milestone-6 measurement-driven plan (batches
+16–20), derived from `threadmaxx_core_future_optimization_notes.md`.
 
 Batches 9 and 10 are **example projects**, not library batches —
 they consume the existing public surface and prove a real game can
@@ -1385,6 +1392,328 @@ first, and any future render-side addition will hold to the same rule.** If a fe
 open for a WebGPU, D3D12, or even a pure-software reference renderer
 later without API churn.
 
+### 3.9 Post-Milestone-6 plan — measurement-driven tightening
+
+Batches 1–15 closed Milestones 1 through 6. Section §3.6.4
+("Profiler-driven follow-ons") has been waiting on real-workload
+measurement to graduate from speculation to scheduled work, and
+`threadmaxx_core_future_optimization_notes.md` codifies the
+philosophy explicitly: *next gains come from cheaper chunk
+traversal, cheaper command handling, fewer contention points,
+better grain tuning, and occasional cache-friendly batching —
+not another structural rewrite.*
+
+§3.9 is the near-future plan derived from those notes. Five
+library-side batches, sequenced so the measurement harness lands
+first and every subsequent batch ships with a before/after number
+in its PR. The §3.6.4 candidates are folded back in where
+batch-16 evidence makes them concrete.
+
+The mapping to the notes' "recommended order of attack" (§6):
+
+| Notes ordering            | This plan          |
+|---------------------------|--------------------|
+| 1. reduce chunk iter      | §3.9.2 batch 17    |
+| 2. reduce command path    | §3.9.3 batch 18    |
+| 3. low-contention events  | done — batch 13c   |
+| 4. measurable grain       | §3.9.1 batch 16    |
+| 5. wave-local caching     | §3.9.2 batch 17    |
+| 6. batching / prefetch    | §3.9.4 batch 19    |
+| 7. SIMD in siblings       | §3.9.6 (not core)  |
+
+#### 3.9.1 Batch 16 — Workload-realistic benchmark harness (gate)  ✅ landed 2026-05-16
+
+Every later perf batch in §3.9 must clear a numeric bar on a
+representative scene. Today's `bench/` directory has eight
+micro-benchmarks (per batch 13c + batch 15b); this batch adds
+scene-shaped end-to-end workloads and the reporting plumbing so
+a regression in `forEachChunk` against an RPG-shaped scene is
+visible without spelunking through perf counters.
+
+**As-shipped 2026-05-16** — six new files, four new bench
+targets:
+
+- `bench/scene_workloads.hpp` — three deterministic seeds:
+  - **`AiOnlyWorkload`** (`kAiCount` = 1,024) — Transform +
+    Velocity + BoundingVolume; half also Health.
+  - **`RenderAiWorkload`** (`kRenderCount` = 20,000) —
+    ~50% RenderTag, ~50% Velocity, ~5% StaticTag. The
+    rpg_demo shape scaled up.
+  - **`ChurnWorkload`** (`kChurnCount` = 100,000) — Transform
+    + Velocity, ~25% Health. Drives commit-phase and migration
+    pressure.
+  - `benchConfig(workers, entityCount, sharded=false)` helper
+    returns a `Config` with deterministic + no-sleep + large
+    initial capacity, used by every bench.
+- `bench/common.hpp` — header-only `Stopwatch`,
+  `LatencyHistogram` (mean / p50 / p95 / p99 / stddev,
+  sort-on-finalize), `BenchRow` POD + `CsvWriter` (writes to
+  stdout AND optional `argv[1]` file), `runIters(...)`
+  convenience wrapper.
+- `bench/chunk_iter_bench.cpp` — `forEachWith` /
+  `forEachWithCached` / `forEachChunk` / `rawMaskedWalk` on AI
+  and Render+AI workloads. Read-only accumulation body (no
+  writes / no DCE) so iteration cost is measured pure.
+- `bench/commit_path_bench.cpp` — `setTransform` /
+  `setVelocity` / `addRemoveTag` / `spawnDestroy` on the
+  Churn workload, run under both
+  `singleThreadedCommit={true, false}`.
+- `bench/migration_bench.cpp` — `setHealth` / `removeTag`
+  alternating, driving migrations between the
+  no-Health and with-Health archetypes. Two sweeps:
+  density (fix N=32k, vary migrations/tick) and scene (fix
+  50% density, vary N).
+- `bench/grain_sweep.cpp` — sweeps `ISystem::preferredGrain`
+  across {8, 16, 32, 64, 128, 256, 512} on AI and Render+AI
+  workloads with `parallelFor(grain=0)` so the engine picks up
+  the hint. Reports steal_pct alongside the percentile breakdown.
+- `bench/README.md` — inventory, output-format reference, the
+  shipping bar each §3.9.x batch must clear, and "how to add a
+  new bench" instructions.
+
+CSV column layout is fixed by `common.hpp::BenchRow`:
+`label, workload, entities, workers, grain, mean_ns, stddev_ns,
+p50_ns, p95_ns, p99_ns, throughput, steal_pct, note`. The `note`
+column carries the headline derived metric
+(`ns_per_entity=…` / `ns_per_cmd=…` / `ns_per_mig=…`) so a
+glance at the CSV gives the same answer the bench would highlight
+in a human-readable summary.
+
+**Baseline numbers** (Release, 4 workers, dev workstation —
+informational only; future PRs cite the CSVs that ship with the
+binary, not these):
+
+- `chunk_iter_bench` (AI-only, 1k entities, ns/entity):
+  `forEachWith ≈ 41.4` · `forEachWithCached ≈ 44.6` ·
+  `forEachChunk ≈ 18.9` · `rawMaskedWalk ≈ 2.4`. The
+  ~16-ns gap between `forEachChunk` and `rawMaskedWalk` is the
+  headroom batch 17 attacks.
+- `commit_path_bench` (Churn, 100k entities, ns/cmd):
+  `setTransform 125 (single) / 152 (sharded)` ·
+  `setVelocity 95 / 114` · `addRemoveTag 145 / 283` ·
+  `spawnDestroy ~1.4 µs / ~1.7 µs`. Confirms the §3.6.3
+  finding that the sharded path's classifier overhead
+  currently exceeds its parallelism win on every variant —
+  batch 18's arena-backed recording is the right next attack
+  on the value-only variants.
+- `migration_bench` (density sweep, 32k scene): per-migration
+  cost drops from ~1.0 µs at 16 mig/tick to ~158 ns at 32k
+  mig/tick — fixed per-tick overhead amortizes as density
+  rises. Batch 19's pair-batched path should improve the
+  density tail.
+- `grain_sweep` (Render+AI, 20k entities): clear elbow at
+  grain ≥ 64 (`steal_pct` drops from ~47% to ~6%, mean step
+  time roughly halves). Suggests a `preferredGrain` default of
+  64–128 for canonical workloads; per-system tuning lives in
+  batch 17.
+
+Effort: ~3 hours. No public API changes. Gates every later
+batch in §3.9. Both default and `-Werror` builds compile clean
+on first pass; `ctest` still reports 79/79 on both.
+
+#### 3.9.2 Batch 17 — Chunk iteration micro-optimization (gated on 16)
+
+Goal: shave overhead off the chunk traversal hot path without
+changing the public surface. Notes §2.1, §3.3.
+
+Each landing requires a measured win on the batch-16
+`chunk_iter_bench` and must keep the existing 79-test ctest
+suite + `commit_hash_test.cpp` golden hashes byte-for-byte.
+
+Candidate landings:
+
+- **Pre-decoded chunk-component pointers.** Cache the
+  `(component → vector-base)` map at chunk creation / migration
+  time instead of re-deriving it inside `getSpan<T>` /
+  `getChunkSpan<T>` on every call. The chain of `if constexpr`
+  / mask-presence checks in the current hot path becomes a
+  single deref.
+- **`WorldView` chunk-presence bitmask cache.** Today the
+  view caches chunk pointers + entity counts; extend it to
+  also carry the chunk's `ComponentSet` so a per-query chunk
+  filter is one `AND` instead of an indirected mask read.
+- **`MaskCache` steady-state allocation freedom.** Add
+  `MaskCache::reserve(size_t)`; the rebuild path swaps the
+  filled span into the cache vector without
+  freeing/reallocating when the size hasn't changed.
+- **Templated `forEachChunk` callable.** Today the callable is
+  taken by `std::function`; switch to a templated invocable so
+  the inner body fully inlines under LTO.
+
+Risk: cached pointers must be invalidated on archetype
+migration. Mitigation: invalidate at the same hook that flips
+`stitchedDirty_`; `commit_hash_test.cpp` catches any
+regression as a loud first-tick divergence.
+
+Public surface impact: minor and additive — `MaskCache::reserve`
+is the only new symbol; everything else is internal.
+
+#### 3.9.3 Batch 18 — Command buffer arena + compact payloads (gated on 16)
+
+Goal: cut allocations and variant overhead in command
+recording. Notes §2.2, §3.1.
+
+Each landing requires a measured win on the batch-16
+`commit_path_bench` and must keep every commit-hash test
+agreeing byte-for-byte.
+
+Candidate landings:
+
+- **Slab-arena storage.** `CommandBuffer` internal storage
+  becomes a chained slab arena similar to `ScratchArena` — zero
+  allocations after the first tick at steady state, even under
+  spawn-heavy frames.
+- **Tagged-union payload.** Replace `std::variant<Cmd…>` with a
+  1-byte tag + ≤23-byte inline payload (covers the four
+  high-frequency value setters in place) plus a heap-pointer
+  fallback for oversize payloads (user-component blobs above
+  the inline cap, mirroring the current `CmdAddUserComponent`
+  buffer-vs-heap split).
+- **Branch-light apply / hash.** `applyCommandImpl` and
+  `hashCommandImpl` migrate to iterate the arena directly; the
+  per-command tag dispatch becomes a small switch instead of a
+  visitor.
+
+Public surface: zero. The arena lives entirely inside
+`CommandBuffer`; the visible API (`spawn`, `setTransform`, …)
+is unchanged. Per-chunk record-time routing (the §3.6.4
+candidate) stays parked — the arena form has to fall short on
+benchmarks before we redesign the recording API.
+
+#### 3.9.4 Batch 19 — Migration batching by archetype pair (gated on 16)
+
+Goal: when many entities migrate between the same archetype
+pair in one tick, perform the move in one contiguous loop
+instead of N individual swap-and-pops. Notes §3.2.
+
+Each landing requires a measured win on the batch-16
+`migration_bench`.
+
+Deliverables:
+
+- `commitBuffer` and `commitBuffersSharded` bucket
+  mask-toggling commands by `(src_arch, dst_arch)` before
+  applying.
+- Per pair, the migration applies as one block: bulk-push N
+  rows into the destination chunk in submission order, then a
+  single contiguous swap-and-pop range on the source.
+- Order **within** a pair is preserved (submission order);
+  pairs themselves apply in the order their first command
+  appeared — preserves the registration-order semantics that
+  the per-tick `commitHash` (batch 13a) gates.
+
+Risk: batching changes the swap-and-pop ordering inside a
+source chunk relative to the per-command interleaving the
+current path produces. Mitigation: `commitHash` is the
+runtime safety net; if the pair-batched and per-command paths
+produce different hashes on the same command stream, the new
+path is wrong and the existing single-command path stays the
+default. Treat this as the same "ship under a flag, prove the
+hashes agree across all five batch-13a scenarios, then make it
+default" pattern that batch 13b followed.
+
+#### 3.9.5 Batch 20 — Async snapshot + trace-sink off-thread (quality of life)
+
+Goal: take long save / trace operations off the sim thread so
+a quick-save can't blow `FrameBudgetWatcher`. Notes §3.5. Not
+perf-gated — purely a stutter quality fix; can land
+independently of batches 17–19.
+
+Deliverables:
+
+- `FileTraceSink::setAsync(bool)` — opt-in background-thread
+  mode. Producer (sim thread) enqueues into a lock-free MPSC
+  slab queue; consumer (background writer) drains and writes.
+  Joined at sink destruction. Default stays synchronous to
+  preserve current behavior bit-for-bit.
+- `Engine::snapshotAsync(callback)` — schedules a `JobSystem`
+  job that runs `world.snapshot()` against the published
+  `WorldView` (already snapshot-stable across a wave per batch
+  13c), then invokes `callback(WorldSnapshot)` from the
+  worker. Sim thread keeps ticking.
+- Documented contract: snapshots reflect the last-committed
+  wave's state; subsequent commits do not retroactively
+  appear. Matches the consistency model the render frame's
+  back-buffer already uses.
+- `tests/async_snapshot_test.cpp` — verifies the contract
+  under spawn-heavy churn + race conditions; verifies
+  `FrameBudgetWatcher` does not fire during a 4096-tick run
+  with periodic async snapshots.
+
+Risk: snapshot consistency under concurrent commit.
+Mitigation: snapshot is taken against the published
+`WorldView` pointer, which only refreshes at wave boundaries
+on the sim thread — exactly the same boundary the renderer's
+back-buffer publish uses.
+
+#### 3.9.6 Out of scope for §3.9
+
+Per the notes, the following are not §3.9 batches. They're
+either sibling-library territory, niche-hardware concerns, or
+ideas the notes flag as "only on profiler evidence." Calling
+them out so they don't drift into batch 16's success
+criteria:
+
+- **SIMD math kernels.** Sibling library (notes §4.1). The
+  engine ships the layout (chunked archetype storage); the
+  math vectorization is the consumer's responsibility.
+- **NUMA-aware allocation.** Niche, not on the near-term path
+  (notes §5.1). Revisit if a workstation/server-class
+  deployment shows topology-aware cache effects.
+- **Alternate work-stealing policies.** Only on profiler
+  evidence of tail-latency outliers (notes §5.2). Today's
+  policy passes batch-13c's job-stealing bench cleanly.
+- **User-defined component packing.** Invasive vs the
+  migration / storage path (notes §5.3). Not worth it until a
+  strong use case shows up.
+- **Epoch-based reclamation for event nodes.** Internal
+  allocator-churn fix (notes §5.4). Only on profiler evidence
+  that the Treiber-stack allocation rate is showing up.
+- **Per-chunk record-time command buffers.** Tracked as a
+  §3.6.4 candidate; revisit if batch 18's arena form falls
+  short on benchmarks.
+- **Read-only cross-wave snapshot pointer cache.** Tracked as
+  a §3.6.4 candidate; revisit if batch-16 evidence shows
+  repeated chunk-pointer reuse across waves.
+
+#### 3.9.7 Recommended order of attack
+
+`16 → {17, 18, 19} (parallel after gate) → 20`.
+
+Batch 16 is the gate: nothing else in §3.9 ships without a
+benchmark row in its PR body that points at a run produced by
+batch-16 infrastructure. Once 16 lands, batches 17 / 18 / 19
+ship independently when their own measurement bar is met (and
+do NOT ship if the bar isn't met — the notes are explicit that
+*"if a proposed optimization does not improve fewer
+branches / allocations / lookups / locks / redundant
+traversals / more contiguous access / more predictable job
+sizes, it probably is not worth the added complexity."*).
+Batch 20 is orthogonal — a quality-of-life stutter fix with
+no benchmark dependency.
+
+#### 3.9.8 Definition of done for §3.9
+
+Plan-level success criteria (verifiable against existing
+diagnostic surface; no new public API required):
+
+- Every system in the rpg_demo runs within 5% of its
+  batch-16 theoretical lower bound on the **Render+AI**
+  workload (20k entities) on the reference hardware.
+- A 4096-tick run on the **Churn** workload (100k entities,
+  4 worker threads) finishes with zero `FrameBudgetWatcher`
+  alerts when `setTickBudget(1.0/60.0)` is set.
+- `commit_hash_test.cpp` and `sharded_commit_test.cpp` still
+  pass byte-for-byte against pre-§3.9 reference hashes
+  (cached as goldens in the repo) — proves no batch in §3.9
+  altered determinism.
+- Both default and `-Werror` builds still pass `ctest` 100%
+  on every commit in the §3.9 sequence.
+
+When all four hold, §3.9 is closed. Further perf work past
+that point is the next "if profiling says so" pass and would
+start its own §3.x section against fresh evidence.
+
 ## 4. Items the previous plan got right but underestimates the cost of
 
 - **Archetype/chunk storage.** Shipped in batch 6 (✅ §2), with the
@@ -1500,8 +1829,31 @@ the *primitives*. Batch 14 (✅) closed the phase by shipping the
 latest snapshot for HUDs), `FrameBudgetWatcher` built-in system
 emitting `BudgetExceeded` events, and `Engine::setStallTimeout`
 watchdog thread emitting `EngineStall`. The Vulkan renderer
-(batch 9) and RPG demo (batch 10) will be the first real-game
+(batch 9) and RPG demo (batch 10) are the first real-game
 consumers.
+
+### Phase 7 — measurement-driven tightening (current, §3.9)
+
+Once Milestones 1–6 closed, the next perf phase is *not* another
+structural rewrite. Per
+`threadmaxx_core_future_optimization_notes.md` and §3.9, the
+remaining wins are:
+
+- cheaper chunk traversal (§3.9.2 batch 17)
+- cheaper command recording (§3.9.3 batch 18)
+- cache-friendly migration batching (§3.9.4 batch 19)
+- better grain tuning + a workload-realistic benchmark harness
+  (§3.9.1 batch 16 — the gate)
+- async snapshot / trace off-thread for stutter-free saves
+  (§3.9.5 batch 20 — quality of life, orthogonal)
+
+Every batch in this phase ships with a before/after number from
+the batch-16 harness in its PR body. If the number isn't there
+or doesn't move, the batch doesn't land — the notes are explicit
+that *"if a proposed optimization does not improve fewer
+branches / allocations / lookups / locks / redundant traversals /
+more contiguous access / more predictable job sizes, it probably
+is not worth the added complexity."*
 
 ## 7. Public API extensions still on deck
 
