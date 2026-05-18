@@ -462,6 +462,30 @@ public:
             static_cast<std::uint32_t>(sizeof(T)));
     }
 
+    /// §3.10.3 batch 23 — look up the @ref UserComponentId for a
+    /// previously-registered type without re-registering. Returns an
+    /// invalid id (test with `.valid()`) when @c T was never
+    /// registered via @ref registerUserComponent — there is NO
+    /// auto-registration on lookup. Designed for systems that want
+    /// to fetch their tokens lazily on demand rather than threading
+    /// a `UserComponentIds*` struct through every constructor.
+    ///
+    /// @tparam T  Must be trivially copyable. The lookup keys off
+    ///            `typeid(T)`, so passing a different `T` with the
+    ///            same name but different stride returns the
+    ///            originally-registered id (with the original
+    ///            stride) — be careful in dynamic-library setups.
+    ///
+    /// @thread_safety Safe to call from any thread once registration
+    ///                is complete. The internal registry mutex
+    ///                serializes against concurrent registrations.
+    template <typename T>
+    UserComponentId userComponent() const noexcept {
+        static_assert(std::is_trivially_copyable_v<T>,
+            "userComponent<T>: T must be trivially copyable.");
+        return findUserComponentRaw_(std::type_index(typeid(T)));
+    }
+
 private:
     void markResourceStaleRaw_(std::uint32_t index,
                                std::uint32_t generation,
@@ -469,6 +493,10 @@ private:
 
     UserComponentId registerUserComponentRaw_(std::type_index type,
                                               std::uint32_t stride);
+
+    /// §3.10.3 batch 23 — type-erased lookup helper for
+    /// @ref userComponent.
+    UserComponentId findUserComponentRaw_(std::type_index type) const noexcept;
 
     std::unique_ptr<internal::EngineImpl> impl_;
 };

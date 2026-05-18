@@ -22,10 +22,18 @@ enum : std::uint32_t {
 /// Per-entity render parameters. Drives `CubeRenderSystem` →
 /// `DrawItem::materialOverride.params` + per-instance scale. The Vulkan
 /// renderer just multiplies the override into its Lambert shader.
+///
+/// §3.11 batch 9b.2b — added `meshId`. The default (0) selects the
+/// renderer's default mesh (the unit-cube replacement loaded from
+/// `assets/cube.obj`). Positive values select a renderer-registered
+/// mesh slot via `VulkanRenderer::registerMesh*`. Changing this
+/// field's layout bumped `kRpgSaveVersion` (see `SaveLoadSystem.cpp`);
+/// pre-9b.2b saves are rejected at load time.
 struct CubeRender {
-    float color[4] = {0.8f, 0.8f, 0.85f, 1.0f};
-    float scale    = 1.0f;
-    float pad[3]   = {0.0f, 0.0f, 0.0f};   // pad to 16 bytes
+    float    color[4] = {0.8f, 0.8f, 0.85f, 1.0f};
+    float    scale    = 1.0f;
+    std::int32_t meshId = 0;
+    float    pad[2]   = {0.0f, 0.0f};   // pad to 32 bytes
 };
 
 /// NPC AI state machine. The brain transitions between states based on
@@ -210,6 +218,12 @@ struct WorldState {
     bool          stressMode      = false;
     std::uint32_t npcCount        = 0;   // chosen by DemoGame::onSetup
     std::uint32_t pickupCount     = 0;   // chosen by DemoGame::onSetup
+    /// §3.11 batch 9b.2b — meshIds assigned to entity classes when the
+    /// renderer's registration callback is wired (main.cpp). Zero
+    /// means "fall back to the default cube" (the headless / null-
+    /// callback case). Set in `DemoGame::onSetup` before the spawn
+    /// loops run.
+    std::int32_t  pickupMeshId    = 0;
     /// §3.11.5 batch D5 — `FrameBudgetWatcher` reports per-tick alerts
     /// on this counter; HudSystem surfaces it.
     std::uint32_t budgetExceededCount = 0;

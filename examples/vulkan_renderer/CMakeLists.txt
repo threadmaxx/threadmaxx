@@ -94,6 +94,15 @@ target_link_libraries(threadmaxx_vulkan_renderer
         glfw
 )
 
+# §3.11 batch 9b.3 — bake the per-build .spv directory so the
+# `ShaderLoader` can re-read shader bytecode from disk when a hot
+# reload fires. Without this the renderer would only see the embedded
+# SPIR-V baked into the *_spv.hpp headers and `markResourceStale` would
+# be a no-op for any in-place shader edit. PRIVATE: only the renderer
+# implementation reads it; the public header stays path-free.
+target_compile_definitions(threadmaxx_vulkan_renderer PRIVATE
+    THREADMAXX_VK_SHADER_DIR="${VK_GENERATED_DIR}")
+
 set_target_properties(threadmaxx_vulkan_renderer PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON

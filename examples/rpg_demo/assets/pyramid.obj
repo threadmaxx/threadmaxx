@@ -1,0 +1,39 @@
+# Wavefront OBJ — square-base pyramid.
+# §3.11 batch 9b.2b — second asset used to exercise multi-mesh
+# dispatch in the rpg_demo. Slot 1 in the renderer's mesh table.
+# Pickups draw with this shape; player + NPCs continue to use the
+# default cube (slot 0).
+#
+# 5 vertices (apex + 4 base corners) + 6 normals (4 side + 1 base
+# + 1 spare) + 6 faces (4 side triangles + 2 base triangles).
+# After parsing: 18 corners total (already triangles, so no fan-split
+# multiplier — 4 side faces × 3 corners + 2 base faces × 3 corners).
+
+# Apex.
+v  0.0  0.5  0.0
+# Base corners (-Y plane, corners CCW seen from below).
+v -0.5 -0.5 -0.5
+v  0.5 -0.5 -0.5
+v  0.5 -0.5  0.5
+v -0.5 -0.5  0.5
+
+# Side normals — slope outward and upward, length-1 approximations.
+# Front (-Z), right (+X), back (+Z), left (-X).
+vn  0.0  0.4472 -0.8944
+vn  0.8944 0.4472  0.0
+vn  0.0  0.4472  0.8944
+vn -0.8944 0.4472  0.0
+# Base normal.
+vn  0.0 -1.0  0.0
+# Spare slot (unused; vn 6 just keeps indexing tidy).
+vn  0.0  1.0  0.0
+
+# Side triangles — apex + two adjacent base corners, CCW from outside.
+f 1//1 2//1 3//1
+f 1//2 3//2 4//2
+f 1//3 4//3 5//3
+f 1//4 5//4 2//4
+# Base — two triangles (CCW seen from below, i.e. flip ordering vs
+# top-down view since the base faces -Y).
+f 2//5 5//5 4//5
+f 2//5 4//5 3//5

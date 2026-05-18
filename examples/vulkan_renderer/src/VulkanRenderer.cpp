@@ -11,7 +11,11 @@
 #include "ShaderLoader.hpp"
 
 #include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
+#include <threadmaxx/Resource.hpp>
 #include <threadmaxx/render/InstanceBufferLayout.hpp>
+
+#include <typeindex>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -81,7 +85,16 @@ struct VulkanRenderer::Impl {
     ShaderLoader*  shaderLoader  = nullptr;
 
     // Cached cube handle — every instance batches against this for v1.
+    // §3.11 batch 9b.2 — this is now the "default mesh" used for
+    // `meshId == 0` (and any meshId out of range). Game code can swap
+    // it via `setDefaultMesh` / `setDefaultMeshFromData`.
     threadmaxx::ResourceHandle<Mesh> cubeHandle;
+
+    // §3.11 batch 9b.2b — additional mesh slots, addressed by
+    // `meshId >= 1`. Slot index `(meshId - 1)`. Game code registers
+    // via `VulkanRenderer::registerMesh*`. Cleared in shutdown
+    // before the loader's `releaseGpuResources` runs.
+    std::vector<threadmaxx::ResourceHandle<Mesh>> meshSlots;
 
     // Per-frame instance buffer (host-visible). Resized on demand.
     struct PerFrame {
@@ -95,6 +108,13 @@ struct VulkanRenderer::Impl {
         VkBuffer       debugPointBuffer = VK_NULL_HANDLE;
         VkDeviceMemory debugPointMemory = VK_NULL_HANDLE;
         VkDeviceSize   debugPointCapacity = 0;
+
+        // §3.11 batch 9b.2b — per-camera per-meshId scratch buckets
+        // for the bucket-and-pack draw flow. Reset each call to
+        // `recordFrame`; vector capacities persist across frames so
+        // steady-state pays zero allocations after the first tick.
+        std::vector<std::int32_t>                                 scratchMeshIds;
+        std::vector<std::vector<threadmaxx::InstanceLayoutEntry>> scratchBuckets;
     };
     std::vector<PerFrame> perFrame;
 
@@ -106,6 +126,11 @@ struct VulkanRenderer::Impl {
 
     std::atomic<std::uint64_t> framesSubmitted = 0;
 
+    // §3.11 batch 9b.3 — auto-detached subscription to the engine's
+    // `AssetReloaded` channel. Filled in `initialize()`; the
+    // `Subscription` dtor removes the listener in `~Impl`.
+    threadmaxx::Subscription reloadSub;
+
     void ensureBuffer(PerFrame& pf, VkDeviceSize bytes, VkBufferUsageFlags usage,
                       VkBuffer& outBuffer, VkDeviceMemory& outMemory,
                       VkDeviceSize& outCapacity);
@@ -114,17 +139,28 @@ struct VulkanRenderer::Impl {
     void recordFrame(VkCommandBuffer cmd, std::uint32_t imageIndex,
                      const threadmaxx::RenderFrame& frame, PerFrame& pf);
     // §3.11.2 batch D2 — per-camera slice into the pre-packed
-    // instance buffer. Offset is bytes from the buffer base; count is
-    // the number of `InstanceLayoutEntry` records for that camera.
+    // instance buffer. §3.11 batch 9b.2b — the single
+    // (offset, count) pair is now a list of per-meshId sub-slices.
+    // Default case (every visible instance has meshId == 0 or < 0)
+    // collapses to one entry with `meshId == 0`, producing the
+    // same single-bind+single-draw path as pre-9b.2b.
+    struct MeshGroup {
+        std::int32_t  meshId;
+        VkDeviceSize  offsetBytes;
+        std::uint32_t instanceCount;
+    };
     struct CameraSlice {
-        VkDeviceSize  offsetBytes  = 0;
-        std::uint32_t instanceCount = 0;
+        std::vector<MeshGroup> groups;
     };
     void recordCamera(VkCommandBuffer cmd, const threadmaxx::Camera& cam,
                       std::uint32_t cameraIndex,
                       const threadmaxx::RenderFrame& frame,
                       PerFrame& pf,
                       const CameraSlice& slice);
+
+    // §3.11 batch 9b.2b — resolve a meshId to a Mesh*. Returns the
+    // default cube for `meshId == 0` or out-of-range / freed slots.
+    const Mesh* lookupMesh(std::int32_t meshId) const noexcept;
 };
 
 // ---------------------------------------------------------------------------
@@ -155,15 +191,12 @@ bool VulkanRenderer::initialize() {
     if (!impl_->frames.create(impl_->ctx, impl_->cfg.framesInFlight)) {
         return false;
     }
-    if (!impl_->pipes.create(impl_->ctx,
-                             impl_->swapchain.colorFormat(),
-                             impl_->swapchain.depthFormat())) {
-        return false;
-    }
-
-    impl_->perFrame.resize(impl_->cfg.framesInFlight);
 
     // ---- Asset loaders --------------------------------------------------
+    //
+    // §3.11 batch 9b.3 — loaders are now created BEFORE the pipelines
+    // so `pipes.create` can register each shader stage with the loader
+    // up front; that's what wires the hot-reload contract end-to-end.
     {
         auto mesh = std::make_unique<MeshLoader>(impl_->ctx);
         impl_->meshLoader = mesh.get();
@@ -180,10 +213,40 @@ bool VulkanRenderer::initialize() {
         impl_->engine->addResourceLoader(std::move(sh));
     }
 
+    if (!impl_->pipes.create(impl_->ctx,
+                             impl_->swapchain.colorFormat(),
+                             impl_->swapchain.depthFormat(),
+                             *impl_->shaderLoader,
+                             *impl_->engine)) {
+        return false;
+    }
+
+    impl_->perFrame.resize(impl_->cfg.framesInFlight);
+
     // Stand up the fallback unit-cube mesh that every Milestone-1
     // `RenderTag` entity batches against until batch 10 plugs in real
     // mesh assets.
     impl_->cubeHandle = impl_->meshLoader->createUnitCube(*impl_->engine);
+
+    // §3.11 batch 9b.3 — subscribe to the engine's typed
+    // `AssetReloaded` event channel. When the shader loader publishes
+    // a reload for one of our pipeline shader ids, `rebuildIfMatches`
+    // tears down + re-creates the affected pipeline. The
+    // `Subscription` auto-detaches on Impl destruction.
+    impl_->reloadSub = impl_->engine->events<threadmaxx::AssetReloaded>()
+        .subscribeScoped([this](const threadmaxx::AssetReloaded& ev) {
+            if (ev.type != std::type_index(typeid(Shader))) return;
+            const threadmaxx::ResourceId<Shader> oldId{ev.oldIndex, ev.oldGeneration};
+            const threadmaxx::ResourceId<Shader> newId{ev.newIndex, ev.newGeneration};
+            const bool rebuilt = impl_->pipes.rebuildIfMatches(
+                impl_->ctx, *impl_->engine, oldId, newId);
+            if (rebuilt) {
+                std::printf("[vulkan_renderer] pipeline rebuilt after shader reload "
+                            "(old=%u/%u new=%u/%u)\n",
+                            oldId.index, oldId.generation,
+                            newId.index, newId.generation);
+            }
+        });
 
     return true;
 }
@@ -199,6 +262,11 @@ void VulkanRenderer::shutdown() {
     if (impl_->meshLoader)    impl_->meshLoader->releaseGpuResources();
     if (impl_->textureLoader) impl_->textureLoader->releaseGpuResources();
 
+    // §3.11 batch 9b.2b — drop slot-table refs before the loader frees
+    // GPU memory below. The loader's `releaseGpuResources` is the
+    // authoritative free; this just decrements the registry refcounts
+    // so the slots are clean for the engine-side teardown.
+    impl_->meshSlots.clear();
     impl_->cubeHandle.reset();
     impl_->destroyPerFrame();
     impl_->pipes.destroy(impl_->ctx);
@@ -215,6 +283,66 @@ void VulkanRenderer::onResize(std::uint32_t width, std::uint32_t height) {
 
 std::uint64_t VulkanRenderer::framesSubmitted() const noexcept {
     return impl_->framesSubmitted.load(std::memory_order_relaxed);
+}
+
+void VulkanRenderer::setDefaultMesh(threadmaxx::ResourceHandle<Mesh> handle) noexcept {
+    // §3.11 batch 9b.2 — replace the cached cube handle. Move-assign
+    // so the previous handle's destructor runs and decrements the
+    // refcount on the old slot.
+    impl_->cubeHandle = std::move(handle);
+}
+
+bool VulkanRenderer::setDefaultMeshFromData(std::span<const float>         vertices,
+                                            std::span<const std::uint16_t> indices) noexcept {
+    if (!impl_->meshLoader || !impl_->engine) return false;
+    auto handle = impl_->meshLoader->createMesh(*impl_->engine, vertices, indices);
+    if (!handle.valid()) return false;
+    impl_->cubeHandle = std::move(handle);
+    return true;
+}
+
+std::int32_t VulkanRenderer::registerMesh(threadmaxx::ResourceHandle<Mesh> handle) {
+    if (!handle.valid()) return -1;
+    impl_->meshSlots.push_back(std::move(handle));
+    // Slot indices 1..N; slot 0 is reserved for the default mesh.
+    return static_cast<std::int32_t>(impl_->meshSlots.size());
+}
+
+std::int32_t VulkanRenderer::registerMeshFromData(std::span<const float>         vertices,
+                                                  std::span<const std::uint16_t> indices) noexcept {
+    if (!impl_->meshLoader || !impl_->engine) return -1;
+    auto handle = impl_->meshLoader->createMesh(*impl_->engine, vertices, indices);
+    if (!handle.valid()) return -1;
+    return registerMesh(std::move(handle));
+}
+
+void VulkanRenderer::reloadShaders() {
+    if (!impl_->engine) return;
+    int requested = 0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(PipelineShaderSlot::Count); ++i) {
+        const auto slot = static_cast<PipelineShaderSlot>(i);
+        const auto id = impl_->pipes.shaderId(slot);
+        if (!id.valid()) continue;
+        impl_->engine->markResourceStale<Shader>(id);
+        ++requested;
+    }
+    std::printf("[vulkan_renderer] reloadShaders: %d stale request(s) queued\n",
+                requested);
+}
+
+const Mesh* VulkanRenderer::Impl::lookupMesh(std::int32_t meshId) const noexcept {
+    if (meshId <= 0) {
+        return cubeHandle.valid() ? cubeHandle.get() : nullptr;
+    }
+    const std::size_t slot = static_cast<std::size_t>(meshId - 1);
+    if (slot >= meshSlots.size()) {
+        return cubeHandle.valid() ? cubeHandle.get() : nullptr;
+    }
+    const auto& h = meshSlots[slot];
+    if (!h.valid()) {
+        return cubeHandle.valid() ? cubeHandle.get() : nullptr;
+    }
+    return h.get();
 }
 
 void VulkanRenderer::submitFrame(const threadmaxx::RenderFrame& frame) {
@@ -378,14 +506,18 @@ void VulkanRenderer::Impl::destroyPerFrame() noexcept {
 bool VulkanRenderer::Impl::recreateSwapchain() {
     vkDeviceWaitIdle(ctx.device());
     swapchain.destroy(ctx);
-    pipes.destroy(ctx);
 
     const std::uint32_t w = pendingWidth  ? pendingWidth  : cfg.width;
     const std::uint32_t h = pendingHeight ? pendingHeight : cfg.height;
     if (!swapchain.create(ctx, window, w, h)) {
         return false;
     }
-    if (!pipes.create(ctx, swapchain.colorFormat(), swapchain.depthFormat())) {
+    // §3.11 batch 9b.3 — recreate ONLY the pipelines; don't re-register
+    // shaders with the loader (that would duplicate entries).
+    if (!pipes.recreatePipelines(ctx,
+                                 swapchain.colorFormat(),
+                                 swapchain.depthFormat(),
+                                 *engine)) {
         return false;
     }
     return true;
@@ -458,18 +590,49 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
         // §3.11.2 batch D2 — pre-pack every camera's instance slice
         // into one contiguous buffer BEFORE the camera loop starts,
         // so per-camera `ensureBuffer` calls can't destroy a buffer
-        // that an earlier camera already bound. Each camera gets its
-        // own `(offset, count)` window into the packed buffer; the
-        // bind uses `pOffsets` so the shader's instance index 0 maps
-        // to the camera's first entry.
+        // that an earlier camera already bound.
+        //
+        // §3.11 batch 9b.2b — within each camera's slice, instances are
+        // bucketed by meshId so the per-camera draw loop can bind the
+        // matching mesh and issue one `vkCmdDrawIndexed` per mesh.
+        // Bucket iteration order is insertion order (the meshIds the
+        // camera first sees), giving deterministic draw ordering. With
+        // a single meshId the bucket list collapses to one entry,
+        // matching pre-9b.2b output bit-for-bit.
         std::vector<threadmaxx::InstanceLayoutEntry> packed;
         std::vector<CameraSlice> slices(frame.cameras.size());
         const std::size_t cameraCount =
             std::min<std::size_t>(frame.cameras.size(), 32);
+
+        auto appendToBucket = [&](std::int32_t meshId,
+                                  const threadmaxx::InstanceLayoutEntry& e) {
+            // Treat all negative meshIds as "default mesh" (slot 0) so
+            // they coalesce into a single bucket. The renderer's
+            // `lookupMesh` does the same.
+            const std::int32_t key = meshId < 0 ? 0 : meshId;
+            for (std::size_t b = 0; b < pf.scratchMeshIds.size(); ++b) {
+                if (pf.scratchMeshIds[b] == key) {
+                    pf.scratchBuckets[b].push_back(e);
+                    return;
+                }
+            }
+            // New bucket. Reuse a pre-existing vector if available
+            // (preserves capacity across ticks) before allocating.
+            pf.scratchMeshIds.push_back(key);
+            if (pf.scratchBuckets.size() < pf.scratchMeshIds.size()) {
+                pf.scratchBuckets.emplace_back();
+            } else {
+                pf.scratchBuckets[pf.scratchMeshIds.size() - 1].clear();
+            }
+            pf.scratchBuckets[pf.scratchMeshIds.size() - 1].push_back(e);
+        };
+
         for (std::size_t i = 0; i < cameraCount; ++i) {
             const std::uint32_t bit = (1u << i);
-            const VkDeviceSize off = sizeof(threadmaxx::InstanceLayoutEntry) *
-                                     packed.size();
+            // Reset scratch state for this camera. Capacities persist.
+            pf.scratchMeshIds.clear();
+            for (auto& bucket : pf.scratchBuckets) bucket.clear();
+
             // Auto-instance lane (Milestone-1 contract): always visible.
             for (const auto& inst : frame.instances) {
                 threadmaxx::DrawItem virt = {};
@@ -483,19 +646,30 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
                 } else {
                     virt.materialOverride.params = {1.0f, 1.0f, 1.0f, 1.0f};
                 }
-                packed.push_back(threadmaxx::packInstance(virt));
+                appendToBucket(virt.meshId, threadmaxx::packInstance(virt));
             }
             // Camera-mask-filtered opaque items.
             const auto opaqueItems = frame.drawItems[threadmaxx::passIndex(
                 threadmaxx::RenderPass::Opaque)];
             for (const auto& di : opaqueItems) {
                 if ((di.cameraMask & bit) == 0) continue;
-                packed.push_back(threadmaxx::packInstance(di));
+                appendToBucket(di.meshId, threadmaxx::packInstance(di));
             }
-            const std::size_t after = packed.size();
-            slices[i].offsetBytes  = off;
-            slices[i].instanceCount = static_cast<std::uint32_t>(
-                after - off / sizeof(threadmaxx::InstanceLayoutEntry));
+
+            // Flush buckets to `packed[]` in insertion order and record
+            // the per-bucket sub-slice. Empty buckets are filtered.
+            slices[i].groups.clear();
+            for (std::size_t b = 0; b < pf.scratchMeshIds.size(); ++b) {
+                const auto& bucket = pf.scratchBuckets[b];
+                if (bucket.empty()) continue;
+                MeshGroup g{};
+                g.meshId        = pf.scratchMeshIds[b];
+                g.offsetBytes   = sizeof(threadmaxx::InstanceLayoutEntry) *
+                                  packed.size();
+                g.instanceCount = static_cast<std::uint32_t>(bucket.size());
+                packed.insert(packed.end(), bucket.begin(), bucket.end());
+                slices[i].groups.push_back(g);
+            }
         }
 
         if (!packed.empty()) {
@@ -584,36 +758,43 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
 
     // ---- Opaque pass --------------------------------------------------------
     // §3.11.2 batch D2 — instances were pre-packed in recordFrame;
-    // we just bind the camera's slice via `pOffsets`. No per-camera
-    // ensureBuffer that could invalidate already-bound buffers.
-    if (slice.instanceCount > 0 && cubeHandle.valid()) {
-        const Mesh* mesh = cubeHandle.get();
-        if (mesh && mesh->gpuReady) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.opaquePipe());
+    // §3.11 batch 9b.2b — each camera's slice is now a list of
+    // per-meshId sub-slices. Pipeline + push-constants are bound once
+    // up front; the loop just rebinds vertex buffer + index buffer for
+    // each mesh and draws its slice. Per-pipeline state (push
+    // constants etc.) survives across the inner draws because we
+    // don't switch pipelines.
+    if (!slice.groups.empty() && cubeHandle.valid()) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.opaquePipe());
 
-            OpaquePushConstants pc = {};
-            std::memcpy(pc.viewProj, vp, sizeof(vp));
-            // Down-and-to-the-right directional light.
-            pc.lightDir[0] = -0.3f;
-            pc.lightDir[1] = -1.0f;
-            pc.lightDir[2] = -0.2f;
-            pc.cameraPos[0] = cam.position.x;
-            pc.cameraPos[1] = cam.position.y;
-            pc.cameraPos[2] = cam.position.z;
-            vkCmdPushConstants(cmd, pipes.opaqueLayout(),
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(pc), &pc);
+        OpaquePushConstants pc = {};
+        std::memcpy(pc.viewProj, vp, sizeof(vp));
+        // Down-and-to-the-right directional light.
+        pc.lightDir[0] = -0.3f;
+        pc.lightDir[1] = -1.0f;
+        pc.lightDir[2] = -0.2f;
+        pc.cameraPos[0] = cam.position.x;
+        pc.cameraPos[1] = cam.position.y;
+        pc.cameraPos[2] = cam.position.z;
+        vkCmdPushConstants(cmd, pipes.opaqueLayout(),
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(pc), &pc);
+
+        for (const auto& g : slice.groups) {
+            if (g.instanceCount == 0) continue;
+            const Mesh* mesh = lookupMesh(g.meshId);
+            if (!mesh || !mesh->gpuReady) continue;
 
             VkBuffer vbufs[2] = {mesh->vertexBuffer, pf.instanceBuffer};
-            // §3.11.2 batch D2 — binding 1 (per-instance) uses this
-            // camera's slice offset. The shader's gl_InstanceIndex 0
-            // maps to the first record of the slice.
-            VkDeviceSize voffs[2] = {0, slice.offsetBytes};
+            // Binding 1 (per-instance) uses this group's slice offset
+            // into the pre-packed buffer. The shader's
+            // `gl_InstanceIndex 0` maps to the first record.
+            VkDeviceSize voffs[2] = {0, g.offsetBytes};
             vkCmdBindVertexBuffers(cmd, 0, 2, vbufs, voffs);
             vkCmdBindIndexBuffer(cmd, mesh->indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
             vkCmdDrawIndexed(cmd, mesh->indexCount,
-                             slice.instanceCount,
+                             g.instanceCount,
                              0, 0, 0);
         }
     }

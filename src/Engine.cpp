@@ -81,6 +81,10 @@ UserComponentId Engine::registerUserComponentRaw_(std::type_index type,
     return impl_->userComponents().reg(type, stride);
 }
 
+UserComponentId Engine::findUserComponentRaw_(std::type_index type) const noexcept {
+    return impl_->userComponents().find(type);
+}
+
 std::vector<TaskGraphNode> Engine::taskGraphSnapshot() const {
     const std::size_t N = impl_->registeredSystemCount();
     const auto& waves = impl_->systemWaves();

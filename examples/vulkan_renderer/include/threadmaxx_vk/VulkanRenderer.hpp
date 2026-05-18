@@ -1,9 +1,12 @@
 #pragma once
 
 #include <threadmaxx/Renderer.hpp>
+#include <threadmaxx/Resource.hpp>
+#include <threadmaxx_vk/Mesh.hpp>
 
 #include <cstdint>
 #include <memory>
+#include <span>
 
 struct GLFWwindow;
 
@@ -57,6 +60,59 @@ public:
     /// Total number of frames the renderer has submitted to the GPU.
     /// Used by the smoke test and any HUD code reading it.
     std::uint64_t framesSubmitted() const noexcept;
+
+    /// §3.11 batch 9b.2 — replace the cached "default mesh" used to
+    /// draw every RenderTag instance. Pre-batch-9b.2 the default was
+    /// the procedural unit-cube created in `initialize()`; game code
+    /// may now call this after `initialize()` returns to swap in a
+    /// mesh sourced from a real `.obj` asset (or any other content
+    /// pipeline). Passing a default-constructed (invalid) handle
+    /// drops the override and the renderer skips opaque drawing for
+    /// instances whose mesh isn't otherwise resolved.
+    ///
+    /// The handle is held by-value, so the slot's refcount is bumped
+    /// for the lifetime of the override. The previous handle (if
+    /// any) is reset, which decrements its refcount; if no other
+    /// holder pins it, the slot frees automatically. Per the
+    /// `ResourceHandle` contract the GPU memory itself stays
+    /// allocated until the loader's `releaseGpuResources` runs at
+    /// renderer shutdown.
+    void setDefaultMesh(threadmaxx::ResourceHandle<Mesh> handle) noexcept;
+
+    /// §3.11 batch 9b.2 — convenience overload that uploads the given
+    /// vertex / index data via the renderer's internal `MeshLoader`
+    /// and then installs the resulting handle as the default mesh.
+    /// Same vertex layout contract as `setDefaultMesh`: binding 0 is
+    /// pos[3] + normal[3], 24-byte stride; indices are 16-bit. Returns
+    /// `false` if the upload fails (e.g. layout violation, allocation
+    /// failure); the previous default stays in place.
+    bool setDefaultMeshFromData(std::span<const float>         vertices,
+                                std::span<const std::uint16_t> indices) noexcept;
+
+    /// §3.11 batch 9b.2b — register a non-default mesh and obtain a
+    /// non-negative meshId game code can stamp onto `DrawItem::meshId`
+    /// / `RenderInstance::meshId`. The renderer's draw loop groups
+    /// instances by meshId and binds the matching mesh per group; an
+    /// instance with `meshId == 0` (or `< 0`) falls back to the
+    /// default mesh installed via `setDefaultMesh`. Returns the new
+    /// meshId, or `-1` on null input.
+    std::int32_t registerMesh(threadmaxx::ResourceHandle<Mesh> handle);
+
+    /// Convenience: uploads `vertices` / `indices` via the internal
+    /// `MeshLoader` and registers the resulting handle in one call.
+    /// Same layout contract as `setDefaultMeshFromData`. Returns the
+    /// new meshId, or `-1` on upload failure.
+    std::int32_t registerMeshFromData(std::span<const float>         vertices,
+                                      std::span<const std::uint16_t> indices) noexcept;
+
+    /// §3.11 batch 9b.3 — trigger a hot reload for every shader the
+    /// renderer's pipelines depend on. For each tracked shader the
+    /// engine's `markResourceStale<Shader>(id)` is invoked; the
+    /// `ShaderLoader` then re-reads the on-disk `.spv` on its next
+    /// `update()` tick and emits `AssetReloaded`. The renderer's
+    /// internal subscriber rebuilds the affected `VkPipeline` in
+    /// place. Useful as an F-key handler in a debug UI.
+    void reloadShaders();
 
 private:
     struct Impl;

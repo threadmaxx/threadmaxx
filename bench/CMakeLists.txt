@@ -31,3 +31,24 @@ foreach(bench ${THREADMAXX_BENCHMARKS})
             -Wall -Wextra -Wpedantic -O2)
     endif()
 endforeach()
+
+# §S4 close-out — SIMD kernels bench. Separate from the core bench
+# list because it needs `-mavx2 -mfma` on x86_64 to actually exercise
+# the AVX2 path (the core library stays portable, so the AVX2 code
+# only compiles when the consumer opts in via its own target flags).
+if (TARGET threadmaxx::simd)
+    add_executable(simd_kernels simd_kernels.cpp)
+    target_link_libraries(simd_kernels PRIVATE threadmaxx::simd)
+    set_target_properties(simd_kernels PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(simd_kernels PRIVATE
+            -Wall -Wextra -Wpedantic -O3)
+        if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+            target_compile_options(simd_kernels PRIVATE -mavx2 -mfma)
+        endif()
+    endif()
+endif()

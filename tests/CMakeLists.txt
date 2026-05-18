@@ -82,6 +82,8 @@ set(THREADMAXX_TESTS
     stitched_view_concurrency_test
     concurrency_soak_test
     async_snapshot_test
+    engine_user_component_lookup_test
+    command_buffer_spawn_n_test
     # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
     # (batch D-audit) which exercises the actual SaveLoadSystem rather
     # than re-implementing the wire format.
@@ -109,4 +111,10 @@ endforeach()
 # Skipped when the rpg_demo's optional Vulkan deps are missing.
 if (TARGET rpg_demo_core)
     add_subdirectory(rpg_demo)
+endif()
+
+# threadmaxx_simd sibling-library test suite (S1+). Lives in
+# `tests/simd/`. Skipped if the SIMD opt-in is off.
+if (TARGET threadmaxx::simd)
+    add_subdirectory(simd)
 endif()

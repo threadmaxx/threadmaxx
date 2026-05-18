@@ -25,7 +25,11 @@ namespace {
 // the engine's `WorldSnapshot` magic so a malformed file is detected
 // before the engine's deserialize runs.
 constexpr std::uint32_t kRpgSaveMagic   = 0x53475052u;  // 'RPGS' LE
-constexpr std::uint32_t kRpgSaveVersion = 1u;
+// §3.11 batch 9b.2b — bumped from 1 → 2 with the `CubeRender::meshId`
+// field. The per-section stride check in `readSection` would already
+// reject pre-9b.2b saves on a CubeRender size mismatch; the version
+// bump gives a cleaner up-front failure point for any future tooling.
+constexpr std::uint32_t kRpgSaveVersion = 2u;
 
 template <typename T>
 void writePod(std::ostream& os, const T& v) {

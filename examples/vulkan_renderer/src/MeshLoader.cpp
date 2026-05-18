@@ -99,9 +99,37 @@ threadmaxx::LoaderStats MeshLoader::stats() const noexcept {
 }
 
 threadmaxx::ResourceHandle<Mesh> MeshLoader::createUnitCube(threadmaxx::Engine& engine) {
+    auto handle = createMesh(
+        engine,
+        std::span<const float>(kCubeVertices.data(), kCubeVertices.size()),
+        std::span<const std::uint16_t>(kCubeIndices.data(), kCubeIndices.size()));
+    unitCube_ = handle;
+    return handle;
+}
+
+// §3.11 batch 9b.2 — generic upload. Used by both `createUnitCube`
+// (legacy procedural cube) and the demo's runtime OBJ-loaded meshes.
+// The opaque pipeline binds binding 0 with a 24-byte stride (3 pos +
+// 3 normal floats per corner); the function asserts that the input
+// matches.
+threadmaxx::ResourceHandle<Mesh> MeshLoader::createMesh(
+    threadmaxx::Engine&             engine,
+    std::span<const float>          vertices,
+    std::span<const std::uint16_t>  indices) {
+
+    if (vertices.empty() || indices.empty()) {
+        return threadmaxx::ResourceHandle<Mesh>{};
+    }
+    if ((vertices.size() % 6u) != 0u) {
+        return threadmaxx::ResourceHandle<Mesh>{};
+    }
+    if ((indices.size() % 3u) != 0u) {
+        return threadmaxx::ResourceHandle<Mesh>{};
+    }
+
     Mesh m;
-    const VkDeviceSize vBytes = sizeof(kCubeVertices);
-    const VkDeviceSize iBytes = sizeof(kCubeIndices);
+    const VkDeviceSize vBytes = vertices.size_bytes();
+    const VkDeviceSize iBytes = indices.size_bytes();
 
     createBuffer(ctx_, vBytes,
                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -110,7 +138,7 @@ threadmaxx::ResourceHandle<Mesh> MeshLoader::createUnitCube(threadmaxx::Engine& 
                  m.vertexBuffer, m.vertexMemory);
     void* p = nullptr;
     VK_CHECK(vkMapMemory(ctx_.device(), m.vertexMemory, 0, vBytes, 0, &p));
-    std::memcpy(p, kCubeVertices.data(), vBytes);
+    std::memcpy(p, vertices.data(), vBytes);
     vkUnmapMemory(ctx_.device(), m.vertexMemory);
 
     createBuffer(ctx_, iBytes,
@@ -119,18 +147,16 @@ threadmaxx::ResourceHandle<Mesh> MeshLoader::createUnitCube(threadmaxx::Engine& 
                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                  m.indexBuffer, m.indexMemory);
     VK_CHECK(vkMapMemory(ctx_.device(), m.indexMemory, 0, iBytes, 0, &p));
-    std::memcpy(p, kCubeIndices.data(), iBytes);
+    std::memcpy(p, indices.data(), iBytes);
     vkUnmapMemory(ctx_.device(), m.indexMemory);
 
-    m.indexCount = static_cast<std::uint32_t>(kCubeIndices.size());
-    m.gpuReady = true;
+    m.indexCount = static_cast<std::uint32_t>(indices.size());
+    m.gpuReady   = true;
 
     ownedMeshes_.push_back(m);
     resident_.fetch_add(vBytes + iBytes, std::memory_order_relaxed);
 
-    auto handle = engine.resources().addRefCounted<Mesh>(m);
-    unitCube_ = handle;
-    return handle;
+    return engine.resources().addRefCounted<Mesh>(m);
 }
 
 } // namespace threadmaxx_vk

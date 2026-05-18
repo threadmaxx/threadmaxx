@@ -56,8 +56,16 @@ NPCs are out of sync via per-NPC phase, and the
 The full Vulkan skinning pipeline is deferred to a future
 renderer-side batch (`batch 9b` placeholder) — unit cubes
 don't visibly benefit from bone-weighted skinning so the
-procedural shortcut is the right gameplay payoff. ctest
-now reports 89/89 on both trees.** Batch
+procedural shortcut is the right gameplay payoff. **Batch
+D7** (real assets + hot reload) closes the §3.11 plan with
+a procedural-path `PreloadLoader` IResourceLoader, a
+boot-time `preloadUntil` call that drains 64 fake assets
+before the first tick, F12-triggered `AssetReloaded`
+event-flow demonstration, and aggregate asset-stats in the
+HUD. Real `.obj` / shader file I/O + renderer-side pipeline
+rebuild remain deferred to `batch 9b`. ctest now reports
+91/91 on both trees; the §3.11 demo-driven exercise plan
+is complete.** Batch
 16 (gate) shipped three canonical workloads + four bench
 binaries + shared `bench/common.hpp`. Batch 17 (chunk
 iteration micro-optimization) rewrote `forEachWith` to walk
@@ -2125,12 +2133,49 @@ Public surface impact:
 - **Internal**: F1 / F3 / F7 are pure refactors with no
   visible behavior change.
 
-#### 3.10.3 Batch 23 — Ergonomics + polish (planned)
+#### 3.10.3 Batch 23 — Ergonomics + polish (rolling)
 
 Defers from §3.10.2 plus the missing-feature requests from
-`examples/rpg_demo/`. Likely to ship interleaved with §3.11
-demo batches (a §3.11 batch that hits an ergonomics gap
-schedules the corresponding §3.10.3 sub-fix on the spot).
+`examples/rpg_demo/`. Items land opportunistically as they
+become useful; this is a rolling batch, not a single ship.
+
+**As-shipped 2026-05-17:**
+
+- **F11 — `Engine::userComponent<T>()`** (additive). Lazy
+  lookup of a previously-registered `UserComponentId` by
+  `typeid(T)`. Returns an invalid id (test with
+  `.valid()`) when never registered — no auto-register on
+  miss. Pairs with the existing
+  `Engine::registerUserComponent<T>()`; both go through
+  the engine-internal `UserComponentRegistry`. Designed to
+  unblock the demo's `UserComponentIds*`-threading
+  pattern (every system constructor takes the pointer);
+  new systems can now call `engine.userComponent<MyType>()`
+  on demand.
+  New `engine_user_component_lookup_test.cpp` verifies
+  the contract: registered types resolve, unknown types
+  return `invalid`, and re-registration returns the same
+  id (idempotent per spec).
+
+- **F12 — `CommandBuffer::spawnBundleN(span<const EntityHandle>,
+  span<const Bundle>)`** (additive, landed 2026-05-17).
+  Bulk-spawn helper: pairs each reserved handle with the matching
+  bundle and emits N `spawnBundle` commands. The shorter span
+  bounds the count (mismatched-length spans are tolerated; extra
+  entries silently skipped). Pre-reserves command-buffer storage
+  to amortize the per-spawn `emplace_back` growth. Combined with
+  the §3.9.4 batch 19 migration-batching hint inside
+  `commitBuffer`, a bulk spawn pays roughly one geometric-growth
+  event per destination chunk regardless of N. Required `<span>`
+  added to `CommandBuffer.hpp`'s include list. New
+  `tests/command_buffer_spawn_n_test.cpp` (16-entity split
+  archetype + partial-span tolerance).
+
+**Still planned:**
+
+- F13 — `World::forEachChunkOf` introspection helper.
+- F8 (deferred from §3.10.2) — proper event-channel cache
+  via per-engine version counter.
 
 ### 3.11 RPG-demo-driven library exercise plan
 
@@ -3034,6 +3079,534 @@ test `CMakeLists.txt`),
 **Effort:** ~1 hour actual for the procedural path. The
 deferred full-asset / renderer-side rework remains a
 1–2 week future batch.
+
+---
+
+#### 3.11.7b Batch 9b — Real assets + renderer-side hot reload (split)
+
+Batch 9b carries the four items D7 deferred. Originally
+scoped as one ~2-week renderer rework; split into three
+shippable sub-batches so each lands independently:
+
+- **9b.1 — OBJ mesh parser (sibling-library).** Pure CPU
+  parser in `examples/rpg_demo/ObjLoader.{hpp,cpp}`. No
+  Vulkan / engine deps. Standalone unit test in
+  `tests/rpg_demo/test_obj_loader.cpp`. Renderer
+  integration (multi-mesh dispatch) deferred to 9b.2 —
+  the current `VulkanRenderer::recordFrame` assumes a
+  single hardcoded `cubeHandle`.  ✅ **landed 2026-05-17**
+  (see as-shipped below).
+- **9b.2a — OBJ→GPU upload path.** Generic
+  `MeshLoader::createMesh(engine, vertices, indices)` +
+  `VulkanRenderer::setDefaultMeshFromData` setter. Demo
+  loads `examples/rpg_demo/assets/cube.obj` at startup,
+  replacing the procedural cube. Single-mesh dispatch
+  preserved.  ✅ **landed 2026-05-17** (see below).
+- **9b.2b — Multi-mesh dispatch.** Per-meshId draw loop +
+  renderer slot table + `CubeRender::meshId` + pyramid
+  asset for pickups.  ✅ **landed 2026-05-17**
+  (see §3.11.7b.3 below).
+- **9b.3 — Shader file I/O + hot reload.** Pipeline shaders
+  now register with `ShaderLoader` at create time; F12 →
+  renderer's `reloadShaders` → `markResourceStale<Shader>`
+  → loader re-reads `.spv` → `AssetReloaded` →
+  renderer subscriber rebuilds the affected `VkPipeline`.
+  ✅ **landed 2026-05-17** (see §3.11.7b.4 below).
+- **9b.4 — Vulkan skinning pipeline.** Bone-weight
+  vertex attributes, pose buffer ring, descriptor sets,
+  vertex shader skinning math, glTF skeleton import.
+  Heaviest sub-batch (~1-2 weeks per the original D6
+  spec). Procedural Y-bob from D6 remains the fallback
+  when no skeleton is bound. See §3.11.7b.5 for the
+  three-stage breakdown deferring full implementation
+  to a focused future batch.
+
+#### 3.11.7b.1 Batch 9b.1 — OBJ parser  ✅ landed 2026-05-17
+
+**Files:**
+
+- **`examples/rpg_demo/ObjLoader.hpp`** — public API:
+  `MeshData` POD (positions + normals flat-packed at the
+  opaque pipeline's 24-byte stride; 16-bit indices),
+  `ObjParseResult`, free functions `parseObj(string_view)`
+  and `parseObjFile(string_view path)`.
+- **`examples/rpg_demo/ObjLoader.cpp`** — single-pass
+  parser. Supports `v`, `vn`, `vt` (parsed-then-ignored),
+  `f a/b/c d/e/f g/h/i [...]` with `a`/`a//c`/`a/b`
+  forms. N-gon faces fan-split into triangles. Missing
+  normals default to (0,1,0). Malformed value lines
+  silently skipped; structural failures (16-bit index
+  overflow, no faces) surface as `ok=false`.
+- **`examples/rpg_demo/CMakeLists.txt`** — `ObjLoader.cpp`
+  added to `rpg_demo_core` sources.
+- **`tests/rpg_demo/test_obj_loader.cpp`** — 7 cases:
+  single triangle, hand-rolled cube (8v/6vn/6 quads →
+  36 corners), pentagon (5-gon → 9 corners), missing-normal
+  fallback, malformed-line tolerance (`#`/`o`/`mtllib`/
+  `usemtl`/`g`/`s` + bad-float `v`), empty input, no-faces
+  input. **PASS**.
+- **`tests/rpg_demo/CMakeLists.txt`** — `test_obj_loader`
+  registered.
+
+**Library gaps surfaced: none.** Parser is a sibling-
+library addition per §3.3 — no engine API changes.
+
+**Items still deferred to 9b.2 / 9b.3:**
+
+1. `MeshLoader::createFromObj` renderer-side upload.
+2. Multi-mesh dispatch in `VulkanRenderer::recordFrame`.
+3. Real shader file I/O + runtime `glslc`.
+4. Renderer-side `AssetReloaded` pipeline rebuild.
+5. Full bone-weighted skinning pipeline.
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 94/94 on both trees** (was 93; +1 from
+  `test_obj_loader`).
+- rpg_demo executable still builds + runs validation-clean
+  (parser is unwired into the renderer path).
+
+**Files:** 2 new (`ObjLoader.{hpp,cpp}`), 1 new test
+(`test_obj_loader.cpp`), 2 modified CMakeLists.
+
+**Effort:** ~1 hour actual.
+
+#### 3.11.7b.2 Batch 9b.2a — OBJ→GPU upload path  ✅ landed 2026-05-17
+
+Plumbs the 9b.1 parser into the Vulkan renderer. The
+renderer's hardcoded procedural unit-cube (the
+`kCubeVertices` / `kCubeIndices` arrays in
+`MeshLoader.cpp`) is now replaced at startup by a real
+`.obj` asset loaded from disk. No multi-mesh dispatch
+yet — the single `cubeHandle` is swapped for a different
+single mesh; per-entity-class meshIds remain 9b.2b's
+scope.
+
+**Files:**
+
+- **`examples/vulkan_renderer/src/MeshLoader.{hpp,cpp}`** —
+  added `createMesh(engine, vertices, indices)` (generic
+  upload). `createUnitCube` refactored to delegate to it,
+  collapsing two upload paths to one. New method asserts
+  the input matches the opaque pipeline's vertex layout
+  (`vertices.size() % 6 == 0`, `indices.size() % 3 == 0`)
+  and returns an invalid handle on violation. `<span>`
+  added to the header.
+- **`examples/vulkan_renderer/include/threadmaxx_vk/VulkanRenderer.hpp`** —
+  added `setDefaultMesh(ResourceHandle<Mesh>)` and
+  `setDefaultMeshFromData(std::span<const float>,
+  std::span<const std::uint16_t>)`. The latter uses the
+  internal `MeshLoader` so callers don't need access to
+  the private loader API. `<span>`, `Resource.hpp`,
+  `Mesh.hpp` added to the public header.
+- **`examples/vulkan_renderer/src/VulkanRenderer.cpp`** —
+  implementations. `setDefaultMesh` move-assigns into
+  `impl_->cubeHandle`; the prior handle's refcount drops
+  via `ResourceHandle::~ResourceHandle` and the slot
+  frees if nothing else holds it.
+- **`examples/rpg_demo/assets/cube.obj`** — sample asset
+  exercised at startup. 8 v + 6 vn + 6 quads = 12
+  triangles = 36 corners after fan-split. Same shape the
+  procedural cube produces, byte-for-byte.
+- **`examples/rpg_demo/CMakeLists.txt`** — added
+  `RPG_DEMO_SOURCE_DIR` compile def (PUBLIC on
+  `rpg_demo_core`) so `main.cpp` can resolve
+  `assets/cube.obj` regardless of CWD.
+- **`examples/rpg_demo/main.cpp`** — after
+  `engine.initialize(game)` returns, calls
+  `rpg::parseObjFile` on `assets/cube.obj` and feeds the
+  result through `renderer->setDefaultMeshFromData`.
+  Failure path logs the reason and falls back silently
+  to the procedural cube (the renderer's
+  `initialize()`-time `createUnitCube` already ran).
+
+**Engine subsystems newly exercised in the demo:**
+
+- The end-to-end `parseObj` → `MeshLoader::createMesh`
+  → `engine.resources().addRefCounted<Mesh>` →
+  `VulkanRenderer::setDefaultMesh` pipeline, top to
+  bottom.
+- `ResourceHandle<Mesh>` move-assign and the slot-free
+  side-effect on the previous default mesh.
+
+**Library gaps surfaced: none.** All additions are
+public API on the example renderer; the core threadmaxx
+library is unchanged.
+
+**Items still deferred to 9b.2b / 9b.3 / 9b.4:**
+
+1. Multi-mesh dispatch in `VulkanRenderer::recordCamera`
+   (one bind+draw per unique meshId per camera slice).
+2. `CubeRender::meshId` field + demo assigns different
+   shapes to different entity classes.
+3. Real shader file I/O + runtime `glslc`.
+4. Renderer-side `AssetReloaded` pipeline rebuild.
+5. Full bone-weighted skinning pipeline.
+
+**Test coverage:** the parser is unit-tested in 9b.1
+(`tests/rpg_demo/test_obj_loader.cpp`); the upload +
+default-mesh swap is exercised by the rpg_demo running
+validation-clean. No new headless test is added — a
+Vulkan-aware harness for the upload path would require a
+real device + validation layers in CTest, which the
+project hasn't adopted.
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 94/94 on both trees** (unchanged from 9b.1 —
+  no new tests; correctness gate for this sub-batch is
+  the rpg_demo running validation-clean and printing
+  `[rpg_demo] obj asset: …/assets/cube.obj corners=36
+  installed=1`).
+
+**Files:** 1 new (`assets/cube.obj`), 5 modified
+(`MeshLoader.{hpp,cpp}`, `VulkanRenderer.hpp`,
+`VulkanRenderer.cpp`, `rpg_demo/CMakeLists.txt`,
+`rpg_demo/main.cpp`).
+
+**Effort:** ~1 hour actual.
+
+#### 3.11.7b.3 Batch 9b.2b — Multi-mesh dispatch  ✅ landed 2026-05-17
+
+Closes the multi-mesh half of batch 9b.2. The renderer
+now dispatches per-meshId: each camera's pre-packed
+instance slice is sub-divided into per-mesh buckets, and
+the draw loop binds the matching mesh + draws each
+bucket separately. The demo loads a second OBJ asset
+(`assets/pyramid.obj`), registers it, and assigns its
+meshId to every pickup spawn. Default-cube paths (every
+non-pickup entity) are unaffected: a single-bucket
+slice collapses to the same single-bind + single-draw
+path as pre-9b.2b.
+
+**Files:**
+
+- **`examples/vulkan_renderer/include/threadmaxx_vk/VulkanRenderer.hpp`** —
+  added `registerMesh(handle) -> int32_t` and
+  `registerMeshFromData(spans) -> int32_t`. Both return
+  `-1` on failure / null input. Slot 0 is the default
+  mesh (set via `setDefaultMesh*`); registered slots are
+  1..N.
+- **`examples/vulkan_renderer/src/VulkanRenderer.cpp`** —
+  added `Impl::meshSlots` vector, `Impl::lookupMesh`
+  helper, `Impl::PerFrame::scratchMeshIds` /
+  `scratchBuckets` (per-frame allocation-stable buckets
+  for the per-camera pack loop). Replaced
+  `Impl::CameraSlice::{offsetBytes, instanceCount}` with
+  `std::vector<MeshGroup>`. Refactored `recordFrame`'s
+  pack loop: per camera, instances are bucketed by
+  meshId then concatenated into `packed` in insertion
+  order, with each bucket's `(meshId, offsetBytes,
+  count)` recorded as a `MeshGroup`. Refactored
+  `recordCamera`'s opaque pass: pipeline + push
+  constants bound once, then one
+  `vkCmdBindVertexBuffers` + `vkCmdBindIndexBuffer` +
+  `vkCmdDrawIndexed` per `MeshGroup`. `shutdown` clears
+  `meshSlots` before the loader's `releaseGpuResources`
+  runs.
+- **`examples/rpg_demo/DemoTypes.hpp`** — `CubeRender`
+  gained `int32_t meshId = 0` (replaces one slot of the
+  trailing pad array). `WorldState` gained `int32_t
+  pickupMeshId = 0`.
+- **`examples/rpg_demo/SaveLoadSystem.cpp`** —
+  `kRpgSaveVersion` bumped from 1 → 2 with the
+  `CubeRender` layout change. The per-section stride
+  check would already reject pre-9b.2b saves;
+  the bump gives a clearer up-front version mismatch.
+- **`examples/rpg_demo/CubeRenderSystem.{hpp,cpp}`** —
+  `Snapshot` carries `meshId`; `update` reads it from
+  `CubeRender::meshId`; `buildRenderFrame` writes it
+  into `DrawItem::meshId`.
+- **`examples/rpg_demo/DemoGame.{hpp,cpp}`** — added
+  `RegisterMeshFn` callback type + `setRegisterMeshFn`
+  setter. `onSetup` parses
+  `assets/pyramid.obj` and registers via the callback;
+  stashes the returned meshId in
+  `WorldState::pickupMeshId`. Headless tests leave the
+  callback null and pickups fall back to meshId 0 (the
+  default cube).
+- **`examples/rpg_demo/RespawnSystem.cpp`** —
+  killed-NPC drops now also use
+  `worldState_->pickupMeshId` so they match the
+  floor-spawn pickup shape.
+- **`examples/rpg_demo/main.cpp`** — installs the
+  callback that forwards to `renderer->registerMeshFromData`
+  before `engine.initialize(game)`.
+- **`examples/rpg_demo/assets/pyramid.obj`** — new
+  asset. 5 v + 6 vn + 6 faces (4 side tris + 2 base
+  tris) → 18 corners.
+- 4 modified test files (`tests/rpg_demo/test_animation`,
+  `test_pickup`, `test_quests`) — dropped trailing
+  `{0,0,0}` pad initializer from `CubeRender{}`
+  literals (the trailing fields now default-init
+  correctly to zero).
+
+**Renderer determinism contract:** bucket iteration is
+insertion order (first-seen meshId per camera).
+Auto-instances (`frame.instances`) lane is walked first,
+then opaque DrawItems, so meshId 0 always lands first
+when present. This matches pre-9b.2b draw ordering for
+any scene where every instance has meshId == 0.
+
+**Engine subsystems newly exercised in the demo:**
+
+- The multi-mesh `meshId` path through
+  `RenderInstance` / `DrawItem` / `InstanceLayoutEntry`,
+  end to end.
+- `ResourceHandle<Mesh>` for non-default registered
+  slots; the renderer's slot table holds them by-value,
+  so their refcounts persist for the renderer's lifetime.
+
+**Library gaps surfaced: none.** The
+`ResourceHandle<Mesh>::valid()` precondition on
+`registerMesh` is the only assertion the renderer
+makes; all other behavior plumbs through public engine
+APIs.
+
+**Items still deferred to 9b.3 / 9b.4:**
+
+1. Real shader file I/O + runtime `glslc`.
+2. Renderer-side `AssetReloaded` pipeline rebuild.
+3. Full bone-weighted skinning pipeline.
+
+**Test coverage:** the parser tests from 9b.1 carry
+forward unchanged. The multi-mesh draw path is
+exercised by the rpg_demo running validation-clean
+(pickups visibly render as pyramids instead of cubes
+when the pyramid load succeeds). The headless tests
+keep the callback null so the demo systems all see
+`pickupMeshId == 0` — the same `meshId == 0` →
+default-cube path that pre-9b.2b code took.
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 94/94 on both trees** (unchanged from 9b.2a).
+  test_round_trip exercises the bumped
+  `kRpgSaveVersion`; the headless demo init runs
+  with the registration callback null and pickups
+  spawn with meshId=0.
+
+**Files:** 1 new (`assets/pyramid.obj`), 12 modified
+(VulkanRenderer h+cpp; MeshLoader untouched this round;
+DemoTypes, DemoGame h+cpp, CubeRenderSystem h+cpp,
+SaveLoadSystem, RespawnSystem, main.cpp, three test
+files: test_animation, test_pickup, test_quests).
+
+**Effort:** ~2 hours actual.
+
+#### 3.11.7b.4 Batch 9b.3 — Shader file I/O + hot reload  ✅ landed 2026-05-17
+
+Closes the shader-side of the original D7 deferred list.
+The renderer's pipeline shaders are now registered with
+the `ShaderLoader` at create time, with both their
+embedded SPIR-V (initial value) and on-disk `.spv` path
+(re-read on hot reload). The renderer subscribes to the
+engine's `AssetReloaded` event channel; when a Shader-
+typed reload fires for one of the six tracked shaders,
+the renderer rebuilds the affected `VkPipeline` in
+place. F12 in rpg_demo triggers the full chain via a
+new `VulkanRenderer::reloadShaders` public method.
+
+**Files:**
+
+- **`examples/vulkan_renderer/CMakeLists.txt`** — adds
+  `THREADMAXX_VK_SHADER_DIR` compile def pointing at
+  `${VK_GENERATED_DIR}` (the per-build `.spv` output
+  directory). PRIVATE on the renderer target.
+- **`examples/vulkan_renderer/src/VulkanPipelines.{hpp,cpp}`** —
+  major refactor:
+  - `PipelineShaderSlot` enum (6 stages: opaque
+    vert/frag, debug-line vert/frag, debug-point
+    vert/frag).
+  - `create(ctx, colorFormat, depthFormat, shaderLoader, engine)`
+    — takes the loader + engine, registers each shader
+    via `shaderLoader.add(engine, shaderPathFor(slot),
+    embeddedSpvFor(slot))`, stores per-stage
+    `ResourceHandle<Shader>`.
+  - Per-pipeline build helpers (`buildOpaquePipeline`,
+    `buildDebugLinePipeline`, `buildDebugPointPipeline`)
+    — pure functions of VkShaderModule + format state.
+    Used by both initial create and the rebuild paths.
+  - `rebuildIfMatches(ctx, engine, oldId, newId)` —
+    identifies which stage owned `oldId`, acquires the
+    new handle via `engine.resources().acquire<Shader>(newId)`,
+    calls `vkDeviceWaitIdle`, and rebuilds the
+    affected pipeline using fresh SPIR-V from the
+    registry. Pipeline layouts persist.
+  - `recreatePipelines(ctx, colorFormat, depthFormat, engine)` —
+    swapchain-recreate path; rebuilds pipelines without
+    re-registering shaders (which would duplicate
+    loader entries).
+  - `shaderId(slot)` accessor.
+- **`examples/vulkan_renderer/src/VulkanRenderer.cpp`** —
+  reordered `initialize()` so loaders come before the
+  pipeline build. Added a `Subscription` member that
+  auto-detaches; subscribes to
+  `engine.events<AssetReloaded>()` and dispatches Shader
+  events to `pipes.rebuildIfMatches`. Public
+  `reloadShaders()` walks the six tracked shaders and
+  calls `engine.markResourceStale<Shader>(id)` for each;
+  the loader's `update()` pump on the next tick re-reads
+  the `.spv` files and emits `AssetReloaded`. Swapchain
+  recreate now uses `pipes.recreatePipelines` instead of
+  `pipes.destroy + pipes.create` to avoid duplicate
+  shader registrations.
+- **`examples/vulkan_renderer/include/threadmaxx_vk/VulkanRenderer.hpp`** —
+  added `reloadShaders()` public method.
+- **`examples/rpg_demo/HudSystem.{hpp,cpp}`** — ctor takes
+  optional `ReloadShadersFn` callback. F12 invokes it
+  (in headless mode where the callback is null, F12 is
+  a no-op with an informational log line). Removed the
+  synthetic `AssetReloaded` emit.
+- **`examples/rpg_demo/DemoGame.{hpp,cpp}`** — added
+  `setReloadShadersFn` setter; passes the callback to
+  `HudSystem`'s ctor.
+- **`examples/rpg_demo/main.cpp`** — installs the
+  renderer-bound lambda
+  `[r = renderer.get()]{ r->reloadShaders(); }` via
+  `game.setReloadShadersFn` before `engine.initialize`.
+- **`tests/rpg_demo/test_asset_reload.cpp`** — restructured
+  to build the engine + game manually so a synthetic
+  reload callback can be installed before
+  `engine.initialize` fires. The callback emits
+  AssetReloaded directly; the test still asserts
+  "3 F12 presses → 3 deliveries". The test no longer
+  relies on HudSystem's now-removed synthetic emit path.
+
+**End-to-end chain exercised by F12 in production:**
+
+1. F12 edge → `HudSystem::preStep` consumes it →
+   invokes `reloadShadersFn_`.
+2. The lambda calls `renderer->reloadShaders()`.
+3. `reloadShaders` iterates the six tracked shader ids
+   and calls `engine.markResourceStale<Shader>(id)` per.
+4. `ShaderLoader::markStale` queues each reload.
+5. On the next `engine.step()`, the post-postStep
+   loader pump calls `ShaderLoader::update`, which
+   re-reads each `.spv` file from
+   `${VK_GENERATED_DIR}/{name}.spv`, registers a new
+   slot, and emits `AssetReloaded{oldId, newId, type}`
+   per reload.
+6. The engine's tick-boundary event drain delivers
+   each `AssetReloaded` to the renderer's subscriber.
+7. The subscriber calls
+   `pipes.rebuildIfMatches(ctx, engine, oldId, newId)`,
+   which `vkDeviceWaitIdle`s, destroys the affected
+   pipeline, fetches new SPIR-V from the registry,
+   and creates a fresh `VkPipeline` using the
+   current pipeline layout.
+
+**Engine subsystems newly exercised end-to-end:**
+
+- `IResourceLoader::markStale` / `update` / file I/O.
+- `Engine::markResourceStale<T>(id)`.
+- `EventChannel<AssetReloaded>` typed subscriber path,
+  with the renderer as the canonical subscriber.
+- `ResourceRegistry::acquire<T>(id)` for the renderer
+  to refcount-pin a freshly-installed shader slot.
+
+**Library gaps surfaced: none.** All hot-reload
+plumbing already existed in the core; 9b.3 wired the
+renderer + demo as the first real consumer.
+
+**Items still deferred to 9b.4:** the full
+bone-weighted Vulkan skinning pipeline — see
+§3.11.7b.5 below for the three-stage breakdown.
+
+**Test coverage:**
+
+- `tests/rpg_demo/test_asset_reload.cpp` — restructured;
+  still validates the F12 → AssetReloaded delivery chain
+  via a synthetic reload callback. **PASS** (3
+  deliveries).
+- Renderer-side pipeline rebuild path is exercised at
+  runtime via the rpg_demo's F12 handler.
+  Validation-clean is the runtime gate.
+
+**Verification:**
+- Both `build/` and `build-werror/` clean.
+- **ctest 94/94 on both trees** (unchanged total —
+  test_asset_reload was updated in place, not added).
+
+**Files:** 8 modified
+(`vulkan_renderer/CMakeLists.txt`,
+`VulkanPipelines.{hpp,cpp}`,
+`VulkanRenderer.{hpp,cpp}`,
+`HudSystem.{hpp,cpp}`,
+`DemoGame.{hpp,cpp}`,
+`rpg_demo/main.cpp`,
+`tests/rpg_demo/test_asset_reload.cpp`).
+
+**Effort:** ~3 hours actual.
+
+#### 3.11.7b.5 Batch 9b.4 — Vulkan skinning pipeline — DEFERRED
+
+This is the final renderer-side work item from the
+original §3.11.7 D7 spec. Honest scoping: the full
+skinning pipeline is a 1-2 week separate batch, not a
+"slot in alongside 9b.3" deliverable. It touches the
+vertex layout (which means a new pipeline variant —
+the existing opaque pipeline's vertex bindings can't
+silently grow without breaking the cube + pyramid
+meshes already in flight), descriptor sets (currently
+the renderer has none), per-frame pose upload
+infrastructure (currently absent), and asset import
+(a glTF parser is a sibling library, not a 2-hour
+deliverable). Procedural Y-bob from D6 is the demo's
+preserved fallback while this stays deferred.
+
+The work splits naturally into three sub-batches:
+
+- **9b.4.a — Skinned vertex layout + pipeline.** Add
+  a `opaque_skinned` pipeline variant: vertex binding
+  carries pos[3] + normal[3] + boneIds[4 × uint8] +
+  boneWeights[4]. New `*_skinned.vert` shader that
+  reads bone matrices from a descriptor-set-bound
+  storage buffer. Pipeline + descriptor-set-layout
+  creation; no demo wiring yet. ~3 days.
+- **9b.4.b — Pose upload ring + descriptor sets.**
+  Per-frame `UploadRing`-backed bone matrix buffer
+  (4×4 matrices, indexed by per-instance bone-base
+  offset). Descriptor-set-per-frame-slot allocation.
+  Renderer wires the per-frame pose buffer binding
+  before opaque_skinned draws. ~3 days.
+- **9b.4.c — glTF skinned-mesh import + demo
+  integration.** Sibling-library glTF 2.0 parser in
+  `examples/rpg_demo/GltfLoader.{hpp,cpp}` producing a
+  `SkinnedMeshData` POD (verts + indices + bone
+  hierarchy + per-vertex bone influences). Demo
+  swaps one NPC's render path from `CubeRender`
+  (procedural Y-bob) to a `SkinnedRender` user
+  component referencing the new pipeline. A simple
+  walking animation drives the per-frame bone matrix
+  upload. ~5 days.
+
+Each sub-batch is independently shippable. None of
+them is required to "close" §3.11 — D6's procedural
+Y-bob already satisfies the original animation gate
+per §3.11.6.
+
+**Why this stays deferred rather than half-shipped:**
+
+1. The vertex format change is irreversible without
+   pipeline duplication — a half-finished skinned
+   pipeline that ships as a stub would either crash
+   on draw (no descriptor set bound) or render
+   garbage (uninitialized bone matrices).
+2. Validation-clean is the renderer's correctness
+   gate; a skinning path that's never actually drawn
+   can't be validated this way.
+3. The demo's existing entities (player, NPCs,
+   pickups, sword) are all unit cubes / pyramids
+   with no bone structure — there's nothing to skin
+   without authoring real assets.
+4. The procedural Y-bob from D6 is the right
+   fallback for the demo's current asset set; a
+   half-finished skinning system doesn't replace
+   anything.
+
+When 9b.4 is undertaken, it gets its own focused
+session (or three).
 
 ---
 

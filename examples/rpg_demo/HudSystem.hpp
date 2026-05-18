@@ -6,6 +6,7 @@
 
 #include "DemoTypes.hpp"
 
+#include <functional>
 #include <memory>
 
 namespace rpg {
@@ -18,9 +19,16 @@ namespace rpg {
 ///     ticks.
 class HudSystem : public threadmaxx::ISystem {
 public:
+    /// §3.11 batch 9b.3 — optional callback invoked on F12. The demo
+    /// installs a lambda that forwards to
+    /// `VulkanRenderer::reloadShaders`; tests leave it null and F12
+    /// becomes a no-op.
+    using ReloadShadersFn = std::function<void()>;
+
     HudSystem(threadmaxx::Engine* engine,
               WorldState* worldState,
-              UserComponentIds* ids);
+              UserComponentIds* ids,
+              ReloadShadersFn reloadShadersFn = {});
     ~HudSystem() override;
 
     const char* name() const noexcept override { return "hud"; }
@@ -47,6 +55,9 @@ private:
     threadmaxx::Subscription   reloadSub_;
     std::unique_ptr<threadmaxx::FileTraceSink> trace_;
     std::uint64_t              lastLoggedTick_ = 0;
+    /// §3.11 batch 9b.3 — null when no renderer is wired (headless
+    /// tests) or when main.cpp didn't provide one.
+    ReloadShadersFn            reloadShadersFn_;
 };
 
 } // namespace rpg

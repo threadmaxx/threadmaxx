@@ -31,6 +31,7 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
         s.color[2]  = cr->color[2];
         s.color[3]  = cr->color[3];
         s.scale     = cr->scale;
+        s.meshId    = cr->meshId;
         s.entity    = e;
         snapshot_.push_back(s);
     }
@@ -58,7 +59,7 @@ void CubeRenderSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             s.transform.scale.y * s.scale,
             s.transform.scale.z * s.scale,
         };
-        di.meshId       = 0;
+        di.meshId       = s.meshId;        // §3.11 batch 9b.2b
         di.materialId   = 0;
         di.materialOverride.params = {s.color[0], s.color[1], s.color[2], s.color[3]};
         // Default = all cameras; cullByFrustum overwrites below.

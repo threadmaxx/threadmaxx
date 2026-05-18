@@ -31,6 +31,7 @@ private:
         threadmaxx::Transform transform;
         float                 color[4];
         float                 scale;
+        std::int32_t          meshId;        // §3.11 batch 9b.2b
         threadmaxx::EntityHandle entity;
     };
 

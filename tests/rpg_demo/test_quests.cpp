@@ -43,7 +43,7 @@ struct QuestTestGame : DemoGame {
             };
             seed.spawnBundle(h, b);
             addUserComponent(seed, ids().cubeRender, h,
-                CubeRender{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f, {0,0,0}});
+                CubeRender{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f});
             addUserComponent(seed, ids().pickup, h, Pickup{1u});
         }
     }

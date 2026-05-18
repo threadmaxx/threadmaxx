@@ -19,6 +19,7 @@ set(RPG_DEMO_TESTS
     test_animation
     test_preload
     test_asset_reload
+    test_obj_loader
 )
 
 foreach(test ${RPG_DEMO_TESTS})

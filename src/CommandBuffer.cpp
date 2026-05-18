@@ -108,6 +108,21 @@ void CommandBuffer::spawnBundle(EntityHandle reserved, const Bundle& b) {
             b.physicsBody, b.navAgent, b.boundingVolume,
             b.initialMask, reserved}));
 }
+// §3.10.3 batch 23 (F12) — bulk spawn. Pre-reserve the storage so
+// the loop's per-spawn `emplace_back` doesn't trigger geometric
+// vector growth N times. Loop body is one `make_unique<CmdSpawn>` +
+// one `commands_.emplace_back`; the §3.9.4 batch 19 migration-batch
+// hint inside `EngineImpl::commitBuffer` handles the destination-
+// chunk amortization on the apply side.
+void CommandBuffer::spawnBundleN(std::span<const EntityHandle> reserved,
+                                 std::span<const Bundle> bundles) {
+    const std::size_t n = std::min(reserved.size(), bundles.size());
+    if (n == 0) return;
+    commands_.reserve(commands_.size() + n);
+    for (std::size_t i = 0; i < n; ++i) {
+        spawnBundle(reserved[i], bundles[i]);
+    }
+}
 void CommandBuffer::destroy(EntityHandle e) {
     commands_.emplace_back(detail::CmdDestroy{e});
 }

@@ -13,8 +13,10 @@ namespace rpg {
 
 HudSystem::HudSystem(threadmaxx::Engine* engine,
                      WorldState* worldState,
-                     UserComponentIds* ids)
-    : engine_(engine), worldState_(worldState), ids_(ids) {
+                     UserComponentIds* ids,
+                     ReloadShadersFn reloadShadersFn)
+    : engine_(engine), worldState_(worldState), ids_(ids),
+      reloadShadersFn_(std::move(reloadShadersFn)) {
     pickupSub_ = engine_->events<PickupCollected>().subscribeScoped(
         [](const PickupCollected& ev) {
             std::printf("[hud] pickup collected — total=%u\n", ev.totalPickups);
@@ -86,19 +88,20 @@ void HudSystem::preStep(threadmaxx::SystemContext&) {
     }
     if (edges & kEdgeReloadShader) {
         input().edges.fetch_and(~kEdgeReloadShader, std::memory_order_acq_rel);
-        // §3.11.7 batch D7: F12 emits a synthetic `AssetReloaded`
-        // event to demonstrate the hot-reload event channel from
-        // game-side. The real renderer-side pipeline rebuild on
-        // this event is deferred to `batch 9b` per FUTURE_WORK.
-        // The subscriber installed in the ctor prints a line.
-        engine_->events<threadmaxx::AssetReloaded>().emit(
-            threadmaxx::AssetReloaded{
-                /*oldIndex*/ 0,
-                /*oldGeneration*/ 0,
-                /*newIndex*/ 1,
-                /*newGeneration*/ 1,
-                /*type*/ std::type_index(typeid(void)),
-            });
+        // §3.11 batch 9b.3 — F12 now triggers an actual shader hot
+        // reload via the renderer-side callback main.cpp wired in.
+        // The renderer iterates its tracked shader ids and calls
+        // `engine.markResourceStale<Shader>(id)` for each; the
+        // `ShaderLoader::update` pump on the next tick re-reads the
+        // on-disk `.spv` files and emits `AssetReloaded` events,
+        // which the renderer subscribes to and uses to rebuild
+        // pipelines. Headless tests leave `reloadShadersFn_` null so
+        // F12 is a no-op there.
+        if (reloadShadersFn_) {
+            reloadShadersFn_();
+        } else {
+            std::printf("[hud] F12: no renderer callback wired (headless mode)\n");
+        }
     }
 }
 

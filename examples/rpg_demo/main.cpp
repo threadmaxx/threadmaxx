@@ -23,6 +23,7 @@
 
 #include "DemoGame.hpp"
 #include "Input.hpp"
+#include "ObjLoader.hpp"
 
 #include <threadmaxx_vk/VulkanRenderer.hpp>
 
@@ -36,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -116,6 +118,27 @@ int main(int argc, char** argv) {
     auto renderer = std::make_unique<threadmaxx_vk::VulkanRenderer>(&engine, window, vrcfg);
     engine.setRenderer(renderer.get());
 
+    // §3.11 batch 9b.2b — wire the multi-mesh registration callback
+    // before `engine.initialize`. By the time `onSetup` fires the
+    // renderer's `initialize()` has run, so the loader is ready and
+    // `registerMeshFromData` returns a real meshId. The callback is
+    // null-safe — headless tests skip this step and pickups fall
+    // back to the default cube.
+    game.setRegisterMeshFn(
+        [r = renderer.get()](std::span<const float>         vertices,
+                             std::span<const std::uint16_t> indices) {
+            return r->registerMeshFromData(vertices, indices);
+        });
+
+    // §3.11 batch 9b.3 — wire the F12 shader-reload callback. The
+    // callback fires from `HudSystem::preStep` when the user hits
+    // F12; the renderer's `reloadShaders` walks each tracked pipeline
+    // shader, calls `engine.markResourceStale<Shader>(id)`, and lets
+    // the engine's loader → AssetReloaded → renderer-subscriber chain
+    // rebuild the affected pipelines. Headless tests leave this null
+    // and F12 becomes a no-op.
+    game.setReloadShadersFn([r = renderer.get()] { r->reloadShaders(); });
+
     WindowUserData ud{&engine, &game.worldState()};
     glfwSetWindowUserPointer(window, &ud);
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
@@ -124,6 +147,28 @@ int main(int argc, char** argv) {
     if (!engine.initialize(game)) {
         std::fprintf(stderr, "[rpg_demo] engine.initialize failed\n");
         return 1;
+    }
+
+    // §3.11 batch 9b.2 — replace the procedural unit-cube the renderer
+    // built during initialize() with one loaded from an .obj asset.
+    // Exercises the full demo-side `parseObjFile` → renderer-side
+    // `createMesh` + `setDefaultMesh` upload path end-to-end. Failure
+    // silently leaves the procedural cube in place — the demo is still
+    // playable, the log line just calls out which path is live.
+    {
+        const std::string objPath = std::string(RPG_DEMO_SOURCE_DIR) +
+                                    "/assets/cube.obj";
+        const auto parsed = rpg::parseObjFile(objPath);
+        if (parsed.ok) {
+            const bool installed = renderer->setDefaultMeshFromData(
+                std::span<const float>(parsed.mesh.vertices),
+                std::span<const std::uint16_t>(parsed.mesh.indices));
+            std::printf("[rpg_demo] obj asset: %s corners=%u installed=%d\n",
+                        objPath.c_str(), parsed.mesh.cornerCount, int(installed));
+        } else {
+            std::printf("[rpg_demo] obj asset: %s — fallback to procedural cube (%s)\n",
+                        objPath.c_str(), parsed.error.c_str());
+        }
     }
 
     std::printf("[rpg_demo] running %s — Esc / window close to exit\n",

@@ -10,6 +10,7 @@ project(threadmaxx
 option(THREADMAXX_BUILD_EXAMPLES "Build the bundled minimal example" ON)
 option(THREADMAXX_BUILD_TESTS "Build and register the test suite" ON)
 option(THREADMAXX_BUILD_BENCHMARKS "Build the standalone benchmark binaries" OFF)
+option(THREADMAXX_BUILD_SIMD "Make the threadmaxx_simd header-only sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -106,6 +107,32 @@ else()
     if (THREADMAXX_WARNINGS_AS_ERRORS)
         target_compile_options(threadmaxx PRIVATE -Werror)
     endif()
+endif()
+
+# --------------------------------------------------------------------------
+# threadmaxx_simd — header-only sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_SIMD=ON` (the default). The library
+# is pure headers; the INTERFACE target carries only the include
+# directory. Consumers `target_link_libraries(... threadmaxx::simd)`.
+# Designed to coexist with the core engine — the engine does not
+# depend on it. See `include/threadmaxx_simd/DESIGN_NOTES.md` for
+# the spec and `include/threadmaxx_simd/FUTURE_WORK.md` for the
+# batch plan.
+if (THREADMAXX_BUILD_SIMD)
+    add_library(threadmaxx_simd INTERFACE)
+    add_library(threadmaxx::simd ALIAS threadmaxx_simd)
+    target_include_directories(threadmaxx_simd INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    )
+    target_compile_features(threadmaxx_simd INTERFACE cxx_std_20)
+    # The SIMD library reuses the core's POD types (`Vec3`, `Transform`,
+    # etc.) so consumers need both. Marked PUBLIC so a single
+    # `target_link_libraries(client PRIVATE threadmaxx::simd)` is
+    # enough.
+    target_link_libraries(threadmaxx_simd INTERFACE threadmaxx::threadmaxx)
 endif()
 
 # --------------------------------------------------------------------------

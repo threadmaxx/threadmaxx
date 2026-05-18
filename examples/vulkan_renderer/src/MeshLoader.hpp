@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace threadmaxx_vk {
@@ -29,6 +30,23 @@ public:
     /// up and the registry is reachable via the engine. Idempotent: a
     /// second call replaces the existing entry.
     threadmaxx::ResourceHandle<Mesh> createUnitCube(threadmaxx::Engine& engine);
+
+    /// §3.11 batch 9b.2 — generic upload path. Accepts a flat vertex
+    /// stream matching the opaque pipeline's binding-0 layout (6
+    /// floats per corner: posXYZ + normalXYZ, 24-byte stride) and a
+    /// 16-bit index array. Creates host-visible VkBuffers, copies the
+    /// data, registers a new refcounted Mesh slot in the engine's
+    /// resource registry, and returns the handle. The loader tracks
+    /// the GPU memory so it can be freed at shutdown.
+    ///
+    /// @pre Vulkan context is up. @pre vertices.size() % 6 == 0.
+    /// @pre indices.size() % 3 == 0 and indices contains only values
+    /// within `[0, vertices.size() / 6)`. Inputs that fail these
+    /// preconditions return an invalid handle.
+    threadmaxx::ResourceHandle<Mesh> createMesh(
+        threadmaxx::Engine&             engine,
+        std::span<const float>          vertices,
+        std::span<const std::uint16_t>  indices);
 
     /// Called by @ref VulkanRenderer::shutdown immediately after
     /// `vkDeviceWaitIdle` and before the Vulkan context is destroyed.

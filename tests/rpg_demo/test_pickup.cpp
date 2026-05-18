@@ -35,7 +35,7 @@ struct PickupTestGame : DemoGame {
         };
         seed.spawnBundle(testPickup, b);
         addUserComponent(seed, ids().cubeRender, testPickup,
-            CubeRender{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f, {0,0,0}});
+            CubeRender{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f});
         addUserComponent(seed, ids().pickup, testPickup, Pickup{9u});
     }
 };

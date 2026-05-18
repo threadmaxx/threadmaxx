@@ -45,7 +45,7 @@ struct AnimTestGame : DemoGame {
         };
         seed.spawnBundle(bobNpc, b);
         addUserComponent(seed, ids().cubeRender, bobNpc,
-            CubeRender{{0.5f, 0.7f, 0.5f, 1.0f}, 1.0f, {0,0,0}});
+            CubeRender{{0.5f, 0.7f, 0.5f, 1.0f}, 1.0f});
         AnimState anim;
         anim.baseY     = 1.0f;
         anim.phase     = 0.0f;

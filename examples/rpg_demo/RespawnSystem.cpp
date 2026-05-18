@@ -32,9 +32,14 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
     if (drops_.empty()) return;
     const auto idsCube   = ids_->cubeRender;
     const auto idsPickup = ids_->pickup;
+    // §3.11 batch 9b.2b — match the floor-pickup meshId so killed-NPC
+    // drops draw with the same pyramid mesh (zero = default cube when
+    // the renderer callback wasn't wired).
+    const std::int32_t pickupMeshId =
+        worldState_ ? worldState_->pickupMeshId : 0;
     auto plans = drops_;  // copy by value into the lambda
 
-    ctx.single([plans = std::move(plans), idsCube, idsPickup]
+    ctx.single([plans = std::move(plans), idsCube, idsPickup, pickupMeshId]
                (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
         for (const auto& p : plans) {
             // §3.11.1 batch D1 — corpse: flip DisabledTag so the
@@ -56,8 +61,11 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
                 threadmaxx::Component::BoundingVolume,
             };
             cb.spawnBundle(p.pickup, b);
-            threadmaxx::addUserComponent(cb, idsCube, p.pickup,
-                CubeRender{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f, {0,0,0}});
+            {
+                CubeRender cr{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f};
+                cr.meshId = pickupMeshId;
+                threadmaxx::addUserComponent(cb, idsCube, p.pickup, cr);
+            }
             threadmaxx::addUserComponent(cb, idsPickup, p.pickup,
                 Pickup{2u});  // killed-NPC drop = 2x value of floor pickup
         }

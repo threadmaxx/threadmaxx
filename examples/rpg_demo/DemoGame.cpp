@@ -5,6 +5,7 @@
 #include "CombatSystem.hpp"
 #include "CubeRenderSystem.hpp"
 #include "DamageSystem.hpp"
+#include "ObjLoader.hpp"
 #include "PreloadLoader.hpp"
 #include "QuestSystem.hpp"
 #include "DayNightSystem.hpp"
@@ -104,6 +105,34 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     (void)engine.events<threadmaxx::BudgetExceeded>();
     (void)engine.events<QuestProgressed>();
 
+    // §3.11 batch 9b.2b — register the per-entity-class meshes via the
+    // renderer-bound callback main.cpp installed. The pyramid asset
+    // ships in `examples/rpg_demo/assets/pyramid.obj`; pickups draw
+    // with it when the registration succeeds. Headless tests (callback
+    // = null) leave `pickupMeshId = 0` and pickups fall back to the
+    // default cube — same behavior as pre-9b.2b. Parser failures and
+    // upload failures both fall through silently to the cube path.
+    if (registerMeshFn_) {
+        const std::string pyramidPath = std::string(RPG_DEMO_SOURCE_DIR) +
+                                        "/assets/pyramid.obj";
+        const auto parsed = parseObjFile(pyramidPath);
+        if (parsed.ok) {
+            const std::int32_t mid = registerMeshFn_(
+                std::span<const float>(parsed.mesh.vertices),
+                std::span<const std::uint16_t>(parsed.mesh.indices));
+            if (mid > 0) {
+                worldState_.pickupMeshId = mid;
+                std::printf("[demo] pyramid asset: corners=%u meshId=%d\n",
+                            parsed.mesh.cornerCount, mid);
+            } else {
+                std::printf("[demo] pyramid asset: upload failed; pickups fall back to cube\n");
+            }
+        } else {
+            std::printf("[demo] pyramid asset: parse failed (%s); pickups fall back to cube\n",
+                        parsed.error.c_str());
+        }
+    }
+
     // §3.11.5 batch D5 — choose spawn counts. `worldState_.stressMode`
     // is set by main.cpp from the `--stress` CLI flag (default false).
     worldState_.npcCount    = worldState_.stressMode ? kStressNpcCount
@@ -176,7 +205,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         };
         seed.spawnBundle(swordH, b);
         threadmaxx::addUserComponent(seed, ids_.cubeRender, swordH,
-            CubeRender{{0.85f, 0.85f, 0.95f, 1.0f}, 1.0f, {0,0,0}});
+            CubeRender{{0.85f, 0.85f, 0.95f, 1.0f}, 1.0f});
         threadmaxx::addUserComponent(seed, ids_.swordTag, swordH,
             SwordTag{1.4f});
     }
@@ -272,8 +301,11 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         };
         seed.spawnBundle(h, b);
 
-        threadmaxx::addUserComponent(seed, ids_.cubeRender, h,
-            CubeRender{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f});
+        {
+            CubeRender cr{{1.0f, 0.85f, 0.20f, 1.0f}, 0.7f};
+            cr.meshId = worldState_.pickupMeshId;
+            threadmaxx::addUserComponent(seed, ids_.cubeRender, h, cr);
+        }
         threadmaxx::addUserComponent(seed, ids_.pickup, h, Pickup{1u});
     }
 
@@ -333,7 +365,8 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         engine.registerSystem(std::make_unique<threadmaxx::FrameBudgetWatcher>(
             &engine, kTickBudgetSeconds));
     }
-    engine.registerSystem(std::make_unique<HudSystem>(&engine, &worldState_, &ids_));
+    engine.registerSystem(std::make_unique<HudSystem>(
+        &engine, &worldState_, &ids_, reloadShadersFn_));
 }
 
 } // namespace rpg

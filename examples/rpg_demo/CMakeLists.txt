@@ -46,10 +46,19 @@ add_library(rpg_demo_core STATIC
     AnimationSystem.cpp
     # §3.11.7 batch D7 — simulated boot-time loader
     PreloadLoader.cpp
+    # §3.11 batch 9b.1 — Wavefront OBJ parser (sibling-library)
+    ObjLoader.cpp
 )
 
 target_include_directories(rpg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(rpg_demo_core PUBLIC threadmaxx::threadmaxx glfw)
+
+# §3.11 batch 9b.2 — bake the source-dir path so the executable can
+# resolve `examples/rpg_demo/assets/*.obj` regardless of the CWD it's
+# launched from. `RPG_DEMO_SOURCE_DIR` is a `const char*` string
+# literal in main.cpp. Headless tests don't depend on the path.
+target_compile_definitions(rpg_demo_core PUBLIC
+    RPG_DEMO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 set_target_properties(rpg_demo_core PROPERTIES
     CXX_STANDARD 20

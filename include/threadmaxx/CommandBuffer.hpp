@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -304,6 +305,24 @@ public:
     /// Spawn a @ref Bundle into a pre-reserved handle taken via
     /// `SystemContext::reserveHandle()`.
     void spawnBundle(EntityHandle reserved, const Bundle& b);
+
+    /// §3.10.3 batch 23 (F12) — bulk-spawn helper. Pairs each handle
+    /// in @p reserved with the matching bundle in @p bundles and
+    /// emits N `spawnBundle(reserved[i], bundles[i])` commands. The
+    /// shorter of the two spans bounds the count, so callers can
+    /// pass mismatched-length spans intentionally (the extra entries
+    /// are silently skipped).
+    ///
+    /// Pre-reserves command-buffer storage to amortize the
+    /// `emplace_back` churn under high-spawn workloads. Callers
+    /// typically obtain @p reserved via
+    /// `Engine::reserveEntityHandles(count, span)` (the batch
+    /// reservation API). Combined with the §3.9.4 batch 19
+    /// migration-batching hint inside `commitBuffer`, a bulk spawn
+    /// pays roughly one geometric-growth event per destination
+    /// chunk regardless of N.
+    void spawnBundleN(std::span<const EntityHandle> reserved,
+                      std::span<const Bundle> bundles);
 
     void destroy(EntityHandle entity);
     void setTransform   (EntityHandle entity, const Transform&    t);
