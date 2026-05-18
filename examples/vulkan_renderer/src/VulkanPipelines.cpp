@@ -7,6 +7,7 @@
 
 #include "opaque_vert_spv.hpp"
 #include "opaque_frag_spv.hpp"
+#include "opaque_skinned_vert_spv.hpp"
 #include "debug_line_vert_spv.hpp"
 #include "debug_line_frag_spv.hpp"
 #include "debug_point_vert_spv.hpp"
@@ -45,13 +46,14 @@ namespace {
 std::filesystem::path shaderPathFor(PipelineShaderSlot slot) {
     const char* file = nullptr;
     switch (slot) {
-        case PipelineShaderSlot::OpaqueVert:     file = "opaque.vert.spv";       break;
-        case PipelineShaderSlot::OpaqueFrag:     file = "opaque.frag.spv";       break;
-        case PipelineShaderSlot::DebugLineVert:  file = "debug_line.vert.spv";   break;
-        case PipelineShaderSlot::DebugLineFrag:  file = "debug_line.frag.spv";   break;
-        case PipelineShaderSlot::DebugPointVert: file = "debug_point.vert.spv";  break;
-        case PipelineShaderSlot::DebugPointFrag: file = "debug_point.frag.spv";  break;
-        case PipelineShaderSlot::Count:          file = "<invalid>";             break;
+        case PipelineShaderSlot::OpaqueVert:        file = "opaque.vert.spv";         break;
+        case PipelineShaderSlot::OpaqueFrag:        file = "opaque.frag.spv";         break;
+        case PipelineShaderSlot::OpaqueSkinnedVert: file = "opaque_skinned.vert.spv"; break;
+        case PipelineShaderSlot::DebugLineVert:     file = "debug_line.vert.spv";     break;
+        case PipelineShaderSlot::DebugLineFrag:     file = "debug_line.frag.spv";     break;
+        case PipelineShaderSlot::DebugPointVert:    file = "debug_point.vert.spv";    break;
+        case PipelineShaderSlot::DebugPointFrag:    file = "debug_point.frag.spv";    break;
+        case PipelineShaderSlot::Count:             file = "<invalid>";               break;
     }
     return std::filesystem::path(THREADMAXX_VK_SHADER_DIR) / file;
 }
@@ -95,12 +97,13 @@ void fillStandardState(VkPipelineRasterizationStateCreateInfo& rs,
 // what subsequent re-reads pull in.
 std::span<const std::uint32_t> embeddedSpvFor(PipelineShaderSlot slot) {
     switch (slot) {
-        case PipelineShaderSlot::OpaqueVert:     return k_opaque_vert_spv;
-        case PipelineShaderSlot::OpaqueFrag:     return k_opaque_frag_spv;
-        case PipelineShaderSlot::DebugLineVert:  return k_debug_line_vert_spv;
-        case PipelineShaderSlot::DebugLineFrag:  return k_debug_line_frag_spv;
-        case PipelineShaderSlot::DebugPointVert: return k_debug_point_vert_spv;
-        case PipelineShaderSlot::DebugPointFrag: return k_debug_point_frag_spv;
+        case PipelineShaderSlot::OpaqueVert:        return k_opaque_vert_spv;
+        case PipelineShaderSlot::OpaqueFrag:        return k_opaque_frag_spv;
+        case PipelineShaderSlot::OpaqueSkinnedVert: return k_opaque_skinned_vert_spv;
+        case PipelineShaderSlot::DebugLineVert:     return k_debug_line_vert_spv;
+        case PipelineShaderSlot::DebugLineFrag:     return k_debug_line_frag_spv;
+        case PipelineShaderSlot::DebugPointVert:    return k_debug_point_vert_spv;
+        case PipelineShaderSlot::DebugPointFrag:    return k_debug_point_frag_spv;
         case PipelineShaderSlot::Count: break;
     }
     return {};
@@ -364,6 +367,106 @@ VkPipeline VulkanPipelines::buildDebugPointPipeline(VkDevice device,
     return pipe;
 }
 
+VkPipeline VulkanPipelines::buildOpaqueSkinnedPipeline(VkDevice device,
+                                                       VkShaderModule vs,
+                                                       VkShaderModule fs,
+                                                       VkFormat colorFormat,
+                                                       VkFormat depthFormat) {
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "main";
+
+    // §3.11.7b.5 batch 9b.4.a — skinned vertex format:
+    // pos[3]f + normal[3]f + boneIDs[4]u32 + boneWeights[4]f = 56 bytes.
+    VkVertexInputBindingDescription bindings[2] = {};
+    bindings[0].binding = 0;
+    bindings[0].stride = 56;   // 12 + 12 + 16 + 16
+    bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    bindings[1].binding = 1;
+    bindings[1].stride = 128;
+    bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+    VkVertexInputAttributeDescription attrs[8] = {};
+    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    0};                  // pos
+    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    sizeof(float) * 3};  // normal
+    attrs[2] = {2, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0};                  // instPos
+    attrs[3] = {3, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16};                 // instOrientation
+    attrs[4] = {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32};                 // instScale
+    attrs[5] = {5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 48};                 // instMatOverride
+    attrs[6] = {6, 1, VK_FORMAT_R32G32B32A32_SINT,   64};                 // instMeshMat (needs .w for boneBase)
+    // location 8: boneIDs (uvec4 → R32G32B32A32_UINT)
+    attrs[7] = {8, 0, VK_FORMAT_R32G32B32A32_UINT,   sizeof(float) * 6};
+
+    // NOTE: boneWeights (location 9) shares the same binding as
+    // boneIDs but at offset 40. We need a 9th attr slot — extend the
+    // array.
+
+    VkVertexInputAttributeDescription attrs2[9] = {};
+    for (int i = 0; i < 8; ++i) attrs2[i] = attrs[i];
+    attrs2[8] = {9, 0, VK_FORMAT_R32G32B32A32_SFLOAT, sizeof(float) * 6 + sizeof(std::uint32_t) * 4};
+
+    VkPipelineVertexInputStateCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 2;
+    vi.pVertexBindingDescriptions = bindings;
+    vi.vertexAttributeDescriptionCount = 9;
+    vi.pVertexAttributeDescriptions = attrs2;
+
+    VkPipelineInputAssemblyStateCreateInfo ia = {};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineRasterizationStateCreateInfo rs;
+    VkPipelineMultisampleStateCreateInfo   ms;
+    VkPipelineColorBlendAttachmentState    cb;
+    VkPipelineColorBlendStateCreateInfo    cbs;
+    VkPipelineViewportStateCreateInfo      vp;
+    fillStandardState(rs, ms, cb, cbs, vp);
+
+    VkPipelineDepthStencilStateCreateInfo ds = {};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn = {};
+    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates = dynStates;
+
+    VkPipelineRenderingCreateInfo rci = {};
+    rci.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rci.colorAttachmentCount = 1;
+    rci.pColorAttachmentFormats = &colorFormat;
+    rci.depthAttachmentFormat = depthFormat;
+
+    VkGraphicsPipelineCreateInfo gc = {};
+    gc.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gc.pNext = &rci;
+    gc.stageCount = static_cast<std::uint32_t>(stages.size());
+    gc.pStages = stages.data();
+    gc.pVertexInputState = &vi;
+    gc.pInputAssemblyState = &ia;
+    gc.pViewportState = &vp;
+    gc.pRasterizationState = &rs;
+    gc.pMultisampleState = &ms;
+    gc.pDepthStencilState = &ds;
+    gc.pColorBlendState = &cbs;
+    gc.pDynamicState = &dyn;
+    gc.layout = opaqueSkinnedLayout_;
+
+    VkPipeline pipe = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gc, nullptr, &pipe));
+    return pipe;
+}
+
 bool VulkanPipelines::create(VulkanContext& ctx,
                              VkFormat colorFormat,
                              VkFormat depthFormat,
@@ -430,6 +533,51 @@ bool VulkanPipelines::create(VulkanContext& ctx,
         }
     }
 
+    // ----------------- Opaque skinned pipeline -------------------------
+    //
+    // §3.11.7b.5 batch 9b.4.a — build the skinned pipeline state.
+    // Layout = same push-constants as opaque (viewProj/light/camera)
+    // PLUS a descriptor set 0 holding the bone matrix SSBO at
+    // binding 0. The actual descriptor set ALLOCATION + buffer
+    // binding lives in 9b.4.b's renderer-side per-frame upload path;
+    // here we just stand up the layout so the pipeline is valid.
+    {
+        VkDescriptorSetLayoutBinding boneBinding = {};
+        boneBinding.binding         = 0;
+        boneBinding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        boneBinding.descriptorCount = 1;
+        boneBinding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
+
+        VkDescriptorSetLayoutCreateInfo dsl = {};
+        dsl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dsl.bindingCount = 1;
+        dsl.pBindings    = &boneBinding;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &dsl, nullptr,
+                                             &opaqueSkinnedBoneSetLayout_));
+
+        VkPushConstantRange pcRange = {};
+        pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pcRange.size = sizeof(OpaquePushConstants);
+
+        VkPipelineLayoutCreateInfo lc = {};
+        lc.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lc.setLayoutCount = 1;
+        lc.pSetLayouts    = &opaqueSkinnedBoneSetLayout_;
+        lc.pushConstantRangeCount = 1;
+        lc.pPushConstantRanges    = &pcRange;
+        VK_CHECK(vkCreatePipelineLayout(device, &lc, nullptr,
+                                        &opaqueSkinnedLayout_));
+
+        VkShaderModule vs = makeShader(device,
+            embeddedSpvFor(PipelineShaderSlot::OpaqueSkinnedVert));
+        VkShaderModule fs = makeShader(device,
+            embeddedSpvFor(PipelineShaderSlot::OpaqueFrag));
+        opaqueSkinnedPipe_ = buildOpaqueSkinnedPipeline(
+            device, vs, fs, colorFormat, depthFormat);
+        vkDestroyShaderModule(device, vs, nullptr);
+        vkDestroyShaderModule(device, fs, nullptr);
+    }
+
     return true;
 }
 
@@ -443,13 +591,19 @@ bool VulkanPipelines::recreatePipelines(VulkanContext& ctx,
     // The layouts survive a swapchain recreate (push-constant ranges
     // and descriptor sets are layout-independent of the swapchain
     // format). Only the VkPipeline objects need fresh builds.
-    if (!rebuildOpaque(ctx, engine))     return false;
-    if (!rebuildDebugLine(ctx, engine))  return false;
-    if (!rebuildDebugPoint(ctx, engine)) return false;
+    if (!rebuildOpaque(ctx, engine))         return false;
+    if (!rebuildDebugLine(ctx, engine))      return false;
+    if (!rebuildDebugPoint(ctx, engine))     return false;
+    if (!rebuildOpaqueSkinned(ctx, engine))  return false;
     return true;
 }
 
 void VulkanPipelines::destroy(VulkanContext& ctx) noexcept {
+    // §3.11.7b.5 batch 9b.4.a — tear down skinned state.
+    if (opaqueSkinnedPipe_)          { vkDestroyPipeline(ctx.device(), opaqueSkinnedPipe_, nullptr); opaqueSkinnedPipe_ = VK_NULL_HANDLE; }
+    if (opaqueSkinnedLayout_)        { vkDestroyPipelineLayout(ctx.device(), opaqueSkinnedLayout_, nullptr); opaqueSkinnedLayout_ = VK_NULL_HANDLE; }
+    if (opaqueSkinnedBoneSetLayout_) { vkDestroyDescriptorSetLayout(ctx.device(), opaqueSkinnedBoneSetLayout_, nullptr); opaqueSkinnedBoneSetLayout_ = VK_NULL_HANDLE; }
+
     if (debugPointPipe_)  { vkDestroyPipeline(ctx.device(), debugPointPipe_, nullptr); debugPointPipe_ = VK_NULL_HANDLE; }
     if (debugLinePipe_)   { vkDestroyPipeline(ctx.device(), debugLinePipe_, nullptr);  debugLinePipe_  = VK_NULL_HANDLE; }
     if (debugLayout_)     { vkDestroyPipelineLayout(ctx.device(), debugLayout_, nullptr); debugLayout_ = VK_NULL_HANDLE; }
@@ -538,6 +692,32 @@ bool VulkanPipelines::rebuildDebugPoint(VulkanContext& ctx, threadmaxx::Engine& 
     return true;
 }
 
+bool VulkanPipelines::rebuildOpaqueSkinned(VulkanContext& ctx, threadmaxx::Engine& engine) {
+    const auto vsSpv = spvFromRegistry(engine,
+                                       shaders_[static_cast<std::size_t>(
+                                           PipelineShaderSlot::OpaqueSkinnedVert)].id());
+    // The skinned pipeline shares its fragment stage with the
+    // non-skinned opaque pipeline (same `vNormal` + `vColor`
+    // inputs); pull the current `OpaqueFrag` bytes from the registry.
+    const auto fsSpv = spvFromRegistry(engine,
+                                       shaders_[static_cast<std::size_t>(
+                                           PipelineShaderSlot::OpaqueFrag)].id());
+    if (vsSpv.empty() || fsSpv.empty()) return false;
+
+    const VkDevice device = ctx.device();
+    VkShaderModule vs = makeShader(device, vsSpv);
+    VkShaderModule fs = makeShader(device, fsSpv);
+
+    VkPipeline fresh = buildOpaqueSkinnedPipeline(device, vs, fs, colorFormat_, depthFormat_);
+    vkDestroyShaderModule(device, vs, nullptr);
+    vkDestroyShaderModule(device, fs, nullptr);
+    if (fresh == VK_NULL_HANDLE) return false;
+
+    if (opaqueSkinnedPipe_) vkDestroyPipeline(device, opaqueSkinnedPipe_, nullptr);
+    opaqueSkinnedPipe_ = fresh;
+    return true;
+}
+
 bool VulkanPipelines::rebuildIfMatches(VulkanContext& ctx,
                                        threadmaxx::Engine& engine,
                                        threadmaxx::ResourceId<Shader> oldId,
@@ -565,8 +745,16 @@ bool VulkanPipelines::rebuildIfMatches(VulkanContext& ctx,
     const auto slot = static_cast<PipelineShaderSlot>(slotIdx);
     switch (slot) {
         case PipelineShaderSlot::OpaqueVert:
-        case PipelineShaderSlot::OpaqueFrag:
             return rebuildOpaque(ctx, engine);
+        case PipelineShaderSlot::OpaqueFrag:
+            // The fragment shader is shared between the opaque and
+            // opaque-skinned pipelines, so a reload here has to
+            // rebuild BOTH. Order doesn't matter — both calls
+            // pull fresh SPIR-V from the same registry entry.
+            return rebuildOpaque(ctx, engine) &&
+                   rebuildOpaqueSkinned(ctx, engine);
+        case PipelineShaderSlot::OpaqueSkinnedVert:
+            return rebuildOpaqueSkinned(ctx, engine);
         case PipelineShaderSlot::DebugLineVert:
         case PipelineShaderSlot::DebugLineFrag:
             return rebuildDebugLine(ctx, engine);

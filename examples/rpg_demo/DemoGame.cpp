@@ -18,6 +18,7 @@
 #include "PlayerInputSystem.hpp"
 #include "RespawnSystem.hpp"
 #include "SaveLoadSystem.hpp"
+#include "SkinnedRenderSystem.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Components.hpp>
@@ -350,6 +351,11 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::make_unique<QuestSystem>(&engine, &worldState_));
     engine.registerSystem(std::make_unique<DayNightSystem>(&worldState_));
     engine.registerSystem(std::make_unique<CubeRenderSystem>(&ids_, &worldState_));
+    // §3.11.7b.5 batch 9b.4.c — single hardcoded skinned-capsule
+    // entity. Falls silent when `skinnedMeshId == 0` (headless
+    // tests + builds where the renderer-side registration callback
+    // wasn't wired).
+    engine.registerSystem(std::make_unique<SkinnedRenderSystem>(&worldState_));
     engine.registerSystem(std::make_unique<HealthBarSystem>());
     engine.registerSystem(std::make_unique<DebugOverlaySystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<SaveLoadSystem>(

@@ -114,6 +114,31 @@ public:
     /// place. Useful as an F-key handler in a debug UI.
     void reloadShaders();
 
+    /// §3.11.7b.5 batch 9b.4.b — register a skinned mesh. Vertex
+    /// stream MUST match the skinned pipeline's layout: 56 bytes
+    /// per vertex = `pos[3]f + normal[3]f + boneIDs[4]u32 +
+    /// boneWeights[4]f`. Returns a non-negative `skinnedMeshId` to
+    /// use in `DrawItem::meshId` for items that also set
+    /// `DrawItem::skeletonId >= 0` (the dispatch flag). Returns
+    /// `-1` on upload failure.
+    std::int32_t registerSkinnedMeshFromData(
+        std::span<const float>         vertices,
+        std::span<const std::uint16_t> indices) noexcept;
+
+    /// §3.11.7b.5 batch 9b.4.b — upload the per-frame bone matrices.
+    /// `matrices` is a packed array of `mat4` values, column-major
+    /// (Vulkan std140 convention). The renderer copies into the
+    /// current back PerFrame's bone buffer and updates the descriptor
+    /// set; the buffer is consumed by the next `submitFrame` call.
+    /// Per-`DrawItem::pose.ringSlot` index addresses into this array
+    /// (`boneBase = pose.ringSlot`).
+    ///
+    /// Call this each tick from the sim thread BEFORE
+    /// `engine.step()` for the corresponding tick; the engine's
+    /// render-frame build runs inside `step()` and `submitFrame`
+    /// fires immediately after with the freshly-written bone buffer.
+    void setBoneMatrices(std::span<const float> matrices) noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

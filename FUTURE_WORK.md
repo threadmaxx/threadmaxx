@@ -3564,74 +3564,163 @@ bone-weighted Vulkan skinning pipeline — see
 
 **Effort:** ~3 hours actual.
 
-#### 3.11.7b.5 Batch 9b.4 — Vulkan skinning pipeline — DEFERRED
+#### 3.11.7b.5 Batch 9b.4 — Vulkan skinning pipeline
 
-This is the final renderer-side work item from the
-original §3.11.7 D7 spec. Honest scoping: the full
-skinning pipeline is a 1-2 week separate batch, not a
-"slot in alongside 9b.3" deliverable. It touches the
-vertex layout (which means a new pipeline variant —
-the existing opaque pipeline's vertex bindings can't
-silently grow without breaking the cube + pyramid
-meshes already in flight), descriptor sets (currently
-the renderer has none), per-frame pose upload
-infrastructure (currently absent), and asset import
-(a glTF parser is a sibling library, not a 2-hour
-deliverable). Procedural Y-bob from D6 is the demo's
-preserved fallback while this stays deferred.
+The full skinning pipeline is a 1-2 week effort that
+touches vertex layout, descriptor sets, per-frame pose
+upload infrastructure, and asset import. Split into
+three independently-shippable sub-batches. Procedural
+Y-bob from D6 remains the demo's preserved fallback at
+all stages.
 
-The work splits naturally into three sub-batches:
+##### 3.11.7b.5.a Batch 9b.4.a — Skinned vertex layout + pipeline  ✅ landed 2026-05-18
 
-- **9b.4.a — Skinned vertex layout + pipeline.** Add
-  a `opaque_skinned` pipeline variant: vertex binding
-  carries pos[3] + normal[3] + boneIds[4 × uint8] +
-  boneWeights[4]. New `*_skinned.vert` shader that
-  reads bone matrices from a descriptor-set-bound
-  storage buffer. Pipeline + descriptor-set-layout
-  creation; no demo wiring yet. ~3 days.
-- **9b.4.b — Pose upload ring + descriptor sets.**
-  Per-frame `UploadRing`-backed bone matrix buffer
-  (4×4 matrices, indexed by per-instance bone-base
-  offset). Descriptor-set-per-frame-slot allocation.
-  Renderer wires the per-frame pose buffer binding
-  before opaque_skinned draws. ~3 days.
-- **9b.4.c — glTF skinned-mesh import + demo
-  integration.** Sibling-library glTF 2.0 parser in
-  `examples/rpg_demo/GltfLoader.{hpp,cpp}` producing a
-  `SkinnedMeshData` POD (verts + indices + bone
-  hierarchy + per-vertex bone influences). Demo
-  swaps one NPC's render path from `CubeRender`
-  (procedural Y-bob) to a `SkinnedRender` user
-  component referencing the new pipeline. A simple
-  walking animation drives the per-frame bone matrix
-  upload. ~5 days.
+Shipped the architectural anchor: an `opaque_skinned`
+Vulkan pipeline + skinned vertex shader + bone-matrix
+descriptor-set-layout. The pipeline is created at
+renderer init alongside the existing three; it's
+dead code today (no entity routes through it) but
+9b.4.b's per-frame pose-upload work just needs to bind
+the descriptor set + change one dispatch in
+`recordCamera` to use it.
 
-Each sub-batch is independently shippable. None of
-them is required to "close" §3.11 — D6's procedural
-Y-bob already satisfies the original animation gate
-per §3.11.6.
+**Files**:
 
-**Why this stays deferred rather than half-shipped:**
+- `examples/vulkan_renderer/shaders/opaque_skinned.vert` —
+  new vertex shader. Reads `inBoneIDs` (uvec4 at
+  location 8) + `inBoneWeights` (vec4 at location 9)
+  from the per-vertex binding; reads a bone matrix
+  SSBO (`layout(set = 0, binding = 0)`) and blends up
+  to 4 bone matrices per vertex weighted by the
+  per-vertex weights. Per-instance bone-base offset
+  is the `.w` lane of the existing `instMeshMat`
+  attribute (was a reserved "pose-slot" field in
+  `InstanceLayoutEntry` since batch 8). Reuses
+  `opaque.frag` for the fragment stage — same
+  `vNormal` + `vColor` outputs.
+- `examples/vulkan_renderer/CMakeLists.txt` — adds
+  `opaque_skinned.vert` to `VK_RENDERER_SHADERS`; the
+  existing glslc + EmbedSpv pipeline produces
+  `opaque_skinned_vert_spv.hpp` automatically.
+- `examples/vulkan_renderer/src/VulkanPipelines.{hpp,cpp}` —
+  extended:
+  - `PipelineShaderSlot::OpaqueSkinnedVert = 6`,
+    `Count = 7`.
+  - New `opaqueSkinnedBoneSetLayout_` descriptor set
+    layout (1 SSBO binding, vertex stage), built in
+    `create()`.
+  - New `opaqueSkinnedLayout_` pipeline layout chaining
+    the bone set layout + existing
+    `OpaquePushConstants` push range.
+  - New `buildOpaqueSkinnedPipeline` helper — same
+    rasterization / depth state as opaque, with the
+    skinned 56-byte vertex stride (pos[3]f +
+    normal[3]f + boneIDs[4]u32 + boneWeights[4]f) and
+    9 vertex attribute descriptions (the original 6
+    instance bindings + 2 per-vertex + 1 instMeshMat
+    that the skinned shader actually reads as
+    `ivec4`).
+  - New `rebuildOpaqueSkinned` helper invoked by
+    `rebuildIfMatches` for `OpaqueSkinnedVert` reloads.
+    Hot reload of `OpaqueFrag` now rebuilds BOTH the
+    opaque AND opaque-skinned pipelines (shared
+    fragment stage).
+  - `recreatePipelines` (swapchain-recreate path)
+    extended to rebuild the skinned pipeline too.
+  - `destroy` tears down skinned state in the right
+    order (pipeline → layout → descriptor set layout).
+- Public accessors: `VulkanPipelines::opaqueSkinnedPipe()`,
+  `opaqueSkinnedLayout()`, `opaqueSkinnedBoneSetLayout()`.
+  9b.4.b will use the descriptor-set-layout accessor to
+  allocate descriptor sets from a pool.
 
-1. The vertex format change is irreversible without
-   pipeline duplication — a half-finished skinned
-   pipeline that ships as a stub would either crash
-   on draw (no descriptor set bound) or render
-   garbage (uninitialized bone matrices).
-2. Validation-clean is the renderer's correctness
-   gate; a skinning path that's never actually drawn
-   can't be validated this way.
-3. The demo's existing entities (player, NPCs,
-   pickups, sword) are all unit cubes / pyramids
-   with no bone structure — there's nothing to skin
-   without authoring real assets.
-4. The procedural Y-bob from D6 is the right
-   fallback for the demo's current asset set; a
-   half-finished skinning system doesn't replace
-   anything.
+**Verification**:
+- Both `build/` and `build-werror/` clean.
+- **ctest 108/108 on both trees** (unchanged; pipeline
+  is non-draw code that doesn't surface in any
+  existing test).
+- Vulkan smoke binary runs 30 ticks clean (pipeline +
+  shader + descriptor-set-layout creation all succeed
+  on a real Vulkan 1.3 driver).
 
-When 9b.4 is undertaken, it gets its own focused
-session (or three).
+**Why dead code is OK here**: a half-finished skinned
+pipeline would be problematic if it tried to draw —
+the descriptor set hasn't been written to a real bone
+buffer. But the pipeline simply being CREATED is
+trivially correct: the driver validates the shader +
+layout + state at creation time, not at draw time.
+The skinned pipeline is now a known-good architectural
+piece that 9b.4.b will plug into the draw path.
+
+**Effort**: ~2 hours actual (substantially less than
+the 3-day estimate; the existing batch-9b.3 hot-reload
+infrastructure absorbed most of the "new pipeline"
+boilerplate).
+
+##### 3.11.7b.5.b Batch 9b.4.b — Pose upload ring + descriptor sets  ✅ landed 2026-05-18
+
+Plumbed the per-frame bone-matrix upload + descriptor set binding
+so the skinned pipeline draws live geometry. Released as part of
+v1.1.0.
+
+**Files modified**:
+
+- `examples/vulkan_renderer/src/VulkanRenderer.cpp` —
+  `skinnedMeshSlots` parallel slot table; per-`PerFrame`
+  `boneBuffer` + `boneMemory` + `boneDescriptorSet`;
+  `boneDescriptorPool` allocated at init via
+  `createBoneDescriptorResources` and torn down in shutdown;
+  `MeshGroup` gained `bool skinned`; `recordFrame` keys buckets
+  by `(meshId, skinned)`; `recordCamera` switches between
+  `pipes.opaquePipe()` and `pipes.opaqueSkinnedPipe()` on
+  demand, re-pushes push constants on switch, binds the bone
+  descriptor set before skinned draws.
+- `examples/vulkan_renderer/include/threadmaxx_vk/VulkanRenderer.hpp` —
+  public `registerSkinnedMeshFromData(vertices, indices)` and
+  `setBoneMatrices(span<const float>)`.
+
+##### 3.11.7b.5.c Batch 9b.4.c — Skinned-mesh demo integration  ✅ landed 2026-05-18
+
+Wired the demo end-to-end with a procedurally-generated 2-bone
+"stick figure" capsule. Real-asset (glTF) import deferred to v1.x
+— the procedural path proves the renderer-side infrastructure
+without dragging in a JSON+binary parser.
+
+**Files added**:
+
+- `examples/rpg_demo/SkinnedCapsule.{hpp,cpp}` — pure-CPU
+  procedural generator. 12 verts in 3 rings (y={0,1,2}, 4 NESW
+  cardinal verts per ring); weights: ring 0 → bone 0, ring 1 →
+  50/50, ring 2 → bone 1. Output matches the skinned pipeline's
+  56-byte stride exactly. 8 quads × 2 = 16 triangles.
+- `examples/rpg_demo/SkinnedRenderSystem.{hpp,cpp}` — single
+  hardcoded DrawItem at (8, 0, 5) with `skeletonId = 0` (dispatch
+  flag) + `pose.ringSlot = 0` (bone-base). Falls silent when
+  `WorldState::skinnedMeshId == 0`.
+
+**Files modified**:
+
+- `examples/rpg_demo/DemoTypes.hpp` — `WorldState::skinnedMeshId`.
+- `examples/rpg_demo/DemoGame.cpp` — registers `SkinnedRenderSystem`.
+- `examples/rpg_demo/CMakeLists.txt` — `SkinnedCapsule.cpp` +
+  `SkinnedRenderSystem.cpp` added to `rpg_demo_core`.
+- `examples/rpg_demo/main.cpp` — registers the capsule via
+  `renderer->registerSkinnedMeshFromData`; per-tick computes
+  2 column-major mat4s (bone 0 identity, bone 1 rotation around
+  Z) and pushes via `renderer->setBoneMatrices`.
+
+**glTF deferral rationale**: a real glTF 2.0 parser is ~3 days
+(JSON header parsing for accessors/buffer-views/primitives/skins/
+nodes, binary chunk reader, bone-hierarchy traversal, inverse-
+bind matrix application). Worth shipping as a focused sibling-
+library batch when there's appetite. The procedural capsule path
+in v1.1 proves the renderer-side infrastructure is correct
+(validation-clean, visibly deforming mesh) so the glTF batch can
+focus exclusively on asset parsing.
+
+**Verification**: rpg_demo 60-tick run under
+`THREADMAXX_VK_VALIDATE=1` produced zero validation errors with
+the skinned capsule registered + drawing.
 
 ---
 

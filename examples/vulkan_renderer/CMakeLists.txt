@@ -21,6 +21,7 @@ endif()
 set(VK_RENDERER_SHADERS
     opaque.vert
     opaque.frag
+    opaque_skinned.vert
     debug_line.vert
     debug_line.frag
     debug_point.vert

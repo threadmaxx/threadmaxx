@@ -24,6 +24,9 @@
 #include "DemoGame.hpp"
 #include "Input.hpp"
 #include "ObjLoader.hpp"
+#include "SkinnedCapsule.hpp"
+
+#include <cmath>
 
 #include <threadmaxx_vk/VulkanRenderer.hpp>
 
@@ -171,6 +174,27 @@ int main(int argc, char** argv) {
         }
     }
 
+    // §3.11.7b.5 batch 9b.4.c — register the procedural skinned
+    // capsule mesh, stash the id in WorldState so
+    // `SkinnedRenderSystem` will emit DrawItems for it. Failure
+    // (returns -1) leaves `skinnedMeshId == 0` and the system falls
+    // silent — vanilla unskinned demo still works.
+    {
+        const auto cap = rpg::makeSkinnedCapsule();
+        const std::int32_t skinId = renderer->registerSkinnedMeshFromData(
+            std::span<const float>(cap.vertices),
+            std::span<const std::uint16_t>(cap.indices));
+        if (skinId > 0) {
+            game.worldState().skinnedMeshId = skinId;
+            std::printf("[rpg_demo] skinned capsule: meshId=%d verts=%zu tris=%zu\n",
+                        skinId, cap.vertices.size() / 14,
+                        cap.indices.size() / 3);
+        } else {
+            std::printf("[rpg_demo] skinned capsule: registration failed; "
+                        "skinning path disabled\n");
+        }
+    }
+
     std::printf("[rpg_demo] running %s — Esc / window close to exit\n",
                 maxTicks ? "bounded" : "unbounded");
 
@@ -182,6 +206,39 @@ int main(int argc, char** argv) {
         glfwPollEvents();
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
         rpg::pollContinuousInput(window, kFixedDt);
+
+        // §3.11.7b.5 batch 9b.4.c — push the per-frame bone matrices
+        // for the procedural 2-bone capsule. Bone 0 (root) is the
+        // identity; bone 1 (tip) rotates around the Z axis with a
+        // sine wave so the upper half of the capsule visibly sways.
+        // Matrices are column-major (Vulkan std140 convention).
+        if (game.worldState().skinnedMeshId > 0) {
+            const float t = static_cast<float>(tick) * static_cast<float>(kFixedDt);
+            const float angle = 0.4f * std::sin(2.5f * t);   // ±0.4 rad ≈ ±23°
+            const float c = std::cos(angle), s = std::sin(angle);
+            // Column-major 4×4 — stored row-by-row in array of 16:
+            //   [0..3]   col 0
+            //   [4..7]   col 1
+            //   [8..11]  col 2
+            //   [12..15] col 3
+            float bones[32] = {
+                // Bone 0: identity.
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1,
+                // Bone 1: rotation by `angle` around the Z axis.
+                // Because vertex y at y=2 is on the rotation center
+                // (we want pure rotation around the capsule's own
+                // y axis at the bone joint), the rotation acts in
+                // the X plane.
+                 c, s, 0, 0,
+                -s, c, 0, 0,
+                 0, 0, 1, 0,
+                 0, 0, 0, 1,
+            };
+            renderer->setBoneMatrices(std::span<const float>(bones, 32));
+        }
 
         engine.step();
         ++tick;

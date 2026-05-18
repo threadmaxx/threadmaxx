@@ -8,6 +8,85 @@ are documented in `include/threadmaxx/version.hpp`.
 The sibling `threadmaxx_simd` library has its own independent
 changelog at `include/threadmaxx_simd/CHANGELOG.md`.
 
+## [1.1.0] — 2026-05-18 — Vulkan skinned-mesh rendering
+
+Additive minor release. The `examples/vulkan_renderer/` reference
+renderer now supports skinned-mesh draws end-to-end; the rpg_demo
+shows a single procedurally-generated 2-bone capsule with an
+animated tip bone alongside the existing cube + pyramid entities.
+
+### Added (renderer example, `examples/vulkan_renderer/`)
+
+- **`opaque_skinned.vert`** — Vulkan vertex shader that blends up
+  to 4 bones per vertex from a storage-buffer-bound bone matrix
+  array. Reuses `opaque.frag` for the fragment stage.
+- **`opaque_skinned` pipeline variant** in `VulkanPipelines`:
+  56-byte vertex stride (`pos[3]f + normal[3]f + boneIDs[4]u32 +
+  boneWeights[4]f`), descriptor set 0 / binding 0 SSBO layout for
+  the bone matrix array. Same hot-reload + swapchain-recreate
+  paths as the existing pipelines.
+- **`VulkanRenderer::registerSkinnedMeshFromData(vertices, indices)`** —
+  uploads a skinned-vertex-layout mesh and returns a non-negative
+  `skinnedMeshId`.
+- **`VulkanRenderer::setBoneMatrices(span<const float>)`** —
+  per-frame bone-matrix push. Column-major mat4s packed
+  contiguously. The renderer copies into the back PerFrame's
+  bone buffer + updates its descriptor set.
+- **Per-frame bone descriptor pool + per-PerFrame descriptor set**
+  in `VulkanRenderer::Impl`. Allocated once at init; descriptor
+  writes happen lazily on first / resized `setBoneMatrices` call
+  per frame slot.
+- **Skinned-aware draw dispatch** in `recordCamera`. The existing
+  per-meshId bucket loop is now keyed by `(meshId, skinned)`;
+  buckets with `skinned == true` route to `opaqueSkinnedPipe()`
+  + bind the bone descriptor set + draw against the matching
+  skinned mesh from `skinnedMeshSlots`.
+
+### Added (rpg_demo, `examples/rpg_demo/`)
+
+- **`SkinnedCapsule.{hpp,cpp}`** — pure-CPU procedural generator
+  for a 12-vertex 2-bone "stick figure" mesh (3 rings × 4 verts
+  each; ring 0 → bone 0, ring 1 → 50/50 blend, ring 2 → bone 1).
+- **`SkinnedRenderSystem`** — single hardcoded skinned DrawItem at
+  world position (8, 0, 5) with `skeletonId = 0` (dispatch flag)
+  + `pose.ringSlot = 0` (bone-base offset). Falls silent when
+  `worldState_->skinnedMeshId == 0` (headless / unregistered).
+- **`WorldState::skinnedMeshId`** — populated by `main.cpp` after
+  `engine.initialize` if `registerSkinnedMeshFromData` succeeded.
+- **`main.cpp` per-frame skinning**: registers the procedural
+  capsule once + pushes 32 floats (2 × mat4) per tick via
+  `setBoneMatrices`. Bone 0 stays identity; bone 1 rotates around
+  Z with a sine wave for visible motion.
+
+### Contract note
+
+`DrawItem::skeletonId` (existing, batch-8 public type) is now the
+documented "use the skinned pipeline" dispatch signal in the
+Vulkan reference renderer: any value `>= 0` routes through the
+opaque-skinned pipeline. `pose.ringSlot` is the renderer-defined
+bone-base offset into the buffer passed to `setBoneMatrices`.
+
+### Deferred to v1.x
+
+- **glTF skinned-mesh import** — the procedural-capsule approach
+  in v1.1 proves the end-to-end pipeline works; real asset import
+  remains a v1.x sibling-library candidate. See FUTURE_WORK
+  §3.11.7b.5 for the scope sketch.
+- **Multi-skeleton / multi-character scenes** — the current
+  `setBoneMatrices` API supports it (just pass more matrices,
+  per-DrawItem `pose.ringSlot` indexes), but no demo currently
+  exercises N > 1 skeletons.
+
+### Verification
+
+- Both `build/` and `build-werror/` clean.
+- ctest 108/108 on both trees (no test changes; new functionality
+  is renderer/demo-side).
+- rpg_demo runs validation-clean for 60 ticks with the skinned
+  capsule registered + drawing (`THREADMAXX_VK_VALIDATE=1`).
+
+---
+
 ## [1.0.0] — 2026-05-18 — Production-ready close-out
 
 ### Added

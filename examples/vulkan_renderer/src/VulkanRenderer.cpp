@@ -96,6 +96,17 @@ struct VulkanRenderer::Impl {
     // before the loader's `releaseGpuResources` runs.
     std::vector<threadmaxx::ResourceHandle<Mesh>> meshSlots;
 
+    // §3.11.7b.5 batch 9b.4.b — skinned mesh slots, addressed by
+    // `meshId >= 1` in the skinned namespace. DrawItems with
+    // `skeletonId >= 0` route through this slot table instead of
+    // the unskinned `meshSlots`. Same lifetime rules.
+    std::vector<threadmaxx::ResourceHandle<Mesh>> skinnedMeshSlots;
+
+    // §3.11.7b.5 batch 9b.4.b — bone matrix descriptor pool. The
+    // per-frame descriptor set lives in `PerFrame::boneDescriptorSet`
+    // below; this pool just owns the allocation.
+    VkDescriptorPool boneDescriptorPool = VK_NULL_HANDLE;
+
     // Per-frame instance buffer (host-visible). Resized on demand.
     struct PerFrame {
         VkBuffer       instanceBuffer = VK_NULL_HANDLE;
@@ -109,12 +120,27 @@ struct VulkanRenderer::Impl {
         VkDeviceMemory debugPointMemory = VK_NULL_HANDLE;
         VkDeviceSize   debugPointCapacity = 0;
 
+        // §3.11.7b.5 batch 9b.4.b — bone matrix buffer (host-visible,
+        // mapped). Growable like instanceBuffer; the descriptor set
+        // is updated whenever the buffer's backing VkBuffer changes
+        // (resize → new handle → re-write descriptor).
+        VkBuffer        boneBuffer        = VK_NULL_HANDLE;
+        VkDeviceMemory  boneMemory        = VK_NULL_HANDLE;
+        VkDeviceSize    boneCapacity      = 0;
+        VkDeviceSize    boneSize          = 0;   // last setBoneMatrices size
+        VkDescriptorSet boneDescriptorSet = VK_NULL_HANDLE;
+
         // §3.11 batch 9b.2b — per-camera per-meshId scratch buckets
         // for the bucket-and-pack draw flow. Reset each call to
         // `recordFrame`; vector capacities persist across frames so
         // steady-state pays zero allocations after the first tick.
+        // §3.11.7b.5 batch 9b.4.b — `scratchSkinned[bucket]` matches
+        // the parallel `scratchMeshIds[bucket]` and `scratchBuckets[bucket]`
+        // entries, encoding whether the bucket is for the skinned
+        // pipeline. Same scratch lifetime.
         std::vector<std::int32_t>                                 scratchMeshIds;
         std::vector<std::vector<threadmaxx::InstanceLayoutEntry>> scratchBuckets;
+        std::vector<bool>                                         scratchSkinned;
     };
     std::vector<PerFrame> perFrame;
 
@@ -130,6 +156,19 @@ struct VulkanRenderer::Impl {
     // `AssetReloaded` channel. Filled in `initialize()`; the
     // `Subscription` dtor removes the listener in `~Impl`.
     threadmaxx::Subscription reloadSub;
+
+    // §3.11.7b.5 batch 9b.4.b — helpers.
+    /// Ensure the bone descriptor pool + per-frame descriptor sets
+    /// exist. Idempotent; called once in `initialize()` after
+    /// `pipes.create` so the bone set layout is available.
+    void createBoneDescriptorResources();
+    /// Update the descriptor set for frame slot `fi` to point at
+    /// that frame's bone buffer (whole range). Called whenever the
+    /// bone buffer is (re)created via `ensureBuffer`.
+    void updateBoneDescriptor(std::uint32_t fi, PerFrame& pf);
+    /// Tear down the bone descriptor pool. The per-frame bone
+    /// buffers themselves are freed by `destroyPerFrame`.
+    void destroyBoneDescriptorResources() noexcept;
 
     void ensureBuffer(PerFrame& pf, VkDeviceSize bytes, VkBufferUsageFlags usage,
                       VkBuffer& outBuffer, VkDeviceMemory& outMemory,
@@ -148,6 +187,7 @@ struct VulkanRenderer::Impl {
         std::int32_t  meshId;
         VkDeviceSize  offsetBytes;
         std::uint32_t instanceCount;
+        bool          skinned = false;   // §9b.4.b — dispatch selector
     };
     struct CameraSlice {
         std::vector<MeshGroup> groups;
@@ -161,6 +201,10 @@ struct VulkanRenderer::Impl {
     // §3.11 batch 9b.2b — resolve a meshId to a Mesh*. Returns the
     // default cube for `meshId == 0` or out-of-range / freed slots.
     const Mesh* lookupMesh(std::int32_t meshId) const noexcept;
+
+    // §3.11.7b.5 batch 9b.4.b — resolve a skinnedMeshId. No default
+    // fallback (cube isn't skinned-layout-compatible).
+    const Mesh* lookupSkinnedMesh(std::int32_t meshId) const noexcept;
 };
 
 // ---------------------------------------------------------------------------
@@ -228,6 +272,12 @@ bool VulkanRenderer::initialize() {
     // mesh assets.
     impl_->cubeHandle = impl_->meshLoader->createUnitCube(*impl_->engine);
 
+    // §3.11.7b.5 batch 9b.4.b — stand up the bone descriptor pool +
+    // per-frame descriptor sets now that the pipeline (and its
+    // bone-set layout) exists. Descriptor sets are wired to each
+    // frame's bone buffer lazily on first `setBoneMatrices` call.
+    impl_->createBoneDescriptorResources();
+
     // §3.11 batch 9b.3 — subscribe to the engine's typed
     // `AssetReloaded` event channel. When the shader loader publishes
     // a reload for one of our pipeline shader ids, `rebuildIfMatches`
@@ -267,6 +317,8 @@ void VulkanRenderer::shutdown() {
     // authoritative free; this just decrements the registry refcounts
     // so the slots are clean for the engine-side teardown.
     impl_->meshSlots.clear();
+    impl_->skinnedMeshSlots.clear();
+    impl_->destroyBoneDescriptorResources();
     impl_->cubeHandle.reset();
     impl_->destroyPerFrame();
     impl_->pipes.destroy(impl_->ctx);
@@ -316,6 +368,56 @@ std::int32_t VulkanRenderer::registerMeshFromData(std::span<const float>        
     return registerMesh(std::move(handle));
 }
 
+std::int32_t VulkanRenderer::registerSkinnedMeshFromData(
+    std::span<const float>         vertices,
+    std::span<const std::uint16_t> indices) noexcept {
+    // §3.11.7b.5 batch 9b.4.b — same upload path as `createMesh`,
+    // but the resulting handle goes into the skinned slot table.
+    // We don't check the per-vertex stride here (the input is a flat
+    // float span); callers must match the skinned pipeline's 56-byte
+    // layout (14 floats per vertex). A regression in that contract
+    // would surface as Vulkan validation errors or garbage geometry.
+    if (!impl_->meshLoader || !impl_->engine) return -1;
+    auto handle = impl_->meshLoader->createMesh(*impl_->engine, vertices, indices);
+    if (!handle.valid()) return -1;
+    impl_->skinnedMeshSlots.push_back(std::move(handle));
+    return static_cast<std::int32_t>(impl_->skinnedMeshSlots.size());
+}
+
+void VulkanRenderer::setBoneMatrices(std::span<const float> matrices) noexcept {
+    // §3.11.7b.5 batch 9b.4.b — write the bone matrix array into the
+    // CURRENT back frame's bone buffer + update its descriptor set.
+    // The frame index advances inside `submitFrame`, so this call
+    // must happen BEFORE `submitFrame` for the matrices to land in
+    // the right slot. Empty input is a valid no-op (no skinned
+    // entities this tick).
+    if (matrices.empty()) return;
+    if (impl_->perFrame.empty()) return;
+
+    const std::uint32_t fi = impl_->frameIndex;
+    if (fi >= impl_->perFrame.size()) return;
+    auto& pf = impl_->perFrame[fi];
+
+    const VkDeviceSize bytes = matrices.size_bytes();
+    const VkBuffer oldHandle = pf.boneBuffer;
+    impl_->ensureBuffer(pf, bytes,
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                        pf.boneBuffer, pf.boneMemory, pf.boneCapacity);
+
+    void* mapped = nullptr;
+    VK_CHECK(vkMapMemory(impl_->ctx.device(), pf.boneMemory, 0, bytes, 0, &mapped));
+    std::memcpy(mapped, matrices.data(), bytes);
+    vkUnmapMemory(impl_->ctx.device(), pf.boneMemory);
+    pf.boneSize = bytes;
+
+    // If `ensureBuffer` (re)created the buffer, the descriptor set's
+    // bound handle is stale — rewrite it. The first call after init
+    // also hits this path (oldHandle was VK_NULL_HANDLE).
+    if (oldHandle != pf.boneBuffer) {
+        impl_->updateBoneDescriptor(fi, pf);
+    }
+}
+
 void VulkanRenderer::reloadShaders() {
     if (!impl_->engine) return;
     int requested = 0;
@@ -328,6 +430,19 @@ void VulkanRenderer::reloadShaders() {
     }
     std::printf("[vulkan_renderer] reloadShaders: %d stale request(s) queued\n",
                 requested);
+}
+
+// §3.11.7b.5 batch 9b.4.b — resolve a skinned meshId to its
+// `Mesh*`. Returns null if the slot is out of range or freed —
+// unlike `lookupMesh` we don't fall back to the default cube
+// because the cube isn't laid out as a 56-byte skinned vertex.
+const Mesh* VulkanRenderer::Impl::lookupSkinnedMesh(std::int32_t meshId) const noexcept {
+    if (meshId <= 0) return nullptr;
+    const std::size_t slot = static_cast<std::size_t>(meshId - 1);
+    if (slot >= skinnedMeshSlots.size()) return nullptr;
+    const auto& h = skinnedMeshSlots[slot];
+    if (!h.valid()) return nullptr;
+    return h.get();
 }
 
 const Mesh* VulkanRenderer::Impl::lookupMesh(std::int32_t meshId) const noexcept {
@@ -498,9 +613,72 @@ void VulkanRenderer::Impl::destroyPerFrame() noexcept {
         if (pf.debugLineMemory)  vkFreeMemory  (ctx.device(), pf.debugLineMemory,  nullptr);
         if (pf.debugPointBuffer) vkDestroyBuffer(ctx.device(), pf.debugPointBuffer, nullptr);
         if (pf.debugPointMemory) vkFreeMemory  (ctx.device(), pf.debugPointMemory, nullptr);
+        if (pf.boneBuffer)       vkDestroyBuffer(ctx.device(), pf.boneBuffer,       nullptr);
+        if (pf.boneMemory)       vkFreeMemory  (ctx.device(), pf.boneMemory,       nullptr);
         pf = {};
     }
     perFrame.clear();
+}
+
+void VulkanRenderer::Impl::createBoneDescriptorResources() {
+    if (boneDescriptorPool != VK_NULL_HANDLE) return;
+    const std::uint32_t framesIn = cfg.framesInFlight;
+
+    VkDescriptorPoolSize poolSize = {};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = framesIn;
+
+    VkDescriptorPoolCreateInfo pci = {};
+    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pci.maxSets = framesIn;
+    pci.poolSizeCount = 1;
+    pci.pPoolSizes = &poolSize;
+    VK_CHECK(vkCreateDescriptorPool(ctx.device(), &pci, nullptr,
+                                    &boneDescriptorPool));
+
+    // Allocate one descriptor set per PerFrame slot, all sharing the
+    // single bone-set layout. We allocate them all in one call (more
+    // efficient than per-slot calls); descriptor sets get written
+    // lazily on first `setBoneMatrices` call per slot.
+    std::vector<VkDescriptorSetLayout> layouts(framesIn,
+                                               pipes.opaqueSkinnedBoneSetLayout());
+    std::vector<VkDescriptorSet> allocated(framesIn);
+    VkDescriptorSetAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = boneDescriptorPool;
+    ai.descriptorSetCount = framesIn;
+    ai.pSetLayouts = layouts.data();
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &ai, allocated.data()));
+
+    if (perFrame.size() < framesIn) perFrame.resize(framesIn);
+    for (std::uint32_t i = 0; i < framesIn; ++i) {
+        perFrame[i].boneDescriptorSet = allocated[i];
+    }
+}
+
+void VulkanRenderer::Impl::updateBoneDescriptor(std::uint32_t /*fi*/, PerFrame& pf) {
+    if (pf.boneDescriptorSet == VK_NULL_HANDLE || pf.boneBuffer == VK_NULL_HANDLE) return;
+    VkDescriptorBufferInfo bi = {};
+    bi.buffer = pf.boneBuffer;
+    bi.offset = 0;
+    bi.range  = VK_WHOLE_SIZE;
+    VkWriteDescriptorSet w = {};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = pf.boneDescriptorSet;
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w.pBufferInfo = &bi;
+    vkUpdateDescriptorSets(ctx.device(), 1, &w, 0, nullptr);
+}
+
+void VulkanRenderer::Impl::destroyBoneDescriptorResources() noexcept {
+    if (boneDescriptorPool) {
+        // Pool destruction implicitly frees the allocated sets.
+        vkDestroyDescriptorPool(ctx.device(), boneDescriptorPool, nullptr);
+        boneDescriptorPool = VK_NULL_HANDLE;
+    }
+    for (auto& pf : perFrame) pf.boneDescriptorSet = VK_NULL_HANDLE;
 }
 
 bool VulkanRenderer::Impl::recreateSwapchain() {
@@ -604,21 +782,26 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
         const std::size_t cameraCount =
             std::min<std::size_t>(frame.cameras.size(), 32);
 
-        auto appendToBucket = [&](std::int32_t meshId,
+        // §3.11.7b.5 batch 9b.4.b — buckets are now keyed by
+        // (meshId, skinned). A skinned DrawItem with the same meshId
+        // as an unskinned one would still want a separate bucket
+        // because they hit different pipelines + meshes.
+        auto appendToBucket = [&](std::int32_t meshId, bool skinned,
                                   const threadmaxx::InstanceLayoutEntry& e) {
-            // Treat all negative meshIds as "default mesh" (slot 0) so
-            // they coalesce into a single bucket. The renderer's
-            // `lookupMesh` does the same.
-            const std::int32_t key = meshId < 0 ? 0 : meshId;
+            // Skinned items use the skinned slot namespace; meshId 0
+            // is meaningless there (no default skinned mesh), so
+            // skip without bucketing.
+            if (skinned && meshId <= 0) return;
+            const std::int32_t key = (!skinned && meshId < 0) ? 0 : meshId;
             for (std::size_t b = 0; b < pf.scratchMeshIds.size(); ++b) {
-                if (pf.scratchMeshIds[b] == key) {
+                if (pf.scratchMeshIds[b] == key &&
+                    pf.scratchSkinned[b]  == skinned) {
                     pf.scratchBuckets[b].push_back(e);
                     return;
                 }
             }
-            // New bucket. Reuse a pre-existing vector if available
-            // (preserves capacity across ticks) before allocating.
             pf.scratchMeshIds.push_back(key);
+            pf.scratchSkinned.push_back(skinned);
             if (pf.scratchBuckets.size() < pf.scratchMeshIds.size()) {
                 pf.scratchBuckets.emplace_back();
             } else {
@@ -631,9 +814,12 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
             const std::uint32_t bit = (1u << i);
             // Reset scratch state for this camera. Capacities persist.
             pf.scratchMeshIds.clear();
+            pf.scratchSkinned.clear();
             for (auto& bucket : pf.scratchBuckets) bucket.clear();
 
             // Auto-instance lane (Milestone-1 contract): always visible.
+            // Auto-instances are never skinned (they're the legacy
+            // RenderTag-only entities).
             for (const auto& inst : frame.instances) {
                 threadmaxx::DrawItem virt = {};
                 virt.entity = inst.entity;
@@ -646,14 +832,18 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
                 } else {
                     virt.materialOverride.params = {1.0f, 1.0f, 1.0f, 1.0f};
                 }
-                appendToBucket(virt.meshId, threadmaxx::packInstance(virt));
+                appendToBucket(virt.meshId, /*skinned=*/false,
+                               threadmaxx::packInstance(virt));
             }
-            // Camera-mask-filtered opaque items.
+            // Camera-mask-filtered opaque items. `skeletonId >= 0`
+            // is the public signal that the item should use the
+            // skinned pipeline (§3.11.7b.5 batch 9b.4.b).
             const auto opaqueItems = frame.drawItems[threadmaxx::passIndex(
                 threadmaxx::RenderPass::Opaque)];
             for (const auto& di : opaqueItems) {
                 if ((di.cameraMask & bit) == 0) continue;
-                appendToBucket(di.meshId, threadmaxx::packInstance(di));
+                appendToBucket(di.meshId, di.skeletonId >= 0,
+                               threadmaxx::packInstance(di));
             }
 
             // Flush buckets to `packed[]` in insertion order and record
@@ -664,6 +854,7 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
                 if (bucket.empty()) continue;
                 MeshGroup g{};
                 g.meshId        = pf.scratchMeshIds[b];
+                g.skinned       = pf.scratchSkinned[b];
                 g.offsetBytes   = sizeof(threadmaxx::InstanceLayoutEntry) *
                                   packed.size();
                 g.instanceCount = static_cast<std::uint32_t>(bucket.size());
@@ -759,36 +950,59 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
     // ---- Opaque pass --------------------------------------------------------
     // §3.11.2 batch D2 — instances were pre-packed in recordFrame;
     // §3.11 batch 9b.2b — each camera's slice is now a list of
-    // per-meshId sub-slices. Pipeline + push-constants are bound once
-    // up front; the loop just rebinds vertex buffer + index buffer for
-    // each mesh and draws its slice. Per-pipeline state (push
-    // constants etc.) survives across the inner draws because we
-    // don't switch pipelines.
+    // per-meshId sub-slices.
+    // §3.11.7b.5 batch 9b.4.b — each group is also tagged with
+    // `skinned`. We switch pipelines on demand (track the currently-
+    // bound one to avoid redundant rebinds when groups happen to be
+    // ordered with all-unskinned-then-all-skinned). Push constants
+    // get re-pushed each pipeline switch because the pipeline
+    // layouts differ between opaque and opaque-skinned.
     if (!slice.groups.empty() && cubeHandle.valid()) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.opaquePipe());
-
         OpaquePushConstants pc = {};
         std::memcpy(pc.viewProj, vp, sizeof(vp));
-        // Down-and-to-the-right directional light.
         pc.lightDir[0] = -0.3f;
         pc.lightDir[1] = -1.0f;
         pc.lightDir[2] = -0.2f;
         pc.cameraPos[0] = cam.position.x;
         pc.cameraPos[1] = cam.position.y;
         pc.cameraPos[2] = cam.position.z;
-        vkCmdPushConstants(cmd, pipes.opaqueLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(pc), &pc);
+
+        enum class Bound : std::uint8_t { None, Opaque, OpaqueSkinned };
+        Bound bound = Bound::None;
 
         for (const auto& g : slice.groups) {
             if (g.instanceCount == 0) continue;
-            const Mesh* mesh = lookupMesh(g.meshId);
+
+            const Mesh* mesh = g.skinned
+                ? lookupSkinnedMesh(g.meshId)
+                : lookupMesh(g.meshId);
             if (!mesh || !mesh->gpuReady) continue;
+            if (g.skinned && pf.boneDescriptorSet == VK_NULL_HANDLE) continue;
+
+            // Bind / switch pipeline + push constants if needed.
+            const Bound need = g.skinned ? Bound::OpaqueSkinned : Bound::Opaque;
+            if (need != bound) {
+                const VkPipeline       pipe   = g.skinned ? pipes.opaqueSkinnedPipe()   : pipes.opaquePipe();
+                const VkPipelineLayout layout = g.skinned ? pipes.opaqueSkinnedLayout() : pipes.opaqueLayout();
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                vkCmdPushConstants(cmd, layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(pc), &pc);
+                if (g.skinned) {
+                    // Bind the bone descriptor set (set 0). The
+                    // unskinned opaque pipeline has no descriptor
+                    // sets, so we only bind here.
+                    vkCmdBindDescriptorSets(cmd,
+                                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            layout,
+                                            /*firstSet=*/0,
+                                            1, &pf.boneDescriptorSet,
+                                            0, nullptr);
+                }
+                bound = need;
+            }
 
             VkBuffer vbufs[2] = {mesh->vertexBuffer, pf.instanceBuffer};
-            // Binding 1 (per-instance) uses this group's slice offset
-            // into the pre-packed buffer. The shader's
-            // `gl_InstanceIndex 0` maps to the first record.
             VkDeviceSize voffs[2] = {0, g.offsetBytes};
             vkCmdBindVertexBuffers(cmd, 0, 2, vbufs, voffs);
             vkCmdBindIndexBuffer(cmd, mesh->indexBuffer, 0, VK_INDEX_TYPE_UINT16);

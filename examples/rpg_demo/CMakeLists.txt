@@ -48,6 +48,9 @@ add_library(rpg_demo_core STATIC
     PreloadLoader.cpp
     # §3.11 batch 9b.1 — Wavefront OBJ parser (sibling-library)
     ObjLoader.cpp
+    # §3.11.7b.5 batch 9b.4.c — procedural 2-bone skinned demo
+    SkinnedCapsule.cpp
+    SkinnedRenderSystem.cpp
 )
 
 target_include_directories(rpg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

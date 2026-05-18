@@ -224,6 +224,12 @@ struct WorldState {
     /// callback case). Set in `DemoGame::onSetup` before the spawn
     /// loops run.
     std::int32_t  pickupMeshId    = 0;
+    /// §3.11.7b.5 batch 9b.4.c — skinned mesh registered by main.cpp
+    /// after `engine.initialize`. Zero (or non-positive) means the
+    /// renderer's skinning path isn't wired (e.g. headless tests, or
+    /// a build where `registerSkinnedMeshFromData` returned -1) and
+    /// `SkinnedRenderSystem` falls silent.
+    std::int32_t  skinnedMeshId   = 0;
     /// §3.11.5 batch D5 — `FrameBudgetWatcher` reports per-tick alerts
     /// on this counter; HudSystem surfaces it.
     std::uint32_t budgetExceededCount = 0;
