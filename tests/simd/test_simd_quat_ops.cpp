@@ -122,6 +122,37 @@ int main() {
         std::printf("[simd_quat] tail 1/7/13 OK\n");
     }
 
+    // ---- 5b. nlerp endpoints + midpoint --------------------------------
+    {
+        // Endpoints exact (modulo normalization).
+        const Quat a{0, 0, 0, 1};
+        const float a90 = 0.5f * (3.14159265f / 2.0f);
+        const Quat b{0, std::sin(a90), 0, std::cos(a90)};
+        std::vector<Quat> av{a};
+        std::vector<Quat> bv{b};
+        std::vector<Quat> out(1);
+
+        simd::nlerp(av, bv, out, 0.0f);
+        CHECK(approxEq(out[0], a, 1e-5f));
+        simd::nlerp(av, bv, out, 1.0f);
+        CHECK(approxEq(out[0], b, 1e-5f));
+
+        // Midpoint — nlerp's midpoint is the normalized average; it
+        // differs slightly from slerp's midpoint but stays unit-length.
+        simd::nlerp(av, bv, out, 0.5f);
+        CHECK(approxEq(quatNorm(out[0]), 1.0f, 1e-5f));
+        // For symmetric inputs, the midpoint's vector part should be
+        // entirely in the rotation axis (y here). x and z must be ~0.
+        CHECK(approxEq(out[0].x, 0.0f, 1e-5f));
+        CHECK(approxEq(out[0].z, 0.0f, 1e-5f));
+
+        // Shortest-path: a vs -a should produce identity at midpoint.
+        std::vector<Quat> bv_neg{Quat{0, 0, 0, -1}};
+        simd::nlerp(av, bv_neg, out, 0.5f);
+        CHECK(approxEq(out[0], Quat{0, 0, 0, 1}, 1e-5f));
+        std::printf("[simd_quat] nlerp endpoints / midpoint / shortest-path OK\n");
+    }
+
     // ---- 6. mismatched sizes + empty spans ------------------------------
     {
         std::vector<Quat> a(5, Quat{0, 0, 0, 1});

@@ -11,15 +11,24 @@
 //     a future batch; this file just produces the capability set.
 //
 // Implementation: x86 path uses CPUID via the GCC / Clang
-// `__get_cpuid_count` intrinsic. ARM path stubs `neon = true` when
-// compiled for an ARM target with NEON (the runtime probe collapses
-// to compile-time on ARM because there's no portable equivalent of
-// CPUID for NEON detection). Other architectures fall back to
-// scalar-only.
+// `__get_cpuid_count` intrinsic (MSVC: `__cpuidex`). On ARM hosts
+// `runtime_capabilities()` is honestly a compile-time alias —
+// there's no portable user-space NEON probe equivalent to CPUID.
+// If the build was compiled with `-mfpu=neon` (or similar), the
+// runtime view reports `neon=true`; otherwise `false`. Other
+// architectures fall back to scalar-only.
 //
-// The result is cached in a function-local static: the CPUID
-// sequence runs exactly once per process. Subsequent calls are
-// near-zero-cost (a single static-init check).
+// The result is cached in a function-local static (C++11 magic-
+// statics provide thread-safe one-shot initialization). The CPUID
+// sequence runs exactly once per process; subsequent calls are
+// near-zero-cost (a single relaxed-load on the static-init guard).
+//
+// Note on AVX2 + OS support: AVX2 also requires the OS to save YMM
+// state across context switches (XCR0 bit 2). The probe here does
+// NOT execute `XGETBV` to verify this — any user-space OS shipped
+// in the last decade has YMM enabled, and an OS that strands an
+// AVX2-capable binary without it would crash on the first VEX
+// instruction regardless of what we report.
 
 #pragma once
 

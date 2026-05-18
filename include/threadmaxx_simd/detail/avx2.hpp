@@ -1,22 +1,36 @@
-// threadmaxx_simd — AVX2 backend for Vec3 kernels.
+// threadmaxx_simd — AVX2 backend kernels.
 //
-// Vectorizes the element-wise kernels (`add` / `sub` / `scale` /
-// `madd` / `dot`) by treating a `std::span<Vec3>` as a flat float
-// array of length `3 * n`. AVX2 processes 8 floats per lane, so we
-// step in chunks of 8 floats (= 2⅔ Vec3s, but float-wise that
-// doesn't matter — element-wise ops don't care about Vec3
-// boundaries). A scalar tail handles the last 0..7 floats.
+// Kernels in this file (organized by family):
+//   Vec3:       add / sub / scale / madd / dot / normalize
+//   Quat:       quat_normalize
+//   Frustum:    frustum_cull
+//   Transform:  apply_transforms / integrate_linear_motion
+//   AABB:       transform_aabb
 //
-// `normalize` is NOT in this file: it's the only Vec3 kernel that's
-// inherently per-Vec3 (it needs `len² = x² + y² + z²` per element,
-// which requires a 3-way AoS↔SoA deinterleave under AVX2). Logged
-// as a follow-up — see FUTURE_WORK S3.5.
+// Two vectorization patterns are used:
+//   (1) Flat-float for densely-packed Vec3 streams: treat
+//       `std::span<Vec3>` as `float[3*n]` and process 8 floats per
+//       iteration with `_mm256_loadu_ps` / `_mm256_storeu_ps`.
+//       Used by Vec3 add/sub/scale/madd/dot. The element-wise ops
+//       don't care about Vec3 boundaries.
+//   (2) Gather-based AoS↔SoA for per-element work that crosses Vec3
+//       boundaries (normalize), Transform boundaries (apply_transforms,
+//       integrate_linear_motion), or operates on a single AABB's 8
+//       corners (transform_aabb). Stride indices precomputed outside
+//       the loop; tail handled scalar.
 //
-// Aliasing note: we cast `Vec3*` → `float*` to access the contiguous
-// flat layout. `Vec3` is standard-layout with first member `float x`,
-// so `&v == &v.x` is pointer-interconvertible. Treating the array of
-// Vec3s as `float[3*n]` is the documented common pattern in ECS /
-// game-engine code; compilers (GCC / Clang / MSVC) treat it as
+// Whether a public dispatcher routes to this backend is decided in
+// the `*_ops.hpp` headers based on benchmark-measured wins. Several
+// kernels here (normalize, quat_normalize, integrate_linear_motion)
+// stay covered by the equivalence tests even though the public
+// dispatcher routes around them to scalar — kept as a reference for
+// future micro-opts.
+//
+// Aliasing note: we cast `Vec3*` → `float*` (etc.) to access the
+// contiguous flat layout. `Vec3` is standard-layout with first
+// member `float x`, so `&v == &v.x` is pointer-interconvertible.
+// Treating the array as `float[N]` is the documented common pattern
+// in ECS / game-engine code; GCC / Clang / MSVC treat it as
 // non-aliasing under their effective-type rules. The cast lives
 // only in `detail::` so user code never sees it (per DESIGN_NOTES
 // §9 non-goals: "No public reliance on `reinterpret_cast`").
@@ -42,10 +56,14 @@
 
 namespace threadmaxx::simd::detail::avx2 {
 
-/// Horizontal sum of an AVX2 register's 8 floats into a single
-/// scalar. Two halves → 128-bit add → two `hadd` → low-element
-/// extract. Standard pattern; good enough for the dot-product
-/// epilogue.
+// ---- Horizontal-reduction helpers ----------------------------------------
+//
+// Three helpers: sum / min / max across the 8 lanes of an __m256.
+// All follow the standard "split into 128-bit halves, reduce
+// pairwise, extract low" pattern.
+
+/// Horizontal sum: returns Σ v[lane]. Used by `dot` for the
+/// per-iteration accumulator's final reduction.
 inline float horizontal_sum_ps(__m256 v) noexcept {
     const __m128 lo = _mm256_castps256_ps128(v);
     const __m128 hi = _mm256_extractf128_ps(v, 1);
@@ -53,6 +71,26 @@ inline float horizontal_sum_ps(__m256 v) noexcept {
     s = _mm_hadd_ps(s, s);
     s = _mm_hadd_ps(s, s);
     return _mm_cvtss_f32(s);
+}
+
+/// Horizontal min / max. Used by `transform_aabb` for the per-AABB
+/// reduction of 8 transformed corners back to a single AABB.
+inline float hmin_ps(__m256 v) noexcept {
+    const __m128 lo = _mm256_castps256_ps128(v);
+    const __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 m = _mm_min_ps(lo, hi);
+    m = _mm_min_ps(m, _mm_movehl_ps(m, m));
+    m = _mm_min_ss(m, _mm_shuffle_ps(m, m, 0x55));
+    return _mm_cvtss_f32(m);
+}
+
+inline float hmax_ps(__m256 v) noexcept {
+    const __m128 lo = _mm256_castps256_ps128(v);
+    const __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 m = _mm_max_ps(lo, hi);
+    m = _mm_max_ps(m, _mm_movehl_ps(m, m));
+    m = _mm_max_ss(m, _mm_shuffle_ps(m, m, 0x55));
+    return _mm_cvtss_f32(m);
 }
 
 inline void add(std::span<const Vec3> a,
@@ -373,26 +411,6 @@ inline void frustum_cull(std::span<const Vec3> centers,
         }
         visible_mask[i] = vis;
     }
-}
-
-// ---- Horizontal-reduction helpers ----------------------------------------
-
-inline float hmin_ps(__m256 v) noexcept {
-    const __m128 lo = _mm256_castps256_ps128(v);
-    const __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128 m = _mm_min_ps(lo, hi);
-    m = _mm_min_ps(m, _mm_movehl_ps(m, m));
-    m = _mm_min_ss(m, _mm_shuffle_ps(m, m, 0x55));
-    return _mm_cvtss_f32(m);
-}
-
-inline float hmax_ps(__m256 v) noexcept {
-    const __m128 lo = _mm256_castps256_ps128(v);
-    const __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128 m = _mm_max_ps(lo, hi);
-    m = _mm_max_ps(m, _mm_movehl_ps(m, m));
-    m = _mm_max_ss(m, _mm_shuffle_ps(m, m, 0x55));
-    return _mm_cvtss_f32(m);
 }
 
 // ---- Transform kernels ---------------------------------------------------

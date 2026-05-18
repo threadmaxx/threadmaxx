@@ -13,8 +13,10 @@
 
 #include <threadmaxx_simd/config.hpp>
 #include <threadmaxx_simd/cpu.hpp>
+#include <threadmaxx_simd/version.hpp>
 
 #include <cstdio>
+#include <cstring>
 
 int main() {
     using namespace threadmaxx::simd;
@@ -73,6 +75,17 @@ int main() {
         capabilities scalar_only{};
         CHECK_EQ(preferred_isa_from(scalar_only), isa::scalar);
     }
+
+    // ---- 5. Library version --------------------------------------------
+    static_assert(THREADMAXX_SIMD_VERSION_MAJOR >= 1,
+        "library is at least v1.0");
+    static_assert(THREADMAXX_SIMD_VERSION >= 10000,
+        "packed version matches MAJOR*10000+...");
+    const char* v = version_string();
+    CHECK(v != nullptr);
+    CHECK(std::strlen(v) > 0);
+    std::printf("[simd_config] version=%s (packed=%d)\n",
+                v, THREADMAXX_SIMD_VERSION);
 
     EXIT_WITH_RESULT();
 }

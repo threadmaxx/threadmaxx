@@ -1,15 +1,20 @@
 // threadmaxx_simd — public Transform batch kernels.
 //
-// In S2 the dispatch path is "always scalar"; S4 vectorizes the
-// hottest of these (`integrate_linear_motion`, `apply_transforms`).
+// Current dispatch:
+//   - `apply_transforms`         →  AVX2 when built (1.23× win).
+//   - `integrate_positions`      →  ALWAYS scalar (Transform-stride
+//     gather PLUS per-element quaternion composition; no AVX2 impl).
+//   - `integrate_linear_motion`  →  ALWAYS scalar (AVX2 impl exists
+//     for reference but the Transform 40-byte stride costs ≈ scalar
+//     throughput per benchmark).
 //
 // Conventions:
 //   - All kernels walk parallel spans. Writers stop at the shorter
 //     span; no exception is thrown for size mismatch.
-//   - `integrate_positions` treats `Velocity.angular` as an axis-angle
-//     pair (direction = axis, magnitude = angle in radians) and
-//     composes the per-tick delta into the orientation via
-//     normalized quaternion multiplication.
+//   - `integrate_positions` treats `Velocity.angular` as an axis-
+//     angle pair (direction = axis, magnitude = rad/s) and composes
+//     the per-tick delta into the orientation via normalized quat
+//     multiplication.
 //   - `integrate_linear_motion` advances position only; it's the
 //     hot-path for projectiles / particle systems that don't carry
 //     orientation state.

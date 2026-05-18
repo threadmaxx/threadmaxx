@@ -465,39 +465,6 @@ appropriate `#if THREADMAXX_SIMD_HAS_X` arms in the
 dispatchers. The library's structure supports this without
 further refactoring.
 
-## Batch S5 — Runtime CPU probe + dispatch
-
-**Goal**: when multiple backends are built (e.g., scalar + AVX2),
-the kernel picks the best one at first call via a one-time CPUID
-probe. Useful for distributing a single binary that uses AVX2 on
-capable hardware and falls back on older machines.
-
-**Test gate**:
-
-- `test_simd_runtime_dispatch` — `runtime_capabilities()` returns
-  consistent results across calls; `preferred_isa()` matches
-  `runtime_capabilities()` on the host.
-- A force-scalar override via env var (`THREADMAXX_SIMD_FORCE=scalar`)
-  works.
-
-**Files**:
-
-- `include/threadmaxx_simd/cpu.hpp`
-- `include/threadmaxx_simd/detail/dispatch.hpp`
-- All `*_ops.hpp` updated to route through the dispatcher.
-
-**Risks**:
-
-- CPUID on x86 needs `__cpuid_count`-style intrinsics; not
-  portable to MSVC syntax without `#if`s.
-- Dispatch must inline cleanly or it becomes a per-call branch.
-
-## Batch S6 — SSE2 (or NEON) second backend
-
-Same shape as S3/S4 but for a second ISA. Pick based on coverage
-gap: SSE2 covers older x86 hardware; NEON covers ARM. On a Linux
-x86_64 dev workstation SSE2 is the natural pick.
-
 ## Batch S7 — Chunk integration  ✅ landed 2026-05-18 (test gate); benchmarks deferred
 
 **Shipped (integration test)**:
@@ -537,6 +504,143 @@ see §S4 above. Re-run when porting new kernels.
   `test_simd_chunk_integration`).
 
 **Effort**: ~30 min actual.
+
+## v1.0 close-out — production-ready  ✅ landed 2026-05-18
+
+This section seals the v1.0 line. Everything shipped above is
+covered by tests + benchmarks + docs; everything below is either
+documented as out-of-scope (the §9 list) or a concrete v1.x
+candidate (next section) that does NOT block v1.0 use.
+
+**Final close-out additions**:
+
+- `nlerp(Quat)` kernel — vectorizable lerp+normalize with
+  shortest-path flip. Faster substitute for `slerp` when
+  constant-angular-velocity isn't needed (animation blending).
+  Scalar-only in v1.0; AVX2 vectorization is a v1.x candidate.
+- `version.hpp` — semver macros + `version_string()`. Library
+  starts at **v1.0.0**.
+- `README.md` (this directory) — top-level overview with
+  quick-start + doc cross-references.
+- `CHANGELOG.md` — distilled batch history in Keep-a-Changelog
+  format.
+- `USER_GUIDE.md` / `MAINTAINER_GUIDE.md` updates with the new
+  surface area.
+- Audit pass fixes (umbrella include, doc-lag comments, hoisted
+  reduction helpers, etc.). See CHANGELOG §1.0.0 "Fixed".
+
+**v1.0 success criteria** (all met):
+
+- ✓ Every public kernel has equivalence + correctness tests.
+- ✓ Every dispatcher decision is benchmark-backed.
+- ✓ Header-only — INTERFACE CMake target, no object files.
+- ✓ Portable — builds on x86_64 with or without `-mavx2`.
+- ✓ Docs: README, USER_GUIDE, MAINTAINER_GUIDE, DESIGN_NOTES,
+  CHANGELOG, FUTURE_WORK.
+- ✓ Versioning: semver, lifecycle policy documented.
+- ✓ ctest 100% on both `build/` and `build-werror/` trees.
+
+## v1.x candidate batches (not blocking v1.0)
+
+Each is a concrete, scoped follow-up. None is a prerequisite for
+v1.0 production use; pursue when measured perf evidence or a
+user need surfaces.
+
+### v1.1 candidate — AVX2 `nlerp(Quat)`
+
+Vectorize the scalar `nlerp` shipped in v1.0. Layout: 2 quats per
+`__m256` (same as the existing `quat_normalize` AVX2 impl). The
+lerp body is 4 mul + 4 sub + 4 add per pair; vectorized that's
+~4 cycles per 2 pairs. The normalize step reuses the existing
+AVX2 `quat_normalize` path or its equivalent.
+
+**Bench gate**: AVX2 must beat scalar nlerp at ≥1k entities to
+justify dispatching. Expected to win unlike `quat_normalize`
+because the lerp body has compute density the normalize-only
+version lacks.
+
+### v1.x candidate — AVX2 `slerp(Quat)`
+
+Polynomial sin/cos approximation on AVX2 lanes. The math:
+
+- `acos(cosθ)` via Remez polynomial in `[-1, 1]` (~5th-degree
+  accurate to ~1e-6).
+- `sin(x)` over `[0, π/2]` via Taylor or Remez (5-term).
+- Two `sin` calls per slerp; one `acos` per slerp; one
+  reciprocal of `sin(θ)`.
+
+Lane masking for the lerp-fallback branch (`cosθ > 0.9995`) and
+the shortest-path flip (`cosθ < 0`) is fiddly. Plan: implement
+both branches unconditionally per lane and `_mm256_blendv_ps`
+into the final result. Costs ~1 extra register but keeps the
+control flow lane-uniform.
+
+**Scope**: ~half-day of careful work. Polynomial coefficients
+should be tested against `1e-5` relative tolerance to scalar
+reference.
+
+### v1.x candidate — AVX2 `integrate_positions`
+
+Currently scalar because the Transform-stride gather + per-
+element quaternion composition is two layers of complexity, and
+the simpler `integrate_linear_motion` AVX2 attempt was a
+benchmark loss.
+
+If pursued, follow the `apply_transforms` template (10-stride
+Transform gather) and reuse the `quat_normalize` AVX2 helper for
+the post-composition renormalize. Realistic win is uncertain
+given the gather overhead.
+
+**Bench gate**: must clear scalar at 16k+ entities to justify
+the implementation effort.
+
+### v1.x candidate — Permute-based Vec3 normalize
+
+Replace the current gather-based AoS↔SoA in `detail::avx2::normalize`
+with a permute sequence (~8 ops). The gather is the documented
+bottleneck (currently ~30% slower than scalar). A clean permute
+should flip the dispatcher decision.
+
+**Reference**: search "3-way deinterleave AVX2 RGB to planar" —
+standard pattern, well-documented.
+
+**Bench gate**: must clear scalar at all sizes including the
+small-n boundary.
+
+### v1.x candidate — Per-quat `_mm_hadd_ps` for `quat_normalize`
+
+Replace `_mm256_dp_ps` (12-15 cycle latency) with per-lane
+`_mm_mul_ps` + `_mm_hadd_ps` × 2 (~6 cycle total). Same
+correctness, ~half the critical-path latency.
+
+**Bench gate**: must clear scalar at 16k+ entities.
+
+### v1.x candidate — Runtime force-scalar override
+
+Originally specced in S5 but unimplemented: an
+`THREADMAXX_SIMD_FORCE=scalar` environment variable that causes
+all kernel dispatchers to route to scalar even when AVX2 is
+built. Useful for diagnostic comparison + regression bisection.
+
+Doesn't fit cleanly into the current compile-time `#if` dispatch
+model — would need a per-kernel function-pointer indirection or
+a runtime flag checked at each call site (perf-bad). Deferred
+until profile data shows it's needed.
+
+### v1.x candidate — SSE2 second backend
+
+DEFERRED per `DESIGN_NOTES.md` §S6: SSE2 fills a niche between
+scalar and AVX2 (pre-2013 x86 hardware) that's not on the
+project's target. Same template applies if it's needed —
+`detail/sse2.hpp` mirroring `detail/avx2.hpp`'s structure, with
+appropriate `#if` arms in the dispatchers.
+
+### v1.x candidate — NEON backend
+
+Same story as SSE2 but for ARM hosts. The library's compile-time
+ISA detection already recognizes `__ARM_NEON__`; just no
+`detail/neon.hpp` has been written. Out of scope until the
+project targets ARM hardware.
 
 ## Out of scope for the whole library
 

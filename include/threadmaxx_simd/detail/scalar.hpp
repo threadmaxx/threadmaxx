@@ -192,6 +192,26 @@ inline Quat quat_slerp_one(const Quat& a, const Quat& b, float alpha) noexcept {
     };
 }
 
+/// Normalized linear interpolation between two unit quaternions.
+/// Equivalent to `normalize(lerp(a, b, alpha))`; preserves the
+/// shortest-path flip (negates `b` if `dot(a, b) < 0`). Much
+/// cheaper than slerp (no `sin` / `cos`) at the cost of non-
+/// constant angular velocity along the interpolation arc — fine
+/// for animation blending where the eye can't tell the
+/// difference.
+inline Quat quat_nlerp_one(const Quat& a, const Quat& b, float alpha) noexcept {
+    const float cosTheta = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    const Quat bb = (cosTheta < 0.0f)
+                  ? Quat{-b.x, -b.y, -b.z, -b.w}
+                  : b;
+    return quat_normalize_one(Quat{
+        a.x + alpha * (bb.x - a.x),
+        a.y + alpha * (bb.y - a.y),
+        a.z + alpha * (bb.z - a.z),
+        a.w + alpha * (bb.w - a.w),
+    });
+}
+
 // ---- Quaternion kernels --------------------------------------------------
 
 /// In-place per-element normalize of a span of quaternions.
@@ -208,6 +228,19 @@ inline void quat_slerp(std::span<const Quat> a,
     const std::size_t n = std::min({a.size(), b.size(), out.size()});
     for (std::size_t i = 0; i < n; ++i) {
         out[i] = quat_slerp_one(a[i], b[i], alpha);
+    }
+}
+
+/// Parallel-span nlerp. Faster than slerp; pick this when animation
+/// blending is the goal and the slight non-uniform-angular-velocity
+/// is acceptable.
+inline void quat_nlerp(std::span<const Quat> a,
+                       std::span<const Quat> b,
+                       std::span<Quat> out,
+                       float alpha) noexcept {
+    const std::size_t n = std::min({a.size(), b.size(), out.size()});
+    for (std::size_t i = 0; i < n; ++i) {
+        out[i] = quat_nlerp_one(a[i], b[i], alpha);
     }
 }
 

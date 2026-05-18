@@ -1,19 +1,29 @@
 // threadmaxx_simd — public Vec3 batch kernels.
 //
-// Span-based, no-allocation, scalar-fallback-always. In S1 the
-// dispatch path is "always scalar"; S3 grows compile-time branching
-// onto AVX2 paths when the build target supports them. The public
-// signatures listed here are the user contract — backend changes
-// won't reshape them.
+// Span-based, no-allocation, scalar-fallback-always. The public
+// signatures here are the stable user contract; backend dispatch
+// (compile-time scalar vs. AVX2 selection) happens transparently.
+//
+// Current dispatch (see comments on each function for rationale):
+//   - `add` / `sub` / `scale` / `madd` / `dot`  →  AVX2 when built,
+//     else scalar. Benchmarks show 1.1×–3.5× wins on x86_64.
+//   - `normalize`  →  ALWAYS scalar (AVX2 implementation exists in
+//     `detail/avx2.hpp` and is tested for correctness but is slower
+//     than scalar on the workloads measured — kept as reference).
 //
 // Tail / mismatched-length policy:
 //   - Writers (`add`/`sub`/`scale`/`madd`/`normalize`) stop at
-//     `min(in.size(), out.size())` and silently no-op past. There is
-//     no exception thrown for size mismatch; this matches the rest
-//     of the threadmaxx public API.
+//     `min(in.size(), out.size())` and silently no-op past. There
+//     is no exception thrown for size mismatch; this matches the
+//     rest of the threadmaxx public API.
 //   - `dot` accumulates across `min(a.size(), b.size())` and returns
 //     `0.0f` on empty input.
-//   - `normalize` of the zero vector yields the zero vector.
+//   - `normalize` of the zero vector yields the zero vector (no NaN
+//     from `1/sqrt(0)`).
+//   - In-place aliasing is safe for the element-wise kernels:
+//     calling `add(a, b, a)` or `sub(a, a, out)` produces well-
+//     defined results because each step's reads finish before the
+//     same step's write.
 
 #pragma once
 
@@ -30,13 +40,12 @@
 
 namespace threadmaxx::simd {
 
-// §S3 — compile-time dispatch: when the translation unit was built
-// with `-mavx2` (or equivalent flag), `THREADMAXX_SIMD_HAS_AVX2` is
-// 1 and the AVX2 paths take over for the 5 element-wise kernels.
-// `normalize` stays on the scalar path until the 3-way deinterleave
-// version lands (S3.5 / S4). The build's portability is unchanged:
-// without AVX2 flags, the AVX2 header doesn't even open and the
-// dispatcher resolves to scalar at preprocessor time.
+// Compile-time dispatch: when the translation unit was built with
+// `-mavx2` (or equivalent), `THREADMAXX_SIMD_HAS_AVX2 == 1` and the
+// AVX2 paths take over for the element-wise kernels. The build's
+// portability is unchanged: without AVX2 flags, the AVX2 header
+// doesn't even open and the dispatcher resolves to scalar at
+// preprocessor time.
 
 /// out[i] = a[i] + b[i] (component-wise).
 inline void add(std::span<const Vec3> a,

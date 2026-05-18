@@ -1,10 +1,11 @@
-// threadmaxx_simd — feature detection and dispatch enum.
+// threadmaxx_simd — compile-time feature detection and dispatch enum.
 //
-// Compile-time only in this batch (S1). The runtime CPU probe and the
-// `runtime_capabilities()` / `preferred_isa()` implementations gain
-// their dynamic-dispatch teeth in S5; for now `preferred_isa()` is a
-// `constexpr` shorthand for "whichever ISA the build picked up" and
-// `runtime_capabilities()` matches `compile_time_capabilities()`.
+// This header is the foundation: it defines the `isa` enum, the
+// `capabilities` POD, and the compile-time view of what SIMD ISAs
+// the current translation unit was built with. Runtime probing
+// (CPUID) lives in `cpu.hpp` — include that when you need the
+// host CPU's actual capabilities (which can differ from compile-
+// time when shipping a fat binary).
 //
 // Macros defined here:
 //
@@ -12,9 +13,9 @@
 //   THREADMAXX_SIMD_HAS_AVX2  — compiler is targeting AVX2.
 //   THREADMAXX_SIMD_HAS_NEON  — compiler is targeting ARM NEON.
 //
-// These never *force* a backend; they merely advertise availability so
-// `*_ops.hpp` can wire compile-time dispatch in later batches. Today
-// (S1) every kernel is scalar regardless.
+// These never *force* a backend; they merely advertise availability
+// to the `*_ops.hpp` headers, which decide per-kernel whether the
+// AVX2 / NEON / SSE2 paths are dispatched (benchmark-driven choice).
 
 #pragma once
 
@@ -67,9 +68,9 @@ struct capabilities {
 /// Returns the capability set the current translation unit was built
 /// with. The result is `constexpr` so the test suite can branch on it
 /// at compile time and consumers can use it inside `if constexpr`.
+/// `scalar` is true via the struct's default initializer.
 constexpr capabilities compile_time_capabilities() noexcept {
     capabilities c{};
-    c.scalar = true;
 #if THREADMAXX_SIMD_HAS_SSE2
     c.sse2 = true;
 #endif
