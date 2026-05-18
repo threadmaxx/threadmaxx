@@ -159,4 +159,8 @@ void* Engine::getEventChannelRaw(std::type_index type,
     return impl_->getEventChannelRaw(type, factory, deleter, drainFn);
 }
 
+std::uint64_t Engine::engineSerial() const noexcept {
+    return impl_->engineSerial();
+}
+
 } // namespace threadmaxx

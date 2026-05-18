@@ -2171,11 +2171,36 @@ become useful; this is a rolling batch, not a single ship.
   `tests/command_buffer_spawn_n_test.cpp` (16-entity split
   archetype + partial-span tolerance).
 
-**Still planned:**
+- **F13 — `World::forEachChunkOf(ComponentSet, fn)`** (additive,
+  landed 2026-05-18). Templated introspection helper that walks
+  every non-empty archetype chunk whose mask satisfies `required`
+  and invokes `fn(const ArchetypeChunk&)`. Saves debug / tooling
+  code from the manual `for (i=0..archetypeChunkCount())` + mask
+  predicate boilerplate. Skips the engine's startup-allocated
+  empty `all()`-masked chunk automatically (same convention as
+  `Query.hpp::forEachChunk`). New helper free functions
+  `internal::chunkMaskHasAll` / `internal::chunkIsEmpty` declared
+  in `World.hpp` and defined in `World.cpp` so the template body
+  doesn't force consumers to include `internal/Archetype.hpp`.
+  New `tests/world_for_each_chunk_of_test.cpp` covers
+  3-archetype scene + 5 mask-predicate cases including the
+  no-match path and iteration-order stability.
 
-- F13 — `World::forEachChunkOf` introspection helper.
-- F8 (deferred from §3.10.2) — proper event-channel cache
-  via per-engine version counter.
+- **F8 — `Engine::events<T>()` thread_local cache** (additive,
+  landed 2026-05-18). Previously deferred (§3.10.2 batch 22)
+  because the obvious `thread_local EventChannel<T>*` cache UAFed
+  when an engine was destroyed + recreated at the same memory
+  address. Fixed via a per-engine non-zero serial (assigned at
+  construction from a global atomic counter): the cache stores
+  `{engineSerial, channel_ptr}` per `(Ev, thread)`, and the
+  `serial == engineSerial()` check on every call invalidates
+  stale entries automatically. Hot-path is single atomic load +
+  comparison (replaces ~30 ns mutex acquisition). New
+  `Engine::engineSerial()` public method (`@internal`-tagged)
+  exposes the value. New `tests/event_channel_cache_test.cpp`
+  covers 5 scenarios: same-engine stable ptr, distinct serials,
+  recreated-engine cache invalidation, cross-engine coexistence,
+  multiple-Ev-types-per-engine.
 
 ### 3.11 RPG-demo-driven library exercise plan
 
@@ -4071,6 +4096,68 @@ cameras, lights, per-pass bins, debug overlay, `buildRenderFrame`
 hook, visibility helpers, instance/upload helpers); the rest
 depends on §3 batches 9–14 (Vulkan example, RPG demo, task graph,
 cancellation/budgets, storage contention, telemetry ingestion).
+
+## v1.0.0 production close-out — Batch 25  ✅ landed 2026-05-18
+
+The v1.0 line is now sealed. Everything in the §10 production-ready
+checklist has been met (see "Today:" paragraph above); Batch 25
+delivers the polish that turns a feature-complete library into a
+shippable release.
+
+**Shipped in Batch 25**:
+
+- `include/threadmaxx/version.hpp` — `THREADMAXX_VERSION_MAJOR/MINOR/PATCH`
+  macros, packed `THREADMAXX_VERSION`, `version_string() → "1.0.0"`.
+  Bump rules + lifecycle policy documented in the file header.
+- `CMakeLists.txt` `project()` VERSION: 0.1.0 → 1.0.0.
+- `cmake/threadmaxxConfig.cmake.in` — was referenced by the install
+  rules but missing on disk. Created with proper `find_dependency(Threads)`
+  + Targets include. `find_package(threadmaxx 1.0 CONFIG)` now works
+  end-to-end on a downstream project (verified via
+  `/tmp/threadmaxx-consumer/`).
+- `CHANGELOG.md` (top level) — Keep-a-Changelog format distilling
+  the batch history from v0.1.0 (Batch 1) through v1.0.0
+  (Batch 25). 16 release entries.
+- `README.md` — status flipped from "early but functional" to
+  "v1.0.0 — production-ready"; doc index table added pointing at
+  README / ARCHITECTURE / CHANGELOG / FUTURE_WORK / CLAUDE.md /
+  `include/threadmaxx_simd/` / `doc/`. Test count updated to 108.
+- `tests/version_test.cpp` — version-macros gate.
+
+**v1.0 success criteria — all met**:
+
+- ✓ Stable public API (the §10 checklist; the rpg_demo runs without
+  engine patches).
+- ✓ 108/108 ctest pass on both `build/` and `build-werror/`.
+- ✓ Library installs cleanly via `cmake --install`; downstream
+  `find_package(threadmaxx 1.0 CONFIG)` resolves + links.
+- ✓ Full doc set: README, ARCHITECTURE, CHANGELOG, FUTURE_WORK,
+  CLAUDE.md (AI-assisted dev guide), `doc/` (Doxygen).
+- ✓ Sibling `threadmaxx_simd` library shipped at its own v1.0.0
+  (`include/threadmaxx_simd/`).
+- ✓ Versioning policy + bump rules documented (in `version.hpp`
+  and CHANGELOG).
+- ✓ Stable serialization (batch 4, `kWorldSnapshotVersion = 2`).
+- ✓ Profiling + telemetry surface (batch 4 + 14).
+- ✓ Deterministic / reproducible simulation modes (batch 13a
+  `commitHash`, batch 12 `SkipPolicy::Scripted`).
+- ✓ Multi-core scalability proven by §3.9 batches 16–20.
+- ✓ Multi-renderer story (renderer-agnostic core + Vulkan reference
+  renderer at `examples/vulkan_renderer/`).
+
+**v1.x candidate work** (not blocking v1.0):
+
+The §3 plan documents these in detail. None blocks production use;
+each is a focused follow-up batch when measured evidence or a user
+need surfaces.
+
+- **Batch 9b.4** — Vulkan bone-weighted skinning pipeline (deferred
+  ~1-2 weeks; see §3.11.7b.5).
+- **threadmaxx_simd v1.x candidates** — AVX2 nlerp / slerp /
+  integrate_positions, permute-based normalize, runtime force-scalar
+  override, SSE2 / NEON backends (see
+  `include/threadmaxx_simd/FUTURE_WORK.md`).
+- Anything from §6 / §7 that profiler data hasn't yet justified.
 
 ## 11. Final note
 

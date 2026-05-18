@@ -12,7 +12,17 @@
 
 namespace threadmaxx { struct WorldSnapshot; }
 
-namespace threadmaxx::internal { struct ArchetypeChunk; }
+namespace threadmaxx::internal {
+struct ArchetypeChunk;
+
+/// §3.10.3 batch 24 (F13) — `ArchetypeChunk` is forward-declared in
+/// `World.hpp` to keep the header light; these free helpers let the
+/// `World::forEachChunkOf` template predicate check chunk-vs-mask
+/// AND skip empty chunks without consumers having to include
+/// `internal/Archetype.hpp`. Defined in `World.cpp`.
+bool chunkMaskHasAll(const ArchetypeChunk& chunk, ComponentSet required) noexcept;
+bool chunkIsEmpty   (const ArchetypeChunk& chunk) noexcept;
+} // namespace threadmaxx::internal
 
 namespace threadmaxx {
 
@@ -198,6 +208,35 @@ public:
     /// @{
     std::size_t archetypeChunkCount() const noexcept;
     const internal::ArchetypeChunk& archetypeChunk(std::size_t i) const noexcept;
+
+    /// §3.10.3 batch 24 (F13) — introspection helper for iterating
+    /// chunks whose mask satisfies a required set. Saves callers from
+    /// the `for (i = 0..archetypeChunkCount()) { if (mask.hasAll(req))
+    /// ... }` boilerplate. Single-threaded by design — this is the
+    /// introspection / debug-tooling path, not a parallel-dispatch
+    /// path. Use @ref forEachChunk in `Query.hpp` for parallel work.
+    ///
+    /// @param required  Mask the chunk must satisfy (`chunk.mask.hasAll(required)`).
+    ///                  Pass `ComponentSet::none()` to visit every non-empty chunk.
+    /// @param fn        Invocable as `fn(const internal::ArchetypeChunk&)`.
+    ///                  Visit order matches `archetypeChunk(i)` for `i =
+    ///                  0..archetypeChunkCount()-1` (stable across runs).
+    ///                  Empty chunks (zero entities) are skipped — same
+    ///                  policy as `forEachChunk<Required...>` in
+    ///                  `Query.hpp`. The engine retains a default
+    ///                  empty `all()`-masked chunk at construction;
+    ///                  callers should not have to filter it.
+    template <typename F>
+    void forEachChunkOf(ComponentSet required, F&& fn) const {
+        const std::size_t count = archetypeChunkCount();
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto& chunk = archetypeChunk(i);
+            if (internal::chunkIsEmpty(chunk)) continue;
+            if (internal::chunkMaskHasAll(chunk, required)) {
+                fn(chunk);
+            }
+        }
+    }
     /// @}
 
     /// Locate an entity in chunked storage. Returns `(UINT32_MAX,

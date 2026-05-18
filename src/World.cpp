@@ -166,6 +166,17 @@ const internal::ArchetypeChunk& World::archetypeChunk(std::size_t i) const noexc
     return impl_ptr_->storage.archetypes().chunks()[i];
 }
 
+// §3.10.3 batch 24 (F13) — free helpers used by `World::forEachChunkOf`
+// to keep `ArchetypeChunk` forward-declared in `World.hpp`.
+namespace internal {
+bool chunkMaskHasAll(const ArchetypeChunk& chunk, ComponentSet required) noexcept {
+    return chunk.mask.hasAll(required);
+}
+bool chunkIsEmpty(const ArchetypeChunk& chunk) noexcept {
+    return chunk.entities.empty();
+}
+} // namespace internal
+
 ArchetypeLocation World::locate(EntityHandle e) const noexcept {
     const auto loc = impl_ptr_->storage.locate(e);
     return ArchetypeLocation{loc.archetype, loc.row};

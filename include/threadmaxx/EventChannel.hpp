@@ -318,17 +318,35 @@ private:
 
 template <typename Ev>
 EventChannel<Ev>& Engine::events() {
-    // §3.10.2 batch 22 — F8 considered, NOT shipped. A `thread_local`
-    // pointer cache here looked attractive (skip the engine's
-    // `eventChannelsMtx_` on every call), but the implementation
-    // broke under test workloads that create and destroy engines
-    // back-to-back: the cached pointer dangles when a fresh engine
-    // happens to land at the same address as a destroyed one. The
-    // safe variants (per-instance version counter, per-thread map
-    // keyed by `this`) are more bookkeeping than the ~30 ns mutex
-    // acquire is worth. Documented as "warm channels at setup" on
-    // the public API instead — see `Engine::events` comment.
+    // §3.10.3 batch 24 (F8) — `thread_local` channel pointer cache,
+    // keyed by per-engine serial. On cache hit (current engine's
+    // serial matches the cached serial), we skip the engine's
+    // `eventChannelsMtx_` entirely — a single atomic load + compare
+    // replaces the ~30 ns mutex acquire. On cache miss (first call
+    // for this type from this thread, OR a different engine
+    // instance), the slow path takes the mutex.
     //
+    // UAF safety: each Engine has a unique non-zero serial assigned
+    // at construction from a global atomic counter. A fresh engine
+    // that lands at the same memory address as a destroyed one has
+    // a different serial; the cache's `serial == this->engineSerial()`
+    // check fails → fresh lookup → new ptr cached.
+    //
+    // One static slot per `(Ev, thread)` pair (the function is
+    // templated on `Ev` and the `thread_local` is per-thread). Slot
+    // size is 16 bytes (uint64 + ptr). Bounded by the number of
+    // distinct `Ev` types touched per thread — typically <20.
+    struct Cached {
+        std::uint64_t        serial = 0;
+        EventChannel<Ev>*    ptr    = nullptr;
+    };
+    thread_local Cached cached;
+
+    const std::uint64_t s = this->engineSerial();
+    if (cached.serial == s && cached.ptr != nullptr) {
+        return *cached.ptr;
+    }
+
     // Stateless captureless lambdas decay to function pointers; the
     // engine stores those alongside the type-erased channel pointer
     // and uses them for ~Engine() teardown and per-tick drain.
@@ -341,7 +359,9 @@ EventChannel<Ev>& Engine::events() {
     };
     void* raw = getEventChannelRaw(std::type_index(typeid(Ev)),
                                    +factory, +deleter, +drainFn);
-    return *static_cast<EventChannel<Ev>*>(raw);
+    cached.ptr    = static_cast<EventChannel<Ev>*>(raw);
+    cached.serial = s;
+    return *cached.ptr;
 }
 
 } // namespace threadmaxx

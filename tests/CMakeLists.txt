@@ -84,6 +84,9 @@ set(THREADMAXX_TESTS
     async_snapshot_test
     engine_user_component_lookup_test
     command_buffer_spawn_n_test
+    world_for_each_chunk_of_test
+    event_channel_cache_test
+    version_test
     # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
     # (batch D-audit) which exercises the actual SaveLoadSystem rather
     # than re-implementing the wire format.

@@ -6,9 +6,24 @@ AI, …) that read the world in parallel and emit commands; the engine
 commits them deterministically and hands a flat `RenderFrame` to whatever
 renderer you plug in.
 
-Status: early but functional. The public API is small and intentionally
-minimal; the internals are PImpl'd so they can change. 79 tests pin the
-documented invariants.
+**Status: v1.0.0 — production-ready.** Stable public API, 108 tests
+pinning the documented invariants, both default and `-Werror` build
+trees clean. A complete 3D RPG demo + Vulkan reference renderer
+prove integration readiness (`examples/rpg_demo/`,
+`examples/vulkan_renderer/`). The sibling `threadmaxx_simd` library
+ships its own v1.0.0 release at `include/threadmaxx_simd/`.
+
+## Documentation
+
+| Document                          | Audience              | Purpose |
+|-----------------------------------|-----------------------|---------|
+| [`README.md`](README.md)          | Everyone              | This file — top-level overview |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Library devs       | Internals, threading model, invariants |
+| [`CHANGELOG.md`](CHANGELOG.md)    | Everyone              | Per-release notes back to 0.1.0 |
+| [`FUTURE_WORK.md`](FUTURE_WORK.md)| Library devs          | Batch history + v1.x candidate work |
+| [`CLAUDE.md`](CLAUDE.md)          | AI-assisted devs      | Coding instructions for Claude Code sessions |
+| [`include/threadmaxx_simd/`](include/threadmaxx_simd/) | SIMD users / devs | Sibling SIMD library docs (README, USER_GUIDE, MAINTAINER_GUIDE, CHANGELOG) |
+| `doc/` (Doxygen-buildable)        | API consumers         | Multi-page user guide; rendered via `cmake --build build --target doc` |
 
 ## Highlights
 

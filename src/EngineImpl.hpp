@@ -218,6 +218,10 @@ public:
                              void (*deleter)(void*),
                              void (*drainFn)(void*));
 
+    /// §3.10.3 batch 24 (F8) — accessor for the per-engine serial.
+    /// Forwarded to via `Engine::engineSerial()`.
+    std::uint64_t engineSerial() const noexcept { return engineSerial_; }
+
 private:
     // Applies a command buffer's commands to the world. Single-threaded.
     void commitBuffer(CommandBuffer& cb);
@@ -354,6 +358,15 @@ private:
     // `Engine::events<T>()`. Serialize the map mutation; lookup-hit
     // is the steady-state hot path and the mutex is uncontended.
     mutable std::mutex eventChannelsMtx_;
+
+    // §3.10.3 batch 24 (F8) — unique non-zero serial assigned at
+    // construction from a global atomic counter. `Engine::events<T>()`
+    // uses it as the validity key for its `thread_local` channel cache:
+    // a fresh engine that lands at the same memory address as a
+    // destroyed one has a different serial, so the cache invalidates
+    // automatically and there's no UAF risk. Read via the public
+    // `Engine::engineSerial()` getter; never reused.
+    std::uint64_t engineSerial_ = 0;
 
     // Double-buffered render-frame storage. We build into back_, then
     // atomically publish the pointer; the renderer reads through front_.

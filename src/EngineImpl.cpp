@@ -467,8 +467,16 @@ bool SystemContextImpl::shouldYield() const noexcept {
 
 // ---- EngineImpl ---------------------------------------------------------
 
+namespace {
+// §3.10.3 batch 24 (F8) — monotonically increasing per-process counter
+// stamped onto each Engine. Used as the validity key for the
+// `thread_local` channel cache in `Engine::events<T>()`.
+std::atomic<std::uint64_t> sNextEngineSerial{1};
+} // namespace
+
 EngineImpl::EngineImpl(const Config& cfg) : cfg_(cfg) {
     jobs_ = std::make_unique<JobSystem>(cfg_.workerCount);
+    engineSerial_ = sNextEngineSerial.fetch_add(1, std::memory_order_relaxed);
 }
 
 EngineImpl::~EngineImpl() {

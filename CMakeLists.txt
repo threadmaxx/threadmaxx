@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(threadmaxx
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "Graphics-independent C++20 game backend with a job system"
     LANGUAGES CXX)
 
@@ -48,6 +48,7 @@ set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/SpatialHash.hpp
     include/threadmaxx/Trace.hpp
     include/threadmaxx/Telemetry.hpp
+    include/threadmaxx/version.hpp
     include/threadmaxx/World.hpp
     include/threadmaxx/Engine.hpp
 )

@@ -417,6 +417,14 @@ public:
                              void (*deleter)(void*),
                              void (*drainFn)(void*));
 
+    /// @internal Per-instance non-zero serial assigned at construction
+    /// from a process-global atomic counter. Used by `events<T>()`'s
+    /// `thread_local` cache (§3.10.3 batch 24 / F8) to invalidate
+    /// when a fresh engine lands at the same memory address as a
+    /// destroyed one. Never reused; uniquely identifies the engine
+    /// instance for the life of the process.
+    std::uint64_t engineSerial() const noexcept;
+
     /// Get (or lazily create) the engine-owned event channel for type
     /// `Ev`. Same instance is returned across calls and across threads.
     /// Definition lives in `EventChannel.hpp` — include that header to
