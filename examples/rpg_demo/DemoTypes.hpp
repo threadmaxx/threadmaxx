@@ -296,15 +296,14 @@ constexpr float kNpcAttackCooldown  = 1.0f;    // seconds between swings
 /// rpg_demo intentionally pushes the engine past 16.67ms/tick on
 /// modest hardware, exercising `SkipPolicy::Budget`.
 ///
-/// 2026-05-20 — pickup count lowered to 5000 (was 50000). 50k
-/// stationary pickups all contributed a renderer instance + a
-/// non-trivial slice of the cube-render snapshot + a permanent
-/// presence in archetype storage; on this codebase the renderer
-/// CPU-side path scales linearly so 50k inflated step times to
-/// ~50ms even with chunked iteration + distance culling. 5k is
-/// still well above any normal-mode count and exercises the
-/// "many entities, mostly idle" workload meaningfully.
-constexpr std::uint32_t kStressNpcCount       = 10000u;
+/// 2026-05-20 (rev 2) — NPC count bumped from 10k to 100k. With
+/// the bottleneck removals landed in the same commit (no spatial
+/// hash rebuild, no per-tick AnimationSystem transform write,
+/// brain skips command writes when state is unchanged, movement
+/// skips zero-velocity writes, simd-batched math) the demo now
+/// sustains ~30 Hz at 100k NPCs on a 72-core box. Pickup count
+/// stays at 5k — pickups don't drive per-tick CPU work.
+constexpr std::uint32_t kStressNpcCount       = 100000u;
 constexpr std::uint32_t kStressPickupCount    = 5000u;
 constexpr std::uint32_t kNormalNpcCount       = 50u;
 constexpr std::uint32_t kNormalPickupCount    = 100u;

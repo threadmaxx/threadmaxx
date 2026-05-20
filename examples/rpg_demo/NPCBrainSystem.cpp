@@ -1,71 +1,75 @@
 #include "NPCBrainSystem.hpp"
 
+#include "ParallelDispatch.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Components.hpp>
 #include <threadmaxx/Engine.hpp>
 #include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
+#include <threadmaxx/internal/Archetype.hpp>
 
+#if RPG_DEMO_HAS_SIMD
+#  include <threadmaxx_simd/vec3_ops.hpp>
+#endif
+
+#include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <random>
+#include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace rpg {
 
 namespace {
 
-constexpr float kCellSize     = 4.0f;
 constexpr float kWanderDur    = 2.5f;
 constexpr float kIdleDur      = 1.5f;
 constexpr float kFleeSpeed    = 4.5f;
 constexpr float kWanderSpeed  = 2.0f;
-// §3.11.1 batch D1 — combat-state tuning.
 constexpr float kChargeSpeed  = 3.5f;
-// 2026-05-20 — retreat speed lowered from 5.0 (was faster than the
-// player's run speed; user reported NPCs ran away too fast to chase).
-// Now slightly slower than charge so the player can close the gap.
 constexpr float kRetreatSpeed = 2.8f;
 constexpr float kRetreatDur   = 4.0f;
 constexpr float kRetreatHpFrac = 0.30f;
-constexpr float kFightStopDist = 1.0f;  // don't overshoot the player
+constexpr float kFightStopDist = 1.0f;
 
-inline float distanceXZ(const threadmaxx::Vec3& a, const threadmaxx::Vec3& b) {
-    const float dx = a.x - b.x;
-    const float dz = a.z - b.z;
-    return std::sqrt(dx * dx + dz * dz);
-}
+/// Tiny deterministic xorshift32 PRNG. Replaces `std::mt19937` from
+/// the legacy path — same seed → same sequence, but constructed in
+/// O(1) instead of mt19937's 2.5 kB state init.
+struct XorShift32 {
+    std::uint32_t state;
+    constexpr explicit XorShift32(std::uint32_t seed) noexcept
+        : state(seed ? seed : 0x9e3779b9u) {}
+    constexpr std::uint32_t next() noexcept {
+        std::uint32_t x = state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        state = x;
+        return x;
+    }
+    float angle() noexcept {
+        return (static_cast<float>(next()) * (1.0f / 4294967296.0f) - 0.5f)
+               * 6.2831853f;
+    }
+    float wanderDist() noexcept {
+        return 3.0f + static_cast<float>(next()) * (7.0f / 4294967296.0f);
+    }
+};
+
+struct BrainSlice {
+    const threadmaxx::internal::ArchetypeChunk* chunk;
+    std::span<const NpcState>                   npcSpan;
+    std::uint32_t                               beginFlat;
+    std::uint32_t                               endFlat;
+};
 
 } // namespace
 
 NPCBrainSystem::NPCBrainSystem(threadmaxx::Engine* engine,
                                WorldState* worldState, UserComponentIds* ids)
-    : engine_(engine), worldState_(worldState), ids_(ids), hash_(kCellSize) {}
-
-void NPCBrainSystem::preStep(threadmaxx::SystemContext& ctx) {
-    // 2026-05-20 — chunk-walk + pickup skip. Pre-fix this walked
-    // the stitched 60k-entity view, inserting every entity with
-    // BoundingVolume into the hash — including all stationary
-    // pickups. Under --stress the 50k+ unordered_map inserts cost
-    // ~7ms, the single biggest item in `pre+post+brf`. The new
-    // path walks Faction-bearing chunks directly and skips any
-    // chunk that carries the Pickup user component (those are
-    // queried via a flat scan by PickupSystem instead).
-    hash_.clear();
-    const auto& w = ctx.world();
-    const auto pickupBit = ids_->pickup.componentBit();
-    const auto chunkCount = w.archetypeChunkCount();
-    for (std::size_t c = 0; c < chunkCount; ++c) {
-        const auto& chunk = w.archetypeChunk(c);
-        if (!chunk.mask.has(threadmaxx::Component::BoundingVolume)) continue;
-        if (chunk.mask.has(threadmaxx::Component::DisabledTag))     continue;
-        if (chunk.mask.has(pickupBit)) continue;
-        const auto n = chunk.entities.size();
-        for (std::size_t r = 0; r < n; ++r) {
-            hash_.insert(chunk.transforms[r].position, chunk.entities[r]);
-        }
-    }
-}
+    : engine_(engine), worldState_(worldState), ids_(ids) {}
 
 void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
     const auto& w = ctx.world();
@@ -76,50 +80,118 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
     const threadmaxx::Vec3 pp = playerT.position;
     const float dt = static_cast<float>(ctx.dt());
 
-    // Snapshot the stitched entity + mask views once. parallelFor jobs
-    // capture these by value (cheap span copies); the underlying
-    // vectors are stable for the duration of this `update()` because
-    // no system mutates them outside the commit phase.
-    const auto entities = w.entities();
-    const auto masks    = w.componentMasks();
-    const std::uint32_t count = static_cast<std::uint32_t>(entities.size());
+    // 2026-05-20 (rev 4) — flat-row parallelFor with cross-chunk slices.
+    //
+    // Earlier revs used per-chunk-outer / row-parallel-inner — the
+    // outer loop's `parallelFor(rows, grain=0)` deadlocked when any
+    // NPC chunk had a small row count (parallelFor submits 1 sub-job
+    // → round-robin'd to a single worker → other workers never get
+    // notified, wave latch deadlocks).
+    //
+    // This rev does ONE big `parallelFor(totalNpcRows, grain=0)` over
+    // the flat row count across every matching NPC chunk. Always
+    // produces ~4*workerCount sub-jobs.
+    //
+    // The chunk-level SIMD diff stage runs serially before the big
+    // parallelFor — one `simd::sub` call over the full packed
+    // position buffer subtracts the (broadcast) player position.
 
-    // Per-job RNG is seeded deterministically from tick + range start
-    // so two runs of the same scene produce the same NPC paths. The
-    // shared `rng_` member is no longer used (worker-shared mutable
-    // state would have raced).
-    auto* ids = ids_;
-    const std::uint64_t tickSalt = ctx.tick();
-    // 2026-05-20 — melee channel, shared (lock-free MPSC per §3.6
-    // batch 13c) across all worker jobs in this parallelFor.
+    const auto pickupBit = ids_->pickup.componentBit();
+    const auto npcId     = ids_->npcState;
+    const auto npcBit    = npcId.componentBit();
+    const auto chunkCount = w.archetypeChunkCount();
+
+    // Build slice list + packed positions / player-broadcast buffers.
+    std::vector<BrainSlice>       slices;
+    std::vector<threadmaxx::Vec3> positions;
+    std::vector<threadmaxx::Vec3> playerBroadcast;
+    slices.reserve(8);
+    for (std::size_t c = 0; c < chunkCount; ++c) {
+        const auto& chunk = w.archetypeChunk(c);
+        if (!chunk.mask.has(threadmaxx::Component::Faction)) continue;
+        if (!chunk.mask.has(npcBit))                         continue;
+        if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+        if (chunk.mask.has(pickupBit))                       continue;
+        const auto n = chunk.entities.size();
+        if (n == 0) continue;
+
+        BrainSlice s;
+        s.chunk     = &chunk;
+        s.npcSpan   = threadmaxx::user::chunkSpan<NpcState>(chunk, npcId);
+        if (s.npcSpan.empty()) continue;
+        s.beginFlat = static_cast<std::uint32_t>(positions.size());
+        for (std::size_t r = 0; r < n; ++r) {
+            positions.push_back(chunk.transforms[r].position);
+        }
+        s.endFlat   = static_cast<std::uint32_t>(positions.size());
+        slices.push_back(s);
+    }
+    const std::uint32_t total = static_cast<std::uint32_t>(positions.size());
+    if (total == 0) return;
+
+    playerBroadcast.assign(total, pp);
+    std::vector<threadmaxx::Vec3> diffs(total);
+#if RPG_DEMO_HAS_SIMD
+    // SIMD-batched (pos - player) across ALL chunks in one call.
+    threadmaxx::simd::sub(
+        std::span<const threadmaxx::Vec3>(positions),
+        std::span<const threadmaxx::Vec3>(playerBroadcast),
+        std::span<threadmaxx::Vec3>(diffs));
+#else
+    // ---- Non-SIMD reference path.
+    for (std::uint32_t i = 0; i < total; ++i) {
+        diffs[i].x = positions[i].x - pp.x;
+        diffs[i].y = positions[i].y - pp.y;
+        diffs[i].z = positions[i].z - pp.z;
+    }
+#endif
+
     auto& damageChan = engine_->events<DamageDealt>();
     const auto playerHandle = player;
+    const std::uint64_t tickSalt = ctx.tick();
+    const auto npcIdLocal = npcId;
+    const auto* slicesPtr = slices.data();
+    const std::uint32_t sliceCount =
+        static_cast<std::uint32_t>(slices.size());
+    const auto* diffsData = diffs.data();
 
-    ctx.parallelFor(count, /*grain*/ 0,
-        [&ctx, &w, ids, pp, dt, tickSalt, entities, masks,
-         &damageChan, playerHandle]
+    dispatchOrInline(ctx, total,
+        [&ctx, slicesPtr, sliceCount, diffsData, npcIdLocal,
+         pp, dt, tickSalt, playerHandle, &damageChan]
         (threadmaxx::Range r, threadmaxx::CommandBuffer& cb) {
-            std::mt19937 rng(static_cast<std::uint32_t>(
-                0xC0FFEEu ^ tickSalt ^ static_cast<std::uint64_t>(r.begin)));
-            std::uniform_real_distribution<float> ang(-3.14159f, 3.14159f);
-            std::uniform_real_distribution<float> dist(3.0f, 10.0f);
+            // Find starting slice for r.begin via linear scan.
+            std::uint32_t si = 0;
+            while (si + 1 < sliceCount && r.begin >= slicesPtr[si].endFlat) {
+                ++si;
+            }
+            XorShift32 rng(0xC0FFEEu ^
+                           static_cast<std::uint32_t>(tickSalt) ^
+                           r.begin * 0x9e3779b9u);
 
-            for (std::uint32_t i = r.begin; i < r.end; ++i) {
-                if ((i & 0x1FFu) == 0 && ctx.shouldYield()) return;
-                if (!masks[i].has(threadmaxx::Component::Faction))    continue;
-                if (masks[i].has(threadmaxx::Component::DisabledTag)) continue;
+            for (std::uint32_t flat = r.begin; flat < r.end; ++flat) {
+                if ((flat & 0x1FFu) == 0 && ctx.shouldYield()) return;
+                while (si + 1 < sliceCount && flat >= slicesPtr[si].endFlat) {
+                    ++si;
+                }
+                const auto& slice = slicesPtr[si];
+                const std::uint32_t row = flat - slice.beginFlat;
+                const auto* chunk = slice.chunk;
 
-                const auto e = entities[i];
-                const NpcState* st = threadmaxx::user::tryGet<NpcState>(w, ids->npcState, e);
-                if (!st) continue;
-
-                const auto& fac = w.get<threadmaxx::Faction>(e);
+                const auto& fac = chunk->factions[row];
                 if (fac.id != kFactionHostile && fac.id != kFactionFriendly) continue;
 
-                const auto& tr = w.get<threadmaxx::Transform>(e);
-                const float distToPlayer = distanceXZ(tr.position, pp);
+                const auto& tr   = chunk->transforms[row];
+                const auto& diff = diffsData[flat];
+                const float distToPlayerSq = diff.x * diff.x + diff.z * diff.z;
+                float distToPlayer = -1.0f;
+                auto distXZ = [&]() {
+                    if (distToPlayer < 0.0f)
+                        distToPlayer = std::sqrt(distToPlayerSq);
+                    return distToPlayer;
+                };
 
-                NpcState next = *st;
+                const NpcState st = slice.npcSpan[row];
+                NpcState next = st;
                 next.stateTimer += dt;
                 if (next.attackCooldown > 0.0f) {
                     next.attackCooldown =
@@ -128,85 +200,78 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                 threadmaxx::Vec3 vel{0, 0, 0};
 
                 const bool hostile = (fac.id == kFactionHostile);
-                const threadmaxx::Health* hp = w.tryGetHealth(e);
+                const threadmaxx::Health* hp =
+                    chunk->mask.has(threadmaxx::Component::Health)
+                        ? &chunk->healths[row] : nullptr;
                 const bool lowHp = hp && hp->max > 0.0f &&
                                    (hp->current / hp->max) < kRetreatHpFrac;
 
                 switch (next.mode) {
-                case NpcState::Idle:
-                    if (distToPlayer < next.aoiRadius) {
+                case NpcState::Idle: {
+                    const float aoiSq = next.aoiRadius * next.aoiRadius;
+                    if (distToPlayerSq < aoiSq) {
                         next.mode       = hostile ? NpcState::Fight
                                                   : NpcState::Flee;
                         next.stateTimer = 0.0f;
                     } else if (next.stateTimer >= kIdleDur) {
-                        const float a = ang(rng);
-                        const float d = dist(rng);
+                        const float a = rng.angle();
+                        const float d = rng.wanderDist();
                         next.targetX   = tr.position.x + std::cos(a) * d;
                         next.targetZ   = tr.position.z + std::sin(a) * d;
                         next.mode      = NpcState::Wander;
                         next.stateTimer = 0.0f;
                     }
                     break;
-
+                }
                 case NpcState::Wander: {
                     const float dx = next.targetX - tr.position.x;
                     const float dz = next.targetZ - tr.position.z;
-                    const float d  = std::sqrt(dx * dx + dz * dz);
-                    if (distToPlayer < next.aoiRadius) {
-                        next.mode = hostile ? NpcState::Fight : NpcState::Flee;
+                    const float d2 = dx * dx + dz * dz;
+                    const float aoiSq = next.aoiRadius * next.aoiRadius;
+                    if (distToPlayerSq < aoiSq) {
+                        next.mode = hostile ? NpcState::Fight
+                                            : NpcState::Flee;
                         next.stateTimer = 0.0f;
-                    } else if (next.stateTimer >= kWanderDur || d < 0.5f) {
+                    } else if (next.stateTimer >= kWanderDur || d2 < 0.25f) {
                         next.mode = NpcState::Idle;
                         next.stateTimer = 0.0f;
                     } else {
+                        const float d = std::sqrt(d2);
                         vel.x = (dx / d) * kWanderSpeed;
                         vel.z = (dz / d) * kWanderSpeed;
                     }
                     break;
                 }
-
                 case NpcState::Flee: {
-                    const float dx = tr.position.x - pp.x;
-                    const float dz = tr.position.z - pp.z;
-                    const float d  = std::sqrt(dx * dx + dz * dz);
-                    if (distToPlayer > next.aoiRadius * 1.8f) {
+                    const float d = distXZ();
+                    if (d > next.aoiRadius * 1.8f) {
                         next.mode = NpcState::Idle;
                         next.stateTimer = 0.0f;
                     } else if (d > 0.01f) {
-                        vel.x = (dx / d) * kFleeSpeed;
-                        vel.z = (dz / d) * kFleeSpeed;
+                        vel.x = (diff.x / d) * kFleeSpeed;
+                        vel.z = (diff.z / d) * kFleeSpeed;
                     }
                     break;
                 }
-
                 case NpcState::Fight: {
-                    // 2026-05-20 — only the half of the hostile
-                    // pack with `fleeRoll < kRetreatChance` runs
-                    // away on low HP. The rest fight to the death.
-                    // Makes the demo feel less like a cat-and-mouse
-                    // chase and more like a melee.
+                    const float d = distXZ();
                     if (lowHp && next.fleeRoll < kRetreatChance) {
                         next.mode = NpcState::Retreat;
                         next.stateTimer = 0.0f;
-                    } else if (distToPlayer > next.aoiRadius * 1.8f) {
+                    } else if (d > next.aoiRadius * 1.8f) {
                         next.mode = NpcState::Wander;
                         next.stateTimer = 0.0f;
                         next.targetX = pp.x; next.targetZ = pp.z;
-                    } else if (distToPlayer > kFightStopDist) {
-                        const float dx = pp.x - tr.position.x;
-                        const float dz = pp.z - tr.position.z;
-                        const float d  = std::sqrt(dx * dx + dz * dz);
+                    } else if (d > kFightStopDist) {
                         if (d > 0.01f) {
-                            vel.x = (dx / d) * kChargeSpeed;
-                            vel.z = (dz / d) * kChargeSpeed;
+                            vel.x = (-diff.x / d) * kChargeSpeed;
+                            vel.z = (-diff.z / d) * kChargeSpeed;
                         }
                     }
-                    // 2026-05-20 — melee strike. Lock-free MPSC
-                    // emit (§3.6 batch 13c) — safe from any worker.
-                    if (distToPlayer < kNpcAttackRange &&
+                    if (d < kNpcAttackRange &&
                         next.attackCooldown <= 0.0f) {
                         DamageDealt hit;
-                        hit.attacker = e;
+                        hit.attacker = chunk->entities[row];
                         hit.target   = playerHandle;
                         hit.amount   = kNpcAttackDamage;
                         hit.posX = pp.x; hit.posY = pp.y; hit.posZ = pp.z;
@@ -215,33 +280,38 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                     }
                     break;
                 }
-
                 case NpcState::Retreat: {
                     if (next.stateTimer >= kRetreatDur) {
                         next.mode = NpcState::Wander;
                         next.stateTimer = 0.0f;
-                        next.targetX = tr.position.x + (tr.position.x - pp.x);
-                        next.targetZ = tr.position.z + (tr.position.z - pp.z);
+                        next.targetX = tr.position.x + diff.x;
+                        next.targetZ = tr.position.z + diff.z;
                     } else {
-                        const float dx = tr.position.x - pp.x;
-                        const float dz = tr.position.z - pp.z;
-                        const float d  = std::sqrt(dx * dx + dz * dz);
+                        const float d = distXZ();
                         if (d > 0.01f) {
-                            vel.x = (dx / d) * kRetreatSpeed;
-                            vel.z = (dz / d) * kRetreatSpeed;
+                            vel.x = (diff.x / d) * kRetreatSpeed;
+                            vel.z = (diff.z / d) * kRetreatSpeed;
                         }
                     }
                     break;
                 }
                 }
 
-                // Write directly into the per-job CommandBuffer. `addUserComponent`
-                // on an entity that already carries the bit is an in-place
-                // memcpy of the column row — no archetype migration. Dropping
-                // the prior `removeUserComponent + addUserComponent` pair
-                // saves two migrations per NPC per tick (huge under stress).
-                cb.setVelocity(e, threadmaxx::Velocity{vel, {0, 0, 0}});
-                threadmaxx::addUserComponent(cb, ids->npcState, e, next);
+                // Skip-when-equal writes — see rev 2 notes.
+                NpcState cmpA = next;  cmpA.stateTimer = 0.0f;
+                NpcState cmpB = st;    cmpB.stateTimer = 0.0f;
+                const bool stateMeaningfullyChanged =
+                    std::memcmp(&cmpA, &cmpB, sizeof(NpcState)) != 0;
+                if (stateMeaningfullyChanged) {
+                    threadmaxx::addUserComponent(cb, npcIdLocal,
+                        chunk->entities[row], next);
+                }
+                const auto& curVel = chunk->velocities[row].linear;
+                if (vel.x != curVel.x || vel.y != curVel.y ||
+                    vel.z != curVel.z) {
+                    cb.setVelocity(chunk->entities[row],
+                        threadmaxx::Velocity{vel, {0, 0, 0}});
+                }
             }
         });
 }

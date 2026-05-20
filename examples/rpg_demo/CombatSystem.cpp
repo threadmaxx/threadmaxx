@@ -6,6 +6,11 @@
 #include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
+#include <threadmaxx/internal/Archetype.hpp>
+
+#if RPG_DEMO_HAS_SIMD
+#  include <threadmaxx_simd/vec3_ops.hpp>
+#endif
 
 #include <cmath>
 #include <vector>
@@ -23,26 +28,14 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
         threadmaxx::user::tryGet<PlayerState>(w, ids_->playerState, player);
     if (!ps) return;
 
-    // §3.11.1 batch D1 — rising-edge detection: emit damage on the
-    // tick that the swing actually starts. Prevents one swing from
-    // damaging the same NPC every tick of its 0.30s window.
+    // Rising-edge detection: only emit damage on the tick the swing
+    // STARTS. Prevents one swing from damaging the same NPC every
+    // tick of its 0.30 s window.
     const float currT = ps->swordSwingTimer;
     const bool  rising = (prevSwingTimer_ <= 0.0f && currT > 0.0f);
     prevSwingTimer_ = currT;
     if (!rising) return;
 
-    // 2026-05-20 — drive the hit check from the PLAYER's world
-    // transform plus the same swing-arc constants
-    // PlayerInputSystem uses to animate the sword. Pre-fix this
-    // read the sword's CURRENT world transform; that worked
-    // fine while the sword was static but as soon as the swing
-    // animation landed (same date), the rising-edge tick caught
-    // the sword at its starting angle (≈ +1.1 rad), placing
-    // the tip far from any frontal target. The user reported
-    // "NPCs are not hit". Sampling `kSwingSamples` tips along
-    // the full swing arc gives a swept-volume hit check that
-    // matches the visible sweep, and stays decoupled from the
-    // animation timing.
     const threadmaxx::Transform* pT = w.tryGetTransform(player);
     if (!pT) return;
     const SwordTag* tag =
@@ -64,9 +57,83 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
         return {vx, vy, vz};
     };
 
-    const auto& hash = brain_->spatialHash();
-    auto& chDamage = engine_->events<DamageDealt>();
+    // 2026-05-20 (rev 2) — combat-side candidate scan replaces the
+    // previous query against `NPCBrainSystem::spatialHash`. The hash
+    // was rebuilt every preStep (~10 ms at 100k NPCs) but only used
+    // on the rare rising-edge tick — net waste. We now do a direct
+    // chunk-walk over hostile-NPC chunks limited to entities within
+    // a coarse swing-reach radius, then do the precise per-sample
+    // tip overlap test against just those candidates.
+    //
+    // The coarse radius is the worst-case tip-extent: roughly
+    // |kSwordRest| + length + kSwordTipRadius. For the demo's
+    // constants that's ~2.5 m around the player. At density up to
+    // 100k / (60×60) we'd expect ~70 candidates per swing on average,
+    // an order of magnitude smaller than a stitched-view sweep.
+    const float coarseR = std::sqrt(kSwordRestX * kSwordRestX +
+                                    kSwordRestY * kSwordRestY +
+                                    kSwordRestZ * kSwordRestZ)
+                          + length + kSwordTipRadius + 0.5f;
+    const float coarseRSq = coarseR * coarseR;
 
+    struct Candidate {
+        threadmaxx::EntityHandle entity;
+        threadmaxx::Vec3         pos;
+    };
+    std::vector<Candidate> cand;
+    cand.reserve(64);
+
+#if RPG_DEMO_HAS_SIMD
+    // Per-chunk SIMD-batched diff: same shape as the brain's
+    // batch — stage positions, broadcast player pos, run
+    // `simd::sub`, then scalar inspect the diffs.
+    std::vector<threadmaxx::Vec3> positions, playerBroadcast, diffs;
+#endif
+
+    const auto chunkCount = w.archetypeChunkCount();
+    for (std::size_t c = 0; c < chunkCount; ++c) {
+        const auto& chunk = w.archetypeChunk(c);
+        if (!chunk.mask.has(threadmaxx::Component::Faction)) continue;
+        if (!chunk.mask.has(threadmaxx::Component::Health))  continue;
+        if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+        const auto n = chunk.entities.size();
+        if (n == 0) continue;
+#if RPG_DEMO_HAS_SIMD
+        positions.resize(n);
+        playerBroadcast.assign(n, pT->position);
+        diffs.resize(n);
+        for (std::size_t r = 0; r < n; ++r) {
+            positions[r] = chunk.transforms[r].position;
+        }
+        threadmaxx::simd::sub(
+            std::span<const threadmaxx::Vec3>(positions),
+            std::span<const threadmaxx::Vec3>(playerBroadcast),
+            std::span<threadmaxx::Vec3>(diffs));
+        for (std::size_t r = 0; r < n; ++r) {
+            if (chunk.factions[r].id != kFactionHostile) continue;
+            if (chunk.healths[r].current <= 0.0f) continue;
+            const auto& d = diffs[r];
+            if (d.x * d.x + d.y * d.y + d.z * d.z > coarseRSq) continue;
+            cand.push_back({chunk.entities[r], chunk.transforms[r].position});
+        }
+#else
+        // ---- Non-SIMD reference path. Same logic without the
+        //      batched `simd::sub`.
+        for (std::size_t r = 0; r < n; ++r) {
+            if (chunk.factions[r].id != kFactionHostile) continue;
+            if (chunk.healths[r].current <= 0.0f) continue;
+            const auto& tp = chunk.transforms[r].position;
+            const float dx = tp.x - pT->position.x;
+            const float dy = tp.y - pT->position.y;
+            const float dz = tp.z - pT->position.z;
+            if (dx * dx + dy * dy + dz * dz > coarseRSq) continue;
+            cand.push_back({chunk.entities[r], tp});
+        }
+#endif
+    }
+    if (cand.empty()) return;
+
+    auto& chDamage = engine_->events<DamageDealt>();
     std::vector<threadmaxx::EntityHandle> alreadyHit;
     alreadyHit.reserve(8);
     auto wasHit = [&](threadmaxx::EntityHandle e) {
@@ -74,11 +141,9 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
         return false;
     };
 
-    // Sample positions along the player-local X-axis chop arc. The
-    // pivot stays at (kSwordRest{X,Y,Z}); the blade (0, 0, -length)
-    // rotates by `a` around +X, sweeping in the player-local YZ
-    // plane. Same arc constants as the visible animation in
-    // PlayerInputSystem.
+    const float tipR2 = kSwordTipRadius * kSwordTipRadius;
+    // Sample positions along the player-local X-axis chop arc. Same
+    // arc as the visible animation in PlayerInputSystem.
     for (int i = 0; i < kSwingHitSamples; ++i) {
         const float t = static_cast<float>(i) /
                         static_cast<float>(kSwingHitSamples - 1);
@@ -86,8 +151,6 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
                          t * (kSwingAngleEnd - kSwingAngleStart);
         const float ca = std::cos(a);
         const float sa = std::sin(a);
-        // Blade vector after X-rotation by `a`:
-        //   (0, length*sin(a), -length*cos(a))
         const float bladeY =  length * sa;
         const float bladeZ = -length * ca;
         const float lx = kSwordRestX;
@@ -99,32 +162,20 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
             pT->position.y + offset.y,
             pT->position.z + offset.z,
         };
-        hash.forEachInRadius(tip, kSwordTipRadius,
-            [&](const threadmaxx::Vec3&,
-                const threadmaxx::EntityHandle& target) {
-                if (!target.valid() || target == player) return;
-                if (target == sword) return;
-                if (!w.alive(target)) return;
-                if (wasHit(target)) return;
-                const threadmaxx::Faction* f = w.tryGetFaction(target);
-                if (!f || f->id != kFactionHostile) return;
-                if (!w.has<threadmaxx::Health>(target)) return;
-                const auto& hp = w.get<threadmaxx::Health>(target);
-                if (hp.current <= 0.0f) return;
-                DamageDealt ev;
-                ev.attacker = player;
-                ev.target   = target;
-                ev.amount   = kSwordDamage;
-                const threadmaxx::Transform* tt =
-                    w.tryGetTransform(target);
-                if (tt) {
-                    ev.posX = tt->position.x;
-                    ev.posY = tt->position.y;
-                    ev.posZ = tt->position.z;
-                }
-                chDamage.emit(ev);
-                alreadyHit.push_back(target);
-            });
+        for (const auto& c : cand) {
+            if (wasHit(c.entity)) continue;
+            const float dx = c.pos.x - tip.x;
+            const float dy = c.pos.y - tip.y;
+            const float dz = c.pos.z - tip.z;
+            if (dx * dx + dy * dy + dz * dz > tipR2) continue;
+            DamageDealt ev;
+            ev.attacker = player;
+            ev.target   = c.entity;
+            ev.amount   = kSwordDamage;
+            ev.posX = c.pos.x; ev.posY = c.pos.y; ev.posZ = c.pos.z;
+            chDamage.emit(ev);
+            alreadyHit.push_back(c.entity);
+        }
     }
 }
 

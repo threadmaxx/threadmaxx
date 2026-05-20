@@ -56,6 +56,31 @@ add_library(rpg_demo_core STATIC
 target_include_directories(rpg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(rpg_demo_core PUBLIC threadmaxx::threadmaxx glfw)
 
+# 2026-05-20 — link the threadmaxx_simd sibling library for batch math
+# kernels (AVX2 add/sub/scale/madd over packed Vec3 spans, sphere-based
+# broad-phase frustum_cull, etc.). Header-only INTERFACE target — no
+# additional .cpp. Silently skipped if THREADMAXX_BUILD_SIMD=OFF
+# (rpg_demo systems then fall back to the scalar inline path that lives
+# in a comment block right next to each simd:: call).
+if (TARGET threadmaxx::simd)
+    target_link_libraries(rpg_demo_core PUBLIC threadmaxx::simd)
+    target_compile_definitions(rpg_demo_core PUBLIC RPG_DEMO_HAS_SIMD=1)
+    # 2026-05-20 — opt this TU into AVX2 + FMA on x86_64. The
+    # `threadmaxx_simd` headers compile-time-dispatch on `__AVX2__`;
+    # the library is intentionally portable by default and does NOT
+    # add the flag globally, so consumers opt in per-target. We do
+    # the same scoping the `bench/` and `tests/simd/` targets do. On
+    # non-x86_64 hosts the option is silently dropped; the scalar
+    # path then ships.
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+            target_compile_options(rpg_demo_core PRIVATE -mavx2 -mfma)
+        endif()
+    endif()
+else()
+    target_compile_definitions(rpg_demo_core PUBLIC RPG_DEMO_HAS_SIMD=0)
+endif()
+
 # §3.11 batch 9b.2 — bake the source-dir path so the executable can
 # resolve `examples/rpg_demo/assets/*.obj` regardless of the CWD it's
 # launched from. `RPG_DEMO_SOURCE_DIR` is a `const char*` string

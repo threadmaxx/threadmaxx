@@ -337,7 +337,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // §3.11.6 batch D6 — Y-bob animation runs AFTER MovementSystem
     // (X/Z integrated from Velocity) and BEFORE HierarchySystem
     // (so Parent-attached children inherit the bobbed Y).
-    engine.registerSystem(std::make_unique<AnimationSystem>(&ids_));
+    engine.registerSystem(std::make_unique<AnimationSystem>(&ids_, &worldState_));
     // §3.11.1 batch D1 — hierarchy propagates the sword's world
     // transform AFTER MovementSystem updates the player's position.
     // CombatSystem reads the propagated sword transform, so its

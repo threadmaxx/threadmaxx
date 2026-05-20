@@ -38,6 +38,13 @@ private:
     const WorldState*                       worldState_ = nullptr;
     std::vector<threadmaxx::DrawItem>       items_;
     std::vector<threadmaxx::BoundingVolume> bounds_;
+    // 2026-05-20 — parallel arrays for the SIMD sphere broad-phase.
+    // `centers_[i]` is the AABB center for `items_[i]`, `radii_[i]`
+    // is the bounding sphere radius. Built in `update` and consumed
+    // by `simd::frustum_cull` in `buildRenderFrame`. Kept as member
+    // state so steady-state ticks reuse the allocation.
+    std::vector<threadmaxx::Vec3>           centers_;
+    std::vector<float>                      radii_;
 };
 
 } // namespace rpg

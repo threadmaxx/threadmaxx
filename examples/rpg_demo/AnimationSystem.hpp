@@ -26,7 +26,8 @@ namespace rpg {
 
 class AnimationSystem : public threadmaxx::ISystem {
 public:
-    explicit AnimationSystem(UserComponentIds* ids) : ids_(ids) {}
+    AnimationSystem(UserComponentIds* ids, const WorldState* worldState = nullptr)
+        : ids_(ids), worldState_(worldState) {}
 
     const char* name() const noexcept override { return "animation"; }
     threadmaxx::ComponentSet reads()  const noexcept override {
@@ -40,7 +41,8 @@ public:
     void update(threadmaxx::SystemContext& ctx) override;
 
 private:
-    UserComponentIds* ids_ = nullptr;
+    UserComponentIds*  ids_        = nullptr;
+    const WorldState*  worldState_ = nullptr;
 };
 
 } // namespace rpg

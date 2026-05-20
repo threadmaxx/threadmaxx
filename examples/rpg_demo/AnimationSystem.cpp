@@ -3,22 +3,31 @@
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
+#include <threadmaxx/internal/Archetype.hpp>
 
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace rpg {
 
 void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
+    // 2026-05-20 (rev 2) — preserve the per-entity Y-bob write for
+    // gameplay-visible Y, but skip it under `--stress`. In stress
+    // mode the CubeRenderSystem applies the bob at DRAW time (cheap,
+    // zero command-buffer cost) so the visual is identical; under
+    // 100k NPCs the per-tick setTransform writes would have been
+    // ~5 ms of commit work for a purely cosmetic effect.
+    //
+    // Non-stress mode keeps the legacy contract: AnimationSystem
+    // writes the bobbed Y into Transform.position.y, so any test or
+    // game-side code that reads the transform sees the visual Y.
+    if (worldState_ && worldState_->stressMode) return;
+
     const auto& w = ctx.world();
-    // Simulation time = tick × fixed dt. Deterministic across runs.
     const double simTime = static_cast<double>(ctx.tick()) * ctx.dt();
     const auto animId = ids_->animState;
 
-    // Two-pass: snapshot every (entity, new Y) tuple inside
-    // `update` (parallel-safe reads), then write them all in a
-    // single `single()` callback. Keeps the command buffer flow
-    // simple and avoids inflating the per-entity callback signature.
     struct PendingY {
         threadmaxx::EntityHandle e;
         threadmaxx::Transform    t;
@@ -34,7 +43,6 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
 
         const bool hasVel = chunk.mask.has(threadmaxx::Component::Velocity);
         auto animSpan = threadmaxx::user::chunkSpan<AnimState>(chunk, animId);
-
         const auto n = chunk.entities.size();
         for (std::size_t r = 0; r < n; ++r) {
             const auto& tr  = chunk.transforms[r];
@@ -45,9 +53,6 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
                 speed = std::sqrt(v.linear.x * v.linear.x +
                                   v.linear.z * v.linear.z);
             }
-            // Speed ratio: 0 at rest, ~1 at typical wander/charge
-            // speed. Clamped so a fast-flee NPC doesn't bob to the
-            // ceiling.
             constexpr float kRefSpeed = 4.0f;
             const float ratio = std::min(speed / kRefSpeed, 1.0f);
             const float bob = std::sin(static_cast<float>(simTime) *
@@ -55,8 +60,6 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
                               a.amplitude * ratio;
             threadmaxx::Transform out = tr;
             out.position.y = a.baseY + bob;
-            // Only schedule a write if Y actually changed; saves
-            // command-buffer churn when the entity is at rest.
             if (out.position.y != tr.position.y) {
                 pending.push_back({chunk.entities[r], out});
             }
