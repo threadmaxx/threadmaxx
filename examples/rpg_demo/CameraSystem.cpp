@@ -114,6 +114,19 @@ threadmaxx::Camera buildPerspective(threadmaxx::Vec3 eye,
 // §3.11.2 batch D2 — top-down ortho looking straight down. View matrix
 // is the same as buildPerspective except up/forward differ; projection
 // is orthographic.
+//
+// 2026-05-20 — corrected the view matrix:
+//   * World +X → screen-right  (east on the map).
+//   * World -Z → screen-up     (i.e. negative Z is "north" of the map;
+//                               positive Z is below center).
+//   * World +Y → behind the camera (positive view-Z), so terrain
+//                geometry below the camera lands at negative view-Z
+//                = visible depth.
+// The pre-fix matrix had the sign flipped on the row that picks
+// world Z, so world +Z drifted off the top of the map instead of the
+// bottom — the user's "minimap directions are not correct" report.
+// At center.z == 0 the bug happened to cancel out, which is why
+// only off-center scenes exposed it.
 threadmaxx::Camera buildTopDownOrtho(threadmaxx::Vec3 center,
                                      float halfHeight, float aspect,
                                      float nearZ, float farZ) {
@@ -126,11 +139,22 @@ threadmaxx::Camera buildTopDownOrtho(threadmaxx::Vec3 center,
     cam.farZ        = farZ;
     cam.aspect      = aspect;
     cam.orthoSize   = halfHeight;
-    // Hand-built view: eye looks straight down at center.
+    // Column-major view matrix, derived from the same look-at
+    // convention as buildPerspective (rows = [s.{x,y,z}, u.{x,y,z},
+    // -f.{x,y,z}]) with f=(0,-1,0), s=(1,0,0), u=(0,0,-1):
+    //   col0 = (s.x, u.x, -f.x) = (1, 0, 0)
+    //   col1 = (s.y, u.y, -f.y) = (0, 0, 1)
+    //   col2 = (s.z, u.z, -f.z) = (0, -1, 0)
+    //   col3 = (-dot(s,eye), -dot(u,eye), +dot(f,eye), 1)
+    //        = (-center.x, +center.z, -cam.position.y, 1)
+    // The pre-fix matrix had col1 and col2 negated (storing R rather
+    // than R^T), so the eye no longer mapped to the origin once the
+    // player was off Z=0 — the user's "minimap directions are not
+    // correct" report.
     cam.view = {
         1, 0, 0, 0,
-        0, 0, -1, 0,
-        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, -1, 0, 0,
         -center.x, center.z, -cam.position.y, 1.0f,
     };
     const float halfWidth = halfHeight * aspect;
@@ -193,20 +217,28 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
 
     // -- Aim PIP (narrow FOV, only while sword is drawn). --
     if (drawAimPipThisFrame_) {
-        // Shoulder-mounted: forward from player, low pitch.
+        // 2026-05-20 — moved to a true over-the-shoulder framing.
+        // Pre-fix the eye was 1.5 units IN FRONT of the player and
+        // looked further forward, so the player wasn't even in
+        // shot — the PIP just showed empty terrain ahead. We now
+        // place the eye 2.5 units behind + 1.4 above + 0.8 to the
+        // right of the player and aim at a point ~6 units ahead of
+        // the player, so the player's silhouette is left-of-frame
+        // and the swing landing zone occupies the centre — which
+        // is what a third-person aim camera is for.
         const threadmaxx::Vec3 aimEye{
-            target.x - sy * 1.5f,
-            target.y + 0.5f,
-            target.z - cy * 1.5f,
+            target.x + sy * 2.5f - cy * 0.8f,
+            target.y + 1.4f,
+            target.z + cy * 2.5f + sy * 0.8f,
         };
         const threadmaxx::Vec3 aimTgt{
-            target.x - sy * 20.0f,
+            target.x - sy * 6.0f,
             target.y,
-            target.z - cy * 20.0f,
+            target.z - cy * 6.0f,
         };
         threadmaxx::Camera aim = buildPerspective(
             aimEye, aimTgt, {0, 1, 0},
-            /*fovY*/ 0.5f,  // narrow
+            /*fovY*/ 0.6f,
             /*aspect*/ (fbW * kViewportAimPip.width) / (fbH * kViewportAimPip.height),
             /*near*/ 0.1f, /*far*/ 50.0f);
         aim.id       = kCameraIdAim;

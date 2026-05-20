@@ -33,6 +33,10 @@ public:
 private:
     WorldState*       worldState_ = nullptr;
     UserComponentIds* ids_        = nullptr;
+    /// 2026-05-20 — last-tick swing timer; used to detect the
+    /// trailing edge so we re-issue the resting Parent localOffset
+    /// once when the swing ends.
+    float             prevSwingTimer_ = 0.0f;
 };
 
 } // namespace rpg

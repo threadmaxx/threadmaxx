@@ -102,6 +102,10 @@ int main(int argc, char** argv) {
     }
 
     threadmaxx::Config cfg;
+    // workerCount = 0 → JobSystem picks max(1, hardware_concurrency - 1).
+    // The brain + cube-render + culling systems all scale with worker
+    // count under `--stress`; pinning to 8 left a 72-core box at 7%
+    // CPU. Auto-sizing fills out the pool.
     cfg.workerCount = 0;
     threadmaxx::Engine engine(cfg);
 

@@ -5,8 +5,6 @@
 
 #include "DemoTypes.hpp"
 
-#include <random>
-
 namespace rpg {
 
 /// Hostile-faction NPC brain. Each tick:
@@ -43,7 +41,6 @@ private:
     WorldState*       worldState_ = nullptr;
     UserComponentIds* ids_        = nullptr;
     threadmaxx::SpatialHash<threadmaxx::EntityHandle> hash_;
-    std::mt19937      rng_;
 };
 
 } // namespace rpg

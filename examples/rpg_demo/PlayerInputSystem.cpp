@@ -67,12 +67,65 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     newT.orientation.z = 0.0f;
     newT.orientation.w = std::cos(half);
 
+    // 2026-05-20 — visible sword-swing animation. Without this the
+    // F-press flipped a hidden hit-window flag and the sword cube
+    // never moved; the user reported "sword does not move". We now
+    // arc the sword's local-offset position+orientation around the
+    // player-local Y axis from +1.1 rad → -1.1 rad across the swing
+    // window. The same setParent re-issue runs once on the trailing
+    // edge so the resting pose snaps back. The sword's resting
+    // local offset matches the values seeded in DemoGame::onSetup
+    // (`{0.5, 0.8, -0.8}` position, `{0.18, 0.18, 1.4}` scale).
+    const auto sword = worldState_->sword;
+    const float currSwing = updated.swordSwingTimer;
+    const bool  swingActive = currSwing > 0.0f;
+    const bool  swingJustEnded =
+        prevSwingTimer_ > 0.0f && currSwing <= 0.0f;
+    prevSwingTimer_ = currSwing;
+
+    threadmaxx::Parent swordParent = {};
+    bool writeSwordParent = false;
+    if (sword.valid() && w.alive(sword)) {
+        swordParent.parent = player;
+        swordParent.localOffset.scale = {0.18f, 0.18f, 1.4f};
+        if (swingActive) {
+            const float progress =
+                1.0f - currSwing / kSwordSwingSeconds;          // 0 → 1
+            const float swingAngle = (0.5f - progress) * 2.2f;  // +1.1 → -1.1
+            const float ca = std::cos(swingAngle);
+            const float sa = std::sin(swingAngle);
+            // Rotate the resting offset (0.5, 0.8, -0.8) around the
+            // player's local +Y axis. The X/Z components arc; Y is
+            // fixed at 0.8.
+            constexpr float kRestX = 0.5f;
+            constexpr float kRestZ = -0.8f;
+            swordParent.localOffset.position = {
+                kRestX * ca - kRestZ * sa,
+                0.8f,
+                kRestX * sa + kRestZ * ca,
+            };
+            // Rotation around local +Y by swingAngle: (0, sin(a/2),
+            // 0, cos(a/2)).
+            const float half = swingAngle * 0.5f;
+            swordParent.localOffset.orientation = {
+                0.0f, std::sin(half), 0.0f, std::cos(half),
+            };
+            writeSwordParent = true;
+        } else if (swingJustEnded) {
+            swordParent.localOffset.position    = {0.5f, 0.8f, -0.8f};
+            swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            writeSwordParent = true;
+        }
+    }
+
     const auto idsPS = ids_->playerState;
-    ctx.single([player, vx, vz, updated, idsPS, newT]
+    ctx.single([player, vx, vz, updated, idsPS, newT,
+                sword, swordParent, writeSwordParent]
                (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
         cb.setVelocity(player, threadmaxx::Velocity{{vx, 0.0f, vz}, {0, 0, 0}});
         cb.setTransform(player, newT);
         threadmaxx::addUserComponent(cb, idsPS, player, updated);
+        if (writeSwordParent) cb.setParent(sword, swordParent);
     });
 }
 

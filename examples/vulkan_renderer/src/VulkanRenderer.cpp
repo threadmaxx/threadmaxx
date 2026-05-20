@@ -904,14 +904,25 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
     // behave bit-for-bit as before. Y is flipped here (height < 0)
     // so the engine's column-major view*proj output matches the
     // GL/OpenGL NDC convention the shaders expect.
+    //
+    // 2026-05-20 — for cameras whose viewport doesn't cover the full
+    // framebuffer (mini-map, aim PIP), clear color + depth inside the
+    // scissor rect BEFORE drawing. Without this each non-first camera
+    // inherits the previous camera's depth values inside its viewport,
+    // which makes opaque draws fail or pass tests against unrelated
+    // depths (visually: terrain bleeds over entities on the mini-map;
+    // the PIP shows a chaotic mix of main-camera pixels and PIP
+    // pixels). The full-screen main camera (cameraIndex==0 with
+    // viewport == [0,0,1,1]) skips the clear since the renderpass-
+    // level loadOp already cleared.
+    const VkExtent2D ext = swapchain.extent();
+    const float fw = static_cast<float>(ext.width);
+    const float fh = static_cast<float>(ext.height);
+    const float vx = cam.viewport.x      * fw;
+    const float vy = cam.viewport.y      * fh;
+    const float vw = cam.viewport.width  * fw;
+    const float vh = cam.viewport.height * fh;
     {
-        const VkExtent2D ext = swapchain.extent();
-        const float fw = static_cast<float>(ext.width);
-        const float fh = static_cast<float>(ext.height);
-        const float vx = cam.viewport.x      * fw;
-        const float vy = cam.viewport.y      * fh;
-        const float vw = cam.viewport.width  * fw;
-        const float vh = cam.viewport.height * fh;
         VkViewport vp = {};
         vp.x = vx;
         vp.y = vy + vh;       // top of rect + flipped height
@@ -926,6 +937,27 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
         sc.extent.width  = static_cast<std::uint32_t>(vw);
         sc.extent.height = static_cast<std::uint32_t>(vh);
         vkCmdSetScissor(cmd, 0, 1, &sc);
+    }
+    const bool isFullScreen =
+        cam.viewport.x      == 0.0f &&
+        cam.viewport.y      == 0.0f &&
+        cam.viewport.width  == 1.0f &&
+        cam.viewport.height == 1.0f;
+    if (cameraIndex != 0 && !isFullScreen) {
+        VkClearAttachment clears[2] = {};
+        clears[0].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clears[0].colorAttachment = 0;
+        clears[0].clearValue.color = {{0.03f, 0.04f, 0.07f, 1.0f}};
+        clears[1].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        clears[1].clearValue.depthStencil = {1.0f, 0};
+        VkClearRect rect = {};
+        rect.rect.offset.x = static_cast<std::int32_t>(vx);
+        rect.rect.offset.y = static_cast<std::int32_t>(vy);
+        rect.rect.extent.width  = static_cast<std::uint32_t>(vw);
+        rect.rect.extent.height = static_cast<std::uint32_t>(vh);
+        rect.baseArrayLayer = 0;
+        rect.layerCount     = 1;
+        vkCmdClearAttachments(cmd, 2, clears, 1, &rect);
     }
 
     // Compute view*proj column-major.
