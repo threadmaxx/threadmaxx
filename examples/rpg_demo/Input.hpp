@@ -15,6 +15,7 @@ enum : std::uint32_t {
     kEdgeAttack       = 1u << 3,   // F   — sword swing
     kEdgeSaveAsync    = 1u << 4,   // F8  — async save (batch D3)
     kEdgeReloadShader = 1u << 5,   // F12 — emit AssetReloaded (batch D7)
+    kEdgeAimToggle    = 1u << 6,   // V   — toggle aim PIP visibility
 };
 
 /// Polled-per-tick analog inputs + edge bits. Filled in by the main

@@ -36,13 +36,12 @@ void CameraSystem::update(threadmaxx::SystemContext& ctx) {
     const auto& tr = w.get<threadmaxx::Transform>(player);
     playerPos_ = tr.position;
 
-    // §3.11.2 batch D2 — aim PIP visibility = sword currently swinging.
-    if (const PlayerState* ps =
-            threadmaxx::user::tryGet<PlayerState>(w, ids_->playerState, player)) {
-        drawAimPipThisFrame_ = ps->swordSwingTimer > 0.0f;
-    } else {
-        drawAimPipThisFrame_ = false;
-    }
+    // 2026-05-20 — aim PIP visibility is now a sticky toggle on V,
+    // flipped by PlayerInputSystem into WorldState::aimPipVisible.
+    // Pre-fix the PIP popped up automatically every time the sword
+    // swung (300 ms each press) which the user found jarring; this
+    // gives explicit control.
+    drawAimPipThisFrame_ = worldState_ && worldState_->aimPipVisible;
 
     // Push the updated yaw back into the player's state so movement
     // matches the camera facing.
@@ -205,15 +204,22 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     b.addCamera(main);
 
     // -- Top-down mini-map (orthographic). --
-    threadmaxx::Camera minimap = buildTopDownOrtho(
-        playerPos_,
-        /*halfHeight*/ 35.0f,
-        /*aspect*/ (fbW * kViewportMinimap.width) / (fbH * kViewportMinimap.height),
-        /*near*/ 0.5f, /*far*/ 100.0f);
-    minimap.id       = kCameraIdMinimap;
-    minimap.viewport = kViewportMinimap;
-    worldState_->activeCameras.push_back(minimap);
-    b.addCamera(minimap);
+    // 2026-05-20 — skip the mini-map in stress mode. Adding a third
+    // camera at the same drawItem count triples the renderer's
+    // per-tick CPU + GPU instance work and was a measurable chunk
+    // of the 16.7ms budget. We still emit the main + (optional)
+    // aim-PIP cameras.
+    if (!worldState_->stressMode) {
+        threadmaxx::Camera minimap = buildTopDownOrtho(
+            playerPos_,
+            /*halfHeight*/ 35.0f,
+            /*aspect*/ (fbW * kViewportMinimap.width) / (fbH * kViewportMinimap.height),
+            /*near*/ 0.5f, /*far*/ 100.0f);
+        minimap.id       = kCameraIdMinimap;
+        minimap.viewport = kViewportMinimap;
+        worldState_->activeCameras.push_back(minimap);
+        b.addCamera(minimap);
+    }
 
     // -- Aim PIP (narrow FOV, only while sword is drawn). --
     if (drawAimPipThisFrame_) {

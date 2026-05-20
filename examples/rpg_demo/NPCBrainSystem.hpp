@@ -5,6 +5,8 @@
 
 #include "DemoTypes.hpp"
 
+namespace threadmaxx { class Engine; }
+
 namespace rpg {
 
 /// Hostile-faction NPC brain. Each tick:
@@ -12,10 +14,12 @@ namespace rpg {
 ///      carries a `BoundingVolume`.
 ///   2. `update` queries the hash for every NPC and transitions through
 ///      Idle → Wander → Flee based on player proximity.
-/// Writes Velocity on each NPC.
+/// Writes Velocity on each NPC; emits `DamageDealt` when a hostile is
+/// in melee range (NPC-to-player attack, 2026-05-20).
 class NPCBrainSystem : public threadmaxx::ISystem {
 public:
-    NPCBrainSystem(WorldState* worldState, UserComponentIds* ids);
+    NPCBrainSystem(threadmaxx::Engine* engine,
+                   WorldState* worldState, UserComponentIds* ids);
 
     const char* name() const noexcept override { return "npc-brain"; }
     threadmaxx::ComponentSet reads() const noexcept override {
@@ -38,8 +42,9 @@ public:
     }
 
 private:
-    WorldState*       worldState_ = nullptr;
-    UserComponentIds* ids_        = nullptr;
+    threadmaxx::Engine* engine_     = nullptr;
+    WorldState*         worldState_ = nullptr;
+    UserComponentIds*   ids_        = nullptr;
     threadmaxx::SpatialHash<threadmaxx::EntityHandle> hash_;
 };
 

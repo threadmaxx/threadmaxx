@@ -20,19 +20,35 @@ void PickupSystem::update(threadmaxx::SystemContext& ctx) {
 
     const auto& pT = w.get<threadmaxx::Transform>(player);
     constexpr float kPickRadius = 1.2f;
+    constexpr float kPickRadiusSq = kPickRadius * kPickRadius;
 
-    const auto& hash = brain_->spatialHash();
+    // 2026-05-20 — direct chunk walk over Pickup-bearing chunks
+    // instead of querying the NPC brain's spatial hash. Pickups
+    // were removed from that hash (a single insert there cost
+    // O(log) bucket work; with 50k pickups it dominated the
+    // brain's preStep). A flat distance check across pickup rows
+    // is much cheaper because we just touch contiguous Transform
+    // memory.
+    const auto pickupBit = ids_->pickup.componentBit();
     std::vector<threadmaxx::EntityHandle> hits;
     hits.reserve(8);
-
-    hash.forEachInRadius(pT.position, kPickRadius,
-        [&](const threadmaxx::Vec3&, threadmaxx::EntityHandle e) {
-            if (e == player) return;
-            if (!w.alive(e)) return;
-            if (w.hasTag(e, threadmaxx::Component::DisabledTag)) return;
-            if (!threadmaxx::user::has(w, ids_->pickup, e)) return;
+    const auto chunkCount = w.archetypeChunkCount();
+    for (std::size_t c = 0; c < chunkCount; ++c) {
+        const auto& chunk = w.archetypeChunk(c);
+        if (!chunk.mask.has(pickupBit)) continue;
+        if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+        const auto n = chunk.entities.size();
+        for (std::size_t r = 0; r < n; ++r) {
+            const auto& tp = chunk.transforms[r].position;
+            const float dx = tp.x - pT.position.x;
+            const float dy = tp.y - pT.position.y;
+            const float dz = tp.z - pT.position.z;
+            if (dx * dx + dy * dy + dz * dz > kPickRadiusSq) continue;
+            const auto e = chunk.entities[r];
+            if (e == player) continue;
             hits.push_back(e);
-        });
+        }
+    }
 
     if (hits.empty()) return;
 

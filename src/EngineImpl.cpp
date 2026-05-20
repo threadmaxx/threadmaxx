@@ -1641,7 +1641,9 @@ void EngineImpl::step() {
     // a clean integer relationship.
     simulationTime_ += cfg_.fixedStepSeconds;
 
+    const auto brfStart_ = std::chrono::steady_clock::now();
     buildRenderFrame();
+    const auto brfMidEngine_ = std::chrono::steady_clock::now();
     if (renderer_) {
         const unsigned front = frontIndex_.load(std::memory_order_acquire);
         renderer_->submitFrame(renderFrames_[front]);
@@ -1649,6 +1651,13 @@ void EngineImpl::step() {
 
     const auto stepEnd = std::chrono::steady_clock::now();
     const double stepSeconds = std::chrono::duration<double>(stepEnd - stepStart).count();
+    // 2026-05-20 — surface render-frame publish vs renderer submit
+    // timings. Engine-private fields; readable via stats() if we
+    // expose them, but for now just stashed for the next access.
+    stats_.engineBuildRenderFrameSeconds =
+        std::chrono::duration<double>(brfMidEngine_ - brfStart_).count();
+    stats_.renderSubmitSeconds =
+        std::chrono::duration<double>(stepEnd - brfMidEngine_).count();
 
     stats_.tick = tick_;
     stats_.lastStepSeconds = stepSeconds;

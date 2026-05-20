@@ -39,6 +39,13 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     // only one system per tick observes a given press.
     const std::uint32_t edges = takeEdges();
     const bool attackPressed = (edges & kEdgeAttack) != 0;
+    if (edges & kEdgeAimToggle) {
+        // 2026-05-20 — V toggles the over-the-shoulder PIP. We flip
+        // it here because PlayerInputSystem is the one that owns the
+        // edges (takeEdges clears them atomically); routing through
+        // WorldState gives CameraSystem a stable per-tick read.
+        worldState_->aimPipVisible = !worldState_->aimPipVisible;
+    }
 
     PlayerState updated = *ps;
     const float dt = static_cast<float>(ctx.dt());
@@ -87,32 +94,30 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     bool writeSwordParent = false;
     if (sword.valid() && w.alive(sword)) {
         swordParent.parent = player;
-        swordParent.localOffset.scale = {0.18f, 0.18f, 1.4f};
+        swordParent.localOffset.position = {0.5f, 0.8f, -0.8f};
+        swordParent.localOffset.scale    = {0.18f, 0.18f, 1.4f};
         if (swingActive) {
+            // 2026-05-20 — overhead-to-forward chop around the +X
+            // axis. Previous attempt rotated around +Y and ALSO
+            // orbited the pivot, which dragged the sword across to
+            // the LEFT side of the player even though it's held on
+            // the right; user reported "swings on the opposite side
+            // from where the player holds it". A pure X-rotation
+            // keeps the grip anchored at (+0.5, 0.8, -0.8) and only
+            // sweeps the blade in the player-local YZ plane: starts
+            // raised overhead (a=+1.0), passes forward (a=0) at
+            // mid-swing, ends at a slight downward thrust (a=-0.2).
             const float progress =
                 1.0f - currSwing / kSwordSwingSeconds;          // 0 → 1
-            const float swingAngle = (0.5f - progress) * 2.2f;  // +1.1 → -1.1
-            const float ca = std::cos(swingAngle);
-            const float sa = std::sin(swingAngle);
-            // Rotate the resting offset (0.5, 0.8, -0.8) around the
-            // player's local +Y axis. The X/Z components arc; Y is
-            // fixed at 0.8.
-            constexpr float kRestX = 0.5f;
-            constexpr float kRestZ = -0.8f;
-            swordParent.localOffset.position = {
-                kRestX * ca - kRestZ * sa,
-                0.8f,
-                kRestX * sa + kRestZ * ca,
-            };
-            // Rotation around local +Y by swingAngle: (0, sin(a/2),
-            // 0, cos(a/2)).
-            const float half = swingAngle * 0.5f;
+            const float a = kSwingAngleStart +
+                            progress * (kSwingAngleEnd - kSwingAngleStart);
+            // Quaternion for rotation around local +X by `a`.
+            const float half = a * 0.5f;
             swordParent.localOffset.orientation = {
-                0.0f, std::sin(half), 0.0f, std::cos(half),
+                std::sin(half), 0.0f, 0.0f, std::cos(half),
             };
             writeSwordParent = true;
         } else if (swingJustEnded) {
-            swordParent.localOffset.position    = {0.5f, 0.8f, -0.8f};
             swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
             writeSwordParent = true;
         }

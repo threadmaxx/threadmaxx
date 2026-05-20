@@ -2,15 +2,18 @@
 // renderer + threadmaxx engine + the DemoGame.
 //
 // Controls:
-//   W / A / S / D   move
-//   Arrow keys      yaw / pitch the camera
-//   Q / E           zoom in / out
-//   F1              toggle Chrome-trace capture (/tmp/rpg_demo_trace.*.json)
-//   F5              synchronous quick-save (built-ins + user comps)
-//   F8              asynchronous quick-save (off-thread file write)
-//   F9              load and restore from the saved file
-//   F               sword swing (combat — batch D1)
-//   Esc / window-close exits cleanly.
+//   W / S / Up / Down     forward / back
+//   A / D / Left / Right  strafe left / right
+//   Q / E                 rotate camera yaw
+//   Scroll wheel          zoom in / out
+//   F                     sword swing (combat)
+//   V                     toggle aim PIP camera
+//   F1                    toggle Chrome-trace capture (/tmp/rpg_demo_trace.*.json)
+//   F5                    synchronous quick-save
+//   F8                    asynchronous quick-save
+//   F9                    load and restore from the saved file
+//   F12                   reload shaders (emits AssetReloaded)
+//   Esc / window-close    exit cleanly
 //
 // CLI: `[--stress|-s] [tick_count]`
 //   --stress / -s  — §3.11.5 batch D5: scale up to 10k NPCs + 50k
@@ -120,7 +123,12 @@ int main(int argc, char** argv) {
     threadmaxx_vk::VulkanRenderer::Config vrcfg;
     vrcfg.width  = kWidth;
     vrcfg.height = kHeight;
-    vrcfg.framesInFlight = 2;
+    // 2026-05-20 — framesInFlight=3 lets the GPU pipeline overlap
+    // two earlier frames while the sim builds the next; under
+    // --stress this drops the per-tick `vkWaitSemaphores` wait
+    // because the slot's previous GPU work is usually done by the
+    // time we come back around. 2 was the historical default.
+    vrcfg.framesInFlight = 3;
     vrcfg.enableValidation = std::getenv("THREADMAXX_VK_VALIDATE") != nullptr;
     auto renderer = std::make_unique<threadmaxx_vk::VulkanRenderer>(&engine, window, vrcfg);
     engine.setRenderer(renderer.get());

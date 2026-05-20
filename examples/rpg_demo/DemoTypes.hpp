@@ -57,6 +57,16 @@ struct NpcState {
     float         targetZ    = 0.0f;
     /// Awareness radius — the NPC notices the player within this range.
     float         aoiRadius  = 6.0f;
+    /// 2026-05-20 — per-NPC retreat disposition in [0, 1]. Rolled once
+    /// at spawn time. On low HP the brain only transitions to Retreat
+    /// if this is below `kRetreatChance`; otherwise the NPC fights to
+    /// the death. Deterministic across runs (spawned from the demo's
+    /// seeded RNG).
+    float         fleeRoll   = 0.0f;
+    /// 2026-05-20 — cooldown between NPC-to-player melee swings, in
+    /// seconds. NPCs in Fight state can damage the player when this
+    /// drops to 0 and they're inside `kNpcAttackRange`.
+    float         attackCooldown = 0.0f;
 };
 
 /// Player-only metadata.
@@ -247,6 +257,12 @@ struct WorldState {
     /// the "Defeat all hostiles" quest knows its target. Filled by
     /// `DemoGame::onSetup`.
     std::uint32_t hostileSpawnCount = 0;
+
+    /// 2026-05-20 — sticky toggle for the aim PIP camera. Flipped
+    /// each time `kEdgeAimToggle` (V key) is observed by
+    /// PlayerInputSystem. Decoupled from the sword-swing timer so
+    /// you can leave the PIP open while running around.
+    bool          aimPipVisible    = false;
 };
 
 /// §3.11.1 batch D1 — gameplay tuning constants.
@@ -257,11 +273,39 @@ constexpr float kPlayerMaxHP        = 100.0f;
 constexpr float kHostileMaxHP       =  60.0f;
 constexpr float kFriendlyMaxHP      =  80.0f;
 
+/// 2026-05-20 — sword chop animation arc around the player's local
+/// +X axis. The sword pivot stays at (+0.5, 0.8, -0.8) for the
+/// whole swing; only its orientation rotates. Start raised
+/// overhead, pass through forward-level at mid-swing, end at a
+/// shallow downward thrust. CombatSystem samples positions along
+/// the same arc so the hit volume matches what the player sees.
+constexpr float kSwingAngleStart    =  1.0f;   // raised overhead
+constexpr float kSwingAngleEnd      = -0.3f;   // mild downward
+constexpr int   kSwingHitSamples    = 5;       // angles tested
+constexpr float kSwordRestX         =  0.5f;
+constexpr float kSwordRestY         =  0.8f;
+constexpr float kSwordRestZ         = -0.8f;
+
+/// 2026-05-20 — NPC behavioural tuning.
+constexpr float kRetreatChance      = 0.5f;    // fraction that flees on low HP
+constexpr float kNpcAttackRange     = 1.6f;    // melee reach (world units)
+constexpr float kNpcAttackDamage    = 8.0f;    // HP per hit
+constexpr float kNpcAttackCooldown  = 1.0f;    // seconds between swings
+
 /// §3.11.5 batch D5 — scale-stress entity counts. Tuned so the
 /// rpg_demo intentionally pushes the engine past 16.67ms/tick on
 /// modest hardware, exercising `SkipPolicy::Budget`.
+///
+/// 2026-05-20 — pickup count lowered to 5000 (was 50000). 50k
+/// stationary pickups all contributed a renderer instance + a
+/// non-trivial slice of the cube-render snapshot + a permanent
+/// presence in archetype storage; on this codebase the renderer
+/// CPU-side path scales linearly so 50k inflated step times to
+/// ~50ms even with chunked iteration + distance culling. 5k is
+/// still well above any normal-mode count and exercises the
+/// "many entities, mostly idle" workload meaningfully.
 constexpr std::uint32_t kStressNpcCount       = 10000u;
-constexpr std::uint32_t kStressPickupCount    = 50000u;
+constexpr std::uint32_t kStressPickupCount    = 5000u;
 constexpr std::uint32_t kNormalNpcCount       = 50u;
 constexpr std::uint32_t kNormalPickupCount    = 100u;
 constexpr double        kTickBudgetSeconds    = 1.0 / 60.0;

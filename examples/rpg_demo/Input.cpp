@@ -23,6 +23,7 @@ void keyCallback(GLFWwindow* /*window*/, int key, int /*scancode*/,
         case GLFW_KEY_F:  bit = kEdgeAttack; break;
         case GLFW_KEY_F8: bit = kEdgeSaveAsync; break;
         case GLFW_KEY_F12: bit = kEdgeReloadShader; break;
+        case GLFW_KEY_V:   bit = kEdgeAimToggle; break;
         default: return;
     }
     g_input.edges.fetch_or(bit, std::memory_order_release);
@@ -44,32 +45,34 @@ void installInputCallbacks(GLFWwindow* window) {
 }
 
 void pollContinuousInput(GLFWwindow* window, double /*dtSeconds*/) {
-    // Continuous keys for movement + camera.
+    // 2026-05-20 — Left/Right arrows AND A/D both strafe (Left = A
+    // = strafe left; Right = D = strafe right). Pre-fix the arrows
+    // ran the camera yaw and players had no horizontal strafe on
+    // the arrow keys. Camera-yaw control moved to Q/E (was: zoom);
+    // zoom now lives on the scroll wheel exclusively, leaving the
+    // keyboard for movement.
     float fwd = 0.0f, str = 0.0f;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) fwd += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) fwd -= 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) str += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) str -= 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_W)     == GLFW_PRESS) fwd += 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_S)     == GLFW_PRESS) fwd -= 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS) fwd += 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) fwd -= 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_D)     == GLFW_PRESS) str += 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_A)     == GLFW_PRESS) str -= 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) str += 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS) str -= 1.0f;
     g_input.forward = fwd;
     g_input.strafe  = str;
 
-    // Camera yaw/pitch via arrow keys (more reliable across the
-    // smoke than mouse capture; mouse mode is a follow-on).
+    // Camera yaw on Q/E (rotate left/right). Vertical pitch is
+    // still useful but few players need to adjust it during play —
+    // we hold the camera at a fixed pitch and only expose yaw.
     float yawD = 0.0f, pitchD = 0.0f;
-    if (glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS) yawD   -= 1.5f;
-    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) yawD   += 1.5f;
-    if (glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS) pitchD -= 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) pitchD += 1.0f;
-    // Scale by fixed step (60 Hz target); the caller integrates per tick.
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) yawD -= 1.5f;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) yawD += 1.5f;
     g_input.yawDelta   = yawD   * 0.016f;
     g_input.pitchDelta = pitchD * 0.016f;
-
-    // Q / E zoom.
-    float zoomD = 0.0f;
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) zoomD -= 4.0f * 0.016f;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) zoomD += 4.0f * 0.016f;
-    // Add to whatever the scroll callback may have already deposited.
-    g_input.zoomDelta += zoomD;
+    // Zoom: scroll wheel only (set by the GLFW scroll callback).
+    // Keyboard zoom keys removed to free Q/E for camera yaw.
 
     // Track mouse only to make installInputCallbacks idempotent — full
     // mouse-look is a follow-on.

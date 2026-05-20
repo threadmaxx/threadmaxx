@@ -69,6 +69,15 @@ struct EngineStats {
     /// networked games to detect drift early; tests use it as a
     /// stronger-than-`WorldSnapshot` per-tick checksum.
     std::uint64_t commitHash = 0xcbf29ce484222325ull;
+
+    /// 2026-05-20 — split the post-update tail of `step()` into the
+    /// engine-side render-frame publish vs the renderer's
+    /// `submitFrame` call so HUD overlays can pin down whether the
+    /// remaining wall-clock budget is going to engine bookkeeping
+    /// or downstream renderer CPU work. Both are also included in
+    /// `lastStepSeconds`.
+    double engineBuildRenderFrameSeconds = 0.0;
+    double renderSubmitSeconds = 0.0;
 };
 
 /// Aggregate worker-pool counters. Read via `Engine::jobSystemStats()`.

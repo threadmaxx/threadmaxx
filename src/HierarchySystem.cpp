@@ -17,6 +17,7 @@
 /// own parent's already-resolved world transform).
 #include "threadmaxx/System.hpp"
 #include "threadmaxx/World.hpp"
+#include "threadmaxx/internal/Archetype.hpp"
 
 #include <cstdint>
 #include <unordered_map>
@@ -72,126 +73,139 @@ public:
     }
 
     void update(SystemContext& ctx) override {
-        // §3.10.2 batch 22 — F3 fix. Previously this body allocated a
-        // fresh unordered_map + four std::vectors per tick (DDoSing
-        // the allocator at 60 Hz for any world with Parent entities).
-        // Scratch state is now system-owned and reused across ticks;
-        // `clear()` preserves the allocations.
+        // 2026-05-20 — chunk-iteration rewrite. The previous body
+        // walked every alive entity (O(N), via the stitched view) to
+        // build a handle→dense-index map. Under heavy-entity loads
+        // (60k+ entities, only one of which actually carries Parent
+        // — common in any scene with most entities un-parented) the
+        // O(N) sweep was the largest single CPU cost in
+        // EngineImpl::step. The new path walks only Parent-bearing
+        // archetype chunks and resolves each entry through
+        // `World::tryGetTransform` on the parent handle. Multi-level
+        // chains converge by re-iterating until the parented-set
+        // shrinks to zero or stabilises (each pass resolves every
+        // entry whose parent is already finalised). Steady-state on
+        // single-level hierarchies (the common case) is one pass.
         ctx.single([this, &ctx](Range, CommandBuffer& out) {
             const World& world = ctx.world();
-            const auto entities   = world.entities();
-            const auto transforms = world.transforms();
-            const auto parents    = world.parents();
-            const auto masks      = world.componentMasks();
-            const auto count = entities.size();
-            if (count == 0) return;
-            (void)ctx;
+            const auto chunkCount = world.archetypeChunkCount();
+            if (chunkCount == 0) return;
 
-            // Handle → dense index map, kept across ticks. Hierarchies
-            // span the entire entity set in the worst case so the O(N)
-            // map build is unavoidable; subsequent lookups are O(1).
-            denseOf_.clear();
-            denseOf_.reserve(count);
-            for (std::uint32_t i = 0; i < count; ++i) {
-                denseOf_.emplace(entities[i], i);
-            }
-
-            // worldT[i] is the in-progress world transform for dense i.
-            // Starts as the stored Transform — correct for roots, will be
-            // overwritten for parented entities below. `assign` reuses
-            // capacity from previous ticks.
-            worldT_.assign(transforms.begin(), transforms.end());
-            done_.assign(count, 0);
-
-            // Roots: not Parent-tagged, or Parent handle is invalid or stale.
-            for (std::uint32_t i = 0; i < count; ++i) {
-                if (!masks[i].has(Component::Parent)) { done_[i] = 1; continue; }
-                const auto pH = parents[i].parent;
-                if (!pH.valid() || denseOf_.find(pH) == denseOf_.end()) {
-                    done_[i] = 1;  // dangling parent → treat as root
+            // Collect parented entries from Parent-bearing chunks
+            // only. `pending_` carries dense-into-`worldT_` indices
+            // so the multi-pass resolver can build chains without
+            // re-walking chunks.
+            pending_.clear();
+            handleToWorldIdx_.clear();
+            worldT_.clear();
+            for (std::size_t c = 0; c < chunkCount; ++c) {
+                const auto& chunk = world.archetypeChunk(c);
+                if (!chunk.mask.has(Component::Parent)) continue;
+                const auto n = chunk.entities.size();
+                for (std::size_t r = 0; r < n; ++r) {
+                    Pending p;
+                    p.entity      = chunk.entities[r];
+                    p.parent      = chunk.parents[r].parent;
+                    p.local       = chunk.parents[r].localOffset;
+                    p.storedT     = chunk.transforms[r];
+                    p.worldIdx    = static_cast<std::uint32_t>(worldT_.size());
+                    p.resolved    = false;
+                    pending_.push_back(p);
+                    worldT_.push_back(p.storedT);
+                    handleToWorldIdx_[p.entity] = p.worldIdx;
                 }
             }
+            if (pending_.empty()) return;
 
-            stack_.clear();
-            // `onStack[i] != 0` means dense index `i` is currently in
-            // `stack` for this start chain. Used to detect cycles
-            // (A → B → A) — without this guard, the inner walk would
-            // loop forever. Reset on each chain.
-            onStack_.assign(count, 0);
-            for (std::uint32_t start = 0; start < count; ++start) {
-                if (done_[start]) continue;
-
-                // Walk up the chain, pushing entries until we hit a done node.
-                stack_.clear();
-                std::uint32_t cur = start;
-                while (!done_[cur]) {
-                    if (onStack_[cur]) {
-                        // Cycle: cur is already on the current walk
-                        // stack. Treat every entry on the stack as a
-                        // dangling root so the next pass leaves them
-                        // alone — no infinite loop.
-                        for (auto idx : stack_) done_[idx] = 1;
-                        break;
-                    }
-                    onStack_[cur] = 1;
-                    stack_.push_back(cur);
-                    const auto it = denseOf_.find(parents[cur].parent);
-                    // Pre-pass guaranteed validity here, but defend anyway.
-                    if (it == denseOf_.end()) {
-                        done_[cur] = 1;
-                        onStack_[cur] = 0;
-                        stack_.pop_back();
-                        break;
-                    }
-                    cur = it->second;
-                }
-                // Clear the on-stack flags for entries still in stack.
-                for (auto idx : stack_) onStack_[idx] = 0;
-
-                // Pop top-down: each child's parent is already done.
-                while (!stack_.empty()) {
-                    const std::uint32_t child = stack_.back();
-                    stack_.pop_back();
-
-                    const std::uint32_t pIdx = denseOf_.find(parents[child].parent)->second;
-                    const Transform& parentWorld = worldT_[pIdx];
-                    const Transform& local       = parents[child].localOffset;
-
-                    Transform w;
-                    w.position    = parentWorld.position
-                                  + rotate(parentWorld.orientation, local.position);
-                    w.orientation = mul(parentWorld.orientation, local.orientation);
-                    if (cfg_.propagateScale) {
-                        // Opt-in component-wise scale chain. Useful for
-                        // attached props/sockets that should inherit the
-                        // parent's scaling factor.
-                        w.scale.x = parentWorld.scale.x * local.scale.x;
-                        w.scale.y = parentWorld.scale.y * local.scale.y;
-                        w.scale.z = parentWorld.scale.z * local.scale.z;
+            // Multi-pass resolver. Each pass walks `pending_`; an
+            // entry is resolvable iff its parent is NOT in
+            // `handleToWorldIdx_` (i.e. the parent is a root, world
+            // transform readable from storage) OR the parent IS in
+            // the map AND already resolved (its `worldT_` slot is
+            // finalised). When a pass finishes with no progress, any
+            // remaining entries either have a dangling parent or
+            // form a cycle — both are clamped to their stored
+            // transform.
+            bool progress = true;
+            while (progress) {
+                progress = false;
+                for (auto& p : pending_) {
+                    if (p.resolved) continue;
+                    Transform parentWorld;
+                    if (auto it = handleToWorldIdx_.find(p.parent);
+                        it != handleToWorldIdx_.end()) {
+                        const auto& other = pending_[
+                            indexOfWorldIdx_(it->second)];
+                        if (!other.resolved) continue;
+                        parentWorld = worldT_[it->second];
                     } else {
-                        w.scale = local.scale;  // not chained — see Parent doc
+                        // Parent is a root (no Parent component) or
+                        // dangling. Read from world storage.
+                        const Transform* t =
+                            world.tryGetTransform(p.parent);
+                        if (!t) { p.resolved = true; continue; }
+                        parentWorld = *t;
                     }
-                    worldT_[child] = w;
-                    done_[child] = 1;
+                    Transform w;
+                    w.position = parentWorld.position +
+                        rotate(parentWorld.orientation, p.local.position);
+                    w.orientation =
+                        mul(parentWorld.orientation, p.local.orientation);
+                    if (cfg_.propagateScale) {
+                        w.scale.x = parentWorld.scale.x * p.local.scale.x;
+                        w.scale.y = parentWorld.scale.y * p.local.scale.y;
+                        w.scale.z = parentWorld.scale.z * p.local.scale.z;
+                    } else {
+                        w.scale = p.local.scale;
+                    }
+                    worldT_[p.worldIdx] = w;
+                    p.resolved = true;
+                    progress = true;
+                }
+            }
 
-                    if (!transformsEqual(transforms[child], w)) {
-                        out.setTransform(entities[child], w);
-                    }
+            // Emit setTransform only when the composed world differs
+            // from the chunk's stored Transform. Skips unchanged
+            // entries to keep commit churn low.
+            for (const auto& p : pending_) {
+                if (!p.resolved) continue;
+                const Transform& w = worldT_[p.worldIdx];
+                if (!transformsEqual(p.storedT, w)) {
+                    out.setTransform(p.entity, w);
                 }
             }
         });
     }
 
+    // Helper for the resolver. `handleToWorldIdx_` maps to a
+    // `worldT_` slot, which is parallel to `pending_`; this gives
+    // the corresponding `pending_` index back.
+    std::size_t indexOfWorldIdx_(std::uint32_t worldIdx) const noexcept {
+        // The two indices coincide because `pending_.push_back` and
+        // `worldT_.push_back` are interleaved 1:1 in the collection
+        // loop above.
+        return worldIdx;
+    }
+
 private:
     HierarchyConfig cfg_;
 
-    // §3.10.2 batch 22 — per-tick scratch state, reused across ticks
-    // so steady-state pays zero allocations after the first tick.
-    std::unordered_map<EntityHandle, std::uint32_t> denseOf_;
-    std::vector<Transform>                          worldT_;
-    std::vector<std::uint8_t>                       done_;
-    std::vector<std::uint32_t>                      stack_;
-    std::vector<std::uint8_t>                       onStack_;
+    struct Pending {
+        EntityHandle  entity;
+        EntityHandle  parent;
+        Transform     local;
+        Transform     storedT;
+        std::uint32_t worldIdx = 0;
+        bool          resolved = false;
+    };
+
+    // 2026-05-20 — chunk-iteration scratch state, reused across
+    // ticks. `pending_` is filled from Parent-bearing chunks only,
+    // so worlds dominated by un-parented entities (the common case)
+    // pay O(number-of-parented-entities) per tick instead of O(N).
+    std::vector<Pending>                              pending_;
+    std::vector<Transform>                            worldT_;
+    std::unordered_map<EntityHandle, std::uint32_t>   handleToWorldIdx_;
 };
 
 } // namespace

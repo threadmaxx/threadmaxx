@@ -272,6 +272,10 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
 
         NpcState st;
         st.aoiRadius = hostile ? 7.0f : 4.0f;
+        // 2026-05-20 — deterministic per-NPC retreat disposition.
+        // The brain checks `fleeRoll < kRetreatChance` to decide
+        // whether a low-HP hostile retreats or fights to the death.
+        st.fleeRoll  = hostility(rng);
         threadmaxx::addUserComponent(seed, ids_.npcState, h, st);
 
         // §3.11.6 batch D6 — give each NPC a unique phase so the
@@ -323,7 +327,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // ---- Systems -----------------------------------------------------------
     // Engine takes ownership of each; we cache one raw pointer for the
     // brain so PickupSystem can read the spatial hash it owns.
-    auto brain = std::make_unique<NPCBrainSystem>(&worldState_, &ids_);
+    auto brain = std::make_unique<NPCBrainSystem>(&engine, &worldState_, &ids_);
     brain_ = brain.get();
     engine.registerSystem(std::move(brain));
 

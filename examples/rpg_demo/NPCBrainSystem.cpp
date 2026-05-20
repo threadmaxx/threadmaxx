@@ -2,10 +2,13 @@
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Components.hpp>
+#include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
 
 #include <cmath>
+#include <cstdio>
 #include <random>
 
 namespace rpg {
@@ -19,7 +22,10 @@ constexpr float kFleeSpeed    = 4.5f;
 constexpr float kWanderSpeed  = 2.0f;
 // §3.11.1 batch D1 — combat-state tuning.
 constexpr float kChargeSpeed  = 3.5f;
-constexpr float kRetreatSpeed = 5.0f;
+// 2026-05-20 — retreat speed lowered from 5.0 (was faster than the
+// player's run speed; user reported NPCs ran away too fast to chase).
+// Now slightly slower than charge so the player can close the gap.
+constexpr float kRetreatSpeed = 2.8f;
 constexpr float kRetreatDur   = 4.0f;
 constexpr float kRetreatHpFrac = 0.30f;
 constexpr float kFightStopDist = 1.0f;  // don't overshoot the player
@@ -32,23 +38,32 @@ inline float distanceXZ(const threadmaxx::Vec3& a, const threadmaxx::Vec3& b) {
 
 } // namespace
 
-NPCBrainSystem::NPCBrainSystem(WorldState* worldState, UserComponentIds* ids)
-    : worldState_(worldState), ids_(ids), hash_(kCellSize) {}
+NPCBrainSystem::NPCBrainSystem(threadmaxx::Engine* engine,
+                               WorldState* worldState, UserComponentIds* ids)
+    : engine_(engine), worldState_(worldState), ids_(ids), hash_(kCellSize) {}
 
 void NPCBrainSystem::preStep(threadmaxx::SystemContext& ctx) {
-    // Rebuild the spatial hash from every entity with a BoundingVolume.
-    // Single-threaded — the hash is not thread-safe and we want every
-    // wave system (including the downstream PickupSystem) to see the
-    // same view.
+    // 2026-05-20 — chunk-walk + pickup skip. Pre-fix this walked
+    // the stitched 60k-entity view, inserting every entity with
+    // BoundingVolume into the hash — including all stationary
+    // pickups. Under --stress the 50k+ unordered_map inserts cost
+    // ~7ms, the single biggest item in `pre+post+brf`. The new
+    // path walks Faction-bearing chunks directly and skips any
+    // chunk that carries the Pickup user component (those are
+    // queried via a flat scan by PickupSystem instead).
     hash_.clear();
     const auto& w = ctx.world();
-    const auto entities = w.entities();
-    const auto transforms = w.transforms();
-    const auto masks = w.componentMasks();
-    for (std::size_t i = 0; i < entities.size(); ++i) {
-        if (!masks[i].has(threadmaxx::Component::BoundingVolume)) continue;
-        if (masks[i].has(threadmaxx::Component::DisabledTag))       continue;
-        hash_.insert(transforms[i].position, entities[i]);
+    const auto pickupBit = ids_->pickup.componentBit();
+    const auto chunkCount = w.archetypeChunkCount();
+    for (std::size_t c = 0; c < chunkCount; ++c) {
+        const auto& chunk = w.archetypeChunk(c);
+        if (!chunk.mask.has(threadmaxx::Component::BoundingVolume)) continue;
+        if (chunk.mask.has(threadmaxx::Component::DisabledTag))     continue;
+        if (chunk.mask.has(pickupBit)) continue;
+        const auto n = chunk.entities.size();
+        for (std::size_t r = 0; r < n; ++r) {
+            hash_.insert(chunk.transforms[r].position, chunk.entities[r]);
+        }
     }
 }
 
@@ -75,9 +90,14 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
     // state would have raced).
     auto* ids = ids_;
     const std::uint64_t tickSalt = ctx.tick();
+    // 2026-05-20 — melee channel, shared (lock-free MPSC per §3.6
+    // batch 13c) across all worker jobs in this parallelFor.
+    auto& damageChan = engine_->events<DamageDealt>();
+    const auto playerHandle = player;
 
     ctx.parallelFor(count, /*grain*/ 0,
-        [&ctx, &w, ids, pp, dt, tickSalt, entities, masks]
+        [&ctx, &w, ids, pp, dt, tickSalt, entities, masks,
+         &damageChan, playerHandle]
         (threadmaxx::Range r, threadmaxx::CommandBuffer& cb) {
             std::mt19937 rng(static_cast<std::uint32_t>(
                 0xC0FFEEu ^ tickSalt ^ static_cast<std::uint64_t>(r.begin)));
@@ -101,6 +121,10 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
 
                 NpcState next = *st;
                 next.stateTimer += dt;
+                if (next.attackCooldown > 0.0f) {
+                    next.attackCooldown =
+                        std::max(0.0f, next.attackCooldown - dt);
+                }
                 threadmaxx::Vec3 vel{0, 0, 0};
 
                 const bool hostile = (fac.id == kFactionHostile);
@@ -156,7 +180,12 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                 }
 
                 case NpcState::Fight: {
-                    if (lowHp) {
+                    // 2026-05-20 — only the half of the hostile
+                    // pack with `fleeRoll < kRetreatChance` runs
+                    // away on low HP. The rest fight to the death.
+                    // Makes the demo feel less like a cat-and-mouse
+                    // chase and more like a melee.
+                    if (lowHp && next.fleeRoll < kRetreatChance) {
                         next.mode = NpcState::Retreat;
                         next.stateTimer = 0.0f;
                     } else if (distToPlayer > next.aoiRadius * 1.8f) {
@@ -171,6 +200,18 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                             vel.x = (dx / d) * kChargeSpeed;
                             vel.z = (dz / d) * kChargeSpeed;
                         }
+                    }
+                    // 2026-05-20 — melee strike. Lock-free MPSC
+                    // emit (§3.6 batch 13c) — safe from any worker.
+                    if (distToPlayer < kNpcAttackRange &&
+                        next.attackCooldown <= 0.0f) {
+                        DamageDealt hit;
+                        hit.attacker = e;
+                        hit.target   = playerHandle;
+                        hit.amount   = kNpcAttackDamage;
+                        hit.posX = pp.x; hit.posY = pp.y; hit.posZ = pp.z;
+                        damageChan.emit(hit);
+                        next.attackCooldown = kNpcAttackCooldown;
                     }
                     break;
                 }

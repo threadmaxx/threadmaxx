@@ -23,9 +23,6 @@ void DebugOverlaySystem::update(threadmaxx::SystemContext& ctx) {
     havePlayer_ = false;
 
     const auto& w = ctx.world();
-    const auto entities = w.entities();
-    const auto masks = w.componentMasks();
-    const auto transforms = w.transforms();
 
     const auto player = worldState_->player;
     if (player.valid() && w.alive(player)) {
@@ -37,18 +34,41 @@ void DebugOverlaySystem::update(threadmaxx::SystemContext& ctx) {
         havePlayer_ = true;
     }
 
-    for (std::size_t i = 0; i < entities.size(); ++i) {
-        if (!masks[i].has(threadmaxx::Component::Faction))    continue;
-        if (masks[i].has(threadmaxx::Component::DisabledTag)) continue;
-        const auto e = entities[i];
-        const NpcState* st = threadmaxx::user::tryGet<NpcState>(w, ids_->npcState, e);
-        if (!st) continue;
-        const auto& fac = w.get<threadmaxx::Faction>(e);
-        NpcDebug d;
-        d.position = transforms[i].position;
-        d.radius   = st->aoiRadius;
-        d.color    = (fac.id == kFactionFriendly) ? kColorFriendly : kColorHostile;
-        npcs_.push_back(d);
+    // 2026-05-20 — chunk-walk + nearby-only filter. Pre-fix this
+    // iterated the 60k-entity stitched view and emitted AOI rings
+    // for every Faction-bearing NPC, producing ~10k × 16 = 160k
+    // debug lines per tick under --stress (4ms+ in update, more
+    // in buildRenderFrame). The new path walks Faction chunks
+    // directly (so 50k pickups + terrain are skipped) and only
+    // collects NPCs within `kOverlayRange` of the player (~ a
+    // screen-worth). Outside the radius the overlay would be
+    // illegible anyway.
+    constexpr float kOverlayRange    = 30.0f;
+    constexpr float kOverlayRangeSq  = kOverlayRange * kOverlayRange;
+    const float px = havePlayer_ ? playerPos_.x : 0.0f;
+    const float pz = havePlayer_ ? playerPos_.z : 0.0f;
+
+    const auto npcId = ids_->npcState;
+    const auto chunkCount = w.archetypeChunkCount();
+    for (std::size_t c = 0; c < chunkCount; ++c) {
+        const auto& chunk = w.archetypeChunk(c);
+        if (!chunk.mask.has(threadmaxx::Component::Faction)) continue;
+        if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+        if (!chunk.mask.has(npcId.componentBit())) continue;
+        auto npcSpan = threadmaxx::user::chunkSpan<NpcState>(chunk, npcId);
+        const auto n = chunk.entities.size();
+        for (std::size_t r = 0; r < n; ++r) {
+            const auto& tr = chunk.transforms[r];
+            const float dx = tr.position.x - px;
+            const float dz = tr.position.z - pz;
+            if (dx * dx + dz * dz > kOverlayRangeSq) continue;
+            NpcDebug d;
+            d.position = tr.position;
+            d.radius   = npcSpan[r].aoiRadius;
+            d.color    = (chunk.factions[r].id == kFactionFriendly)
+                ? kColorFriendly : kColorHostile;
+            npcs_.push_back(d);
+        }
     }
 }
 

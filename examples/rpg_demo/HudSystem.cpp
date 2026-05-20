@@ -7,7 +7,9 @@
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
 
+#include <algorithm>
 #include <cstdio>
+#include <vector>
 
 namespace rpg {
 
@@ -119,6 +121,45 @@ void HudSystem::postStep(threadmaxx::SystemContext& ctx) {
         if (ps) pickups = ps->pickups;
     }
 
+    // 2026-05-20 — under --stress, dump the per-system update-time
+    // breakdown so it's obvious where the budget is going. `brf`
+    // (buildRenderFrame) timing isn't readable from postStep
+    // because the engine populates it AFTER all postStep hooks
+    // run; the value is derivable from
+    // `step - sum(upd) - commit`.
+    if (worldState_->stressMode) {
+        const auto stats = engine_->systemStats();
+        struct Row { const char* name; double upd; };
+        std::vector<Row> rows;
+        rows.reserve(stats.size());
+        double updSum = 0.0;
+        for (const auto& s : stats) {
+            rows.push_back({s.name, s.lastUpdateSeconds});
+            updSum += s.lastUpdateSeconds;
+        }
+        std::sort(rows.begin(), rows.end(),
+                  [](const Row& a, const Row& b) { return a.upd > b.upd; });
+        const std::size_t top = std::min<std::size_t>(rows.size(), 6);
+        std::printf("[hud] hot updates:");
+        for (std::size_t i = 0; i < top; ++i) {
+            std::printf(" %s=%.2fms", rows[i].name, rows[i].upd * 1000.0);
+        }
+        std::printf("\n");
+        const auto es = engine_->stats();
+        const double brfImplied = es.lastStepSeconds - updSum -
+                                  es.commitDurationSeconds;
+        std::printf("[hud] step=%.2fms upd=%.2fms commit=%.2fms "
+                    "engBRF=%.2fms render=%.2fms other=%.2fms workers=%u\n",
+                    es.lastStepSeconds * 1000.0,
+                    updSum * 1000.0,
+                    es.commitDurationSeconds * 1000.0,
+                    es.engineBuildRenderFrameSeconds * 1000.0,
+                    es.renderSubmitSeconds * 1000.0,
+                    (brfImplied - es.engineBuildRenderFrameSeconds
+                                - es.renderSubmitSeconds) * 1000.0,
+                    engine_->workerCount());
+    }
+
     // §3.11.5 batch D5 — surface budget alerts + skip counts. In
     // non-stress mode these stay at zero and the suffix is empty.
     char budgetBuf[96] = "";
@@ -139,6 +180,12 @@ void HudSystem::postStep(threadmaxx::SystemContext& ctx) {
                 worldState_->sunAngle,
                 trace_ ? "  [TRACING]" : "",
                 budgetBuf);
+
+    // 2026-05-20 — under --stress, surface the top-5 systems by
+    // last-tick CPU time so it's obvious where the budget is
+    // going. The list is sorted descending; the worst offender
+    // appears first. Only printed in stress mode to keep the
+    // normal-run logs clean.
 
     // §3.11.4 batch D4 — quest progress one-liner. Counts active vs
     // completed; the per-quest detail goes out via the

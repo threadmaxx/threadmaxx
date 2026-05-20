@@ -1,6 +1,8 @@
 #pragma once
 
 #include <threadmaxx/System.hpp>
+#include <threadmaxx/render/DrawItem.hpp>
+#include <threadmaxx/render/Visibility.hpp>
 
 #include "DemoTypes.hpp"
 
@@ -10,6 +12,11 @@ namespace rpg {
 /// during `update` (parallel-safe read), then re-emits them as
 /// `DrawItem`s in `buildRenderFrame`. The renderer falls back to its
 /// unit-cube mesh for any DrawItem without a real mesh asset.
+///
+/// 2026-05-20 — DrawItem + AABB construction moved into update so
+/// the heavy per-entity work runs across worker jobs.
+/// buildRenderFrame then only runs `cullByFrustum` and emits the
+/// pre-built items.
 class CubeRenderSystem : public threadmaxx::ISystem {
 public:
     CubeRenderSystem(UserComponentIds* ids, const WorldState* worldState)
@@ -27,17 +34,10 @@ public:
     void buildRenderFrame(threadmaxx::RenderFrameBuilder& b) override;
 
 private:
-    struct Snapshot {
-        threadmaxx::Transform transform;
-        float                 color[4];
-        float                 scale;
-        std::int32_t          meshId;        // §3.11 batch 9b.2b
-        threadmaxx::EntityHandle entity;
-    };
-
-    UserComponentIds*       ids_        = nullptr;
-    const WorldState*       worldState_ = nullptr;
-    std::vector<Snapshot>   snapshot_;
+    UserComponentIds*                       ids_        = nullptr;
+    const WorldState*                       worldState_ = nullptr;
+    std::vector<threadmaxx::DrawItem>       items_;
+    std::vector<threadmaxx::BoundingVolume> bounds_;
 };
 
 } // namespace rpg

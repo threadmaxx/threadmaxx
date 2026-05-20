@@ -49,12 +49,6 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
         threadmaxx::user::tryGet<SwordTag>(w, ids_->swordTag, sword);
     const float length = tag ? tag->length : 1.4f;
 
-    constexpr float kRestX = 0.5f;
-    constexpr float kRestY = 0.8f;
-    constexpr float kRestZ = -0.8f;
-    constexpr float kSwingArc     = 2.2f;  // matches PlayerInputSystem
-    constexpr int   kSwingSamples = 5;
-
     const auto& q = pT->orientation;
     auto rotateByPlayer = [&](float dx, float dy, float dz)
             -> threadmaxx::Vec3 {
@@ -80,19 +74,25 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
         return false;
     };
 
-    for (int i = 0; i < kSwingSamples; ++i) {
+    // Sample positions along the player-local X-axis chop arc. The
+    // pivot stays at (kSwordRest{X,Y,Z}); the blade (0, 0, -length)
+    // rotates by `a` around +X, sweeping in the player-local YZ
+    // plane. Same arc constants as the visible animation in
+    // PlayerInputSystem.
+    for (int i = 0; i < kSwingHitSamples; ++i) {
         const float t = static_cast<float>(i) /
-                        static_cast<float>(kSwingSamples - 1);  // 0..1
-        const float a  = (0.5f - t) * kSwingArc;
+                        static_cast<float>(kSwingHitSamples - 1);
+        const float a  = kSwingAngleStart +
+                         t * (kSwingAngleEnd - kSwingAngleStart);
         const float ca = std::cos(a);
         const float sa = std::sin(a);
-        // Resting pivot offset (kRestX, kRestY, kRestZ) plus the
-        // blade vector (0, 0, -length), both rotated by `a` around
-        // the player-local +Y axis. Stays in the player-local frame
-        // until the final `rotateByPlayer` lift into world space.
-        const float lx = kRestX * ca - kRestZ * sa - length * sa;
-        const float ly = kRestY;
-        const float lz = kRestX * sa + kRestZ * ca - length * ca;
+        // Blade vector after X-rotation by `a`:
+        //   (0, length*sin(a), -length*cos(a))
+        const float bladeY =  length * sa;
+        const float bladeZ = -length * ca;
+        const float lx = kSwordRestX;
+        const float ly = kSwordRestY + bladeY;
+        const float lz = kSwordRestZ + bladeZ;
         const auto offset = rotateByPlayer(lx, ly, lz);
         const threadmaxx::Vec3 tip{
             pT->position.x + offset.x,
