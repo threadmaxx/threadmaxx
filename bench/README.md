@@ -29,9 +29,12 @@ All targets land under `build/bench/`.
 | `commit_path_bench`     | **16**       | Per-variant commit cost on Churn workload          |
 | `migration_bench`       | **16**       | Per-archetype-pair migration cost                  |
 | `grain_sweep`           | **16**       | `preferredGrain` sweep across canonical workloads  |
+| `rpg_stress_bench`      | **26**       | Full-tick RPG-shaped decomposition at 10k/50k/100k |
 
 The batch-16 benches are the **§3.9 gate** — every later batch in §3.9
-must clear a numeric bar on at least one of these to land.
+must clear a numeric bar on at least one of these to land. The
+batch-26 `rpg_stress_bench` is the **Phase 8 gate** (`OPTIMIZATION_PATH.md`)
+— every Phase 8 batch ships with a before/after row from it.
 
 ## Canonical workloads (`scene_workloads.hpp`)
 
@@ -51,7 +54,16 @@ Three deterministic seeds shared by every §3.9 bench:
   mask-flip workloads run against this. Drives the commit-phase /
   migration paths.
 
-All three use seeded `std::mt19937` so the entity layout is byte-
+- **RpgStress** (`RpgStressWorkload`) — batch-26 addition. Mirrors
+  `examples/rpg_demo` with `--stress` at the engine level: five
+  archetype shapes (player, sword, terrain, NPCs, pickups), all
+  built-in components only (no Vulkan / GLFW / user components
+  dependency). Scales from 10k → 100k+ NPCs via the workload's
+  `npcCount` / `pickupCount` public fields. Used by
+  `rpg_stress_bench` to capture full-tick decomposition (step /
+  update / commit / engBRF / other) at scale.
+
+All seeded with `std::mt19937` so the entity layout is byte-
 identical across runs.
 
 ## Common output format (`common.hpp`)
@@ -182,3 +194,34 @@ optimization does not improve fewer branches / allocations /
 lookups / locks / redundant traversals / more contiguous access
 / more predictable job sizes, it probably is not worth the
 added complexity."*
+
+## Shipping bar for Phase 8 batches (`OPTIMIZATION_PATH.md`)
+
+Phase 8 inherits the §3.9 rules and adds the **`rpg_stress_bench`
+diff** as the cross-cutting gate. Every Phase 8 PR body cites a
+before/after row from `rpg_stress_bench` AT 100k entities at
+minimum. If the touched path is also covered by a more focused
+bench (chunk_iter / commit_path / migration / grain_sweep), the
+PR cites that one too. The diff protocol:
+
+```
+cmake --build build --target rpg_stress_bench -j
+./build/bench/rpg_stress_bench /tmp/before.csv
+# ... apply optimization ...
+./build/bench/rpg_stress_bench /tmp/after.csv
+diff -u /tmp/before.csv /tmp/after.csv
+```
+
+Phase rows emitted: `step` (total), `update` (sum of system
+update durations), `commit` (single-threaded commit phase),
+`engBRF` (engine's render-frame build), `other` (residual).
+Sweep across 10k / 50k / 100k NPCs by default; override via
+`./rpg_stress_bench out.csv <npc1> <npc2> ...` for ad-hoc
+sweeps.
+
+The CSV columns are the same as every other bench; the `note`
+field carries `ns_per_entity` so a glance at the diff shows
+the per-entity cost change at each scale. A regression at one
+scale + a win at another is acceptable when the Pareto front
+moves the right way overall; the PR body must explain the
+trade-off.

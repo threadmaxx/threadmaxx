@@ -16,6 +16,8 @@ set(THREADMAXX_BENCHMARKS
     commit_path_bench
     migration_bench
     grain_sweep
+    # §3.10.4 batch 26 — Phase 8 gate: full-tick RPG-shaped stress
+    rpg_stress_bench
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})
