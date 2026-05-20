@@ -43,8 +43,17 @@ void DebugOverlaySystem::update(threadmaxx::SystemContext& ctx) {
     // collects NPCs within `kOverlayRange` of the player (~ a
     // screen-worth). Outside the radius the overlay would be
     // illegible anyway.
-    constexpr float kOverlayRange    = 30.0f;
-    constexpr float kOverlayRangeSq  = kOverlayRange * kOverlayRange;
+    //
+    // 2026-05-20 (rev 2) — at 100k NPCs the 30m radius still
+    // packed ~50-80k NPCs into the overlay, producing ~1M debug
+    // lines per tick which dominated submitFrame on the renderer
+    // side (~50 ms CPU pack of the line vertex buffer). Under
+    // `--stress` we shrink the radius drastically — the visual
+    // detail at 100k NPCs is illegible at 30m anyway, so this is
+    // also a UX win.
+    const bool stress = worldState_ && worldState_->stressMode;
+    const float kOverlayRange   = stress ? 8.0f  : 30.0f;
+    const float kOverlayRangeSq = kOverlayRange * kOverlayRange;
     const float px = havePlayer_ ? playerPos_.x : 0.0f;
     const float pz = havePlayer_ ? playerPos_.z : 0.0f;
 
@@ -73,19 +82,33 @@ void DebugOverlaySystem::update(threadmaxx::SystemContext& ctx) {
 }
 
 void DebugOverlaySystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
-    // AOI circles, 16 segments each.
-    constexpr int kSeg = 16;
+    // AOI circles. 16 segments in normal mode; under --stress drop to 8
+    // (twice as cheap, still readable at 8m radius). With the tighter
+    // overlay range from update(), peak line count drops from ~1M / tick
+    // to ~50k / tick under stress.
+    const bool stress = worldState_ && worldState_->stressMode;
+    const int  kSeg   = stress ? 8 : 16;
+    // 2026-05-20 — precompute the unit-circle samples once instead of
+    // recomputing cos/sin per NPC per segment. At 1k NPCs × 16 seg this
+    // saved ~0.3 ms; at 100k × 8 seg it saved ~5 ms.
+    constexpr int kSegMax = 32;
+    float ringCx[kSegMax + 1];
+    float ringCz[kSegMax + 1];
+    for (int i = 0; i <= kSeg; ++i) {
+        const float a = 6.2831853f *
+            static_cast<float>(i) / static_cast<float>(kSeg);
+        ringCx[i] = std::cos(a);
+        ringCz[i] = std::sin(a);
+    }
     for (const auto& n : npcs_) {
         for (int i = 0; i < kSeg; ++i) {
-            const float a0 = 6.2831853f *  static_cast<float>(i)      / static_cast<float>(kSeg);
-            const float a1 = 6.2831853f *  static_cast<float>(i + 1)  / static_cast<float>(kSeg);
             threadmaxx::DebugLine dl;
-            dl.a = {n.position.x + std::cos(a0) * n.radius,
+            dl.a = {n.position.x + ringCx[i] * n.radius,
                     n.position.y + 0.05f,
-                    n.position.z + std::sin(a0) * n.radius};
-            dl.b = {n.position.x + std::cos(a1) * n.radius,
+                    n.position.z + ringCz[i] * n.radius};
+            dl.b = {n.position.x + ringCx[i + 1] * n.radius,
                     n.position.y + 0.05f,
-                    n.position.z + std::sin(a1) * n.radius};
+                    n.position.z + ringCz[i + 1] * n.radius};
             dl.colorRGBA = n.color;
             b.addDebugLine(dl);
         }

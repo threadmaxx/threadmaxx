@@ -22,7 +22,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -141,6 +143,19 @@ struct VulkanRenderer::Impl {
         std::vector<std::int32_t>                                 scratchMeshIds;
         std::vector<std::vector<threadmaxx::InstanceLayoutEntry>> scratchBuckets;
         std::vector<bool>                                         scratchSkinned;
+
+        // 2026-05-20 — debug line/point vertex assembly used to happen
+        // inside recordCamera, allocating a fresh std::vector<float> per
+        // camera per frame and calling verts.insert(end(), {init_list})
+        // once per line endpoint (slow under high-line workloads — at
+        // 1M lines this dominated submitFrame at ~118 ms / tick).
+        // Now the assembly happens once in recordFrame (cameras share
+        // the buffer; the contents don't depend on the camera) with the
+        // backing storage living on PerFrame so capacity persists.
+        std::vector<float>     debugLineVerts;
+        std::vector<float>     debugPointVerts;
+        std::uint32_t          debugLineCount  = 0;
+        std::uint32_t          debugPointCount = 0;
     };
     std::vector<PerFrame> perFrame;
 
@@ -151,6 +166,22 @@ struct VulkanRenderer::Impl {
     std::uint32_t pendingHeight = 0;
 
     std::atomic<std::uint64_t> framesSubmitted = 0;
+
+    // 2026-05-20 — lightweight per-phase timing, summed across N frames
+    // and printed every kProfilePeriod frames. Throwaway diagnostic
+    // (active when env var THREADMAXX_VK_PROFILE=1 is set at runtime).
+    // Zero overhead in the disabled path — one cmov per submit branch.
+    bool             profileEnabled    = false;
+    std::uint64_t    profileFrameCount = 0;
+    std::uint64_t    profileSumWaitNs    = 0;
+    std::uint64_t    profileSumAcquireNs = 0;
+    std::uint64_t    profileSumRecordNs  = 0;
+    std::uint64_t    profileSumSubmitNs  = 0;
+    std::uint64_t    profileSumPresentNs = 0;
+    std::uint64_t    profileSumPackNs    = 0;
+    std::uint64_t    profileSumDrawCalls = 0;
+    std::uint64_t    profileSumInstances = 0;
+    static constexpr std::uint64_t kProfilePeriod = 120;
 
     // §3.11 batch 9b.3 — auto-detached subscription to the engine's
     // `AssetReloaded` channel. Filled in `initialize()`; the
@@ -223,6 +254,9 @@ VulkanRenderer::VulkanRenderer(threadmaxx::Engine* engine,
 VulkanRenderer::~VulkanRenderer() = default;
 
 bool VulkanRenderer::initialize() {
+    if (const char* env = std::getenv("THREADMAXX_VK_PROFILE")) {
+        impl_->profileEnabled = (env[0] != '\0' && env[0] != '0');
+    }
     if (!impl_->ctx.init(impl_->window, impl_->cfg.enableValidation)) {
         return false;
     }
@@ -461,6 +495,10 @@ const Mesh* VulkanRenderer::Impl::lookupMesh(std::int32_t meshId) const noexcept
 }
 
 void VulkanRenderer::submitFrame(const threadmaxx::RenderFrame& frame) {
+    using clk = std::chrono::steady_clock;
+    const bool prof = impl_->profileEnabled;
+    auto tStart = prof ? clk::now() : clk::time_point{};
+
     if (impl_->resizePending) {
         if (!impl_->recreateSwapchain()) return;
         impl_->resizePending = false;
@@ -484,6 +522,7 @@ void VulkanRenderer::submitFrame(const threadmaxx::RenderFrame& frame) {
         wi.pValues = &slot.waitTimelineValue;
         VK_CHECK(vkWaitSemaphores(impl_->ctx.device(), &wi, UINT64_MAX));
     }
+    auto tAfterWait = prof ? clk::now() : clk::time_point{};
 
     // Acquire the next swapchain image.
     std::uint32_t imageIndex = 0;
@@ -499,6 +538,7 @@ void VulkanRenderer::submitFrame(const threadmaxx::RenderFrame& frame) {
                      vkResultName(acq));
         return;
     }
+    auto tAfterAcquire = prof ? clk::now() : clk::time_point{};
 
     VK_CHECK(vkResetCommandBuffer(slot.cmd, 0));
     VkCommandBufferBeginInfo bi = {};
@@ -509,6 +549,7 @@ void VulkanRenderer::submitFrame(const threadmaxx::RenderFrame& frame) {
     impl_->recordFrame(slot.cmd, imageIndex, frame, impl_->perFrame[fi]);
 
     VK_CHECK(vkEndCommandBuffer(slot.cmd));
+    auto tAfterRecord = prof ? clk::now() : clk::time_point{};
 
     // Submit: wait on imageAvailable, signal renderFinished + bump timeline.
     const std::uint64_t signalValue = impl_->frames.bumpTimeline();
@@ -543,6 +584,7 @@ void VulkanRenderer::submitFrame(const threadmaxx::RenderFrame& frame) {
     submit.pSignalSemaphoreInfos = signalSIs;
 
     VK_CHECK(vkQueueSubmit2(impl_->ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE));
+    auto tAfterSubmit = prof ? clk::now() : clk::time_point{};
 
     // Present.
     VkSwapchainKHR sc = impl_->swapchain.handle();
@@ -563,6 +605,45 @@ void VulkanRenderer::submitFrame(const threadmaxx::RenderFrame& frame) {
 
     impl_->framesSubmitted.fetch_add(1, std::memory_order_relaxed);
     impl_->frameIndex = (fi + 1u) % impl_->frames.framesInFlight();
+
+    if (prof) {
+        auto tEnd = clk::now();
+        const auto ns = [](auto a, auto b) {
+            return static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count());
+        };
+        impl_->profileSumWaitNs    += ns(tStart,         tAfterWait);
+        impl_->profileSumAcquireNs += ns(tAfterWait,     tAfterAcquire);
+        impl_->profileSumRecordNs  += ns(tAfterAcquire,  tAfterRecord);
+        impl_->profileSumSubmitNs  += ns(tAfterRecord,   tAfterSubmit);
+        impl_->profileSumPresentNs += ns(tAfterSubmit,   tEnd);
+        impl_->profileFrameCount++;
+        if (impl_->profileFrameCount >= Impl::kProfilePeriod) {
+            const double n = static_cast<double>(impl_->profileFrameCount);
+            std::fprintf(stderr,
+                "[vk_prof] avg over %llu frames (ms): "
+                "wait=%.2f acq=%.2f rec=%.2f (pack=%.2f) sub=%.2f pres=%.2f "
+                "draws/f=%.1f insts/f=%.1f\n",
+                static_cast<unsigned long long>(impl_->profileFrameCount),
+                impl_->profileSumWaitNs    / n / 1.0e6,
+                impl_->profileSumAcquireNs / n / 1.0e6,
+                impl_->profileSumRecordNs  / n / 1.0e6,
+                impl_->profileSumPackNs    / n / 1.0e6,
+                impl_->profileSumSubmitNs  / n / 1.0e6,
+                impl_->profileSumPresentNs / n / 1.0e6,
+                impl_->profileSumDrawCalls / n,
+                impl_->profileSumInstances / n);
+            impl_->profileFrameCount = 0;
+            impl_->profileSumWaitNs    = 0;
+            impl_->profileSumAcquireNs = 0;
+            impl_->profileSumRecordNs  = 0;
+            impl_->profileSumSubmitNs  = 0;
+            impl_->profileSumPresentNs = 0;
+            impl_->profileSumPackNs    = 0;
+            impl_->profileSumDrawCalls = 0;
+            impl_->profileSumInstances = 0;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +841,9 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
     // ---- Multi-camera pass --------------------------------------------------
+    auto tPackStart = profileEnabled ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
+    std::uint64_t totalInstancesThisFrame = 0;
     if (frame.cameras.empty()) {
         // No cameras pushed by user systems → nothing to project. The
         // clear color above is the only visible output. This is the
@@ -875,11 +959,84 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
             std::memcpy(p, packed.data(), bytes);
             vkUnmapMemory(ctx.device(), pf.instanceMemory);
         }
+        totalInstancesThisFrame = static_cast<std::uint64_t>(packed.size());
+
+        std::uint64_t drawsThisFrame = 0;
+        // 2026-05-20 — build the debug line / point vertex buffers ONCE
+        // for the whole frame (cameras share the buffer; contents don't
+        // depend on the camera). Previously recordCamera rebuilt these
+        // per camera and used vector::insert(end(), {init_list}) per
+        // endpoint, which dominated submitFrame at high line counts.
+        pf.debugLineCount  = 0;
+        pf.debugPointCount = 0;
+        if (!frame.debugLines.empty()) {
+            const std::size_t nLines = frame.debugLines.size();
+            pf.debugLineVerts.resize(nLines * 14u);  // 2 endpoints × (3 pos + 4 col)
+            float* dst = pf.debugLineVerts.data();
+            for (std::size_t li = 0; li < nLines; ++li) {
+                const auto& l = frame.debugLines[li];
+                float col[4];
+                unpackRGBA(l.colorRGBA, col);
+                dst[ 0] = l.a.x; dst[ 1] = l.a.y; dst[ 2] = l.a.z;
+                dst[ 3] = col[0]; dst[ 4] = col[1]; dst[ 5] = col[2]; dst[ 6] = col[3];
+                dst[ 7] = l.b.x; dst[ 8] = l.b.y; dst[ 9] = l.b.z;
+                dst[10] = col[0]; dst[11] = col[1]; dst[12] = col[2]; dst[13] = col[3];
+                dst += 14;
+            }
+            const VkDeviceSize bytes =
+                static_cast<VkDeviceSize>(pf.debugLineVerts.size()) * sizeof(float);
+            ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                         pf.debugLineBuffer, pf.debugLineMemory,
+                         pf.debugLineCapacity);
+            void* p = nullptr;
+            VK_CHECK(vkMapMemory(ctx.device(), pf.debugLineMemory, 0, bytes, 0, &p));
+            std::memcpy(p, pf.debugLineVerts.data(), bytes);
+            vkUnmapMemory(ctx.device(), pf.debugLineMemory);
+            pf.debugLineCount = static_cast<std::uint32_t>(nLines);
+        }
+        if (!frame.debugPoints.empty()) {
+            const std::size_t nPts = frame.debugPoints.size();
+            pf.debugPointVerts.resize(nPts * 8u);
+            float* dst = pf.debugPointVerts.data();
+            for (std::size_t pi = 0; pi < nPts; ++pi) {
+                const auto& pt = frame.debugPoints[pi];
+                float col[4];
+                unpackRGBA(pt.colorRGBA, col);
+                dst[0] = pt.position.x; dst[1] = pt.position.y; dst[2] = pt.position.z;
+                dst[3] = col[0]; dst[4] = col[1]; dst[5] = col[2]; dst[6] = col[3];
+                dst[7] = pt.pixelSize;
+                dst += 8;
+            }
+            const VkDeviceSize bytes =
+                static_cast<VkDeviceSize>(pf.debugPointVerts.size()) * sizeof(float);
+            ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                         pf.debugPointBuffer, pf.debugPointMemory,
+                         pf.debugPointCapacity);
+            void* p = nullptr;
+            VK_CHECK(vkMapMemory(ctx.device(), pf.debugPointMemory, 0, bytes, 0, &p));
+            std::memcpy(p, pf.debugPointVerts.data(), bytes);
+            vkUnmapMemory(ctx.device(), pf.debugPointMemory);
+            pf.debugPointCount = static_cast<std::uint32_t>(nPts);
+        }
+
+        if (profileEnabled) {
+            auto tPackEnd = std::chrono::steady_clock::now();
+            profileSumPackNs += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    tPackEnd - tPackStart).count());
+        }
 
         for (std::size_t i = 0; i < cameraCount; ++i) {
             recordCamera(cmd, frame.cameras[i],
                          static_cast<std::uint32_t>(i),
                          frame, pf, slices[i]);
+            for (const auto& g : slices[i].groups) {
+                if (g.instanceCount > 0) ++drawsThisFrame;
+            }
+        }
+        if (profileEnabled) {
+            profileSumDrawCalls += drawsThisFrame;
+            profileSumInstances += totalInstancesThisFrame;
         }
     }
 
@@ -1046,26 +1203,9 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
     }
 
     // ---- Debug lines / points (single shared pass) --------------------------
-    if (!frame.debugLines.empty()) {
-        std::vector<float> verts;
-        verts.reserve(frame.debugLines.size() * 14);  // 2 endpoints × (3 pos + 4 col)
-        for (const auto& l : frame.debugLines) {
-            float col[4];
-            unpackRGBA(l.colorRGBA, col);
-            verts.insert(verts.end(),
-                {l.a.x, l.a.y, l.a.z, col[0], col[1], col[2], col[3]});
-            verts.insert(verts.end(),
-                {l.b.x, l.b.y, l.b.z, col[0], col[1], col[2], col[3]});
-        }
-        const VkDeviceSize bytes = verts.size() * sizeof(float);
-        ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                     pf.debugLineBuffer, pf.debugLineMemory,
-                     pf.debugLineCapacity);
-        void* p = nullptr;
-        VK_CHECK(vkMapMemory(ctx.device(), pf.debugLineMemory, 0, bytes, 0, &p));
-        std::memcpy(p, verts.data(), bytes);
-        vkUnmapMemory(ctx.device(), pf.debugLineMemory);
-
+    // 2026-05-20 — CPU vertex packing + upload happens once in
+    // recordFrame; here we just bind + draw against the shared buffer.
+    if (pf.debugLineCount > 0) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.debugLinePipe());
         DebugPushConstants pc = {};
         std::memcpy(pc.viewProj, vp, sizeof(vp));
@@ -1073,28 +1213,10 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
                            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
         VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &pf.debugLineBuffer, &off);
-        vkCmdDraw(cmd, static_cast<std::uint32_t>(frame.debugLines.size()) * 2, 1, 0, 0);
+        vkCmdDraw(cmd, pf.debugLineCount * 2u, 1, 0, 0);
     }
 
-    if (!frame.debugPoints.empty()) {
-        std::vector<float> verts;
-        verts.reserve(frame.debugPoints.size() * 8);
-        for (const auto& pt : frame.debugPoints) {
-            float col[4];
-            unpackRGBA(pt.colorRGBA, col);
-            verts.insert(verts.end(),
-                {pt.position.x, pt.position.y, pt.position.z,
-                 col[0], col[1], col[2], col[3], pt.pixelSize});
-        }
-        const VkDeviceSize bytes = verts.size() * sizeof(float);
-        ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                     pf.debugPointBuffer, pf.debugPointMemory,
-                     pf.debugPointCapacity);
-        void* p = nullptr;
-        VK_CHECK(vkMapMemory(ctx.device(), pf.debugPointMemory, 0, bytes, 0, &p));
-        std::memcpy(p, verts.data(), bytes);
-        vkUnmapMemory(ctx.device(), pf.debugPointMemory);
-
+    if (pf.debugPointCount > 0) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.debugPointPipe());
         DebugPushConstants pc = {};
         std::memcpy(pc.viewProj, vp, sizeof(vp));
@@ -1102,7 +1224,7 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
                            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
         VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &pf.debugPointBuffer, &off);
-        vkCmdDraw(cmd, static_cast<std::uint32_t>(frame.debugPoints.size()), 1, 0, 0);
+        vkCmdDraw(cmd, pf.debugPointCount, 1, 0, 0);
     }
 }
 
