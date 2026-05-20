@@ -34,11 +34,11 @@
 // every other §3.9 bench.
 
 #include "common.hpp"
+#include "rpg_systems.hpp"
 #include "scene_workloads.hpp"
 
 #include <threadmaxx/threadmaxx.hpp>
 
-#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -49,105 +49,6 @@ namespace {
 
 using namespace threadmaxx;
 using namespace threadmaxx_bench;
-
-// Parallel chunk-walking integrator. Reads (Transform, Velocity);
-// writes Transform via the command buffer. Mirrors MovementSystem in
-// `examples/rpg_demo`.
-class MovementSystem : public ISystem {
-public:
-    const char* name() const noexcept override { return "movement"; }
-    ComponentSet reads()  const noexcept override {
-        return ComponentSet{Component::Transform}
-             | ComponentSet{Component::Velocity};
-    }
-    ComponentSet writes() const noexcept override {
-        return ComponentSet{Component::Transform};
-    }
-    void update(SystemContext& ctx) override {
-        const float dt = static_cast<float>(ctx.dt());
-        forEachChunk<Transform, Velocity>(ctx,
-            [dt](std::span<const EntityHandle> es,
-                 std::span<const Transform> trs,
-                 std::span<const Velocity> vels,
-                 CommandBuffer& cb) {
-                for (std::size_t i = 0; i < es.size(); ++i) {
-                    Transform t = trs[i];
-                    t.position.x += vels[i].linear.x * dt;
-                    t.position.y += vels[i].linear.y * dt;
-                    t.position.z += vels[i].linear.z * dt;
-                    cb.setTransform(es[i], t);
-                }
-            });
-    }
-};
-
-// `ctx.single` serial body that walks every Faction-bearing chunk
-// row-by-row. Mirrors NPCBrainSystem's serial RNG-bound path. Touches
-// data but writes nothing — the cost is the iteration shape, not the
-// commit churn (commit cost is already exercised by `commit_path_bench`).
-class BrainSystem : public ISystem {
-public:
-    const char* name() const noexcept override { return "brain"; }
-    ComponentSet reads() const noexcept override {
-        return ComponentSet{Component::Transform}
-             | ComponentSet{Component::Faction};
-    }
-    ComponentSet writes() const noexcept override { return ComponentSet::none(); }
-    void update(SystemContext& ctx) override {
-        ctx.single([this, &ctx](Range, CommandBuffer&) {
-            std::uint64_t sum = 0;
-            const auto chunks = ctx.worldView().chunks();
-            for (const auto* c : chunks) {
-                if (c == nullptr) continue;
-                if (!c->mask.has(Component::Faction)) continue;
-                if (c->mask.has(Component::DisabledTag)) continue;
-                const auto n = c->entities.size();
-                for (std::size_t i = 0; i < n; ++i) {
-                    // Fake brain work proportional to NPC count. The
-                    // body is intentionally cheap; what we're
-                    // measuring is the serial iteration overhead at
-                    // 10k+ rows, not the cost of an arbitrary
-                    // computation.
-                    sum += c->factions[i].id;
-                    sum += static_cast<std::uint64_t>(
-                        c->transforms[i].position.x * 100.0f);
-                }
-            }
-            // Defeat dead-code elimination.
-            sink_.store(sum, std::memory_order_relaxed);
-        });
-    }
-private:
-    std::atomic<std::uint64_t> sink_{0};
-};
-
-// Parallel chunk-walking accumulator. Mirrors a render-prep pass: read
-// every Transform-bearing chunk, accumulate per-chunk results without
-// writing anything. The bench measures iteration framework cost, not
-// the per-entity body (the body is intentionally cheap).
-class RenderPrepSystem : public ISystem {
-public:
-    const char* name() const noexcept override { return "renderprep"; }
-    ComponentSet reads() const noexcept override {
-        return ComponentSet{Component::Transform};
-    }
-    ComponentSet writes() const noexcept override { return ComponentSet::none(); }
-    void update(SystemContext& ctx) override {
-        forEachChunk<Transform>(ctx,
-            [this](std::span<const EntityHandle> es,
-                   std::span<const Transform> trs,
-                   CommandBuffer&) {
-                float acc = 0.0f;
-                for (std::size_t i = 0; i < es.size(); ++i) {
-                    acc += trs[i].position.x + trs[i].position.z;
-                }
-                sink_.fetch_add(static_cast<std::uint64_t>(acc),
-                                std::memory_order_relaxed);
-            });
-    }
-private:
-    std::atomic<std::uint64_t> sink_{0};
-};
 
 // Per-tick snapshot. Captures the engine-stats fields the rpg_demo HUD
 // reports + the sum of per-system update durations.

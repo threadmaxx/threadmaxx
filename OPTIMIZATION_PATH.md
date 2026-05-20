@@ -83,27 +83,43 @@ evidence**, not synthetic gates alone.
 ### 3.1 Phase 8 sequencing
 
 ```
-B26 (gate) → B27 (profile sweep) → {B28, B29, B30, B31} (parallel)
-                                     ↓
-                                  B32 (hygiene)
-                                     ↓
-                                  B33 (docs polish)
-                                     ↓
-                                  v1.2 release
+B26 (gate) ✅ → B27 (profile) ✅ → B28 (forEachChunk sub-job) → B29 (parallel pre-hash)
+                                                                   ↓
+                                                                 B30 (per-arch hash, IF C2 underperforms)
+                                                                   ↓
+                                                                 B32 (sanitizer + soak)
+                                                                   ↓
+                                                                 B33 (docs polish + v1.2 release)
 ```
 
-**B26 is the gate.** No subsequent batch ships without a
-before/after row produced by B26 infrastructure or one of the
-existing `bench/` binaries.
+**B26 is the gate.** ✅ landed 2026-05-20. No subsequent batch
+ships without a before/after row from `rpg_stress_bench`.
 
-**B27 is the diagnostic.** It identifies the top 3 inefficiencies
-in the new workloads but does **not** optimize anything. Its output
-is the input to B28–B31.
+**B27 is the diagnostic.** ✅ landed 2026-05-20. Output:
+`bench/profile_report.md`. Identified three concrete optimization
+candidates with bench gates; sequencing below reflects them.
 
-**B28–B31** are candidate optimizations. Each one ships only if
-B27 evidence (or pre-existing batch-16 bench data) justifies the
-add. Any of them may drop out of the plan if measurement says they
-don't matter.
+**B28** (C1 in the profile report) — sub-job dispatch in
+`forEachChunk` for large chunks. Low risk, ~3-4 ms/tick win at 100k
+entities. The clean first move.
+
+**B29** (C2 in the profile report) — parallel pre-hash + serial
+mix-in. Medium risk (byte-identity proof of the hash), ~6 ms/tick
+win at 100k entities.
+
+**B30** (C3 in the profile report) — per-archetype hash rollup.
+**Gated on B29.** Only ships if C2 underperforms its target; the
+contract amendment (re-recorded reference hashes for any external
+client) is real user-facing churn and v1.x should not pay it
+without clear evidence-driven need.
+
+**B31** (wave-scheduler micro-opts) — **downgraded by B27.** The
+profile shows wave-rebuild + per-wave dispatch overhead is below
+1% of step time at 100k entities. Skip unless a future workload
+exposes it.
+
+**B32 + B33** unchanged. Both ship unconditionally before the v1.2
+tag.
 
 ### 3.2 Batch 26 — Stress-scale benchmark harness (gate)  ✅ landed 2026-05-20
 
@@ -203,213 +219,235 @@ the gate every candidate must clear.
 - Full ctest **108/108** on both trees (no behavior change —
   the new workload + bench are additive under `bench/`).
 
-### 3.3 Batch 27 — Hot-path profile sweep (diagnostic)
+### 3.3 Batch 27 — Hot-path profile sweep (diagnostic)  ✅ landed 2026-05-20
 
 **Goal:** identify the top inefficiencies in the B26 workload
-without optimizing yet. The output is the input to B28–B31.
+without optimizing yet. The output feeds B28+.
+
+**As-shipped 2026-05-20:**
+
+- `bench/rpg_systems.hpp` — shared system definitions
+  (`MovementSystem`, `BrainSystem`, `RenderPrepSystem`) factored
+  from `rpg_stress_bench.cpp` so both the production gate (B26)
+  and the diagnostic probe (B27) link the same code.
+- `bench/rpg_stress_probe.cpp` — three diagnostic passes over the
+  RpgStress workload:
+    - **Pass A** per-system breakdown
+      (`lastUpdateSeconds` / `waitSeconds` / `peakQueueDepth` /
+      `commandsLastStep` for each system at each scale)
+    - **Pass B** system-mix ablation (each system selectively
+      disabled at 100k entities, delta vs. baseline)
+    - **Pass C** commit cost as a function of command volume
+      (movement-only at 1k → 200k NPCs)
+- `bench/profile_report.md` — the **deliverable**. Names three
+  inefficiencies and three candidate optimizations (C1/C2/C3),
+  each with a hypothesis, bench gate, expected delta, risk
+  assessment, and effort estimate.
+- `bench/CMakeLists.txt` — registers `rpg_stress_probe` in
+  `THREADMAXX_BENCHMARKS`.
+
+**Top three inefficiencies** (see report for the data behind each):
+
+1. **Single-threaded commit hashing dominates at 100k cmds/tick.**
+   ~7 ms / tick of the 9.8 ms commit phase is FNV-1a-64 byte-mix
+   on the sim thread; payload-size-proportional (~70 ns/cmd for
+   48-byte CmdSetTransform).
+2. **`forEachChunk` load imbalance.** Movement is 99.9% wait-bound
+   (peakQueueDepth = 1 at 100k); the NPC chunk (95% of entities)
+   is one indivisible job → one worker. Workers 2-4 sit idle.
+   ~3-4 ms / tick recoverable by sub-job splitting.
+3. **`applyCommandImpl` storage write.** ~28 ns/cmd × 100k =
+   2.8 ms / tick on the serial path. Below the headline items but
+   on the same commit budget.
+
+**Three candidate optimizations** (sequenced into B28/B29/B30):
+
+- **C1 — Sub-job dispatch in `forEachChunk` for large chunks.**
+  Hypothesis: movement update 5.09 → ~1.3 ms (4× on 4 workers);
+  step drops ~3-4 ms. Risk: moderate (additive header change).
+  → **B28.**
+- **C2 — Parallel pre-hash + serial mix-in.** Hypothesis: commit
+  9.8 → ~3.5 ms; step drops ~6 ms. Risk: high (byte-identity
+  proof). `commit_hash_test.cpp` must remain byte-identical. → **B29.**
+- **C3 — Per-archetype hash rollup.** Hypothesis: commit 9.8 →
+  ~1 ms; step drops ~9 ms. Risk: highest (determinism contract
+  change → re-recorded reference hashes for any external client).
+  → **B30, gated on B29 underperforming.**
+
+**B31 (wave-scheduler micro-opts) downgraded.** The probe shows
+wave dispatch is in the noise (< 1% of step time at 100k entities).
+Skipped unless a future workload exposes it.
+
+**Verification:**
+- `bench/rpg_stress_probe` builds clean on both `build/` and
+  `build-werror/`.
+- Full ctest **108/108** on both trees (no engine changes — pure
+  diagnostic addition).
+
+### 3.4 Batch 28 — Sub-job dispatch in `forEachChunk` (C1)
+
+**Locked in by B27.** Attacks the #2 inefficiency (`forEachChunk`
+load imbalance on large chunks). Greenlit unconditionally.
+
+**Hypothesis:** the NPC chunk at 100k rows is one indivisible job
+under today's `forEachChunk` (one job per matching chunk). When a
+single chunk dwarfs all others, parallelism collapses to 1× the
+worker count — only the worker that grabbed it does any work.
+Movement spends 99.9% of its update window in the latch wait
+(`waitSeconds / lastUpdateSeconds = 5.083 / 5.090`).
 
 **Scope:**
 
-- Run B26's `rpg_stress_bench` with `perf record` (or
-  equivalent platform profiler). Capture flame graphs for the
-  10k / 50k / 100k rows.
-- For each entity-count row, attribute time to:
-    - `update` (system update bodies) — chunk-walk overhead vs.
-      callable-body work
-    - `commit` (single-threaded path) — variant dispatch vs.
-      `applyCommandImpl` vs. hash mix
-    - `wave-rebuild` — `rebuildWaves` invocation cost +
-      `WorldView` rebuild cost between waves
-    - `pre/postStep` — serial commit churn
-    - `engBRF` (engine's render-frame build) — chunk iteration +
-      `RenderInstance` packing
-    - `events` — typed channel drain cost
-- Output: a `bench/profile_report.md` (a one-shot doc, not a
-  CSV) describing the top 3 inefficiencies + 3 candidate
-  optimizations with proposed bench gates for each.
+- Extend `Query.hpp::forEachChunk<Required...>` with a
+  `kSubJobThreshold` (proposed default: 1024 rows). When a
+  matching chunk has > threshold rows, dispatch multiple sub-jobs
+  per chunk, each owning a contiguous row range. Sub-job count
+  per chunk = `ceil(rowCount / chunkSubJobRowBudget)` where the
+  row budget is tuned per `JobSystem::workerCount` and the
+  `preferredGrain` hint.
+- Callback receives a sub-span of the chunk's entity / component
+  spans rather than the full chunk — same contiguous-storage
+  guarantee, narrower range. The documented invariant
+  (`es.size() == component_spans[k].size()`) holds.
+- Pure addition to `Query.hpp`. No public-API rename / removal.
 
-**No code changes.** Pure measurement + reporting.
+**Test gate:**
+- `tests/foreach_chunk_test.cpp` extended to cover sub-job
+  dispatch (large chunk forces split → callback receives
+  partial spans summing to full chunk size).
+- `commit_hash_test`, `sharded_commit_test` byte-identical.
+- All other chunk-iteration tests pass unchanged.
 
 **Acceptance:**
-- The report names the top 3 inefficiencies by ns/tick at 100k
-  entities.
-- Each candidate optimization names: (a) the hypothesis, (b) the
-  bench that would gate it, (c) the expected delta.
-- The report is reviewed against principle #1 (must reduce
-  branches / allocations / lookups / locks / redundant
-  traversals).
+- `bench/rpg_stress_bench` 100k row: `update` mean drops by
+  ≥ 3 ms; `step` mean drops by ≥ 3 ms.
+- `bench/chunk_iter_bench` (AI workload): no regression beyond
+  5% on the small-chunk paths.
+- `bench/foreach_bench`: no regression on small-chunk path.
 
-**Effort:** ~4 hours (mostly profiler tooling + write-up).
+**Effort:** ~2-3 days. The work is in `Query.hpp`; the existing
+test coverage catches regressions immediately.
 
-**Why this is the diagnostic:** every batch in §3.9 shipped with
-a specific hypothesis ("variant size dominates command-buffer
-memory"). Without a fresh profile, B28+ would be guessing. The
-B27 report is the **named target** for each later batch.
+### 3.5 Batch 29 — Parallel pre-hash + serial mix-in (C2)
 
-### 3.4 Batch 28 — WorldView lifetime reuse (deferred from §3.6.4)
+**Locked in by B27.** Attacks the #1 inefficiency (single-threaded
+commit hash). Greenlit, but the byte-identity proof is the
+load-bearing risk — if the new path can't reproduce the existing
+hash byte-for-byte, B29 doesn't ship and the work flows into B30
+instead.
 
-**Conditional batch.** Ships **only if** B27 shows
-`WorldView` rebuild + `rebuildWaves` overhead > 2% of step time
-at 100k entities.
+**Hypothesis:** the FNV-1a-64 byte-mix per command (~70 ns/cmd)
+runs serially on the sim thread because the recurrence
+`h' = (h XOR b) * P` is sequential. But each command's payload
+bytes are independent of every other command's bytes. A pre-pass
+on worker threads can compute, per command, a precomputed-mix
+value `H_cmd` that the serial commit can fold into the running
+hash with one FNV-1a step (~6 ns/cmd) instead of ~70.
 
-**Hypothesis:** `WorldView` is rebuilt between every wave (today,
-~4–6 waves/tick in the RPG-stress workload). At 100k entities + 5
-archetypes, each rebuild is ~10µs × 6 = 60µs/tick. If consistent
-across ticks, that's ~0.36% of a 16.7ms frame — likely below
-threshold. But if archetype churn (spawn/destroy mid-tick) forces
-extra rebuilds, it climbs.
+The math: with FNV-1a's recurrence, if you precompute powers
+`P^n mod 2^64` and per-command "tail constants" via Horner-form
+batching, the parallel-then-mix-in equivalence holds. The
+batch-tail mix can fold an N-byte block in `~ceil(log N)` 64-bit
+multiplies serially, vs. N steps in the naive form.
+
+**Scope:**
+
+- New `src/CommitHashBatching.hpp` / `.cpp` — pure-function
+  helpers for `precomputeMix(byte_span, &H_cmd)` and
+  `foldInto(running_hash, H_cmd)`.
+- `EngineImpl::commitBuffer` precomputes `H_cmd` for each command
+  in a `parallelFor` over the variant stream before applying
+  them. The commit then applies serially (preserving submission
+  order for `applyCommandImpl`) and folds the precomputed
+  `H_cmd` into `stats.commitHash` per command.
+- `Config::commitHashBatching = true` is the default; setting
+  `false` falls back to today's serial byte-mix.
+- The precompute pass writes to a per-engine arena reused across
+  ticks (zero allocations steady state).
+
+**Test gate:**
+- `commit_hash_test.cpp` byte-identical golden. **This is THE
+  load-bearing test.** Any reordering of the byte-mix produces a
+  different hash and the test catches it. No B29 PR lands without
+  this passing first.
+- `sharded_commit_test.cpp` byte-identical golden.
+- New `tests/commit_hash_batching_test.cpp` exhaustively
+  cross-validates `precomputeMix + foldInto` against the naive
+  byte-by-byte FNV-1a on random byte sequences (length 1 to
+  4096). Property-based test with seeded fuzzer.
+
+**Acceptance:**
+- `bench/rpg_stress_bench` 100k row: `commit` mean drops by
+  ≥ 5 ms.
+- `bench/commit_path_bench`: setTransform single-threaded
+  ns/cmd drops by ≥ 50%.
+- `commit_hash_test` passes byte-for-byte against the
+  pre-batch-29 reference goldens.
+
+**Effort:** ~1-2 weeks, most of the time in the byte-identity
+proof + the new property-based test.
+
+### 3.6 Batch 30 — Per-archetype hash rollup (C3)
+
+**Gated on B29.** Ships **only if** B29 underperforms its target
+(<50% reduction in commit ns/cmd) **and** the workload demands a
+v1.x speedup before v1.3.
+
+**Hypothesis:** the strongest determinism guarantee
+threadmaxx ships today is "byte-identical hash across runs given
+the same command stream." If that's loosened to "byte-identical
+hash across runs given the same final per-archetype state," the
+per-command hash mix disappears entirely — the commit hash becomes
+a function of N_archetypes per tick instead of N_commands.
+
+Estimated step at 100k: ~6-7 ms (commit drops from 9.8 → ~1 ms).
+
+**Contract amendment:** the hash semantics weaken. Any external
+client that has recorded reference hashes (replay, lockstep,
+network diff) MUST re-record. The new contract is documented as
+"sufficient for run-vs-run reproducibility detection."
 
 **Scope (if greenlit):**
 
-- Add `EngineImpl::worldViewDirty_` (atomic bool). Set on commit
-  paths that grow / shrink archetypes (the swap-pop + the
-  migrate-create branches in `ArchetypeTable`).
-- `worldView()` accessor reuses the cached view when dirty == false;
-  rebuilds only on dirty == true. The rebuild itself stays cheap.
-- Per-tick stats: `EngineStats::worldViewRebuildCount` (was
-  implicit before; surface for measurement).
+- Per-archetype-chunk running hash, updated incrementally during
+  commit.
+- New `commit_hash_test` goldens, generated once.
+- Migration doc — `doc/migration_v1_2_to_v1_3.md` — describing
+  the contract change for clients with recorded hashes.
+- `Config::legacyCommitHash = true` opt-out to preserve the v1.x
+  semantics for a transition period (one MINOR cycle per the
+  version.hpp deprecation policy).
 
 **Test gate:**
-- All existing tests pass byte-for-byte (`commit_hash_test`,
-  `sharded_commit_test`, `world_view_test`).
-- New `tests/world_view_lifetime_test.cpp` asserts:
-    - Wave-to-wave reuse when no commits touched archetype
-      structure.
-    - Rebuild on the first wave after a spawn-into-new-archetype.
-    - Rebuild on the first wave after a destroy that emptied a
-      chunk.
+- New `tests/archetype_hash_determinism_test.cpp`: same input →
+  same hash across runs and machines (the new contract).
+- Existing `commit_hash_test` updated with new goldens; old
+  goldens captured in `tests/v1_2_legacy_commit_hash_test.cpp`
+  exercising the `legacyCommitHash = true` opt-out.
 
 **Acceptance:**
-- `worldViewRebuildCount` drops by ≥ 50% on the RpgStress
-  workload across 300 ticks at 100k entities.
-- Total step time drops by at least the expected delta from B27.
-- No regressions in any existing bench (chunk_iter, commit_path,
-  migration).
+- `bench/rpg_stress_bench` 100k row: `commit` mean drops by
+  ≥ 7 ms.
+- `bench/commit_path_bench`: setTransform ns/cmd drops by
+  ≥ 80%.
+- Migration doc published.
 
-**Effort:** ~1 day if greenlit, including the test.
+**Effort:** ~2 weeks. Roughly half the time is the legacy-opt-out
+plumbing + doc writing.
 
-### 3.5 Batch 29 — Per-chunk record-time command buffers
-       (deferred from §3.6.4)
+### 3.7 Batch 31 — Wave-scheduler micro-opts (DOWNGRADED)
 
-**Conditional batch.** Ships **only if** B27 shows
-`CommandBuffer::record` + commit-time classifier > 5% of step
-time at 100k entities, AND the sharded commit path is being used
-(otherwise the classifier doesn't exist).
+**Skipped by B27 evidence.** The profile shows wave-rebuild +
+per-wave dispatch is below 1% of step time at 100k entities. The
+candidate optimization (compile-time-friendly wave dispatch via
+pre-baked per-wave system index lists) would yield single-digit
+percent of step time at the very most, against the C1+C2 wins
+of 60%+.
 
-**Hypothesis:** the sharded commit path's classifier pass
-(`commitBuffersSharded` Pass A + Pass B) walks every command
-twice. Record-time routing would skip the classifier entirely.
-
-**Critical caveat:** `singleThreadedCommit = true` is the default
-and is faster than sharded on every measured workload (per
-§3.6.3 batch 13c, §3.10.1 batch 21). If B27 shows the
-single-threaded path is the dominant cost (likely), this batch
-**does not ship**. It exists only as a hedge against a future
-workload where sharded becomes a real win.
-
-**Scope (if greenlit):**
-
-- `CommandBuffer` gains a per-chunk-bin internal layout: instead
-  of a single `std::vector<Command>`, hold
-  `std::vector<ChunkBin>` keyed by destination archetype index.
-- Recording API stays bit-for-bit identical from the caller's
-  perspective; the routing is internal.
-- `commitBuffersSharded` skips Pass A + Pass B; jumps straight
-  to Pass C (parallel apply).
-- Determinism: each chunk-bin still applies in submission order.
-  Cross-chunk commands stay on the sim thread (today's "global
-  lane" fallback). The hash function is unchanged.
-
-**Test gate:**
-- `commit_hash_test` and `sharded_commit_test` byte-identical
-  golden.
-- New `tests/per_chunk_recording_test.cpp` asserts intra-bin
-  submission order, cross-bin independence, and the global-lane
-  fallback for mask-toggling commands.
-
-**Acceptance:**
-- Sharded commit on B26's RpgStress workload at 100k entities
-  beats single-threaded commit by ≥ 20% across all variants.
-- (Otherwise the batch doesn't ship; defer back to §3.6.4.)
-
-**Effort:** ~1 week if greenlit. The recording API stays
-backward-compatible; the work is in `CommandBuffer.cpp` +
-`EngineImpl::commitBuffersSharded`.
-
-### 3.6 Batch 30 — Deterministic parallel `ctx.single`
-
-**Conditional batch.** Ships **only if** B27 shows
-`ctx.single`-bodied systems > 30% of update time at 100k
-entities. Likely candidates: NPC brain bodies that use a
-shared RNG.
-
-**Hypothesis:** the rpg_demo's NPCBrainSystem is serial via
-`ctx.single` because `std::mt19937` isn't thread-safe. At 100k
-entities × 10% NPCs = 10k serial brain bodies / tick. If each
-body is ~1µs, that's 10ms — dominating the 11.27ms `update`
-phase we measured.
-
-**Scope (if greenlit):**
-
-- `SystemContext::parallelForWithRng<Rng>(count, grainSize,
-  std::span<Rng> rngsPerWorker, callable)` — new overload that
-  hands each worker its own RNG sub-stream.
-- Sub-stream contract: the engine pre-seeds N worker RNGs from
-  a single master seed. Each worker's RNG is **deterministic
-  conditional on worker count + grain + master seed**.
-- Caveat: this is **NOT bit-identical determinism** under
-  changing worker count. Game code that needs strict
-  determinism (replay, networked sims) must pin worker count
-  or use `Config::deterministic = true` + the existing
-  `ctx.single` path.
-- Documented as the "fast but loosely deterministic" path.
-
-**Test gate:**
-- New `tests/parallel_rng_test.cpp` asserts:
-    - Same seed + same worker count → identical results across
-      runs.
-    - Different worker counts produce different results (this
-      is **expected** — documented contract).
-    - The existing `commit_hash_test` runs the strict-determinism
-      path; it does **not** use the new API.
-
-**Acceptance:**
-- NPCBrain-like serial bodies drop by ≥ 4× on a 4-worker
-  machine.
-- Documented as opt-in / non-strict-determinism.
-
-**Effort:** ~1 week if greenlit. The risk surface is the
-documented determinism contract; implementation is small.
-
-### 3.7 Batch 31 — Wave-scheduler micro-opts
-
-**Conditional batch.** Ships **only if** B27 shows
-`rebuildWaves` or per-wave dispatch overhead > 1% of step time.
-
-**Hypothesis:** at 12+ systems × 5+ waves, the wave-loop in
-`EngineImpl::step` does N system-pointer derefs + dispatches per
-tick. If the systems are tiny (`ctx.single` writes only), the
-loop overhead is meaningful.
-
-**Scope (if greenlit):**
-
-- Compile-time-friendly wave dispatch: pre-bake the per-wave
-  system index lists in `rebuildWaves`; the `step()` loop
-  iterates a tight `std::span<const std::uint8_t>` per wave.
-- Hot loop avoids the `ISystem*` indirection for the simple
-  "is this system in this wave" check.
-
-**Test gate:**
-- `commit_hash_test`, `sharded_commit_test`, `task_graph_test`
-  all byte-identical.
-- New `tests/wave_dispatch_bench.cpp` (a bench, not a test)
-  measures the per-tick wave dispatch overhead.
-
-**Acceptance:**
-- B26's `step` time drops by the expected delta from B27 (likely
-  small — single-digit %).
-
-**Effort:** ~2 days if greenlit.
+**Re-eligible** if a future workload (multi-system DAG with 20+
+systems and 8+ waves) exposes the dispatch cost. Until then,
+parked. Note retained in `OPTIMIZATION_PATH.md` for traceability
+but no work scheduled.
 
 ### 3.8 Batch 32 — Sanitizer + soak hygiene pass
 
@@ -486,20 +524,21 @@ additions. Inventory after B26:
 
 | Binary                  | Purpose                                              | Gate for |
 |-------------------------|------------------------------------------------------|----------|
-| `commit_bench`          | Single vs sharded commit, broad sweep                | B29      |
-| `commit_path_bench`     | Per-variant commit cost on Churn                     | B29      |
+| `commit_bench`          | Single vs sharded commit, broad sweep                | B29, B30 |
+| `commit_path_bench`     | Per-variant commit cost on Churn                     | B29, B30 |
 | `event_channel_bench`   | Lock-free emit throughput                            | —        |
 | `hierarchy_bench`       | HierarchySystem resolution cost                      | —        |
 | `cull_bench`            | cullByFrustum items × cameras matrix                 | —        |
-| `foreach_bench`         | forEachWith / Cached / Chunk sweep                   | —        |
-| `chunk_iter_bench`      | Iteration paths on canonical workloads               | B28, B31 |
+| `foreach_bench`         | forEachWith / Cached / Chunk sweep                   | B28      |
+| `chunk_iter_bench`      | Iteration paths on canonical workloads               | B28      |
 | `migration_bench`       | Per-archetype-pair migration                         | —        |
-| `grain_sweep`           | preferredGrain sweep                                 | B31      |
-| `job_stealing_bench`    | Worker steal-ratio sweep                             | B30      |
+| `grain_sweep`           | preferredGrain sweep                                 | —        |
+| `job_stealing_bench`    | Worker steal-ratio sweep                             | —        |
 | `pack_instances_bench`  | InstanceBufferLayout::packInstances throughput       | —        |
 | `resource_handle_bench` | Refcount churn under contention                      | —        |
 | `simd_kernels`          | Sibling SIMD library benches                         | —        |
 | **`rpg_stress_bench`**  | **B26 addition** — RPG-shaped 100k-entity tick      | **all**  |
+| **`rpg_stress_probe`**  | **B27 addition** — Per-system / ablation / cmd-vol  | —        |
 
 **Output convention:** every bench writes CSV with `BenchRow`
 columns (label, workload, entities, workers, grain, mean_ns,

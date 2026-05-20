@@ -18,6 +18,8 @@ set(THREADMAXX_BENCHMARKS
     grain_sweep
     # §3.10.4 batch 26 — Phase 8 gate: full-tick RPG-shaped stress
     rpg_stress_bench
+    # §3.10.4 batch 27 — Phase 8 diagnostic probe (per-system / ablation / cmd-volume)
+    rpg_stress_probe
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})
