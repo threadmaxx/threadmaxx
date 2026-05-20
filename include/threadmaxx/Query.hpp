@@ -204,7 +204,6 @@ template <typename... Components, typename F>
 void forEachWith(SystemContext& ctx, F&& fn, std::uint32_t /*grain*/ = 0) {
     static_assert(sizeof...(Components) > 0,
                   "forEachWith requires at least one required Component");
-    const auto& world = ctx.world();
     constexpr ComponentSet required = detail::requiredMask<Components...>();
 
     const auto chunks = ctx.worldView().chunks();
@@ -371,6 +370,48 @@ void forEachWithCached(SystemContext& ctx, const MaskCache& cache,
         });
 }
 
+/// §3.10.4 batch 28 — Row threshold above which `forEachChunk` splits a
+/// matching chunk into multiple sub-jobs. Below the threshold a chunk
+/// stays a single job (the pre-batch-28 behavior). Above it, the chunk
+/// is partitioned into contiguous row ranges, each dispatched as its
+/// own job so multiple workers can share the chunk's load.
+///
+/// Tuned against `bench/rpg_stress_bench` at 100k entities: the 100k-row
+/// NPC chunk previously kept a single worker busy for the entire
+/// `update` window (peakQueueDepth=1, waitSeconds/lastUpdateSeconds=99%).
+/// With splitting, the chunk's rows fan out across all workers.
+constexpr std::uint32_t kForEachChunkSubJobThreshold = 1024;
+
+namespace detail {
+
+/// §3.10.4 batch 28 — Per-sub-job descriptor for `forEachChunk` split.
+/// One entry per dispatched job; `rowEnd > rowBegin` is enforced by the
+/// builder. The chunk pointer is fetched at job time from the
+/// captured-by-value `chunks` span, keeping the descriptor a 16-byte POD.
+struct ChunkSubJob {
+    std::size_t   chunkIdx = 0;
+    std::uint32_t rowBegin = 0;
+    std::uint32_t rowEnd   = 0;
+};
+
+/// §3.10.4 batch 28 — Compute the per-sub-job row count for a chunk of
+/// `rowCount` rows on a `workers`-wide pool. Below the threshold the
+/// chunk is one job; above, aim for ~`workers*8` sub-jobs per huge
+/// chunk so steal still has work to grab when one worker stalls. The
+/// 8× fanout (vs `pickGrain`'s 4× default) is empirically better for
+/// chunk row counts ≫ threshold — more, smaller sub-jobs mean the
+/// slowest worker holds the latch by a narrower margin. Floors the
+/// per-job budget at the threshold so we never dispatch tiny sub-jobs.
+inline std::uint32_t chunkSubJobBudget(std::uint32_t rowCount,
+                                       std::uint32_t workers) noexcept {
+    if (rowCount <= kForEachChunkSubJobThreshold) return rowCount;
+    const std::uint32_t target = std::max(1u, workers * 8u);
+    const std::uint32_t budget = (rowCount + target - 1u) / target;
+    return std::max(kForEachChunkSubJobThreshold, budget);
+}
+
+} // namespace detail
+
 /// Parallel iteration over archetype chunks whose mask is a superset of
 /// `required<Required...>()` (§3.1 batch 6).
 ///
@@ -391,6 +432,14 @@ void forEachWithCached(SystemContext& ctx, const MaskCache& cache,
 ///   - parallelizes over chunks (one job per chunk) rather than over
 ///     entities, so per-chunk work scales naturally with archetype
 ///     count.
+///
+/// §3.10.4 batch 28 — For chunks whose `entities.size() >
+/// kForEachChunkSubJobThreshold`, the chunk is split into multiple
+/// sub-jobs covering contiguous row ranges; the callback fires once per
+/// sub-job with the chunk's spans narrowed to that range. Spans across
+/// all invocations for the same chunk sum to the full chunk; every row
+/// is still visited exactly once. The contract `es.size() ==
+/// component_spans[k].size()` holds per call.
 ///
 /// @code
 /// forEachChunk<Transform, Velocity>(ctx,
@@ -425,22 +474,46 @@ void forEachChunk(SystemContext& ctx, F&& fn) {
     }
     if (matching.empty()) return;
 
+    // §3.10.4 batch 28 — Build a sub-job list. Most chunks contribute one
+    // entry (the pre-batch-28 behavior); chunks above the threshold
+    // contribute `ceil(rowCount / budget)` entries. The vector is
+    // allocated once per call and is bounded by
+    // (archetype count + biggest chunk's sub-job count).
+    const std::uint32_t workers = ctx.workerCount();
+    std::vector<detail::ChunkSubJob> subJobs;
     const auto matchCount = static_cast<std::uint32_t>(matching.size());
-    // One `std::vector<size_t>` per call is the price of capturing the
-    // matching list by value into the worker lambda; bounded by
-    // archetype count, allocates ≤ 1 page on every real workload.
-    std::vector<std::size_t> matchIndices;
-    matchIndices.reserve(matchCount);
-    for (std::uint32_t k = 0; k < matchCount; ++k) matchIndices.push_back(matching[k]);
+    subJobs.reserve(matchCount);
+    for (std::uint32_t k = 0; k < matchCount; ++k) {
+        const std::size_t ci = matching[k];
+        const auto* c = chunks[ci];
+        const auto rowCount =
+            static_cast<std::uint32_t>(c->entities.size());
+        const auto budget = detail::chunkSubJobBudget(rowCount, workers);
+        for (std::uint32_t row = 0; row < rowCount; row += budget) {
+            detail::ChunkSubJob sj;
+            sj.chunkIdx = ci;
+            sj.rowBegin = row;
+            sj.rowEnd   = std::min(row + budget, rowCount);
+            subJobs.push_back(sj);
+        }
+    }
+    if (subJobs.empty()) return;
 
-    ctx.parallelFor(matchCount, /*grain*/ 1,
-        [chunks, matchIndices = std::move(matchIndices),
+    const auto jobCount = static_cast<std::uint32_t>(subJobs.size());
+    ctx.parallelFor(jobCount, /*grain*/ 1,
+        [chunks, subJobs = std::move(subJobs),
          fn = std::forward<F>(fn)]
         (Range r, CommandBuffer& cb) mutable {
             for (std::uint32_t k = r.begin; k < r.end; ++k) {
-                const auto* c = chunks[matchIndices[k]];
-                fn(std::span<const EntityHandle>(c->entities),
-                   detail::getChunkSpan<Required>(*c)...,
+                const auto& sj = subJobs[k];
+                const auto* c = chunks[sj.chunkIdx];
+                const auto len = static_cast<std::size_t>(
+                    sj.rowEnd - sj.rowBegin);
+                const std::span<const EntityHandle> es(
+                    c->entities.data() + sj.rowBegin, len);
+                fn(es,
+                   detail::getChunkSpan<Required>(*c).subspan(
+                       sj.rowBegin, len)...,
                    cb);
             }
         });

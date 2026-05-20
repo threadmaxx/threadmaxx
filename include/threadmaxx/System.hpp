@@ -165,6 +165,13 @@ public:
     /// @thread_safety Safe from worker jobs under this `update()`.
     /// The check is a single atomic load; cheap to poll in a hot loop.
     virtual bool shouldYield() const noexcept = 0;
+
+    /// §3.10.4 batch 28 — Worker pool width visible to this update.
+    /// Mirrors @ref Engine::workerCount; pinned at engine construction
+    /// and stable for the wave's duration. Used by query helpers (see
+    /// @ref forEachChunk) to decide how aggressively to fan large
+    /// chunks into sub-jobs. Cheap call (returns a cached uint).
+    virtual std::uint32_t workerCount() const noexcept = 0;
 };
 
 /// User-implemented unit of gameplay/physics/AI.

@@ -70,6 +70,7 @@ public:
     std::uint32_t reserveHandles(std::uint32_t count,
                                  std::span<EntityHandle> out) override;
     bool shouldYield() const noexcept override;
+    std::uint32_t workerCount() const noexcept override;
 
     // Per-system list of command buffers, in submission order. The
     // matching ScratchArena (if any) lives in `arenas_[i]` — they grow

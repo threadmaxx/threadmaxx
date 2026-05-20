@@ -1,3 +1,4 @@
 build
 build-werror
 doc/generated
+.claude

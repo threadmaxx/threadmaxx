@@ -1308,3 +1308,45 @@ vectors keyed by entity index over hash maps; reuse
 allocations across ticks via clear() / assign(); avoid
 `std::thread` creation in steady-state code (dispatch
 through `jobs_->submit` instead).
+
+## §3.10.4 batch 28 — Sub-job dispatch in `forEachChunk`
+
+`Query.hpp::forEachChunk<Required...>` now splits oversized
+chunks into multiple sub-jobs so workers fan out across the
+rows of a single huge chunk instead of one chunk-per-job.
+Pre-B28, a 100k-row NPC chunk got one job → one worker (the
+other three workers sat idle); the system spent 99.9% of its
+update window in the latch wait. Post-B28, that same chunk
+dispatches ~32 sub-jobs across 4 workers; movement update at
+100k drops 5.08 → 2.59 ms (-49%).
+
+Knobs:
+- `kForEachChunkSubJobThreshold = 1024` (public constexpr in
+  `Query.hpp`). Chunks at or below this row count stay a
+  single job. Above, splitting kicks in.
+- `detail::chunkSubJobBudget(rowCount, workers)` picks the
+  per-sub-job row count: `max(threshold, ceil(rowCount /
+  (workers * 8)))`. The 8× fanout (vs `pickGrain`'s 4×) was
+  empirically better — more, smaller sub-jobs let work-stealing
+  hide one slow worker without the latch waiting on it.
+
+Public contract preserved: the callback still receives
+`(std::span<const EntityHandle> es, std::span<const Required>
+component_spans..., CommandBuffer& cb)`, and the
+`es.size() == component_spans[k].size()` invariant holds
+per-call. The callback fires once per sub-job (not once per
+chunk); spans across sub-jobs sum to the full chunk's rows; every
+row is visited exactly once.
+
+New `SystemContext::workerCount() -> uint32_t` virtual on the
+public interface — `forEachChunk` reads it to compute the
+sub-job budget. Cheap pass-through to
+`Engine::workerCount()` (a cached uint at construction time).
+Only `SystemContextImpl` derives from `SystemContext`, so the
+new pure virtual is safe.
+
+When writing a system that calls `forEachChunk` on huge chunks:
+the per-sub-job CommandBuffer is the regular per-job buffer
+(one buffer per sub-job, not per chunk). At 100k commands the
+CommandBuffer recording cost is the new floor; B29 (parallel
+pre-hash) is what attacks the commit phase below that floor.

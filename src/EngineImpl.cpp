@@ -465,6 +465,12 @@ bool SystemContextImpl::shouldYield() const noexcept {
     return engine_.overBudget();
 }
 
+// §3.10.4 batch 28 — Worker pool width. Cheap pass-through; the engine
+// caches it in JobSystem at construction time.
+std::uint32_t SystemContextImpl::workerCount() const noexcept {
+    return engine_.workerCount();
+}
+
 // ---- EngineImpl ---------------------------------------------------------
 
 namespace {
