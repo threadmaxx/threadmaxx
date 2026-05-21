@@ -154,6 +154,27 @@ int main() {
     CHECK(!w.has<UserData>(bundled));
     CHECK_EQ(w.get<Faction>(bundled).id, 99u);
 
+    // §3.1 batch 5 — per-handle accessors return the dense value on a
+    // handle that owns the bit, nullptr on one that doesn't.
+    {
+        const auto* a = w.tryGetAnimationStateRef(e);
+        const auto* p = w.tryGetPhysicsBodyRef(e);
+        const auto* n = w.tryGetNavAgentRef(e);
+        const auto* b2 = w.tryGetBoundingVolume(e);
+        CHECK(a && p && n && b2);
+        CHECK_EQ(a->state,  3u);
+        CHECK_EQ(p->handle, std::uint64_t{0xABCDu});
+        CHECK_EQ(n->handle, std::uint64_t{0xDEEDu});
+        CHECK_EQ(b2->max.z, 1.0f);
+
+        // `bundled` only has Transform/Health/Faction — the batch-5 ref
+        // accessors must return nullptr.
+        CHECK(w.tryGetAnimationStateRef(bundled) == nullptr);
+        CHECK(w.tryGetPhysicsBodyRef(bundled)    == nullptr);
+        CHECK(w.tryGetNavAgentRef(bundled)       == nullptr);
+        CHECK(w.tryGetBoundingVolume(bundled)    == nullptr);
+    }
+
     engine.shutdown();
     EXIT_WITH_RESULT();
 }

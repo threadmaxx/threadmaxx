@@ -76,12 +76,17 @@ private:
         std::mutex              mtx;
         std::condition_variable cv;
         std::thread             thread;
-        std::uint64_t           ownPops    = 0;  // touched only by self
-        std::uint64_t           stolenJobs = 0;  // touched only by self
-        // Per-worker job-duration histogram. Bumped by the worker after
-        // each job() returns; no synchronization needed (own thread).
-        // Aggregated at read time in stats().
-        std::array<std::uint64_t, kJobDurationHistogramBins> histogram = {};
+        // Written by the owning worker only; read by `stats()` from any
+        // thread. Atomic with relaxed memory ordering so TSAN can see the
+        // synchronization (the prior plain-`uint64_t` design was a known
+        // benign race — TSAN flagged it correctly). Relaxed because the
+        // reader doesn't synchronize with other state through these
+        // counters; a slightly stale value is acceptable.
+        std::atomic<std::uint64_t> ownPops    {0};
+        std::atomic<std::uint64_t> stolenJobs {0};
+        // Per-worker job-duration histogram. Same rationale as above —
+        // worker-local increment, read-from-anywhere stats path.
+        std::array<std::atomic<std::uint64_t>, kJobDurationHistogramBins> histogram{};
 
         // True iff any of the priority deques has work.
         bool hasWork() const noexcept {

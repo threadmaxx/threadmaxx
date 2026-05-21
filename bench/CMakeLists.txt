@@ -20,6 +20,8 @@ set(THREADMAXX_BENCHMARKS
     rpg_stress_bench
     # §3.10.4 batch 27 — Phase 8 diagnostic probe (per-system / ablation / cmd-volume)
     rpg_stress_probe
+    # §3.7 batch 31 diagnostic — wave dispatch overhead at high wave counts
+    wave_dispatch_bench
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})

@@ -59,10 +59,11 @@ JobSystemStats JobSystem::stats() const noexcept {
     // from its own thread. Reads from elsewhere see a recent value (a
     // relaxed view is sufficient for stats counters).
     for (const auto& w : workers_) {
-        s.ownPops    += w->ownPops;
-        s.stolenJobs += w->stolenJobs;
+        s.ownPops    += w->ownPops.load(std::memory_order_relaxed);
+        s.stolenJobs += w->stolenJobs.load(std::memory_order_relaxed);
         for (std::size_t i = 0; i < kJobDurationHistogramBins; ++i) {
-            s.jobDurationHistogram[i] += w->histogram[i];
+            s.jobDurationHistogram[i] +=
+                w->histogram[i].load(std::memory_order_relaxed);
         }
     }
     return s;
@@ -107,7 +108,7 @@ JobSystem::JobFn JobSystem::trySteal(std::uint32_t selfIdx) noexcept {
             if (q.empty()) continue;
             JobFn job = std::move(q.back());
             q.pop_back();
-            workers_[selfIdx]->stolenJobs++;
+            workers_[selfIdx]->stolenJobs.fetch_add(1, std::memory_order_relaxed);
             return job;
         }
     }
@@ -157,13 +158,13 @@ void JobSystem::workerLoop(std::uint32_t selfIdx) {
             if (popOwn(job)) fromOwn = true;
         }
 
-        if (fromOwn) self.ownPops++;
+        if (fromOwn) self.ownPops.fetch_add(1, std::memory_order_relaxed);
 
         if (job) {
             const auto t0 = std::chrono::steady_clock::now();
             job();
             const auto t1 = std::chrono::steady_clock::now();
-            self.histogram[binFor(t1 - t0)]++;
+            self.histogram[binFor(t1 - t0)].fetch_add(1, std::memory_order_relaxed);
             if (outstanding_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 // Last in-flight job for the batch. Acquiring doneMtx_
                 // here synchronizes with waitIdle's predicate check.

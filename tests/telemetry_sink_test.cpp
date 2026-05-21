@@ -212,13 +212,16 @@ int main() {
             [&](const BudgetExceeded& e) { drained.push_back(e); });
 
         for (int i = 0; i < 5; ++i) engine.step();
-        engine.shutdown();
 
         // Every tick overshot the 1µs budget; expect ≥ 4 events drained
         // (the last tick's event is delivered on the next drain which
         // happens at the head of step #6, so we should see 4–5 here).
+        // Query the counter BEFORE shutdown — `g.w` is a non-owning
+        // pointer into the engine's systems vector, which is cleared by
+        // shutdown.
         CHECK(g.w->exceedCount() >= 4);
         CHECK(!drained.empty());
+        engine.shutdown();
     }
 
     // ---- (5) Stall watchdog -----------------------------------------

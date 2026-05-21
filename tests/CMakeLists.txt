@@ -88,6 +88,7 @@ set(THREADMAXX_TESTS
     command_buffer_spawn_n_test
     world_for_each_chunk_of_test
     event_channel_cache_test
+    for_each_serial_test
     version_test
     # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
     # (batch D-audit) which exercises the actual SaveLoadSystem rather
@@ -109,6 +110,28 @@ foreach(test ${THREADMAXX_TESTS})
     endif()
     add_test(NAME ${test} COMMAND ${test})
 endforeach()
+
+# §3.8 batch 32 — 10k-tick concurrency soak. NOT registered with
+# default ctest (runs ~3-5 minutes per invocation). Opt-in via
+# -DTHREADMAXX_BUILD_LONG_SOAK=ON.
+option(THREADMAXX_BUILD_LONG_SOAK
+       "Build the 10,000-tick concurrency soak test (not registered with ctest)"
+       OFF)
+if (THREADMAXX_BUILD_LONG_SOAK)
+    add_executable(concurrency_soak_long concurrency_soak_long.cpp)
+    target_link_libraries(concurrency_soak_long PRIVATE threadmaxx::threadmaxx)
+    target_include_directories(concurrency_soak_long PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(concurrency_soak_long PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(concurrency_soak_long PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    # Intentionally NOT add_test() — explicit invocation only.
+endif()
 
 # §3.11 batch D-audit — RPG demo test suite. Lives in a separate
 # subfolder + links the rpg_demo_core static library so the actual

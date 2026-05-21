@@ -238,9 +238,13 @@ int main() {
         engine.registerSystem(std::move(probe));
         engine.step();
         // 1000 items, grain 250 → 4 chunks of size 250 each.
-        std::lock_guard<std::mutex> lk(probePtr->mtx);
-        CHECK_EQ(probePtr->chunkSizes.size(), std::size_t{4});
-        for (auto s : probePtr->chunkSizes) CHECK_EQ(s, std::uint32_t{250});
+        // Scope the lock so it releases BEFORE shutdown destroys the
+        // owning system (and its mutex).
+        {
+            std::lock_guard<std::mutex> lk(probePtr->mtx);
+            CHECK_EQ(probePtr->chunkSizes.size(), std::size_t{4});
+            for (auto s : probePtr->chunkSizes) CHECK_EQ(s, std::uint32_t{250});
+        }
         engine.shutdown();
     }
 
@@ -295,8 +299,11 @@ int main() {
         engine.step();
         // 1000 items, 4 workers, target 16 chunks → grain = 63.
         // Number of chunks should be ceil(1000/63) = 16.
-        std::lock_guard<std::mutex> lk(probePtr->mtx);
-        CHECK_EQ(probePtr->chunkSizes.size(), std::size_t{16});
+        // Scope the lock so it releases BEFORE shutdown.
+        {
+            std::lock_guard<std::mutex> lk(probePtr->mtx);
+            CHECK_EQ(probePtr->chunkSizes.size(), std::size_t{16});
+        }
         engine.shutdown();
     }
 

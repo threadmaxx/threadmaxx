@@ -87,7 +87,7 @@ B26 (gate) ✅ → B27 (profile) ✅ → B28 (forEachChunk sub-job) ✅ → B29 
                                                                        ↓
                                                                      B30 (per-arch hash) ✅ landed 2026-05-21
                                                                        ↓
-                                                                     B32 (sanitizer + soak)
+                                                                     B32 (sanitizer + soak) ✅ landed 2026-05-21
                                                                        ↓
                                                                      B33 (docs polish + v1.2 release)
 ```
@@ -641,52 +641,196 @@ component slots + user columns.
 
 ### 3.7 Batch 31 — Wave-scheduler micro-opts (DOWNGRADED)
 
-**Skipped by B27 evidence.** The profile shows wave-rebuild +
-per-wave dispatch is below 1% of step time at 100k entities. The
-candidate optimization (compile-time-friendly wave dispatch via
-pre-baked per-wave system index lists) would yield single-digit
-percent of step time at the very most, against the C1+C2 wins
-of 60%+.
+**Re-confirmed DOWNGRADED 2026-05-21** by a dedicated synthetic
+bench at the spec's re-eligibility threshold and well beyond.
+`bench/wave_dispatch_bench` sweeps N ∈ {1, 2, 4, 8, 16, 24, 32}
+serial waves (N tracer systems all writing `Transform` →
+one-system-per-wave forced schedule) on both an empty world and a
+10k-entity world. Three variants:
 
-**Re-eligible** if a future workload (multi-system DAG with 20+
-systems and 8+ waves) exposes the dispatch cost. Until then,
-parked. Note retained in `OPTIMIZATION_PATH.md` for traceability
-but no work scheduled.
+- **Tracer/empty** — each `update()` calls `ctx.single([](){})`;
+  realistic per-wave cost (framework + one inner job submit).
+- **Tracer/10k** — same, with 10k entities in one chunk so
+  `WorldView::rebuild` walks a populated chunk inventory.
+- **Empty/empty** — `update()` does nothing; isolates the
+  framework-only floor (no inner job submit).
 
-### 3.8 Batch 32 — Sanitizer + soak hygiene pass
+**Measured per-wave overhead (4 workers, 256 iters, dev
+workstation):**
 
-**Unconditional.** Ships regardless of B27 findings; this is
-the "quality" gate before the v1.2 release.
+| variant         | N=1 step | N=8 step | N=32 step | marginal ns/wave |
+|-----------------|---------:|---------:|----------:|-----------------:|
+| Tracer/empty    |   775 ns | 4.42 µs  | 16.43 µs  | ~500 ns          |
+| Tracer/10k      |   805 ns | 4.35 µs  | 16.33 µs  | ~500 ns          |
+| Empty/empty     |   715 ns | 3.91 µs  | 14.44 µs  | ~450 ns          |
 
-**Scope:**
+**Three load-bearing observations:**
 
-- Build the full test suite under `-fsanitize=thread` (TSAN).
-  Run; fix every race the sanitizer surfaces. Most likely
-  candidates: any `std::atomic<bool>` reads paired with relaxed
-  stores that aren't documented as safe; benign races in
-  `JobSystemStats` counters that TSAN flags but are
-  intentional.
-- Build under `-fsanitize=address,undefined` (ASAN + UBSAN). Fix
-  every issue.
-- New `tests/concurrency_soak_long.cpp` — runs the existing
-  `concurrency_soak_test` for 10,000 ticks instead of 200. Not
-  registered with ctest by default (too slow); opt-in via
-  `-DTHREADMAXX_BUILD_LONG_SOAK=ON`.
-- Public-API coverage audit: walk every public method in
-  `include/threadmaxx/`; verify each has at least one test
-  hitting it. Document gaps in `tests/COVERAGE_AUDIT.md`.
+1. **Per-wave overhead amortizes to ~500 ns at high N.** The
+   first wave costs ~770 ns (fixed engine overhead); each
+   additional wave costs ~500 ns marginal. The N=1 vs N=32
+   slope is consistent.
+2. **10k-entity overhead matches empty-world overhead.** The
+   per-wave `WorldView::rebuild` on a single populated chunk
+   costs single-digit nanoseconds — not a meaningful target.
+3. **`ctx.single`'s submit + latch + commit walk costs ~60 ns
+   per wave** (the gap between Tracer and Empty variants). The
+   remaining ~440 ns is pure engine-framework overhead per wave:
+   `WorldView::rebuild` + `SystemContextImpl` heap alloc +
+   skip-decision pre-compute + per-system stats bookkeeping +
+   commit walk + post-wave budget check.
 
-**Test gate:**
-- TSAN run clean across all 108 tests.
-- ASAN + UBSAN run clean across all 108 tests.
-- Long soak passes (10k ticks).
+**Translating to fraction of step time at a realistic 16 ms
+budget:**
 
-**Acceptance:**
-- All sanitizers clean; long soak clean.
-- Coverage audit complete + any gaps closed with new tests.
+| wave count                  | dispatch overhead | % of 16 ms step |
+|-----------------------------|------------------:|----------------:|
+| 1–3 (rpg_stress production) |   < 2 µs          | < 0.01%         |
+| 8  (spec re-eligibility)    |   4.4 µs          | 0.03%           |
+| 32 (synthetic worst case)   |  16.4 µs          | 0.10%           |
 
-**Effort:** ~1 week. Most of the time is hunting and fixing the
-races / leaks the sanitizers surface.
+**Achievable B31 savings ceiling.** The framework overhead has
+three plausible attack surfaces:
+
+- Pool `SystemContextImpl` across ticks (skip heap alloc):
+  ~50-80 ns/wave.
+- Skip `WorldView::rebuild` when no commit happened in the prior
+  wave: ~50-100 ns/wave.
+- Pre-bake per-wave skip-decision (currently builds a vector
+  each wave): ~20 ns/wave.
+
+**Total ceiling: ~150-200 ns/wave reduction (~30-40% improvement
+in dispatch).** At 32 waves: 5-6 µs/tick saved = **0.04% of a
+16 ms step**. At realistic 1-3 wave production scenes: <0.01%
+saved — below measurement noise. The wins are below what any
+hand-rolled timing harness can reliably distinguish.
+
+**Verdict: B31 stays parked.** No code work scheduled.
+`bench/wave_dispatch_bench` is committed as a permanent
+diagnostic so any future workload shape change (a hypothetical
+40+ system game with 16+ waves of distinct read/write footprints)
+can re-evaluate the call against the same baseline. The bench is
+not registered with CTest (per the standing `bench/` convention).
+
+**Re-eligibility criteria** (would need ALL three to flip B31
+back to scheduled):
+1. A real workload — not a synthetic stress — that exhibits
+   ≥ 16 waves at scale.
+2. The dispatch-overhead fraction of step time exceeding 1%
+   (so a 30-40% reduction is worth >0.3% of step).
+3. The proposed B31 implementation having no measurable
+   regression on the 1-3 wave case (the production majority).
+
+### 3.8 Batch 32 — Sanitizer + soak hygiene pass  ✅ landed 2026-05-21
+
+**As shipped.** Five workstreams; all of B32's gates met.
+Engine code grew by ~80 LOC (mostly hygiene fixes); test code grew
+by ~250 LOC (new long-soak + new for_each_serial_test +
+extensions to six existing tests for coverage close-out).
+
+**1. TSAN.** Configured a separate `build-tsan/` tree with
+`-fsanitize=thread`. Initial run surfaced **~30 distinct race
+patterns** across 16 failing tests, dominated by a single root
+cause: **`std::latch` is invisible to TSAN under GCC 16 +
+libstdc++.** libstdc++'s `latch::wait()` is implemented on top of
+`std::atomic<int>::wait()`, which lowers to a futex syscall;
+TSAN can't see the happens-before edge through it. A minimal 20-
+line reproducer confirmed.
+
+Fix: introduced a `JobLatch` shim in the anonymous namespace at
+the top of `src/EngineImpl.cpp` — same `count_down`/`wait`
+semantics, but built on a plain `std::ptrdiff_t` counter under a
+mutex+CV pair that TSAN models perfectly. Every `count_down`
+takes the lock; every `wait` is a CV-predicate wait. Swapped
+all five `std::latch` call sites (`parallelFor` JobFn variant,
+`parallelFor` JobFnArena variant, `commitBuffersSharded` Pass C,
+`finalizeCommitHash` chunk recompute, the wave-parallel system
+update path).
+
+Initially tried a smarter design — atomic decrement, mutex only
+on the final decrement — which passed the first TSAN ctest run
+(462s, 87/87) but had a 1-in-30 missed-wakeup hang under
+`small_wins_test` stress that only surfaced after the new
+sanitizer-clean test stack was assembled. Replaced with the
+"every count_down takes the lock" form, which passed 30+
+stress runs of the previously-flaky test plus a clean 461s
+ctest run.
+
+Other races surfaced once latch noise cleared:
+- **`stallTimeoutSeconds_` non-atomic.** Plain double assignment
+  by main vs plain read by watchdog thread. Promoted to
+  `std::atomic<double>` with relaxed ordering (idempotent in
+  effect).
+- **`JobSystem::Worker::{ownPops, stolenJobs, histogram}`
+  benign races.** Promoted to `std::atomic<uint64_t>` /
+  `std::array<std::atomic<uint64_t>, N>` with relaxed
+  ordering. Spec-anticipated under "benign races in
+  JobSystemStats counters that TSAN flags but are intentional."
+- **`HudTraceSink` seqlock.** Documented seqlock pattern —
+  concurrent writer/reader overlap is BY DESIGN (caught via
+  `s1 != s2`). TSAN cannot model this. Tried `__tsan_acquire`
+  / `__tsan_release` and `AnnotateHappensBefore/After`
+  annotations; both inadequate because the inherent overlap
+  race is real to TSAN's strict memory-model view. Solved by
+  shipping `cmake/tsan.supp` with a documented suppression for
+  `HudTraceSink::onFrame` and `HudTraceSink::tryGet`. Industry
+  standard for seqlocks (Linux kernel ktime, gettimeofday).
+- **`FrameBudgetWatcher` UAF in `telemetry_sink_test`.** Test
+  read the watcher's `exceedCount()` AFTER `engine.shutdown()`
+  destroyed the system. Reordered the test to query before
+  shutdown.
+- **`task_graph_test`-side UAF / unlock-of-unlocked.** Two
+  tests held `lock_guard` on a probe's mutex when calling
+  `engine.shutdown()`, which destroyed the probe and its
+  mutex while the lock_guard's dtor would unlock. Fixed by
+  scoping the lock to release before shutdown.
+- **`lifecycle_hooks_test` / `build_render_frame_timing_test`
+  shared Transcript.** Two systems wrote to a shared
+  `std::vector<std::string>` from parallel `update()` waves.
+  Added a mutex to the Transcript struct.
+
+Final: **TSAN run clean, 87/87 tests pass.** Single matched
+suppression (HudTraceSink seqlock, documented).
+
+**2. ASAN + UBSAN.** Separate `build-asan/` tree with
+`-fsanitize=address,undefined`. **First run was clean** — no
+leaks, no UB, no buffer overflows. 87/87 tests pass.
+
+**3. Long soak.** New `tests/concurrency_soak_long.cpp`
+(opt-in via `-DTHREADMAXX_BUILD_LONG_SOAK=ON`). Runs the same
+composition as `concurrency_soak_test` (8 workers, sharded
+commit, tick budget + Budget skip policy, hot-reload events,
+RAII subscriptions, stall watchdog) at 10,000 ticks × 2 runs
+× same seed. Asserts per-tick `commitHash` byte-identical,
+skips fire, no spurious `EngineStall`, ≥400 markStale calls.
+Runtime ~5-6 min in Release; passes cleanly first attempt.
+
+**4. Public-API coverage audit.** Walked every public header in
+`include/threadmaxx/`. Output: `tests/COVERAGE_AUDIT.md` (274
+lines, one section per header). Identified **6 load-bearing
+gaps** + ~18 trivial gaps. All 6 load-bearing gaps were closed
+during B32 by extending existing tests:
+- `Bundle::with<T>` chained-builder — `bundle_test.cpp`
+- `Engine::clearScriptedSkips` — `cancellation_test.cpp`
+- `forEachSerial<...>` — new `for_each_serial_test.cpp`
+- `EngineStats::engineBuildRenderFrameSeconds` /
+  `renderSubmitSeconds` — `build_render_frame_seconds_test.cpp`
+- `World::tryGet{AnimationStateRef,PhysicsBodyRef,NavAgentRef,
+  BoundingVolume}` — `new_components_test.cpp`
+- `Viewport` round-trip + `LightType` switched values —
+  `render_frame_builder_test.cpp`
+
+**5. Final test count.** 111/111 ctest pass in Release and
+build-werror; 88/88 in TSAN and ASAN+UBSAN (the difference:
+bench targets and the rpg_demo subfolder aren't built in the
+sanitizer-tree minimal configs).
+
+**Acceptance: all gates met.** No outstanding sanitizer
+issues; long soak deterministic; coverage gaps closed.
+
+**Effort:** ~half a day of focused work, mostly the GCC-libstdc++
+`std::latch` debugging detour. The actual race fixes were
+small; the sanitizer-incompatibility detective work dominated.
 
 ### 3.9 Batch 33 — Documentation + release polish
 

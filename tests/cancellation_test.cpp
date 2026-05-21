@@ -383,5 +383,32 @@ int main() {
         engine.shutdown();
     }
 
+    // §3.5 batch 12 — clearScriptedSkips releases the queue, so a
+    // tick that previously matched a scripted skip will run the
+    // skippable system normally after the clear.
+    {
+        Config cfg;
+        cfg.sleepToPace = false;
+        cfg.workerCount = 2;
+        Engine engine(cfg);
+        EmptyGame game;
+        CHECK(engine.initialize(game));
+        std::atomic<int> ran{0};
+        auto sk = std::make_unique<SkippableHealthTouch>();
+        sk->runCounter = &ran;
+        engine.registerSystem(std::make_unique<SlowSystem>());
+        engine.registerSystem(std::move(sk));
+        engine.setSkipPolicy(SkipPolicy::Scripted);
+        engine.pushScriptedSkip(0, "skippable-touch");
+        // Before clearing: tick 0 should skip the skippable system.
+        engine.step();
+        CHECK_EQ(ran.load(), 0);
+        // Clear and run another tick — the skip is gone.
+        engine.clearScriptedSkips();
+        engine.step();
+        CHECK_EQ(ran.load(), 1);
+        engine.shutdown();
+    }
+
     EXIT_WITH_RESULT();
 }

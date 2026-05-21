@@ -20,10 +20,26 @@ public:
     void buildRenderFrame(threadmaxx::RenderFrameBuilder& b) override {
         threadmaxx::Camera c;
         c.id = 100;
+        // §3.11.2 batch D2 — Viewport round-trip. Non-default viewport
+        // exercises the published-frame copy path; defaulted on
+        // CameraEmitterB so the test covers both cases.
+        c.viewport.x      = 0.25f;
+        c.viewport.y      = 0.50f;
+        c.viewport.width  = 0.50f;
+        c.viewport.height = 0.50f;
         b.addCamera(c);
+        // §3.11.D batch D — LightType switched values. The defaulted
+        // CameraEmitterB tests Directional implicitly; here cover
+        // Point and Spot explicitly so all three enum values round
+        // through `b.addLight` + the published frame.
         threadmaxx::Light l;
         l.intensity = 0.5f;
+        l.type      = threadmaxx::LightType::Point;
         b.addLight(l);
+        threadmaxx::Light l2;
+        l2.intensity = 0.75f;
+        l2.type      = threadmaxx::LightType::Spot;
+        b.addLight(l2);
         threadmaxx::DrawItem item;
         item.entity = threadmaxx::EntityHandle{};
         item.meshId = 11;
@@ -93,8 +109,18 @@ int main() {
     CHECK_EQ(renderer.cameras.size(), std::size_t{2});
     CHECK_EQ(renderer.cameras[0].id, 100u);
     CHECK_EQ(renderer.cameras[1].id, 200u);
-    CHECK_EQ(renderer.lights.size(), std::size_t{1});
+    // §3.11.2 batch D2 — Viewport round-trip: camera A has a custom
+    // viewport, camera B has the default (full screen 0,0,1,1).
+    CHECK_EQ(renderer.cameras[0].viewport.x,      0.25f);
+    CHECK_EQ(renderer.cameras[0].viewport.y,      0.50f);
+    CHECK_EQ(renderer.cameras[0].viewport.width,  0.50f);
+    CHECK_EQ(renderer.cameras[0].viewport.height, 0.50f);
+    CHECK_EQ(renderer.cameras[1].viewport.x,      0.0f);
+    CHECK_EQ(renderer.cameras[1].viewport.width,  1.0f);
+    CHECK_EQ(renderer.lights.size(), std::size_t{2});
     CHECK(renderer.lights[0].intensity == 0.5f);
+    CHECK(renderer.lights[0].type == threadmaxx::LightType::Point);
+    CHECK(renderer.lights[1].type == threadmaxx::LightType::Spot);
     CHECK_EQ(renderer.opaqueItems.size(), std::size_t{1});
     CHECK_EQ(renderer.opaqueItems[0].meshId, 11);
     CHECK_EQ(renderer.transparentItems.size(), std::size_t{1});

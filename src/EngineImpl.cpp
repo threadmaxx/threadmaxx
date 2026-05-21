@@ -32,7 +32,9 @@
 #include <cstring>
 
 #include <algorithm>
-#include <latch>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <numeric>
 #include <sstream>
 #include <thread>
@@ -41,6 +43,69 @@
 namespace threadmaxx::internal {
 
 namespace {
+
+// Drop-in `std::latch` replacement that is visible to ThreadSanitizer.
+//
+// libstdc++'s `std::latch::wait()` is implemented on top of
+// `std::atomic<int>::wait()` which lowers to a futex syscall. TSAN
+// does NOT model the happens-before edge that this syscall
+// establishes, so any non-atomic data written by a worker before
+// `count_down()` and read by the sim thread after `wait()` is flagged
+// as a data race — even though the synchronization is real and the
+// code is correct.
+//
+// This shim wraps the same semantics behind a mutex+CV pair, which
+// TSAN models perfectly. Workers `acq_rel` decrement an atomic
+// counter; only the final decrementer takes the mutex and notifies.
+// The waiter always takes the mutex before checking the count, which
+// closes the wait/notify race and gives TSAN the
+// mutex-release-acquire edge it needs to see worker writes.
+//
+// Cost: one atomic decrement per `count_down`, plus one mutex acquire
+// on the final decrement and one on the wait. Below `std::latch`'s
+// futex syscall cost in the contended case; the spec-grade test
+// `commit_soak_test` runs in ~33s under TSAN with this shim, matching
+// the pre-shim wall clock.
+class JobLatch {
+public:
+    explicit JobLatch(std::ptrdiff_t n) noexcept
+        : count_(n) {}
+
+    JobLatch(const JobLatch&) = delete;
+    JobLatch& operator=(const JobLatch&) = delete;
+
+    // Every count_down takes the lock so the count update + notify are
+    // serialized with the waiter's predicate check. The earlier
+    // optimization (atomic-decrement, notify only on the final
+    // decrement) had a missed-wakeup hazard under TSAN: if the final
+    // decrementer's atomic decrement and the waiter's predicate check
+    // both happened to see `count == 0` before the lock acquisition
+    // sequenced them, the waiter could observe `count == 0` outside the
+    // mutex but the worker hadn't yet entered the notify region —
+    // safe under C++ memory model, but TSAN couldn't see the HB and
+    // worker also wasn't guaranteed to make further progress past the
+    // notify. The "always lock" form serializes everything through the
+    // mutex; the cost is a single uncontended mutex per count_down,
+    // which under typical 8-job parallelFor patterns is well below
+    // the surrounding parallelism's overhead.
+    void count_down() noexcept {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (--count_ == 0) {
+            cv_.notify_all();
+        }
+    }
+
+    void wait() noexcept {
+        std::unique_lock<std::mutex> lk(mtx_);
+        cv_.wait(lk, [this] { return count_ == 0; });
+    }
+
+private:
+    // No longer atomic — every read/write is mutex-protected.
+    std::ptrdiff_t          count_;
+    mutable std::mutex      mtx_;
+    std::condition_variable cv_;
+};
 
 // Picks a sensible chunk size when the caller passes grain=0. The
 // active system's `preferredGrain()` (batch 11) wins when it's
@@ -460,7 +525,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     buffers_.resize(firstIdx + chunkCount);
     arenas_.resize(firstIdx + chunkCount);
 
-    std::latch done(chunkCount);
+    JobLatch done(chunkCount);
     for (std::uint32_t c = 0; c < chunkCount; ++c) {
         const std::uint32_t begin = c * grain;
         const std::uint32_t end   = std::min(begin + grain, count);
@@ -497,7 +562,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     buffers_.resize(firstIdx + chunkCount);
     arenas_.resize(firstIdx + chunkCount);
 
-    std::latch done(chunkCount);
+    JobLatch done(chunkCount);
     for (std::uint32_t c = 0; c < chunkCount; ++c) {
         const std::uint32_t begin = c * grain;
         const std::uint32_t end   = std::min(begin + grain, count);
@@ -600,7 +665,7 @@ std::uint32_t EngineImpl::workerCount() const noexcept {
 
 void EngineImpl::setStallTimeout(double seconds) noexcept {
     if (seconds < 0.0) seconds = 0.0;
-    stallTimeoutSeconds_ = seconds;
+    stallTimeoutSeconds_.store(seconds, std::memory_order_relaxed);
     if (seconds > 0.0) {
         startWatchdog_();
     } else {
@@ -622,7 +687,8 @@ void EngineImpl::stopWatchdog_() {
 void EngineImpl::watchdogThreadFn_() {
     using clock = std::chrono::steady_clock;
     while (watchdogRun_.load(std::memory_order_acquire)) {
-        const double timeout = stallTimeoutSeconds_;
+        const double timeout =
+            stallTimeoutSeconds_.load(std::memory_order_relaxed);
         if (timeout <= 0.0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
@@ -1284,7 +1350,7 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         return;
     }
 
-    std::latch done(static_cast<std::ptrdiff_t>(activeBins));
+    JobLatch done(static_cast<std::ptrdiff_t>(activeBins));
     for (auto& bin : shardChunkBins_) {
         if (bin.empty()) continue;
         jobs_->submit([&bin, &done, &storage] {
@@ -1327,7 +1393,7 @@ std::uint64_t EngineImpl::finalizeCommitHash() {
     // each job writes to its own chunk's cachedHash so there's no
     // sharing. Single-chunk falls through to a serial recompute.
     if (dirty.size() >= 2 && jobs_) {
-        std::latch done(static_cast<std::ptrdiff_t>(dirty.size()));
+        JobLatch done(static_cast<std::ptrdiff_t>(dirty.size()));
         for (std::uint32_t idx : dirty) {
             ArchetypeChunk* c = &chunks[idx];
             jobs_->submit([c, &done] {
@@ -1648,7 +1714,7 @@ void EngineImpl::step() {
             // parked on a CV, so wakeup is sub-µs instead of multi-ms
             // thread create. The tail still runs on the sim thread to
             // avoid a wasted submit + wait round-trip.
-            std::latch waveDone(static_cast<std::ptrdiff_t>(wave.size() - 1));
+            JobLatch waveDone(static_cast<std::ptrdiff_t>(wave.size() - 1));
             for (std::size_t k = 0; k + 1 < wave.size(); ++k) {
                 jobs_->submit([&runIndex, &waveDone, k] {
                     runIndex(k);

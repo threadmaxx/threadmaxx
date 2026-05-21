@@ -22,6 +22,16 @@
 #include <utility>
 #include <vector>
 
+// ThreadSanitizer note: `HudTraceSink` is a classic seqlock. The
+// write of `data_` AND the read of `data_` deliberately race —
+// detection of the torn read is the seqlock's correctness contract
+// (the reader checks `seq_` before vs after and discards mismatched
+// reads). TSAN cannot model this pattern; the build ships
+// `cmake/tsan.supp` with a suppression for `HudTraceSink::onFrame`
+// and `HudTraceSink::tryGet`. Activate via `TSAN_OPTIONS=
+// suppressions=<path>/cmake/tsan.supp`. See the suppression file
+// for the rationale and prior-art links.
+
 namespace threadmaxx {
 
 // ---------- FileTraceSink ------------------------------------------------

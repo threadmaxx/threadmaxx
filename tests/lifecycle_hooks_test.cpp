@@ -5,7 +5,9 @@
 
 #include <threadmaxx/threadmaxx.hpp>
 
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -14,6 +16,11 @@ namespace {
 // so we can assert on the global ordering at the end.
 struct Transcript {
     std::vector<std::string> events;
+    std::mutex               mtx;  // update() runs concurrently across systems
+    void record(std::string s) {
+        std::lock_guard<std::mutex> lk(mtx);
+        events.push_back(std::move(s));
+    }
 };
 
 class RecordingSystem : public threadmaxx::ISystem {
@@ -24,13 +31,13 @@ public:
     const char* name() const noexcept override { return name_; }
 
     void preStep(threadmaxx::SystemContext&) override {
-        transcript_.events.push_back(std::string("pre:") + name_);
+        transcript_.record(std::string("pre:") + name_);
     }
     void update(threadmaxx::SystemContext&) override {
-        transcript_.events.push_back(std::string("update:") + name_);
+        transcript_.record(std::string("update:") + name_);
     }
     void postStep(threadmaxx::SystemContext&) override {
-        transcript_.events.push_back(std::string("post:") + name_);
+        transcript_.record(std::string("post:") + name_);
     }
 
     threadmaxx::ComponentSet reads()  const noexcept override {

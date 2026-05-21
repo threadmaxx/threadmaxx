@@ -2,3 +2,6 @@ build
 build-werror
 doc/generated
 .claude
+build-tsan
+build-asan
+build-long-soak

@@ -137,7 +137,9 @@ public:
     // §3.7 batch 14 — telemetry / stall watchdog.
     void   setTraceSink(::threadmaxx::ITraceSink* sink) noexcept { traceSink_ = sink; }
     void   setStallTimeout(double seconds) noexcept;
-    double stallTimeout() const noexcept { return stallTimeoutSeconds_; }
+    double stallTimeout() const noexcept {
+        return stallTimeoutSeconds_.load(std::memory_order_relaxed);
+    }
     Engine* publicEngine() noexcept { return publicEngine_; }
     ILogger& logger() noexcept { return logger_ ? *logger_ : defaultLogger_; }
 
@@ -305,7 +307,10 @@ private:
     // §3.7 batch 14 — telemetry sink + stall watchdog.
     ::threadmaxx::ITraceSink* traceSink_ = nullptr;
     // 0.0 = disabled. setStallTimeout() (un)spawns watchdog_ as needed.
-    double                    stallTimeoutSeconds_ = 0.0;
+    // Atomic so the watchdog thread can poll it concurrently with the
+    // sim thread reconfiguring the timeout. Idempotent in effect (just
+    // changes the polling cadence), so relaxed ordering is sufficient.
+    std::atomic<double>       stallTimeoutSeconds_{0.0};
     std::thread               watchdog_;
     std::atomic<bool>         watchdogRun_{false};
     // Sim thread writes these at step start; watchdog reads.

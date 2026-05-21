@@ -115,6 +115,17 @@ int main() {
     const auto empty = bundle();
     CHECK(empty.initialMask.empty());
 
+    // §3.10.6 batch 22 — Bundle::with<T>(value) chainable builder.
+    // Each `with<T>(v)` sets the field AND attaches the matching bit.
+    const auto chained = Bundle{}
+                            .with(Transform{})
+                            .with(Velocity{})
+                            .with(UserData{99});
+    CHECK(chained.initialMask.has(Component::Transform));
+    CHECK(chained.initialMask.has(Component::Velocity));
+    CHECK(chained.initialMask.has(Component::UserData));
+    CHECK_EQ(chained.userData.value, std::uint64_t{99});
+
     engine.shutdown();
     EXIT_WITH_RESULT();
 }

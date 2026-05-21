@@ -1522,3 +1522,102 @@ that gets removed when the flag does).
 paused steps to `stats_.commitHash = 0xcbf29ce484222325ull` (FNV
 basis) via the same paused branch in `step()`. The new path's
 end-of-step rollup is never reached on a paused step.
+
+## §3.10.7 batch 32 — Sanitizer + soak hygiene
+
+Closes §3.8 ("quality gate before v1.2"). All three sanitizers
+clean (TSAN, ASAN, UBSAN) plus a 10k-tick opt-in soak plus a
+public-API coverage audit. Engine code grew by ~80 LOC of
+hygiene fixes; test code grew by ~250 LOC.
+
+**`JobLatch` is the TSAN-clean replacement for `std::latch`.**
+Lives in the anonymous namespace at the top of `src/EngineImpl.cpp`.
+libstdc++'s `std::latch::wait()` is built on `std::atomic<int>::
+wait()` which lowers to a futex syscall; ThreadSanitizer cannot
+see the happens-before edge through it. `JobLatch` uses a plain
+`std::ptrdiff_t` counter under a mutex+CV pair — every
+`count_down` takes the lock and decrements, every `wait` is a
+CV-predicate wait. TSAN models the mutex/CV pair perfectly.
+
+The initial "optimized" variant (atomic decrement, mutex only
+on the final decrement) had a subtle missed-wakeup hazard that
+surfaced as an occasional 1-in-30 hang in `small_wins_test`
+under TSAN load. Replaced with the "every count_down takes the
+lock" form, which is solid across 30+ stress runs and the full
+462s ctest run. The mutex cost is sub-microsecond and below the
+surrounding parallelism's overhead at typical job counts.
+**Don't re-introduce the lock-only-on-last form without a
+100× stress validation under TSAN.**
+
+Five call sites in `src/EngineImpl.cpp` were swapped:
+`parallelFor` JobFn variant, `parallelFor` JobFnArena variant,
+`commitBuffersSharded` Pass C, `finalizeCommitHash` chunk
+recompute, the wave-parallel system update path. **Do NOT
+re-introduce `std::latch` in this engine without a TSAN re-run.**
+The two implementations are semantically identical for the
+fan-out-then-join pattern but only `JobLatch` is sanitizer-clean
+under GCC + libstdc++.
+
+**`stallTimeoutSeconds_` is `std::atomic<double>` with relaxed
+ordering.** Set by sim thread via `setStallTimeout`, read by the
+watchdog thread in `watchdogThreadFn_`. Idempotent in effect
+(just changes the polling cadence), so relaxed is sufficient.
+Use `.load(std::memory_order_relaxed)` / `.store(...,
+std::memory_order_relaxed)` — the getter `stallTimeout()` does
+this internally.
+
+**`JobSystem::Worker::{ownPops, stolenJobs, histogram}` are now
+atomic with relaxed ordering.** Per-worker counters are touched
+only by the owning thread for `ownPops` and `histogram`, by the
+stealing thread (which writes its OWN slot, not the victim's) for
+`stolenJobs`. Reads from `JobSystem::stats()` happen from any
+thread. Pre-batch-32 these were plain `uint64_t` and TSAN
+correctly flagged the cross-thread reads as races (documented as
+benign). Promoted to atomics for cleanliness; perf impact zero
+on x86/aarch64 (relaxed atomic ops are pure mov instructions).
+**When adding a new per-worker counter, follow this pattern:
+`std::atomic<uint64_t>` with `.fetch_add(1, std::memory_order_relaxed)`
+on the write side and `.load(std::memory_order_relaxed)` on the
+read side.**
+
+**HudTraceSink seqlock is documented in `cmake/tsan.supp`.** The
+seqlock pattern (writer brackets data writes with odd/even
+sequence bumps; reader retries on torn-read detection) has an
+INHERENT TSAN-visible race on the `data_` field — concurrent
+overlap is BY DESIGN. TSAN cannot model this; standard
+practice (Linux kernel ktime, gettimeofday) is to suppress.
+**Do not try to "fix" the HudTraceSink race by adding mutexes;
+that defeats the seqlock's purpose.** If you change HudTraceSink
+to a different lock-free pattern, also remove the suppression
+file entry. Activate the suppressions in a TSAN build via
+`TSAN_OPTIONS=suppressions=<path>/cmake/tsan.supp`.
+
+**`tests/concurrency_soak_long.cpp` is opt-in.** Gated behind
+`-DTHREADMAXX_BUILD_LONG_SOAK=ON` in CMake. Not registered with
+default ctest (5-6 min runtime per invocation). Same workload
+shape as `concurrency_soak_test` but 50× the ticks (10,000 vs
+200). Use it to surface anything that only manifests after
+sustained steady-state operation. The skipCount comes out at
+roughly 10,000 / 10,000 (every tick skips, since the
+SlowPredecessor reliably trips the 1 ms budget); if a future
+engine change reduces the SlowPredecessor's wall time below the
+budget, the assertion will fail and the test needs a heavier
+predecessor.
+
+**`tests/COVERAGE_AUDIT.md` is the public-API coverage record.**
+274 lines, one section per public header. Generated for B32 and
+should be refreshed when new public symbols land. Six
+load-bearing gaps were closed during B32 (listed in the file's
+header). The ~18 trivial gaps (sister getters, default-empty
+virtuals) are intentionally left open — folding them in would
+dilute the suite without catching real regressions.
+
+**Test count moved from 110 → 111.** New `for_each_serial_test`
+closes the `forEachSerial<...>` coverage gap. Plus extensions
+to existing tests (bundle, cancellation, new_components,
+render_frame_builder, build_render_frame_seconds,
+telemetry_sink, task_graph, lifecycle_hooks,
+build_render_frame_timing) for the other gaps and TSAN fixes.
+Both `build/` (Release) and `build-werror/` (strict warnings)
+trees pass 111/111. Sanitizer trees pass 88/88 (no examples /
+bench, plus the new `for_each_serial_test`).

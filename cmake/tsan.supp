@@ -1,0 +1,34 @@
+# ThreadSanitizer suppressions for threadmaxx.
+#
+# This file lists the documented, intentional race patterns that TSAN
+# cannot model. Every entry includes a why. Activate by exporting
+# `TSAN_OPTIONS=suppressions=<path-to-this-file>` (or by configuring
+# the build with the same flag).
+#
+# Format: `<category>:<frame-substring>` — TSAN matches the substring
+# against frames in the race report's topmost stack.
+#
+# CATEGORIES:
+#   race          — data race
+#   deadlock      — potential deadlock
+#   thread        — generic thread leak / mismatch
+#   mutex         — mutex error (unlock-of-unlocked etc.)
+#   signal        — signal-handling race
+#   called_from_lib:libname — anything from this library
+
+# ---- HudTraceSink seqlock --------------------------------------
+#
+# `HudTraceSink` exposes the latest engine telemetry through a
+# classic seqlock: a sequence counter (`seq_`) brackets the data
+# write, and readers retry on torn reads (`s1 != s2`). Concurrent
+# overlap between writer's `data_ = t` and reader's `out = data_`
+# is BY DESIGN — the reader detects the torn read via the
+# sequence check and rejects the result. TSAN cannot model this
+# pattern: from its strict memory-model standpoint, the
+# overlapping access IS a race.
+#
+# The pattern is well-known and used widely in the Linux kernel
+# (gettimeofday, ktime), Userland TSC paths, and game-engine HUD
+# polling. Suppressing here is the documented industry practice.
+race:threadmaxx::HudTraceSink::onFrame
+race:threadmaxx::HudTraceSink::tryGet

@@ -7,13 +7,20 @@
 #include <threadmaxx/threadmaxx.hpp>
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
 struct Transcript {
     std::vector<std::string> events;
+    std::mutex               mtx;  // update() runs concurrently across systems
+    void record(std::string s) {
+        std::lock_guard<std::mutex> lk(mtx);
+        events.push_back(std::move(s));
+    }
 };
 
 class TracingSystem : public threadmaxx::ISystem {
@@ -23,16 +30,16 @@ public:
     threadmaxx::ComponentSet reads()  const noexcept override { return threadmaxx::ComponentSet::none(); }
     threadmaxx::ComponentSet writes() const noexcept override { return threadmaxx::ComponentSet::none(); }
     void preStep(threadmaxx::SystemContext&) override {
-        t_.events.push_back(std::string("pre:") + name_);
+        t_.record(std::string("pre:") + name_);
     }
     void update(threadmaxx::SystemContext&) override {
-        t_.events.push_back(std::string("update:") + name_);
+        t_.record(std::string("update:") + name_);
     }
     void postStep(threadmaxx::SystemContext&) override {
-        t_.events.push_back(std::string("post:") + name_);
+        t_.record(std::string("post:") + name_);
     }
     void buildRenderFrame(threadmaxx::RenderFrameBuilder&) override {
-        t_.events.push_back(std::string("build:") + name_);
+        t_.record(std::string("build:") + name_);
     }
 
 private:

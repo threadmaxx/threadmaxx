@@ -20,6 +20,15 @@
 
 namespace {
 
+class SleepyRenderer : public threadmaxx::IRenderer {
+public:
+    bool initialize() override { return true; }
+    void submitFrame(const threadmaxx::RenderFrame&) override {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    void shutdown() override {}
+};
+
 using namespace threadmaxx;
 
 class NoHookSystem : public ISystem {
@@ -83,6 +92,37 @@ int main() {
     const auto resumedStats = engine.systemStats();
     // Heavy hook ran again; counter should be > 0 again.
     CHECK(resumedStats[1].buildRenderFrameSeconds > 0.0005);
+
+    // §3.8 batch 32 — `EngineStats::engineBuildRenderFrameSeconds` and
+    // `renderSubmitSeconds` split. Attach a renderer that sleeps in
+    // submitFrame and assert the split is reported and bounded by the
+    // total step time.
+    {
+        Config cfg2; cfg2.sleepToPace = false; cfg2.workerCount = 1;
+        Engine eng2(cfg2);
+        SleepyRenderer renderer;
+        eng2.setRenderer(&renderer);
+        struct G2 : IGame {
+            void onSetup(Engine& e, World&, CommandBuffer&) override {
+                e.registerSystem(std::make_unique<HeavyHookSystem>());
+            }
+        } g2;
+        CHECK(eng2.initialize(g2));
+        eng2.step();
+
+        const auto& es = eng2.stats();
+        // Both fields are reported.
+        CHECK(es.engineBuildRenderFrameSeconds >= 0.0);
+        CHECK(es.renderSubmitSeconds          >= 0.0);
+        // Renderer slept ~2ms; submit time should reflect that.
+        CHECK(es.renderSubmitSeconds > 0.0005);
+        // Both fit inside the total step time (with a small margin
+        // for clock noise).
+        CHECK(es.engineBuildRenderFrameSeconds <= es.lastStepSeconds + 0.001);
+        CHECK(es.renderSubmitSeconds          <= es.lastStepSeconds + 0.001);
+
+        eng2.shutdown();
+    }
 
     engine.shutdown();
     EXIT_WITH_RESULT();
