@@ -1,8 +1,8 @@
-# `audio` — audio mixing and 3D audio sibling library
+# `threadmaxx_audio` — audio mixing and 3D audio sibling library
 
 ## 1. Purpose
 
-`audio` provides runtime audio services for games built on `threadmaxx`.
+`threadmaxx_audio` provides runtime audio services for games built on `threadmaxx`.
 
 It is for:
 
@@ -47,8 +47,8 @@ That matches the roadmap’s boundary: audio is orthogonal to the backend, so it
 ## 3. Package layout
 
 ```text id="g3r2qp"
-include/threadmaxx/audio/
-  audio.hpp              // umbrella include
+include/threadmaxx_audio/
+  threadmaxx_audio.hpp   // umbrella include
   config.hpp             // device settings, sample rate, buffer size
   types.hpp              // SoundId, VoiceId, BusId, ListenerId, StreamId
   device.hpp             // backend device interface
@@ -70,7 +70,7 @@ include/threadmaxx/audio/
     voice_allocator.hpp
 ```
 
-If you want platform-specific backends separated, keep them in `src/audio/backends/`.
+If you want platform-specific backends separated, keep them in `src/threadmaxx_audio/backends/`.
 
 ## 4. Core data model
 
@@ -328,7 +328,7 @@ The roadmap does not require any core engine audio subsystem, so the cleanest in
 
 ### 6.1 Component-driven integration
 
-A game can define its own audio-related components using the existing user-component hook and then feed them into `audio`.
+A game can define its own audio-related components using the existing user-component hook and then feed them into `threadmaxx_audio`.
 
 ```cpp id="q9x4np"
 class AudioSystem final : public threadmaxx::ISystem {

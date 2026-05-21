@@ -1,8 +1,8 @@
-# `editor` — editor, tooling, and hot-reload UI sibling library
+# `threadmaxx_editor` — editor, tooling, and hot-reload UI sibling library
 
 ## 1. Purpose
 
-`editor` provides the interactive development layer for projects built on `threadmaxx`.
+`threadmaxx_editor` provides the interactive development layer for projects built on `threadmaxx`.
 
 It is for:
 
@@ -46,8 +46,8 @@ That matches the roadmap’s boundary: editor and tooling live **above the engin
 ## 3. Suggested package layout
 
 ```text id="m2e7kv"
-include/threadmaxx/editor/
-  editor.hpp             // umbrella include
+include/threadmaxx_editor/
+  threadmaxx_editor.hpp  // umbrella include
   session.hpp            // editor session and connection to engine
   inspect.hpp            // entity, component, resource, and system inspection
   commands.hpp           // edit commands, undo/redo, transaction groups

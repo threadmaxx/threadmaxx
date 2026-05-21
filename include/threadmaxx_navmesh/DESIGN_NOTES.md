@@ -1,8 +1,8 @@
-# `nav` — navmesh and pathfinding sibling library
+# `threadmaxx_navmesh` — navmesh and pathfinding sibling library
 
 ## 1. Purpose
 
-`nav` provides navigation data structures and path queries for games built on `threadmaxx`.
+`threadmaxx_navmesh` provides navigation data structures and path queries for games built on `threadmaxx`.
 
 It is for:
 
@@ -42,19 +42,19 @@ That fits the roadmap boundary exactly: navigation belongs in a sibling library,
 ## 3. Package layout
 
 ```text id="p8v1xq"
-include/threadmaxx/nav/
-  nav.hpp               // umbrella include
-  config.hpp            // feature flags, tolerances, bake options
-  types.hpp             // NavMeshId, NavTileId, NavAgentId, PathId
-  mesh.hpp              // loaded runtime navmesh representation
-  bake.hpp              // bake inputs, bake outputs, validation
-  query.hpp             // path, reachability, raycast-on-navmesh
-  agent.hpp             // NavAgent state and motion intent
-  steering.hpp          // corridor following, local avoidance helpers
-  crowd.hpp             // multi-agent batch updates
-  obstacle.hpp          // dynamic obstacle overlay
-  serialization.hpp     // save/load for nav assets and caches
-  diagnostics.hpp       // debug draw data, stats, validation reports
+include/threadmaxx_navmesh/
+  threadmaxx_navmesh.hpp // umbrella include
+  config.hpp             // feature flags, tolerances, bake options
+  types.hpp              // NavMeshId, NavTileId, NavAgentId, PathId
+  mesh.hpp               // loaded runtime navmesh representation
+  bake.hpp               // bake inputs, bake outputs, validation
+  query.hpp              // path, reachability, raycast-on-navmesh
+  agent.hpp              // NavAgent state and motion intent
+  steering.hpp           // corridor following, local avoidance helpers
+  crowd.hpp              // multi-agent batch updates
+  obstacle.hpp           // dynamic obstacle overlay
+  serialization.hpp      // save/load for nav assets and caches
+  diagnostics.hpp        // debug draw data, stats, validation reports
   detail/
     bitset.hpp
     funnel.hpp
@@ -66,7 +66,7 @@ include/threadmaxx/nav/
 If you want to split runtime and tools, use:
 
 ```text id="a1l7bk"
-src/nav/
+src/threadmaxx_navmesh/
   bake_tool.cpp
   mesh_import.cpp
   mesh_validate.cpp
@@ -79,7 +79,7 @@ src/nav/
 A navmesh asset should be the primary runtime unit.
 
 ```cpp id="f2jv4m"
-namespace threadmaxx::nav {
+namespace threadmaxx::navmesh {
 
 using NavMeshId = std::uint64_t;
 using NavTileId = std::uint32_t;
@@ -99,7 +99,7 @@ struct NavMeshMeta {
     std::uint32_t polygonCount{};
 };
 
-} // namespace threadmaxx::nav
+} // namespace threadmaxx::navmesh
 ```
 
 ### 4.2 Tile-based runtime storage
@@ -122,7 +122,7 @@ That makes it easy to stream large worlds, which is exactly the kind of large-wo
 The engine already has a `NavAgentRef` slot; this library should define the runtime state behind it.
 
 ```cpp id="y0m3cr"
-namespace threadmaxx::nav {
+namespace threadmaxx::navmesh {
 
 enum class AgentStatus : std::uint8_t {
     Idle,
@@ -145,7 +145,7 @@ struct NavAgent {
     AgentStatus status{AgentStatus::Idle};
 };
 
-} // namespace threadmaxx::nav
+} // namespace threadmaxx::navmesh
 ```
 
 ## 5. Public API
@@ -153,7 +153,7 @@ struct NavAgent {
 ### 5.1 Mesh management
 
 ```cpp id="qk9d3t"
-namespace threadmaxx::nav {
+namespace threadmaxx::navmesh {
 
 class NavMeshRegistry {
 public:
@@ -164,13 +164,13 @@ public:
     std::optional<NavMeshMeta> meta(NavMeshRef mesh) const;
 };
 
-} // namespace threadmaxx::nav
+} // namespace threadmaxx::navmesh
 ```
 
 ### 5.2 Path queries
 
 ```cpp id="v6x8ad"
-namespace threadmaxx::nav {
+namespace threadmaxx::navmesh {
 
 struct PathRequest {
     NavMeshRef mesh{};
@@ -198,7 +198,7 @@ public:
     void clear();
 };
 
-} // namespace threadmaxx::nav
+} // namespace threadmaxx::navmesh
 ```
 
 ### 5.3 Batch path solving
@@ -206,7 +206,7 @@ public:
 The key gameplay use case is many agents asking for paths in the same frame.
 
 ```cpp id="m5r4az"
-namespace threadmaxx::nav {
+namespace threadmaxx::navmesh {
 
 struct BatchPathRequest {
     NavMeshRef mesh{};
@@ -221,7 +221,7 @@ public:
     std::vector<PathResult> solve(const BatchPathRequest& request);
 };
 
-} // namespace threadmaxx::nav
+} // namespace threadmaxx::navmesh
 ```
 
 ### 5.4 Steering and corridor following
@@ -229,7 +229,7 @@ public:
 Pathfinding gives you a route; steering makes the agent move smoothly along it.
 
 ```cpp id="x7p2jc"
-namespace threadmaxx::nav {
+namespace threadmaxx::navmesh {
 
 struct FollowPathInput {
     std::span<const Vec3> corridor;
@@ -248,7 +248,7 @@ struct FollowPathOutput {
 
 FollowPathOutput followPath(const FollowPathInput& input);
 
-} // namespace threadmaxx::nav
+} // namespace threadmaxx::navmesh
 ```
 
 ### 5.5 Dynamic obstacle overlay
@@ -256,7 +256,7 @@ FollowPathOutput followPath(const FollowPathInput& input);
 The library should support temporary blockers without rebaking the whole mesh.
 
 ```cpp id="c3n1qa"
-namespace threadmaxx::nav {
+namespace threadmaxx::navmesh {
 
 struct DynamicObstacle {
     Vec3 center{};
@@ -272,7 +272,7 @@ public:
     void update(std::uint64_t obstacleId, DynamicObstacle obstacle);
 };
 
-} // namespace threadmaxx::nav
+} // namespace threadmaxx::navmesh
 ```
 
 This is still not physics. It is just navigation input.

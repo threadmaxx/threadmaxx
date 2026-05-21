@@ -1,8 +1,8 @@
-# `net` — networking, replication, and rollback sibling library
+# `threadmaxx_network` — networking, replication, and rollback sibling library
 
 ## 1. Purpose
 
-`net` provides the wire protocol and runtime needed for:
+`threadmaxx_network` provides the wire protocol and runtime needed for:
 
 * authoritative server play,
 * client prediction and reconciliation,
@@ -31,8 +31,8 @@ It does **not** own game simulation. It consumes `threadmaxx` state, but it neve
 ## 3. Suggested package layout
 
 ```text id="zq1w9m"
-include/threadmaxx/net/
-  net.hpp                 // umbrella include
+include/threadmaxx_network/
+  threadmaxx_network.hpp  // umbrella include
   config.hpp              // protocol and runtime settings
   ids.hpp                 // PeerId, SessionId, NetEntityId, TickId
   transport.hpp           // transport interface
@@ -58,7 +58,7 @@ include/threadmaxx/net/
 If you want a separate transport backend package, split it like this:
 
 ```text
-src/net/
+src/threadmaxx_network/
   transport_udp.cpp
   transport_quic.cpp
   transport_loopback.cpp
@@ -70,10 +70,10 @@ The core protocol layer can stay header-first, while platform/network-specific s
 
 ### 4.1 Stable identities
 
-`threadmaxx` already gives you deterministic commit and stable entity IDs, which is the foundation this library needs. `net` should wrap those IDs in network-facing handles rather than inventing its own world model.
+`threadmaxx` already gives you deterministic commit and stable entity IDs, which is the foundation this library needs. `threadmaxx_network` should wrap those IDs in network-facing handles rather than inventing its own world model.
 
 ```cpp id="d4n2qf"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 struct PeerId { std::uint32_t value; };
 struct SessionId { std::uint64_t value; };
@@ -84,7 +84,7 @@ struct NetEntityId {
     std::uint64_t value;
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 ### 4.2 Transport interface
@@ -92,7 +92,7 @@ struct NetEntityId {
 Keep transport simple and replaceable.
 
 ```cpp id="k7p3lv"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 struct PacketView {
     const std::byte* data{};
@@ -115,7 +115,7 @@ public:
     virtual void shutdown() = 0;
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 This keeps UDP, QUIC, loopback, and deterministic test transport all behind the same contract.
@@ -125,7 +125,7 @@ This keeps UDP, QUIC, loopback, and deterministic test transport all behind the 
 Packets should be small, typed, and versioned.
 
 ```cpp id="t8h0qp"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 enum class PacketType : std::uint8_t {
     Hello,
@@ -152,7 +152,7 @@ struct PacketHeader {
     std::uint32_t ackBits{};
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 ### 4.4 Bitstream codec
@@ -160,7 +160,7 @@ struct PacketHeader {
 Use a compact bit writer/reader for packet payloads.
 
 ```cpp id="y2r1ub"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 class BitWriter {
 public:
@@ -180,7 +180,7 @@ public:
     bool exhausted() const;
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 ## 5. Game-state model
@@ -196,7 +196,7 @@ The library should not mirror the full engine state. It should work with a **rep
 ### 5.1 Replication registry
 
 ```cpp id="o6m4ed"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 struct ComponentCodecId {
     std::uint32_t value{};
@@ -219,7 +219,7 @@ public:
     ComponentCodecId codecId() const noexcept;
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 This registry tells the network layer how to encode known component types. It should use the engine’s existing component serialization hooks where possible. The roadmap already says serialization hooks belong in the engine, not a full migration system, so the network layer should build on that instead of replacing it.
@@ -234,7 +234,7 @@ Ownership should be explicit:
 * some entities can be transferred temporarily during host migration or scripted control.
 
 ```cpp id="u9x4cs"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 enum class Authority : std::uint8_t {
     Server,
@@ -249,7 +249,7 @@ struct OwnershipRule {
     Authority authority{};
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 ## 6. Runtime modes
@@ -281,7 +281,7 @@ Rollback needs three buffers:
 * event history or command history.
 
 ```cpp id="f4r1ds"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 struct RollbackConfig {
     std::uint32_t historyTicks = 120;
@@ -290,7 +290,7 @@ struct RollbackConfig {
     bool keepCommandHistory = true;
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 The goal is not to own simulation. The goal is to capture enough history to rewind `threadmaxx` world state and replay forward.
@@ -300,7 +300,7 @@ The goal is not to own simulation. The goal is to capture enough history to rewi
 ### 7.1 Server session
 
 ```cpp id="q3s8kr"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 class ServerSession {
 public:
@@ -315,13 +315,13 @@ public:
     void disconnect(PeerId peer, std::string_view reason);
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 ### 7.2 Client session
 
 ```cpp id="j8m1pa"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 class ClientSession {
 public:
@@ -335,7 +335,7 @@ public:
     std::optional<TickId> confirmedTick() const noexcept;
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 ### 7.3 Shared simulation bridge
@@ -343,7 +343,7 @@ public:
 This is the glue the game uses.
 
 ```cpp id="l5n7vh"
-namespace threadmaxx::net {
+namespace threadmaxx::network {
 
 struct SimulationBridge {
     // encode/decode from threadmaxx world state
@@ -355,7 +355,7 @@ struct SimulationBridge {
     std::function<void(TickId)> replayFromTick;
 };
 
-} // namespace threadmaxx::net
+} // namespace threadmaxx::network
 ```
 
 ## 8. Integration with `threadmaxx`
@@ -364,11 +364,11 @@ This library should plug into the engine, not patch it.
 
 ### 8.1 Use the engine’s snapshot and serialization hooks
 
-The roadmap already says `threadmaxx` has snapshot serialization and stable entity IDs available as engine-side foundations. `net` should use those for state capture and replay instead of inventing a second serialization model.
+The roadmap already says `threadmaxx` has snapshot serialization and stable entity IDs available as engine-side foundations. `threadmaxx_network` should use those for state capture and replay instead of inventing a second serialization model.
 
 ### 8.2 Use commit hashes for desync checks
 
-The roadmap’s commit hash work gives you a built-in divergence detector. `net` should record the authoritative hash per tick and compare it during replay / lockstep / rollback validation.
+The roadmap’s commit hash work gives you a built-in divergence detector. `threadmaxx_network` should record the authoritative hash per tick and compare it during replay / lockstep / rollback validation.
 
 ### 8.3 Keep the engine unaware of transport
 

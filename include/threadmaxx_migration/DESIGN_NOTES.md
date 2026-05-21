@@ -1,8 +1,8 @@
-# `migration` — save/load versioning and data migration sibling library
+# `threadmaxx_migration` — save/load versioning and data migration sibling library
 
 ## 1. Purpose
 
-`migration` handles versioned persistence for projects built on `threadmaxx`.
+`threadmaxx_migration` handles versioned persistence for projects built on `threadmaxx`.
 
 It is for:
 
@@ -43,19 +43,19 @@ That matches the roadmap boundary: the engine already has serialization hooks, b
 ## 3. Package layout
 
 ```text id="u2m4dq"
-include/threadmaxx/migration/
-  migration.hpp          // umbrella include
-  version.hpp            // schema versioning and compatibility tags
-  registry.hpp           // migration registry and type mappings
-  records.hpp            // serialized record model
-  savefile.hpp           // save/load containers and metadata
-  world.hpp              // world snapshot migration helpers
-  component.hpp          // component field migration helpers
-  rename.hpp             // field / type rename utilities
-  transform.hpp          // record transforms and fixups
-  validation.hpp         // schema validation and diagnostics
-  pipeline.hpp           // migration pipeline execution
-  report.hpp             // migration results and warnings
+include/threadmaxx_migration/
+  threadmaxx_migration.hpp // umbrella include
+  version.hpp              // schema versioning and compatibility tags
+  registry.hpp             // migration registry and type mappings
+  records.hpp              // serialized record model
+  savefile.hpp             // save/load containers and metadata
+  world.hpp                // world snapshot migration helpers
+  component.hpp            // component field migration helpers
+  rename.hpp               // field / type rename utilities
+  transform.hpp            // record transforms and fixups
+  validation.hpp           // schema validation and diagnostics
+  pipeline.hpp             // migration pipeline execution
+  report.hpp               // migration results and warnings
   detail/
     binary_reader.hpp
     binary_writer.hpp
@@ -281,7 +281,7 @@ The engine should keep doing what it already does well:
 * preserve stable entity IDs,
 * maintain deterministic commit data.
 
-`migration` sits above that and turns old saved data into data the current build can load. The roadmap explicitly frames it that way.
+`threadmaxx_migration` sits above that and turns old saved data into data the current build can load. The roadmap explicitly frames it that way.
 
 ### 6.2 Typical load flow
 

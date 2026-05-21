@@ -1,8 +1,8 @@
-# `physics` — physics integration sibling library
+# `threadmaxx_physics` — physics integration sibling library
 
 ## 1. Purpose
 
-`physics` provides physics-facing runtime glue for games built on `threadmaxx`.
+`threadmaxx_physics` provides physics-facing runtime glue for games built on `threadmaxx`.
 
 It is for:
 
@@ -44,21 +44,21 @@ That matches the roadmap’s boundary: physics belongs above the engine, and the
 ## 3. Package layout
 
 ```text id="p6k4ra"
-include/threadmaxx/physics/
-  physics.hpp           // umbrella include
-  config.hpp            // solver options, stepping, tolerances
-  types.hpp             // PhysicsWorldId, BodyId, ShapeId, JointId
-  body.hpp              // rigid body descriptors and state
-  shape.hpp             // collider shapes
-  query.hpp             // raycast, sweep, overlap, contact queries
-  step.hpp              // simulation step interface
-  sync.hpp              // engine ↔ physics synchronization helpers
-  constraints.hpp       // joints and constraint definitions
-  character.hpp         // character controller helpers
-  contact.hpp           // contacts, manifolds, events
-  debug.hpp             // debug-draw and diagnostics data
-  serialization.hpp     // save/load for physics scene state
-  backend.hpp           // solver backend interface
+include/threadmaxx_physics/
+  threadmaxx_physics.hpp // umbrella include
+  config.hpp             // solver options, stepping, tolerances
+  types.hpp              // PhysicsWorldId, BodyId, ShapeId, JointId
+  body.hpp               // rigid body descriptors and state
+  shape.hpp              // collider shapes
+  query.hpp              // raycast, sweep, overlap, contact queries
+  step.hpp               // simulation step interface
+  sync.hpp               // engine ↔ physics synchronization helpers
+  constraints.hpp        // joints and constraint definitions
+  character.hpp          // character controller helpers
+  contact.hpp            // contacts, manifolds, events
+  debug.hpp              // debug-draw and diagnostics data
+  serialization.hpp      // save/load for physics scene state
+  backend.hpp            // solver backend interface
   detail/
     broadphase.hpp
     filter.hpp
@@ -67,7 +67,7 @@ include/threadmaxx/physics/
     cache.hpp
 ```
 
-If you want solver integrations separated, put them under `src/physics/backends/`.
+If you want solver integrations separated, put them under `src/threadmaxx_physics/backends/`.
 
 ## 4. Core data model
 

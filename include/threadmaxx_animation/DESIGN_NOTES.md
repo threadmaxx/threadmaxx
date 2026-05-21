@@ -1,8 +1,8 @@
-# `anim` — animation, IK, and pose evaluation sibling library
+# `threadmaxx_animation` — animation, IK, and pose evaluation sibling library
 
 ## 1. Purpose
 
-`anim` provides runtime animation evaluation for games built on `threadmaxx`.
+`threadmaxx_animation` provides runtime animation evaluation for games built on `threadmaxx`.
 
 It is for:
 
@@ -44,21 +44,21 @@ That matches the roadmap boundary: the engine should expose the animation-relate
 ## 3. Package layout
 
 ```text id="a4m7ty"
-include/threadmaxx/anim/
-  anim.hpp               // umbrella include
-  types.hpp              // SkeletonId, ClipId, PoseId, GraphId, SlotId
-  skeleton.hpp           // skeleton definitions and bindings
-  clip.hpp               // animation clips and event tracks
-  pose.hpp               // pose buffers, joints, blend weights
-  graph.hpp              // state machines and blend trees
-  blend.hpp              // layered/additive blending helpers
-  ik.hpp                 // IK constraints and solvers
-  warp.hpp               // motion warping helpers
-  cloth.hpp              // attachment / cloth influence hooks
-  retarget.hpp           // skeleton retargeting helpers
-  eval.hpp               // graph evaluation API
-  serialization.hpp      // save/load for animation assets
-  diagnostics.hpp        // debug poses, timing, validation
+include/threadmaxx_animation/
+  threadmaxx_animation.hpp // umbrella include
+  types.hpp                // SkeletonId, ClipId, PoseId, GraphId, SlotId
+  skeleton.hpp             // skeleton definitions and bindings
+  clip.hpp                 // animation clips and event tracks
+  pose.hpp                 // pose buffers, joints, blend weights
+  graph.hpp                // state machines and blend trees
+  blend.hpp                // layered/additive blending helpers
+  ik.hpp                   // IK constraints and solvers
+  warp.hpp                 // motion warping helpers
+  cloth.hpp                // attachment / cloth influence hooks
+  retarget.hpp             // skeleton retargeting helpers
+  eval.hpp                 // graph evaluation API
+  serialization.hpp        // save/load for animation assets
+  diagnostics.hpp          // debug poses, timing, validation
   detail/
     hash.hpp
     curve_eval.hpp
@@ -78,7 +78,7 @@ If you want runtime assets and offline baking separated, split import tools into
 Skeletons define joint hierarchy and bind poses.
 
 ```cpp id="q2v8nm"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 using SkeletonId = std::uint64_t;
 using ClipId = std::uint64_t;
@@ -106,7 +106,7 @@ struct SkeletonDesc {
     std::vector<Mat4> bindGlobal;
 };
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ### 4.2 Clips
@@ -114,7 +114,7 @@ struct SkeletonDesc {
 Clips are sampled animation curves over time.
 
 ```cpp id="l1b3cd"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 struct ClipSample {
     PoseId pose{};
@@ -133,7 +133,7 @@ struct ClipDesc {
     std::vector<EventTrackEvent> events;
 };
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ### 4.3 Poses
@@ -141,7 +141,7 @@ struct ClipDesc {
 A pose is the runtime output: per-joint local transforms plus metadata.
 
 ```cpp id="m9t6re"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 struct JointPose {
     Vec3 translation{};
@@ -159,7 +159,7 @@ struct PoseSpan {
     std::span<JointPose> joints;
 };
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 This is the object the renderer can skin from, and it lines up with the roadmap’s `AnimationPoseRef` render-side hook. 
@@ -171,7 +171,7 @@ This is the object the renderer can skin from, and it lines up with the roadmap�
 ### 5.1 Registry and asset access
 
 ```cpp id="v5x1s7"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 class AnimationRegistry {
 public:
@@ -185,7 +185,7 @@ public:
     const ClipDesc* getClip(ClipId clip) const noexcept;
 };
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ### 5.2 Pose buffers
@@ -193,7 +193,7 @@ public:
 Pose buffers should be caller-owned and reusable.
 
 ```cpp id="r8d3fw"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 class PoseBuffer {
 public:
@@ -207,7 +207,7 @@ public:
     std::span<const JointPose> localPose() const noexcept;
 };
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ### 5.3 Graph evaluation
@@ -215,7 +215,7 @@ public:
 A graph drives the final pose.
 
 ```cpp id="k6h2jp"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 enum class NodeType : std::uint8_t {
     Clip,
@@ -249,7 +249,7 @@ public:
     void setOutput(GraphId graph, GraphNodeId node);
 };
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ### 5.4 Evaluation API
@@ -257,7 +257,7 @@ public:
 This is the core runtime call.
 
 ```cpp id="n1y5vh"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 struct EvalContext {
     float dt{};
@@ -282,7 +282,7 @@ public:
     void setParameter(GraphId graph, std::string_view name, Vec3 value);
 };
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ### 5.5 IK and constraints
@@ -290,7 +290,7 @@ public:
 Keep IK as a small constraint layer, not a giant solver framework.
 
 ```cpp id="u3q4fn"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 struct IKTarget {
     JointId joint{};
@@ -309,7 +309,7 @@ void solveIK(const SkeletonDesc& skeleton,
              PoseSpan pose,
              std::span<const IKChain> chains);
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ### 5.6 Motion warping
@@ -317,7 +317,7 @@ void solveIK(const SkeletonDesc& skeleton,
 Useful for foot placement, attack alignment, and reach correction.
 
 ```cpp id="d7m2kc"
-namespace threadmaxx::anim {
+namespace threadmaxx::animation {
 
 struct WarpRequest {
     Vec3 from{};
@@ -330,7 +330,7 @@ void applyWarp(PoseSpan pose,
                const SkeletonDesc& skeleton,
                const WarpRequest& request);
 
-} // namespace threadmaxx::anim
+} // namespace threadmaxx::animation
 ```
 
 ---
@@ -362,7 +362,7 @@ public:
 
 ### 6.2 Render bridge
 
-The render contract already expects `AnimationPoseRef` and skinned draw items in the render frame. `anim` should produce exactly that kind of pose output, then hand it to the render-side code. 
+The render contract already expects `AnimationPoseRef` and skinned draw items in the render frame. `threadmaxx_animation` should produce exactly that kind of pose output, then hand it to the render-side code. 
 
 ### 6.3 Job-friendly batch evaluation
 
