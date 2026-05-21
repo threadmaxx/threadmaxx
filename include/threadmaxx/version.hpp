@@ -34,7 +34,7 @@
 #pragma once
 
 #define THREADMAXX_VERSION_MAJOR 1
-#define THREADMAXX_VERSION_MINOR 1
+#define THREADMAXX_VERSION_MINOR 2
 #define THREADMAXX_VERSION_PATCH 0
 
 #define THREADMAXX_VERSION \
@@ -47,7 +47,7 @@ namespace threadmaxx {
 /// Returns the library version as a dotted string `"M.m.p"`.
 /// Useful for logging at startup or in a HUD overlay.
 constexpr const char* version_string() noexcept {
-    return "1.1.0";
+    return "1.2.0";
 }
 
 } // namespace threadmaxx

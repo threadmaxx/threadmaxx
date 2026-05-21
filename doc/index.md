@@ -71,10 +71,17 @@ documents the invariants this guide relies on; the
     per-component `serialize` / `deserialize` trait pair for save/load.
 23. [Logging](logging.md) — pluggable `ILogger` sink for engine
     lifecycle messages and loader errors.
-24. [Migrating v1.2 → v1.3](migration_v1_2_to_v1_3.md) — the
-    `EngineStats::commitHash` contract amendment that ships with v1.3,
-    the `Config::legacyCommitHash` opt-out, and the deprecation
-    timeline (§3.6 batch 30).
+24. [Performance tuning](performance_tuning.md) — the public tuning
+    knobs (`preferredGrain`, `singleThreadedCommit`, `setTickBudget`
+    + `SkipPolicy`, `legacyCommitHash`), the `bench/` workflow, how
+    to read a regression, and what NOT to chase.
+25. [Migrating v1 → v1.2](migration_v1_to_v1_2.md) — the v1.1 → v1.2
+    upgrade checklist; opt-in knobs, the `commitHash` contract
+    change, and the `legacyCommitHash` transition flag.
+26. [Migrating v1.2 → v1.3](migration_v1_2_to_v1_3.md) — the
+    detailed `EngineStats::commitHash` contract reference for clients
+    that compare hashes across builds, plus the deprecation timeline
+    (§3.6 batch 30).
 
 ## What this guide does not cover
 

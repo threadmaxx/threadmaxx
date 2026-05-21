@@ -1621,3 +1621,74 @@ build_render_frame_timing) for the other gaps and TSAN fixes.
 Both `build/` (Release) and `build-werror/` (strict warnings)
 trees pass 111/111. Sanitizer trees pass 88/88 (no examples /
 bench, plus the new `for_each_serial_test`).
+
+## §3.10.8 batch 33 — v1.2 docs polish + release
+
+Closes Phase 8. Pure additive — no engine behavior changes
+beyond Doxygen brief touch-ups on a handful of accessor pairs.
+
+**Version bump.** `include/threadmaxx/version.hpp` macros +
+`version_string()` literal + `CMakeLists.txt` `project(VERSION)`
+all in sync at `1.2.0`. The three artifacts MUST move together —
+grep all three any time one changes. `tests/version_test_v1_2.cpp`
+is the new pin (v1.2 floor + `version_string()` starts with
+`"1.2."`); the existing `version_test.cpp` keeps the looser v1.0
+floor and the packed-encoding self-consistency check.
+
+**Two new docs.** `doc/performance_tuning.md` is the public
+tuning reference — knobs (`preferredGrain`,
+`singleThreadedCommit`, `legacyCommitHash`, `setTickBudget`),
+the bench/diff protocol, the FrameSnapshot → chrome://tracing
+workflow for diagnosing a regression, and three explicit
+"don't chase what isn't there" failure modes (wave-dispatch
+overhead, sharded commit on small scenes, raising
+`preferredGrain` past entity count). `doc/migration_v1_to_v1_2.md`
+is the v1.1 → v1.2 upgrade checklist; the existing
+`doc/migration_v1_2_to_v1_3.md` (authored under B30 with a
+naming legacy from when the contract change was scheduled for
+v1.3) stays the deep-dive hash contract reference. Both are
+linked from `doc/index.md` at positions 24 / 25 (the v1.2 →
+v1.3 doc moved to position 26).
+
+**CHANGELOG entry.** Per-batch `[1.2.0]` section covering
+B26–B32 with the headline `step` 15.6 → 4.41 ms (-72%) /
+`commit` 9.96 → 2.14 ms (-78%) cumulative deltas, the two
+opt-out contracts (`legacyCommitHash`, `singleThreadedCommit`),
+the deferred/downgraded items (B29 math failure, B31 wave
+ceiling), and the new opt-in knobs (`kForEachChunkSubJobThreshold`,
+`SystemContext::workerCount()`).
+
+**Doxygen brief audit on `include/threadmaxx/`.** A heuristic
+scan flagged ~250 candidate lines (continuation lines from
+`if constexpr` chains, inline function bodies, deleted-copy
+boilerplate — most aren't symbols needing briefs). Six
+genuine accessor-pair gaps closed: `Engine::world()` +
+`config()` + `paused()` + `tickBudget()` + `stallTimeout()`
+(paired with their already-documented siblings),
+`SystemContext::world()` pure-virtual, `ITraceSink::onFrame()`,
+`FileTraceSink::FileTraceSink(Config)`,
+`HudTraceSink::onFrame()`, and the `FrameBudgetWatcher`
+inline getters. The convention for documented-setter /
+minimally-documented-getter pairs is "minimal getter brief +
+`See @ref setX for the setter's full contract`"; for the two
+`world()` / `config()` non-`set*` accessor pairs the pattern
+is `@copydoc` on the const version.
+
+**Verification.** 112/112 Release, 112/112 Werror, 89/89
+ASAN+UBSAN, 89/89 TSAN against `cmake/tsan.supp`. The `+1`
+over B32's count is `version_test_v1_2`. Sanitizer trees
+remain configured to skip benches, the rpg_demo sub-folder,
+and the SIMD sibling library — that's the standing
+"sanitizers run engine-side correctness only" convention.
+
+**v1.2 ships from `main` after this batch's commit lands.**
+Tag with `git tag v1.2.0 -m "..."` only after the user
+authorizes — tagging is a publish action per the risky-actions
+policy.
+
+When adding a new public symbol going forward: (1) ensure the
+symbol has a one-line `@brief` (load-bearing methods get
+`@thread_safety` / `@pre` notes), (2) add a
+`tests/COVERAGE_AUDIT.md` entry if it's a non-trivial method
+not already exercised, (3) if it's an engine knob, add it to
+`doc/performance_tuning.md` under "the major knobs".

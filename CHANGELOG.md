@@ -8,6 +8,170 @@ are documented in `include/threadmaxx/version.hpp`.
 The sibling `threadmaxx_simd` library has its own independent
 changelog at `include/threadmaxx_simd/CHANGELOG.md`.
 
+## [1.2.0] — 2026-05-21 — Phase 8: workload-driven library tightening
+
+Additive minor release covering the Phase 8 work (batches 26–32). Two
+opt-in correctness contracts changed defaults:
+
+- **`commitHash` semantics weakened** from "byte-identical per
+  command stream" to "byte-identical per final per-archetype state."
+  The new default ships `Config::legacyCommitHash = false`; flip to
+  `true` to preserve the v1.1 byte-mix path during the one-MINOR-cycle
+  deprecation window. See `doc/migration_v1_2_to_v1_3.md` (existing,
+  unchanged) and `doc/migration_v1_to_v1_2.md` (new, this release).
+- **`SystemContext::workerCount()`** is now pure-virtual on the
+  public interface. `SystemContextImpl` is the only derived class
+  threadmaxx ships, so external code is unaffected unless it
+  subclasses `SystemContext` directly (unsupported per the public-
+  surface contract).
+
+No symbol removals. No layout changes. No on-disk format change
+(`kWorldSnapshotVersion` unchanged).
+
+### Added (engine)
+
+- **`Config::legacyCommitHash`** (batch 30, §3.6) — opt-out toggle
+  preserving v1.1 byte-mix `commitHash` semantics.
+- **`kForEachChunkSubJobThreshold` + `detail::chunkSubJobBudget()`**
+  in `Query.hpp` (batch 28, §3.4) — public knob + helper that sub-job
+  splits oversized chunks in `forEachChunk`.
+- **`SystemContext::workerCount()`** (batch 28, §3.4) — pure virtual
+  used by `forEachChunk` to size sub-job budgets.
+
+### Added (docs)
+
+- **`doc/performance_tuning.md`** (this release) — covers
+  `preferredGrain`, `Config::singleThreadedCommit`, `setTickBudget` +
+  `SkipPolicy`, the `bench/` harness, how to capture a profile, and
+  how to read the telemetry sink outputs.
+- **`doc/migration_v1_to_v1_2.md`** (this release) — the v1.1 → v1.2
+  migration path. Tiny; lists the new opt-in knobs and the
+  `legacyCommitHash` flag's lifecycle.
+
+### Added (tests)
+
+- **`tests/archetype_hash_determinism_test.cpp`** (batch 30) — pins
+  the new `commitHash` contract (same per-archetype state → same
+  hash; mask-reorder invariance; cross-validation between sharded
+  and single-threaded paths).
+- **`tests/v1_2_legacy_commit_hash_test.cpp`** (batch 30) — pins the
+  v1.1 byte-mix contract under `legacyCommitHash = true`. Will be
+  removed when the flag does.
+- **`tests/for_each_serial_test.cpp`** (batch 32) — closes the
+  `forEachSerial<...>` public-API gap.
+- **`tests/concurrency_soak_long.cpp`** (batch 32) — opt-in 10,000-
+  tick variant of `concurrency_soak_test` (gated by
+  `-DTHREADMAXX_BUILD_LONG_SOAK=ON`). Not registered with ctest;
+  ~6 min runtime in Release.
+- **`tests/COVERAGE_AUDIT.md`** (batch 32) — 274-line public-API
+  coverage audit. Six load-bearing gaps closed in B32.
+- **`tests/version_test_v1_2.cpp`** (this release) — pins the v1.2
+  version floor; companion to the existing `version_test`.
+
+### Added (benchmarks)
+
+- **`bench/scene_workloads.hpp` → `RpgStressWorkload`** (batch 26,
+  §3.2) — 5-archetype 70k–105k-entity workload mirroring
+  `rpg_demo --stress` at the engine level. Built-in components only.
+- **`bench/rpg_stress_bench.cpp`** (batch 26) — the Phase 8 gate.
+  Per-phase `EngineStats` decomposition across 10k / 50k / 100k
+  scales.
+- **`bench/rpg_systems.hpp`** (batch 27, §3.3) — shared system
+  definitions factored from `rpg_stress_bench`.
+- **`bench/rpg_stress_probe.cpp`** (batch 27) — three diagnostic
+  passes (per-system breakdown, system-mix ablation, commit cost
+  vs command volume).
+- **`bench/profile_report.md`** (batch 27) — names the top three
+  100k-entity inefficiencies and the C1/C2/C3 optimization
+  candidates.
+- **`bench/wave_dispatch_bench.cpp`** (batch 31, §3.7) — permanent
+  diagnostic establishing the wave-dispatch overhead ceiling at
+  ~500 ns marginal per wave (< 0.04% of a 16 ms step even at 32
+  waves). Kept as the re-eligibility baseline.
+
+### Changed (engine — performance + hygiene)
+
+- **`forEachChunk` sub-job dispatch** (batch 28, §3.4). Chunks
+  above `kForEachChunkSubJobThreshold = 1024` rows now split into
+  ~8× workerCount sub-jobs. RpgStress 100k: movement update
+  5.08 → 2.59 ms (-49%), `step` 15.6 → 13.0 ms (-2.6 ms / -17%).
+  The `es.size() == component_spans[k].size()` invariant holds
+  per-call as documented; the callback now fires once per sub-job
+  rather than once per chunk.
+- **Per-archetype hash rollup** (batch 30, §3.6). Default
+  `commitHash` path replaced with an end-of-step rollup over
+  per-chunk cached hashes. `ArchetypeChunk` gained
+  `cachedHash` / `hashDirty`; every `mut*()` setter on
+  `EntityStorage` and every `ArchetypeTable::{insert,
+  removeSwapPop,migrate}` site flips the dirty bit.
+  RpgStress 100k: `commit` 9.96 → 2.14 ms (-7.8 ms / -78%);
+  `step` 14.43 → 4.41 ms (-69%, 137 → 42 ns/entity).
+- **`JobLatch` shim** (batch 32, §3.8) replaces `std::latch` at
+  five sites in `src/EngineImpl.cpp`. libstdc++'s `std::latch::wait`
+  lowers to a futex and is invisible to ThreadSanitizer; the
+  mutex+CV form is TSAN-visible and the cost difference is below
+  the surrounding parallelism's overhead.
+- **`stallTimeoutSeconds_` → `std::atomic<double>`** (batch 32) —
+  relaxed-ordering for the watchdog-thread / sim-thread access.
+- **`JobSystem::Worker::{ownPops, stolenJobs, histogram}` →
+  atomics** (batch 32) — relaxed-ordering. Pure-mov on x86 /
+  aarch64; sanitizer-clean replacement for the previously
+  TSAN-flagged but intentional benign races.
+
+### Changed (docs)
+
+- **`include/threadmaxx/version.hpp`** macros and string bumped
+  from 1.1.0 → 1.2.0.
+- **`CMakeLists.txt`** `project(VERSION ...)` bumped to 1.2.0.
+
+### Deferred / downgraded
+
+- **Batch 29 (parallel pre-hash + serial mix-in)** — DEFERRED
+  2026-05-21. The byte-identity gate is mathematically
+  unachievable for FNV-1a-64 under integer multiplication mod
+  2^64 (integer multiplication does not distribute over XOR).
+  The C2 budget rolled into B30. Proof recorded in §3.5 of
+  `OPTIMIZATION_PATH.md` and `CLAUDE.md §3.10.5`. The math
+  probe at `/tmp/fnv_distrib_probe.cpp` was transient by
+  design.
+- **Batch 31 (wave-scheduler micro-opts)** — DOWNGRADED. The
+  permanent `wave_dispatch_bench` shows dispatch overhead at
+  ~500 ns marginal per wave; even a 30-40% reduction would save
+  < 0.04% of a 16 ms step at 32 waves. Re-eligibility criteria
+  in §3.7.
+
+### Sanitizers
+
+- **TSAN** (`build-tsan/` tree with `-fsanitize=thread`): 88/88
+  pass with a single documented suppression for the
+  `HudTraceSink` seqlock (industry standard for seqlocks; see
+  `cmake/tsan.supp`).
+- **ASAN + UBSAN** (`build-asan/` tree with
+  `-fsanitize=address,undefined`): 88/88 clean.
+- **Release + Werror trees**: 112/112 pass (was 108/108 at
+  v1.1.0; +1 from `archetype_hash_determinism_test`, +1 from
+  `v1_2_legacy_commit_hash_test`, +1 from `for_each_serial_test`,
+  +1 from `version_test_v1_2`).
+
+### Batch summary
+
+Phase 8 (workload-driven library tightening) — batches 26–33:
+
+| Batch | Status        | Win at 100k entities                |
+|-------|---------------|-------------------------------------|
+| B26   | gate          | Establishes 15.6 ms baseline        |
+| B27   | diagnostic    | Names C1/C2/C3 candidates           |
+| B28   | ✅ landed     | `step` -2.6 ms, `update` -2.5 ms    |
+| B29   | ❌ deferred   | Math probe disproves byte-identity  |
+| B30   | ✅ landed     | `commit` -7.8 ms, `step` -10 ms     |
+| B31   | downgraded    | Bench shows < 0.04% recoverable     |
+| B32   | ✅ landed     | TSAN/ASAN/UBSAN clean + long soak   |
+| B33   | this release  | Docs + version bump + release polish |
+
+Cumulative RpgStress 100k+5k: `step` 15.6 → 4.41 ms (-72%).
+
+---
+
 ## [1.1.0] — 2026-05-18 — Vulkan skinned-mesh rendering
 
 Additive minor release. The `examples/vulkan_renderer/` reference

@@ -166,9 +166,20 @@ public:
     /// @thread_safety Safe from any thread.
     ILogger& logger() const noexcept;
 
+    /// The engine-owned `World`. Lifetime matches the engine and the
+    /// reference never reseats. Use for read-only inspection from the
+    /// sim thread or for mutation via @ref CommandBuffer; direct
+    /// mutation of `World` is reserved for the commit phase.
+    /// @thread_safety Read-only access is safe between waves. During
+    /// a wave, only the `worldView()` snapshot through `SystemContext`
+    /// is the supported reader.
     World&       world() noexcept;
+    /// @copydoc world
     const World& world() const noexcept;
 
+    /// The `Config` the engine was constructed with. Pinned for the
+    /// engine's lifetime; runtime knobs (`setTickBudget`,
+    /// `setSkipPolicy`, `setStallTimeout`) live as their own setters.
     const Config& config() const noexcept;
 
     /// Monotonically increasing tick counter. 0 before the first
@@ -301,6 +312,8 @@ public:
     /// (the default) is zero.
     /// @thread_safety Sim thread only.
     void setStallTimeout(double seconds) noexcept;
+    /// Current stall-watchdog timeout in seconds; `0.0` means disabled.
+    /// See @ref setStallTimeout for the setter's full contract.
     double stallTimeout() const noexcept;
 
     /// §3.9.5 batch 20 — capture the world snapshot synchronously on
@@ -363,6 +376,7 @@ public:
     /// current world without advancing it. Default `false`.
     /// @thread_safety Safe from any thread.
     void setPaused(bool paused) noexcept;
+    /// `true` iff @ref setPaused was last called with `true`.
     bool paused() const noexcept;
 
     /// §3.5 batch 12 — wall-clock budget per tick, in seconds. Default
@@ -379,6 +393,8 @@ public:
     /// Skipping is reported on the `events<SystemSkipped>()` channel.
     /// @thread_safety Sim thread only.
     void setTickBudget(double seconds) noexcept;
+    /// Current per-tick budget in seconds; `0.0` means "no budget".
+    /// See @ref setTickBudget for the setter's full contract.
     double tickBudget() const noexcept;
 
     /// §3.5 batch 12 — how the engine decides which systems to skip.

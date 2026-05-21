@@ -60,6 +60,11 @@ public:
 
     virtual ~SystemContext() = default;
 
+    /// The engine-owned `World` this system reads from during its
+    /// `update`. Mutations must go through @ref CommandBuffer; direct
+    /// modification from a worker job is undefined behavior.
+    /// @thread_safety Safe to read from any worker job dispatched
+    /// inside this `update`. Lifetime matches the engine.
     virtual const World& world() const noexcept = 0;
 
     /// §3.6 batch 13c — wave-scoped @ref WorldView. The view is rebuilt

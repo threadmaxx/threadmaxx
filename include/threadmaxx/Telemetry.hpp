@@ -28,6 +28,9 @@ namespace threadmaxx {
 class ITraceSink {
 public:
     virtual ~ITraceSink() = default;
+    /// Called once per `Engine::step` on the simulation thread with a
+    /// finalized snapshot. See the class brief for the timing contract
+    /// and the borrowed-span lifetime rule.
     virtual void onFrame(const FrameSnapshot& snap) = 0;
     /// Engine-internal: called once on the sim thread at
     /// `Engine::shutdown` before the engine destroys its sink pointer.
@@ -71,6 +74,8 @@ public:
         std::size_t   rotationBytes   = 64u * 1024u * 1024u;  // 64 MiB
     };
 
+    /// Construct with the given path template + rotation budget. The
+    /// first file is opened lazily on the first @ref onFrame call.
     explicit FileTraceSink(Config cfg);
     ~FileTraceSink() override;
 
@@ -148,6 +153,8 @@ public:
     HudTraceSink() = default;
     ~HudTraceSink() override = default;
 
+    /// Updates the latest-snapshot bracket using a seqlock pattern. See
+    /// the class brief for the writer/reader protocol.
     void onFrame(const FrameSnapshot& snap) override;
 
     /// Read the latest snapshot. Returns `true` and writes `out` when
@@ -197,7 +204,9 @@ public:
     void         update(SystemContext&) override {}
     void         postStep(SystemContext&) override;
 
+    /// Target passed to the constructor; pinned for the watcher's lifetime.
     double targetSeconds() const noexcept { return target_; }
+    /// Number of @ref BudgetExceeded events emitted since construction.
     std::uint64_t exceedCount() const noexcept { return exceedCount_; }
 
 private:

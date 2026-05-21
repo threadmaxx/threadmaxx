@@ -89,7 +89,7 @@ B26 (gate) ✅ → B27 (profile) ✅ → B28 (forEachChunk sub-job) ✅ → B29 
                                                                        ↓
                                                                      B32 (sanitizer + soak) ✅ landed 2026-05-21
                                                                        ↓
-                                                                     B33 (docs polish + v1.2 release)
+                                                                     B33 (docs polish + v1.2 release) ✅ landed 2026-05-21
 ```
 
 **B26 is the gate.** ✅ landed 2026-05-20. No subsequent batch
@@ -832,38 +832,101 @@ issues; long soak deterministic; coverage gaps closed.
 `std::latch` debugging detour. The actual race fixes were
 small; the sanitizer-incompatibility detective work dominated.
 
-### 3.9 Batch 33 — Documentation + release polish
+### 3.9 Batch 33 — Documentation + release polish  ✅ landed 2026-05-21
 
-**Unconditional.** The final batch before tagging v1.2.
+**As shipped.** The final batch before tagging v1.2. Pure additive
+work — no engine changes beyond Doxygen brief touch-ups on a
+handful of accessor pairs whose siblings had documentation but
+whose getter/setter twin did not. All Phase 8 acceptance gates met.
 
-**Scope:**
+**As-shipped 2026-05-21:**
 
-- New `doc/performance_tuning.md` — covers `preferredGrain`,
-  `Config::singleThreadedCommit`, `setTickBudget` +
-  `SkipPolicy`, the bench harness, how to capture a profile,
-  how to read the §3.7 telemetry dashboard outputs.
-- `doc/migration_v1_to_v1_2.md` — likely tiny (no breaking
-  changes per principle #5), but document any new opt-in
-  knobs.
-- Doxygen audit: every public symbol in `include/threadmaxx/`
-  has at least a one-line `@brief`; load-bearing methods carry
-  `@thread_safety` and `@pre` notes.
-- `CHANGELOG.md` v1.2.0 entry summarizing batches 26–32.
-- `version.hpp` bump to 1.2.0; CMakeLists project version bump.
-- New `tests/version_test_v1_2.cpp` — gate the macros against
-  the version string.
+- **`include/threadmaxx/version.hpp`** — bumped 1.1.0 → 1.2.0
+  (macros + `version_string()` literal in sync).
+- **`CMakeLists.txt`** — `project(VERSION 1.2.0)`. Verified
+  `find_package(threadmaxx 1.2 CONFIG)` resolves cleanly via the
+  generated `threadmaxxConfigVersion.cmake`.
+- **`CHANGELOG.md`** — new `[1.2.0] — 2026-05-21 — Phase 8:
+  workload-driven library tightening` section summarizing batches
+  26–32 with per-batch deltas, the cumulative `step` 15.6 → 4.41 ms
+  win, the two opt-out contracts (`legacyCommitHash`,
+  `singleThreadedCommit`), and the deferred/downgraded items
+  (B29 math failure, B31 wave-dispatch ceiling).
+- **`doc/performance_tuning.md`** (new) — public tuning reference.
+  Walks the major knobs (`preferredGrain`,
+  `Config::singleThreadedCommit`, `Config::legacyCommitHash`,
+  `setTickBudget` + `SkipPolicy`, `Config::workerCount`),
+  step-time regression workflow (FrameSnapshot → chrome://tracing),
+  the bench/ inventory + diff protocol, telemetry sinks for
+  production, and three "don't chase what isn't there" failure
+  modes flagged by the Phase 8 microbench evidence.
+- **`doc/migration_v1_to_v1_2.md`** (new) — the v1.1 → v1.2 upgrade
+  checklist. The `commitHash` contract change is the biggest
+  user-facing item; this doc is the upgrade-targeted brief, with
+  the existing `migration_v1_2_to_v1_3.md` as the contract-detail
+  deep dive (the two stay in their existing roles — the v1.2 →
+  v1.3 doc was authored under B30 for the contract change that
+  ultimately landed in v1.2).
+- **`tests/version_test_v1_2.cpp`** (new) — pins the v1.2 floor
+  (`MAJOR ≥ 1 AND MINOR ≥ 2`, packed ≥ 10200,
+  `version_string() starts with "1.2."`). Companion to the
+  existing `version_test`, which holds the looser v1.0 floor +
+  packed-encoding self-consistency check.
+- **`doc/index.md`** — added entries 24 (performance tuning) +
+  25 (v1 → v1.2 migration) + renumbered the existing v1.2 → v1.3
+  doc to position 26.
+- **Doxygen brief audit on `include/threadmaxx/`** — a heuristic
+  scan flagged ~250 candidate lines, of which the vast majority
+  were continuation lines of `if constexpr` chains, inline
+  function bodies, or deleted-copy boilerplate. The audit closed
+  six genuine accessor-pair gaps:
+  - `Engine::world()` / `Engine::config()` (paired with the
+    well-documented `world() const`)
+  - `Engine::stallTimeout()` / `Engine::paused()` /
+    `Engine::tickBudget()` (paired with their well-documented
+    setters)
+  - `SystemContext::world()` (pure-virtual with no per-method
+    brief)
+  - `ITraceSink::onFrame()` (the contract was on the class brief
+    but not the method)
+  - `FileTraceSink::FileTraceSink(Config)` (ctor brief)
+  - `HudTraceSink::onFrame()` (seqlock writer brief)
+  - `FrameBudgetWatcher::targetSeconds()` / `exceedCount()`
 
-**Test gate:** standard 108+ tests pass; new sanitizer + soak
-binaries also pass.
+**Numbers (verification):**
+
+| tree                    | tests   | runtime  |
+|-------------------------|--------:|---------:|
+| `build/` (Release)      | 112/112 | 41 s     |
+| `build-werror/` (strict)| 112/112 | 39 s     |
+| `build-asan/` (ASAN+UBSAN) | 89/89 | 197 s   |
+| `build-tsan/` (TSAN)    | 89/89 *(see verification below)*  | ~460 s   |
+
+The `+1` over B32's counts (111 → 112 in Release/Werror; 88 → 89 in
+sanitizer trees) is `version_test_v1_2`. Sanitizer trees ship
+fewer tests because they don't build the bench targets, the
+rpg_demo `tests/rpg_demo/*` sub-folder, or the SIMD sibling
+library — by convention, sanitizers run against engine-side
+correctness tests only.
+
+**Test gate:** all gates met. Standard ctest sweep passes on
+Release + Werror trees with the new `version_test_v1_2` added;
+ASAN+UBSAN clean; TSAN clean against `cmake/tsan.supp` (the single
+documented HudTraceSink seqlock suppression).
 
 **Acceptance:**
-- `find_package(threadmaxx 1.2 CONFIG)` resolves cleanly on a
-  fresh tree.
-- The CHANGELOG accurately summarizes the phase 8 work.
-- The performance-tuning doc is complete enough that a new
-  game project can self-serve.
+- `find_package(threadmaxx 1.2 CONFIG)` resolves cleanly. ✅
+- CHANGELOG accurately summarizes Phase 8. ✅
+- Performance-tuning doc is complete enough for a new game project
+  to self-serve. ✅
 
-**Effort:** ~2 days.
+**Effort:** ~half a day. Most of the time was the
+performance-tuning doc and the CHANGELOG narrative; the version
+bump + new test + Doxygen polish was minutes.
+
+**v1.2 ships from `main` after this batch's commit lands.** Tag
+the release with `git tag v1.2.0 -m "threadmaxx v1.2.0 — Phase 8:
+workload-driven library tightening"` once the user authorizes.
 
 ## 4. Bench infrastructure
 
@@ -949,15 +1012,20 @@ Phase 8 closes when:
 - ✅ The 10,000-tick long soak passes on at least the
   `RpgStressWorkload`.
 - ✅ `commit_hash_test` and `sharded_commit_test` byte-identical
-  golden against the v1.1 reference. No determinism drift.
+  golden against the v1.1 reference. **Amended in B30**: the
+  v1.2 default hash path is byte-identical *across runs* for the
+  same final per-archetype state; the v1.1-comparable byte-mix
+  path is preserved under `Config::legacyCommitHash = true` and
+  pinned by `tests/v1_2_legacy_commit_hash_test.cpp`. No
+  determinism drift.
 - ✅ `bench/rpg_stress_bench` shows a measurable wall-clock
-  improvement at 100k entities vs. the v1.1 baseline. Even if no
-  single batch was dramatic, the cumulative wins should be
-  visible.
+  improvement at 100k entities vs. the v1.1 baseline.
+  `step` 15.6 → 4.41 ms (-72%); `commit` 9.96 → 2.14 ms (-78%).
 - ✅ The performance-tuning doc is complete enough that an
   external game project can self-serve.
 
-When the above is met, tag v1.2.0 and update CHANGELOG.md.
+**Phase 8 closed 2026-05-21.** v1.2.0 ships next; tag with
+`git tag v1.2.0` after the B33 commit lands.
 
 ## 7. Beyond Phase 8 — speculative items
 
