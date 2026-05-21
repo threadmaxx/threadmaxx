@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <latch>
+#include <numeric>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -76,6 +77,88 @@ inline std::uint64_t mixHashBytes(std::uint64_t h, const T& v) noexcept {
     const auto* p = reinterpret_cast<const std::byte*>(&v);
     for (std::size_t i = 0; i < sizeof(T); ++i) {
         h = mixHashByte(h, static_cast<std::uint8_t>(p[i]));
+    }
+    return h;
+}
+
+// §3.6 batch 30 — Hash a chunk's full content into a 64-bit FNV-1a-64
+// fingerprint. Used by the end-of-step `finalizeCommitHash` rollup to
+// refresh a dirty chunk's `cachedHash`. Inputs are mixed in a fixed,
+// architecture-independent order:
+//   1. mask.bits()         (8 bytes, distinguishes chunks of different shape)
+//   2. row count           (8 bytes)
+//   3. entities[]          (8 bytes × count, preserves entity-identity)
+//   4. each built-in dense vector, in component-enum order, gated by mask
+//   5. each user column,   in registration (ascending-bit) order:
+//        col.bit, col.stride, then col.bytes (count rows × stride bytes)
+//
+// Empty chunks fold down to `mix(basis, mask.bits()) ; mix(_, 0)` —
+// the mask bits still distinguish a still-empty archetype from one
+// that never existed, since `finalizeCommitHash` walks every chunk.
+std::uint64_t hashChunkContent(const ArchetypeChunk& c) noexcept {
+    std::uint64_t h = 0xcbf29ce484222325ull;
+    const std::uint64_t maskBits = c.mask.bits();
+    h = mixHashBytes(h, maskBits);
+    const std::uint64_t count = c.entities.size();
+    h = mixHashBytes(h, count);
+    if (count == 0) {
+        // No rows; per-vector bytes are empty. Mix the column metadata
+        // anyway so a chunk that *carries* a user column with no rows
+        // hashes differently from one without that column.
+        for (const auto& col : c.userColumns) {
+            h = mixHashBytes(h, col.bit);
+            h = mixHashBytes(h, col.stride);
+        }
+        return h;
+    }
+    // Entity handles ride into the hash so reordering rows within a
+    // chunk (e.g. via swap-and-pop) changes the hash. That's the
+    // desired contract: the hash reflects observable structure, not
+    // just multiset content.
+    {
+        const auto* p = reinterpret_cast<const std::byte*>(c.entities.data());
+        const std::size_t bytes = count * sizeof(EntityHandle);
+        for (std::size_t i = 0; i < bytes; ++i) {
+            h = mixHashByte(h, static_cast<std::uint8_t>(p[i]));
+        }
+    }
+    auto mixVecBytes = [&h, count](const auto* data, std::size_t stride) {
+        const auto* p = reinterpret_cast<const std::byte*>(data);
+        const std::size_t bytes = count * stride;
+        for (std::size_t i = 0; i < bytes; ++i) {
+            h = mixHashByte(h, static_cast<std::uint8_t>(p[i]));
+        }
+    };
+    if (c.mask.has(Component::Transform))
+        mixVecBytes(c.transforms.data(), sizeof(Transform));
+    if (c.mask.has(Component::Velocity))
+        mixVecBytes(c.velocities.data(), sizeof(Velocity));
+    if (c.mask.has(Component::RenderTag))
+        mixVecBytes(c.renderTags.data(), sizeof(RenderTag));
+    if (c.mask.has(Component::UserData))
+        mixVecBytes(c.userData.data(), sizeof(UserData));
+    if (c.mask.has(Component::Acceleration))
+        mixVecBytes(c.accelerations.data(), sizeof(Acceleration));
+    if (c.mask.has(Component::Parent))
+        mixVecBytes(c.parents.data(), sizeof(Parent));
+    if (c.mask.has(Component::Health))
+        mixVecBytes(c.healths.data(), sizeof(Health));
+    if (c.mask.has(Component::Faction))
+        mixVecBytes(c.factions.data(), sizeof(Faction));
+    if (c.mask.has(Component::AnimationStateRef))
+        mixVecBytes(c.animationStates.data(), sizeof(AnimationStateRef));
+    if (c.mask.has(Component::PhysicsBodyRef))
+        mixVecBytes(c.physicsBodies.data(), sizeof(PhysicsBodyRef));
+    if (c.mask.has(Component::NavAgentRef))
+        mixVecBytes(c.navAgents.data(), sizeof(NavAgentRef));
+    if (c.mask.has(Component::BoundingVolume))
+        mixVecBytes(c.boundingVolumes.data(), sizeof(BoundingVolume));
+    for (const auto& col : c.userColumns) {
+        h = mixHashBytes(h, col.bit);
+        h = mixHashBytes(h, col.stride);
+        for (std::byte b : col.bytes) {
+            h = mixHashByte(h, static_cast<std::uint8_t>(b));
+        }
     }
     return h;
 }
@@ -1032,12 +1115,18 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
         }
         // else: single-cmd path — fall through with runEnd == i + 1.
 
-        // Apply each command in submission order. The commit hash mixes
-        // in step with the apply — never deferred — so the per-tick
-        // hash matches the pre-batch-19 reference byte-for-byte.
+        // Apply each command in submission order. Under the v1.x legacy
+        // hash path (`Config::legacyCommitHash = true`) the per-tick
+        // hash matches the pre-batch-19 reference byte-for-byte. Under
+        // the new batch-30 path the per-command mix is skipped — the
+        // hash is reconstructed at end of step from per-chunk state
+        // (see `finalizeCommitHash`).
+        const bool legacyHash = cfg_.legacyCommitHash;
         for (std::size_t j = i; j < runEnd; ++j) {
             const EntityHandle spawnResult = applyCommandImpl(cmds[j], storage);
-            commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmds[j], spawnResult);
+            if (legacyHash) {
+                commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmds[j], spawnResult);
+            }
         }
         i = runEnd;
     }
@@ -1154,8 +1243,15 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
                             shardChunkBins_.resize(loc.archetype + 1);
                         }
                         shardChunkBins_[loc.archetype].push_back(&cmd);
-                        commitHashAcc_ = hashCommandImpl(commitHashAcc_,
-                            cmd, kInvalidEntity);
+                        // §3.6 batch 30 — per-command hash mix only
+                        // contributes to the legacy hash. Under the
+                        // new path, the chunk this command will touch
+                        // is already marked dirty by `mut*()` in
+                        // pass C; finalizeCommitHash will roll it up.
+                        if (cfg_.legacyCommitHash) {
+                            commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                                cmd, kInvalidEntity);
+                        }
                         routedChunkLocal = true;
                     }
                 }
@@ -1163,7 +1259,9 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
             if (!routedChunkLocal) {
                 // Global lane: apply on sim thread, then hash.
                 const EntityHandle spawnResult = applyCommandImpl(cmd, storage);
-                commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmd, spawnResult);
+                if (cfg_.legacyCommitHash) {
+                    commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmd, spawnResult);
+                }
             }
         }
     }
@@ -1202,6 +1300,68 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     // §3.9.6 batch 21 — bitmap fast clear: only zero the indices we
     // actually touched this call, leaving the rest at 0.
     for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
+}
+
+// §3.6 batch 30 — end-of-step per-archetype hash rollup. Refreshes
+// every dirty chunk's `cachedHash` (parallel across chunks when ≥ 2
+// chunks need work), then combines all chunks' cachedHashes into one
+// FNV-1a-64 running hash, walking chunks in mask-bits ascending order
+// so the result is independent of archetype creation order.
+//
+// Called from `step()` only when `cfg_.legacyCommitHash == false`.
+// The legacy path keeps `commitHashAcc_` as the running per-command
+// mix and skips this entirely.
+std::uint64_t EngineImpl::finalizeCommitHash() {
+    auto& storage = world_.impl_().storage;
+    auto& chunks  = storage.archetypes().chunks();
+
+    // Collect indices of dirty chunks. Stable order (creation order);
+    // we re-sort for the combine pass below.
+    std::vector<std::uint32_t> dirty;
+    dirty.reserve(chunks.size());
+    for (std::uint32_t i = 0; i < chunks.size(); ++i) {
+        if (chunks[i].hashDirty) dirty.push_back(i);
+    }
+
+    // Recompute dirty chunks. ≥ 2 dirty chunks → parallel via jobs_;
+    // each job writes to its own chunk's cachedHash so there's no
+    // sharing. Single-chunk falls through to a serial recompute.
+    if (dirty.size() >= 2 && jobs_) {
+        std::latch done(static_cast<std::ptrdiff_t>(dirty.size()));
+        for (std::uint32_t idx : dirty) {
+            ArchetypeChunk* c = &chunks[idx];
+            jobs_->submit([c, &done] {
+                c->cachedHash = hashChunkContent(*c);
+                c->hashDirty  = false;
+                done.count_down();
+            });
+        }
+        done.wait();
+    } else {
+        for (std::uint32_t idx : dirty) {
+            auto& c = chunks[idx];
+            c.cachedHash = hashChunkContent(c);
+            c.hashDirty  = false;
+        }
+    }
+
+    // Combine: sort by mask.bits() so the final hash is invariant under
+    // archetype creation order (two engines that ended up with the same
+    // set of chunks but created them in different orders produce the
+    // same commitHash). Empty chunks contribute their mask + 0-count
+    // fingerprint, distinguishing engines whose archetype inventories
+    // differ.
+    std::vector<std::uint32_t> order(chunks.size());
+    std::iota(order.begin(), order.end(), std::uint32_t{0});
+    std::sort(order.begin(), order.end(),
+              [&chunks](std::uint32_t a, std::uint32_t b) {
+                  return chunks[a].mask.bits() < chunks[b].mask.bits();
+              });
+    std::uint64_t h = 0xcbf29ce484222325ull;
+    for (std::uint32_t idx : order) {
+        h = mixHashBytes(h, chunks[idx].cachedHash);
+    }
+    return h;
 }
 
 void EngineImpl::buildRenderFrame() {
@@ -1682,17 +1842,27 @@ void EngineImpl::step() {
     stats_.totalTicks++;
     stats_.totalJobsSubmitted += jobsThisStep;
     stats_.totalCommandsCommitted += commandsThisStep_;
-    stats_.commitHash = commitHashAcc_;
+    // §3.6 batch 30 — `legacyCommitHash` (the v1.x path) keeps
+    // `commitHashAcc_` as the running per-command FNV-1a-64 mix;
+    // publish it directly. Otherwise roll up per-archetype dirty
+    // chunks into the new state-fingerprint hash.
+    if (cfg_.legacyCommitHash) {
+        stats_.commitHash = commitHashAcc_;
+    } else {
+        stats_.commitHash = finalizeCommitHash();
+    }
 
     // §3.6 batch 13a: opt-in production diagnostic. When
     // `logCommitHashEvery > 0`, log the running hash at Info every N
     // ticks. Devs comparing two clients with the same seed but
-    // diverging hashes get a tick number to bisect against.
+    // diverging hashes get a tick number to bisect against. Reads
+    // from `stats_.commitHash` (already populated above) so the
+    // log line agrees with whatever the rest of the engine reports.
     if (cfg_.logCommitHashEvery > 0 &&
         (stats_.totalTicks % cfg_.logCommitHashEvery) == 0) {
         std::ostringstream os;
         os << "commitHash tick=" << stats_.tick
-           << " hash=0x" << std::hex << commitHashAcc_;
+           << " hash=0x" << std::hex << stats_.commitHash;
         logger().log(LogLevel::Info, os.str());
     }
 

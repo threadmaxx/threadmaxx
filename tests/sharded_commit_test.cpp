@@ -266,8 +266,14 @@ int main() {
 
     // ---- (3) Sharded path handles the empty-buffer case ------------
     //
-    // A wave with no command emissions must not crash and must leave
-    // `commitHash` unchanged from the basis.
+    // A wave with no command emissions must not crash, and consecutive
+    // empty steps must produce a stable `commitHash` — empty world
+    // state hashes to a deterministic fingerprint that does not drift.
+    //
+    // §3.6 batch 30 — under the new state-rollup hash, an empty step
+    // computes the per-archetype fingerprint of the (unchanged) world,
+    // not the FNV basis sentinel. We pin the basis sentinel for the
+    // legacy hash path in a separate sub-block below.
     {
         Config cfg;
         cfg.sleepToPace          = false;
@@ -277,7 +283,27 @@ int main() {
         struct G : IGame { void onSetup(Engine&, World&, CommandBuffer&) override {} } g;
         CHECK(engine.initialize(g));
         engine.step();
-        // No commands → hash stays at FNV-1a basis.
+        const std::uint64_t h1 = engine.stats().commitHash;
+        engine.step();
+        const std::uint64_t h2 = engine.stats().commitHash;
+        CHECK_EQ(h1, h2);
+        engine.shutdown();
+    }
+
+    // ---- (3b) Legacy hash path: empty step → basis sentinel. -------
+    //
+    // The pre-batch-30 invariant "no commands → commitHash stays at
+    // FNV basis" still holds when `legacyCommitHash = true`.
+    {
+        Config cfg;
+        cfg.sleepToPace          = false;
+        cfg.workerCount          = 2;
+        cfg.singleThreadedCommit = false;
+        cfg.legacyCommitHash     = true;
+        Engine engine(cfg);
+        struct G : IGame { void onSetup(Engine&, World&, CommandBuffer&) override {} } g;
+        CHECK(engine.initialize(g));
+        engine.step();
         CHECK_EQ(engine.stats().commitHash, 0xcbf29ce484222325ull);
         engine.shutdown();
     }

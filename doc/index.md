@@ -71,6 +71,10 @@ documents the invariants this guide relies on; the
     per-component `serialize` / `deserialize` trait pair for save/load.
 23. [Logging](logging.md) — pluggable `ILogger` sink for engine
     lifecycle messages and loader errors.
+24. [Migrating v1.2 → v1.3](migration_v1_2_to_v1_3.md) — the
+    `EngineStats::commitHash` contract amendment that ships with v1.3,
+    the `Config::legacyCommitHash` opt-out, and the deprecation
+    timeline (§3.6 batch 30).
 
 ## What this guide does not cover
 

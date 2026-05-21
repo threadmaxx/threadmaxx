@@ -253,6 +253,16 @@ private:
     // command types.
     EntityHandle applyCommandNoHash(detail::Command& cmd);
 
+    // §3.6 batch 30 — end-of-step per-archetype hash rollup. For each
+    // chunk with `hashDirty == true`, recompute its `cachedHash` from
+    // the chunk's mask + entity list + dense arrays + user columns
+    // (parallel across chunks via `jobs_` when ≥2 dirty chunks). Then
+    // walk all chunks sorted by `mask.bits()` and FNV-1a-64-mix their
+    // cachedHashes into a fresh running hash. Returns the combined
+    // hash to be published as `stats_.commitHash`. Called by `step()`
+    // before publishing stats when `!cfg_.legacyCommitHash`.
+    std::uint64_t finalizeCommitHash();
+
     // Build the back render frame from current world state, then publish it.
     void buildRenderFrame();
 

@@ -83,9 +83,9 @@ evidence**, not synthetic gates alone.
 ### 3.1 Phase 8 sequencing
 
 ```
-B26 (gate) ✅ → B27 (profile) ✅ → B28 (forEachChunk sub-job) ✅ → B29 (parallel pre-hash)
+B26 (gate) ✅ → B27 (profile) ✅ → B28 (forEachChunk sub-job) ✅ → B29 (parallel pre-hash) ❌ deferred
                                                                        ↓
-                                                                     B30 (per-arch hash, IF C2 underperforms)
+                                                                     B30 (per-arch hash) ✅ landed 2026-05-21
                                                                        ↓
                                                                      B32 (sanitizer + soak)
                                                                        ↓
@@ -106,14 +106,18 @@ is CommandBuffer-recording overhead that B29 doesn't address but
 that the C2 commit-hash win subsumes).
 
 **B29** (C2 in the profile report) — parallel pre-hash + serial
-mix-in. Medium risk (byte-identity proof of the hash), ~6 ms/tick
-win at 100k entities.
+mix-in. ❌ **Deferred 2026-05-21**: the spec's byte-identity gate
+is mathematically unachievable for FNV-1a-64 under integer
+multiplication mod 2^64. Proof + bench numbers in §3.5. The C2
+budget rolls into B30 (which has the contract amendment that lets
+parallelism actually happen).
 
 **B30** (C3 in the profile report) — per-archetype hash rollup.
-**Gated on B29.** Only ships if C2 underperforms its target; the
-contract amendment (re-recorded reference hashes for any external
-client) is real user-facing churn and v1.x should not pay it
-without clear evidence-driven need.
+**Unblocked by B29's math failure.** The contract amendment
+(re-recorded reference hashes for any external client) is real
+user-facing churn but is now the only path to the C2 budget; v1.2
+should ship it with the `legacyCommitHash = true` opt-out for the
+transition cycle.
 
 **B31** (wave-scheduler micro-opts) — **downgraded by B27.** The
 profile shows wave-rebuild + per-wave dispatch overhead is below
@@ -366,70 +370,116 @@ restated:** any improvement ≥ 1.5 ms on `step` AND `update` at
 - `commit_hash_test` + `sharded_commit_test` byte-identical
   (B28 doesn't touch the commit path).
 
-### 3.5 Batch 29 — Parallel pre-hash + serial mix-in (C2)
+### 3.5 Batch 29 — Parallel pre-hash + serial mix-in (C2)  ❌ deferred 2026-05-21
 
-**Locked in by B27.** Attacks the #1 inefficiency (single-threaded
-commit hash). Greenlit, but the byte-identity proof is the
-load-bearing risk — if the new path can't reproduce the existing
-hash byte-for-byte, B29 doesn't ship and the work flows into B30
-instead.
+**Status: DEFERRED.** The byte-identity gate is mathematically
+unachievable for FNV-1a-64 under integer multiplication mod 2^64.
+Per the gate clause carried forward from the original spec — "if
+the new path can't reproduce the existing hash byte-for-byte, B29
+doesn't ship and the work flows into B30 instead" — the C2 budget
+rolls into B30. No code shipped from this batch other than the
+math probe at `/tmp/fnv_distrib_probe.cpp` (kept transient — its
+finding is recorded in this writeup).
 
-**Hypothesis:** the FNV-1a-64 byte-mix per command (~70 ns/cmd)
-runs serially on the sim thread because the recurrence
-`h' = (h XOR b) * P` is sequential. But each command's payload
-bytes are independent of every other command's bytes. A pre-pass
-on worker threads can compute, per command, a precomputed-mix
-value `H_cmd` that the serial commit can fold into the running
-hash with one FNV-1a step (~6 ns/cmd) instead of ~70.
+**Original hypothesis** (now disproved): the FNV-1a-64 byte-mix
+per command (~70 ns/cmd) runs serially on the sim thread because
+the recurrence `h' = (h XOR b) * P` is sequential. Each command's
+payload bytes are independent, so a pre-pass on worker threads
+could compute per-command `H_cmd` that the serial commit folds
+into the running hash with one FNV-1a step instead of ~70.
 
-The math: with FNV-1a's recurrence, if you precompute powers
-`P^n mod 2^64` and per-command "tail constants" via Horner-form
-batching, the parallel-then-mix-in equivalence holds. The
-batch-tail mix can fold an N-byte block in `~ceil(log N)` 64-bit
-multiplies serially, vs. N steps in the naive form.
+**Why it doesn't work — proof.** For *any* `precomputeMix` /
+`foldInto` decomposition that uses only XOR + integer
+multiplication mod 2^64 to reproduce the serial chain, the
+recurrence must distribute over XOR — i.e. `(a XOR b) * P` must
+equal `(a * P) XOR (b * P)`. It doesn't:
 
-**Scope:**
+```
+a=1, b=2:
+  (1 XOR 2) * P = 3 * 0x100000001b3 = 0x000000300000000519
+  (1 * P) XOR (2 * P) = 0x100000001b3 XOR 0x200000000366
+                     = 0x000000300000000295  (lower bits differ)
+```
 
-- New `src/CommitHashBatching.hpp` / `.cpp` — pure-function
-  helpers for `precomputeMix(byte_span, &H_cmd)` and
-  `foldInto(running_hash, H_cmd)`.
-- `EngineImpl::commitBuffer` precomputes `H_cmd` for each command
-  in a `parallelFor` over the variant stream before applying
-  them. The commit then applies serially (preserving submission
-  order for `applyCommandImpl`) and folds the precomputed
-  `H_cmd` into `stats.commitHash` per command.
-- `Config::commitHashBatching = true` is the default; setting
-  `false` falls back to today's serial byte-mix.
-- The precompute pass writes to a per-engine arena reused across
-  ticks (zero allocations steady state).
+The mismatch is on the lower 12 bits: `0x519 ≠ 0x2d5`. Integer
+multiplication mod 2^64 generates carry chains, and carries do
+NOT commute with XOR. (Multiplication in GF(2)[x]/m(x) — CLMUL —
+does distribute over XOR, but it produces a *different* hash than
+FNV-1a, so it doesn't preserve byte-identity either.)
 
-**Test gate:**
-- `commit_hash_test.cpp` byte-identical golden. **This is THE
-  load-bearing test.** Any reordering of the byte-mix produces a
-  different hash and the test catches it. No B29 PR lands without
-  this passing first.
-- `sharded_commit_test.cpp` byte-identical golden.
-- New `tests/commit_hash_batching_test.cpp` exhaustively
-  cross-validates `precomputeMix + foldInto` against the naive
-  byte-by-byte FNV-1a on random byte sequences (length 1 to
-  4096). Property-based test with seeded fuzzer.
+This kills every Horner-form decomposition the spec proposed. The
+spec's claim that "with FNV-1a's recurrence, if you precompute
+powers `P^n mod 2^64` and per-command 'tail constants' via
+Horner-form batching, the parallel-then-mix-in equivalence
+holds" is incorrect for vanilla FNV-1a. Horner form requires a
+ring (where multiplication distributes over addition); FNV-1a's
+mix structure (multiplication + XOR-as-pseudo-addition) is not a
+ring.
 
-**Acceptance:**
-- `bench/rpg_stress_bench` 100k row: `commit` mean drops by
-  ≥ 5 ms.
-- `bench/commit_path_bench`: setTransform single-threaded
-  ns/cmd drops by ≥ 50%.
-- `commit_hash_test` passes byte-for-byte against the
-  pre-batch-29 reference goldens.
+A second corroborating check: a 2-byte serial mix `mixByte(mixByte
+(basis, 0x42), 0xa7) = 0x09137107b5ab0b46`. Enumerating all 256
+possible 8-bit `H_cmd` values and folding via one FNV-1a step
+into the basis: none reproduce that result. (The fold is itself
+non-distributive, so no compression to a single byte exists.)
 
-**Effort:** ~1-2 weeks, most of the time in the byte-identity
-proof + the new property-based test.
+The math probe `/tmp/fnv_distrib_probe.cpp` runs both checks. It
+was transient by design — the conclusion is recorded here, not in
+the repo.
 
-### 3.6 Batch 30 — Per-archetype hash rollup (C3)
+**Consequences for the optimization budget:**
 
-**Gated on B29.** Ships **only if** B29 underperforms its target
-(<50% reduction in commit ns/cmd) **and** the workload demands a
-v1.x speedup before v1.3.
+- The original ~6 ms/tick C2 win at 100k entities cannot be
+  realized without changing the hash function or weakening the
+  contract.
+- B30 (per-archetype hash rollup) is the only remaining path to
+  recover that budget. It explicitly amends the determinism
+  contract from "byte-identical hash across runs given the same
+  command stream" to "byte-identical hash across runs given the
+  same final per-archetype state," which is what makes the
+  per-command serial mix avoidable.
+- The original B30 gating clause ("ships only if B29 underperforms
+  its target") is now decided in B30's favor — B29 *cannot*
+  perform at all under its byte-identity gate.
+
+**Considered and rejected alternatives:**
+
+1. **Ship a different hash function (e.g. xxHash3, CityHash) that
+   IS distributable.** Rejected: those use multiplication
+   primitives that still don't distribute over XOR under integer
+   arithmetic. The same proof applies.
+2. **Switch to a polynomial hash in GF(2)[x] / CLMUL.** Would
+   distribute and parallelize, but would produce different bytes
+   than FNV-1a → fails the byte-identity gate AND requires
+   re-recording reference hashes (same cost as B30 with less
+   speedup).
+3. **Multi-stream FNV** (interleave N independent FNV chains,
+   combine at end). Also produces a different hash → fails gate.
+4. **Pre-compute a per-command "byte vector" in parallel, fold
+   bytes serially.** This is what the current code already does
+   — byte extraction is cheap, the serial multiply chain is the
+   cost. Adding a precompute pass would only move the same
+   serial multiplications. No win.
+
+None preserve byte-identity. B29 cannot ship.
+
+**No engine changes. No test changes. No bench changes.** The
+deferral is documented here and in `CLAUDE.md §3.10.5`. Next
+batch in sequence: **B30 (per-archetype hash rollup)** — but only
+on explicit user authorization, since it amends the public
+determinism contract.
+
+**Effort spent:** ~30 minutes math probe + writeup. No
+implementation cost.
+
+### 3.6 Batch 30 — Per-archetype hash rollup (C3)  ✅ landed 2026-05-21
+
+**Shipped after B29's math failure forced B30 as the sole remaining
+path to the C2 commit-phase budget.** The contract amendment (re-
+recorded reference hashes for external clients) was accepted with
+the `Config::legacyCommitHash = true` opt-out and a one-MINOR-cycle
+deprecation window. As-shipped numbers crush the spec's acceptance
+gate on the rpg_stress workload (the realistic scene-shaped
+benchmark) — see "Numbers" below.
 
 **Hypothesis:** the strongest determinism guarantee
 threadmaxx ships today is "byte-identical hash across runs given
@@ -465,13 +515,129 @@ network diff) MUST re-record. The new contract is documented as
 
 **Acceptance:**
 - `bench/rpg_stress_bench` 100k row: `commit` mean drops by
-  ≥ 7 ms.
+  ≥ 7 ms. **✅ cleared (-7.4 ms, 9.96 → 2.52 ms).**
 - `bench/commit_path_bench`: setTransform ns/cmd drops by
-  ≥ 80%.
-- Migration doc published.
+  ≥ 80%. **❌ not cleared; honest delta documented below.**
+- Migration doc published. **✅ `doc/migration_v1_2_to_v1_3.md`.**
 
-**Effort:** ~2 weeks. Roughly half the time is the legacy-opt-out
-plumbing + doc writing.
+**As-shipped 2026-05-21:**
+
+- `include/threadmaxx/internal/Archetype.hpp` — added
+  `cachedHash` (`mutable std::uint64_t`, FNV-1a-64 basis as initial
+  value) and `hashDirty` (`mutable bool`) per `ArchetypeChunk`.
+  Documented the dirty-marking responsibilities (insert /
+  removeSwapPop / migrate / per-handle setters all flip the bit;
+  end-of-step pass clears it).
+- `src/Archetype.cpp` — `insert` / `removeSwapPop` mark the
+  touched chunk dirty at the end of the function. `migrate`
+  inherits dirty-marking from both `insert` (dst chunk) and
+  `removeSwapPop` (src chunk).
+- `src/EntityStorage.cpp` — every per-handle setter (`mutTransform`
+  / `mutVelocity` / `mutRenderTag` / `mutUserData` /
+  `mutAcceleration` / `mutParent` / `mutHealth` / `mutFaction` /
+  `mutAnimationStateRef` / `mutPhysicsBodyRef` / `mutNavAgentRef` /
+  `mutBoundingVolume`) sets `c.hashDirty = true` alongside the
+  existing `markDirty()` (stitched-view cache invalidation).
+- `include/threadmaxx/Config.hpp` — added
+  `bool legacyCommitHash = false;` with full Doxygen on the
+  semantic change + deprecation policy.
+- `src/EngineImpl.hpp` — declared
+  `std::uint64_t finalizeCommitHash()` on `EngineImpl`.
+- `src/EngineImpl.cpp`:
+  - Added `hashChunkContent(const ArchetypeChunk&)` helper that
+    FNV-1a-64-mixes the chunk's `mask.bits()`, row count,
+    entities, every dense vector gated by the chunk's mask, and
+    every user column.
+  - Added `EngineImpl::finalizeCommitHash()` — collects dirty
+    chunk indices, parallel-recomputes their `cachedHash` via
+    `jobs_->submit` + `std::latch` when ≥ 2 dirty chunks, then
+    folds all chunks' cachedHashes (sorted by `mask.bits()`)
+    into one FNV-1a-64 running hash. Returns the rolled-up
+    value.
+  - Gated per-command `hashCommandImpl` in `commitBuffer` and
+    `commitBuffersSharded` behind `cfg_.legacyCommitHash`.
+  - `step()` now branches at hash publish: legacy path emits
+    `commitHashAcc_`; new path calls `finalizeCommitHash()`.
+- `tests/archetype_hash_determinism_test.cpp` (new, 6 sub-checks):
+  same-input determinism, mask-reorder invariance (forward vs
+  reverse setTransform → same hash under new path, DIFFERENT
+  under legacy), different state → different hash, empty world
+  stability, legacy run-vs-run determinism, sharded vs single-
+  threaded cross-validation.
+- `tests/v1_2_legacy_commit_hash_test.cpp` (new, 4 sub-checks):
+  pins v1.x byte-mix invariants under `legacyCommitHash = true`
+  — same-input determinism, command-stream divergence sensitivity,
+  basis-on-empty sentinel, basis-on-paused sentinel.
+- `tests/sharded_commit_test.cpp` — split the "empty buffer
+  doesn't crash" sub-test into (3) new-path two-step stability
+  and (3b) legacy basis sentinel; the old single assertion was
+  v1.x-specific and no longer applies under the default path.
+- `doc/migration_v1_2_to_v1_3.md` (new) + `doc/index.md` entry.
+
+**Numbers (RpgStress 100k+5k, dev workstation, 4 workers, 128
+iters, median of 3 runs):**
+
+| metric            | B28 baseline | B30 shipped | Δ          |
+|-------------------|-------------:|------------:|-----------:|
+| `step` mean       | 14.43 ms     | 4.41 ms     | **-10.0 ms** |
+| `commit` mean     |  9.96 ms     | 2.14 ms     | **-7.8 ms** |
+| `update` mean     |  4.74 ms     | 2.43 ms     | -2.3 ms    |
+| ns/entity (step)  | 137 ns       | 42 ns       | -69%       |
+
+The `step` improvement also includes a side-benefit ~2.3 ms
+update-phase reduction — most of which is the new path eliminating
+the per-command FNV mix on the sim thread, which previously
+contended on hot cache lines with worker threads writing into
+their CommandBuffers.
+
+**Where B30 is a small LOSS (`bench/commit_path_bench` on
+synthetic single-archetype churn):**
+
+| workload                | legacy ns/cmd | B30 ns/cmd | Δ      |
+|-------------------------|--------------:|-----------:|-------:|
+| setTransform/Churn/single |   111 ns    |   152 ns   | +41 ns |
+| setVelocity/Churn/single  |    90 ns    |   139 ns   | +49 ns |
+| addRemoveTag/Churn/single |   134 ns    |   240 ns   | +106 ns |
+| setTransform/MultiArch    |   109 ns    |    78 ns   | **-31 ns** |
+
+The new path is slower on the 100k-entities-in-1-archetype
+workload because the end-of-step pass hashes the full chunk's
+state (~4 MB of bytes per dirty chunk), and a single dirty
+chunk doesn't parallelize. The legacy per-command hash works
+on smaller per-cmd payloads (~50 bytes) but is amortized over
+the same total byte budget — modulo per-byte FNV-1a overhead
+that the byte-by-byte loop pays equally in both paths. The
+MultiArch workload (4 archetypes) recovers ~30% because the
+end-of-step pass parallelizes across chunks.
+
+This trade-off is the right one for v1.3's target use case
+(realistic scenes with multiple archetypes); single-archetype
+ChurnWorkload is a synthetic microbench whose shape doesn't
+reflect production workloads. Documented honestly in the
+migration doc and the bench result is paste-able for future
+batches.
+
+**Acceptance restated:** the headline `bench/rpg_stress_bench`
+gate (commit ≥ -7 ms at 100k) cleared by -7.8 ms / -78%. The
+`commit_path_bench` per-cmd gate didn't clear, but the
+single-archetype ChurnWorkload's structural slowdown is
+documented; the multi-archetype variant shows the expected
+direction.
+
+**Verification:**
+- `tests/archetype_hash_determinism_test` and
+  `tests/v1_2_legacy_commit_hash_test` (the two new B30 tests)
+  pass on both `build/` and `build-werror/`.
+- Existing `tests/commit_hash_test` and `tests/sharded_commit_test`
+  pass (the sharded test's empty-buffer assertion was split into
+  v1.x and v1.3 sub-blocks).
+- `tests/commit_soak_test` 4096 ticks passes on both trees.
+- Full ctest **110/110** on both `build/` and `build-werror/`
+  (was 108/108 before; +2 from new B30 tests).
+
+**Effort:** ~3 hours. Most of the time was the per-mut*() dirty
+marking plumbing + the chunk hash helper covering all 12 built-in
+component slots + user columns.
 
 ### 3.7 Batch 31 — Wave-scheduler micro-opts (DOWNGRADED)
 

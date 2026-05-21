@@ -65,6 +65,29 @@ struct Config {
     /// so production usage of this knob is for incident response,
     /// not normal builds.
     std::uint32_t logCommitHashEvery = 0;
+
+    /// §3.6 batch 30 — Determinism-contract opt-out. When `false`
+    /// (the v1.3 default), `EngineStats::commitHash` is the
+    /// per-archetype state rollup: at end of step the engine
+    /// recomputes a FNV-1a-64 fingerprint per dirty archetype chunk
+    /// and combines them (sorted by mask) into the published hash.
+    /// Cost is O(dirty chunk bytes) per tick instead of O(commands)
+    /// per tick, which lets the commit phase scale with state size
+    /// rather than command count.
+    ///
+    /// When `true`, the v1.x byte-per-command FNV-1a-64 mix is
+    /// preserved exactly. Use it ONLY if you have recorded reference
+    /// hashes from a v1.x build (replay, lockstep, network diff) and
+    /// can't re-record them yet — `doc/migration_v1_2_to_v1_3.md`
+    /// documents the transition. The flag is slated for removal one
+    /// MINOR cycle after v1.3 ships per the threadmaxx deprecation
+    /// policy.
+    ///
+    /// The two paths produce different hash values for the same
+    /// inputs by construction — they're hashing different things.
+    /// Both are deterministic across runs and machines for the same
+    /// command stream.
+    bool legacyCommitHash = false;
 };
 
 } // namespace threadmaxx

@@ -233,6 +233,7 @@ Transform* EntityStorage::mutTransform(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::Transform)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.transforms[slot.row];
 }
 Velocity* EntityStorage::mutVelocity(EntityHandle h) noexcept {
@@ -241,6 +242,7 @@ Velocity* EntityStorage::mutVelocity(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::Velocity)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.velocities[slot.row];
 }
 RenderTag* EntityStorage::mutRenderTag(EntityHandle h) noexcept {
@@ -249,6 +251,7 @@ RenderTag* EntityStorage::mutRenderTag(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::RenderTag)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.renderTags[slot.row];
 }
 UserData* EntityStorage::mutUserData(EntityHandle h) noexcept {
@@ -257,6 +260,7 @@ UserData* EntityStorage::mutUserData(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::UserData)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.userData[slot.row];
 }
 Acceleration* EntityStorage::mutAcceleration(EntityHandle h) noexcept {
@@ -265,6 +269,7 @@ Acceleration* EntityStorage::mutAcceleration(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::Acceleration)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.accelerations[slot.row];
 }
 Parent* EntityStorage::mutParent(EntityHandle h) noexcept {
@@ -273,6 +278,7 @@ Parent* EntityStorage::mutParent(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::Parent)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.parents[slot.row];
 }
 Health* EntityStorage::mutHealth(EntityHandle h) noexcept {
@@ -281,6 +287,7 @@ Health* EntityStorage::mutHealth(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::Health)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.healths[slot.row];
 }
 Faction* EntityStorage::mutFaction(EntityHandle h) noexcept {
@@ -289,6 +296,7 @@ Faction* EntityStorage::mutFaction(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::Faction)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.factions[slot.row];
 }
 AnimationStateRef* EntityStorage::mutAnimationStateRef(EntityHandle h) noexcept {
@@ -297,6 +305,7 @@ AnimationStateRef* EntityStorage::mutAnimationStateRef(EntityHandle h) noexcept 
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::AnimationStateRef)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.animationStates[slot.row];
 }
 PhysicsBodyRef* EntityStorage::mutPhysicsBodyRef(EntityHandle h) noexcept {
@@ -305,6 +314,7 @@ PhysicsBodyRef* EntityStorage::mutPhysicsBodyRef(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::PhysicsBodyRef)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.physicsBodies[slot.row];
 }
 NavAgentRef* EntityStorage::mutNavAgentRef(EntityHandle h) noexcept {
@@ -313,6 +323,7 @@ NavAgentRef* EntityStorage::mutNavAgentRef(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::NavAgentRef)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.navAgents[slot.row];
 }
 BoundingVolume* EntityStorage::mutBoundingVolume(EntityHandle h) noexcept {
@@ -321,6 +332,7 @@ BoundingVolume* EntityStorage::mutBoundingVolume(EntityHandle h) noexcept {
     auto& c = table_.chunks()[slot.archetypeIndex];
     if (!c.mask.has(Component::BoundingVolume)) return nullptr;
     markDirty();
+    c.hashDirty = true;
     return &c.boundingVolumes[slot.row];
 }
 

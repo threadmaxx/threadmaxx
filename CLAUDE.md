@@ -1348,5 +1348,177 @@ new pure virtual is safe.
 When writing a system that calls `forEachChunk` on huge chunks:
 the per-sub-job CommandBuffer is the regular per-job buffer
 (one buffer per sub-job, not per chunk). At 100k commands the
-CommandBuffer recording cost is the new floor; B29 (parallel
-pre-hash) is what attacks the commit phase below that floor.
+CommandBuffer recording cost is the new floor; B30 (per-archetype
+hash rollup) is what attacks the commit phase below that floor —
+B29's parallel-pre-hash path was attempted on 2026-05-21 and
+deferred (see §3.10.5).
+
+## §3.10.5 batch 29 — Parallel pre-hash (DEFERRED 2026-05-21)
+
+**Status: not shipped.** The byte-identity test gate
+(`commit_hash_test.cpp` byte-identical against pre-B29 goldens)
+is mathematically unachievable for FNV-1a-64 under integer
+multiplication mod 2^64. The spec's gate clause — "if the new
+path can't reproduce the existing hash byte-for-byte, B29
+doesn't ship and the work flows into B30 instead" — fires; the
+C2 budget rolls into B30.
+
+**Why it's impossible (proof sketch).** For any per-command
+parallel `precomputeMix(bytes)` + serial `foldInto(h, H_cmd)`
+decomposition to reproduce `chainMix(h, bytes)` byte-for-byte,
+the FNV-1a recurrence `h' = (h XOR b) * P` must distribute over
+XOR: `(a XOR b) * P` must equal `(a*P) XOR (b*P)`. It doesn't:
+take `a=1, b=2`, `P=0x100000001b3`:
+
+- `(1 XOR 2) * P = 3 * P = 0x300000000519`
+- `(1*P) XOR (2*P) = 0x100000001b3 XOR 0x200000000366 = 0x3000000002d5`
+
+The lower 12 bits diverge (`0x519` vs `0x2d5`) because integer
+multiplication generates carries and carries don't commute with
+XOR. Every Horner-form / power-table decomposition the spec
+proposed relies on this distributivity. None work.
+
+Polynomial-style multiplication in GF(2)[x]/m(x) (CLMUL) IS
+distributive over XOR, but produces a different hash than
+FNV-1a — fails the byte-identity gate just as squarely. Same
+conclusion for any multi-stream interleaved FNV.
+
+The math probe at `/tmp/fnv_distrib_probe.cpp` runs the
+verification end-to-end. It's transient by design — the
+conclusion is recorded here, and in `OPTIMIZATION_PATH.md §3.5`.
+
+**What to do instead.** B30 (per-archetype hash rollup, §3.6 in
+the optimization path) is the recovery route. It explicitly
+amends the determinism contract from "byte-identical hash across
+runs given the same command stream" to "byte-identical hash
+across runs given the same final per-archetype state," which is
+what makes the per-command serial mix avoidable. B30 ships only
+on explicit user authorization since it forces re-recorded
+reference hashes for external clients using `commitHash`.
+
+**Future Claude instances: do not re-attempt B29 without
+re-verifying the math.** The probe at `/tmp/fnv_distrib_probe.cpp`
+can be re-run any time to re-confirm. If the contract amendment
+for B30 isn't acceptable, the alternative is leaving commit-hash
+serial as v1.x's final word and revisiting in v2.
+
+## §3.10.6 batch 30 — Per-archetype hash rollup
+
+The serial per-command FNV-1a-64 mix in `commitBuffer` /
+`commitBuffersSharded` is **gated** behind
+`Config::legacyCommitHash` (default `false` ships the v1.3 path,
+`true` opts back to the v1.x byte-mix). The new default is the
+**per-archetype hash rollup**: every `ArchetypeChunk` carries a
+`mutable std::uint64_t cachedHash` + `mutable bool hashDirty`;
+dirty chunks are re-hashed by `EngineImpl::finalizeCommitHash()`
+at end of step (parallel across chunks via `jobs_` when ≥ 2 dirty
+chunks), then folded sorted-by-`mask.bits()` into the published
+`EngineStats::commitHash`.
+
+**Determinism contract change (v1.2 → v1.3).** "Byte-identical
+hash across runs given the same command stream" → "byte-identical
+hash across runs given the same final per-archetype state."
+External clients with recorded reference hashes must re-record.
+Documented in `doc/migration_v1_2_to_v1_3.md`; opt-out via
+`Config::legacyCommitHash = true` for the v1.3 deprecation cycle.
+Flag is slated for removal in v1.4 per the threadmaxx deprecation
+policy.
+
+**Dirty-marking responsibilities — load-bearing.** Every code
+path that mutates an `ArchetypeChunk`'s observable state MUST set
+`chunk.hashDirty = true`. Currently covered:
+
+- `ArchetypeTable::insert` — sets dirty at the end (covers
+  spawn paths).
+- `ArchetypeTable::removeSwapPop` — sets dirty at the end (covers
+  destroy paths AND the source side of migrate).
+- `ArchetypeTable::migrate` — inherits from both `insert` (dst
+  chunk) and `removeSwapPop` (src chunk); no extra plumbing.
+- `EntityStorage::mut*()` — every per-handle setter
+  (`mutTransform` / `mutVelocity` / `mutRenderTag` /
+  `mutUserData` / `mutAcceleration` / `mutParent` / `mutHealth`
+  / `mutFaction` / `mutAnimationStateRef` / `mutPhysicsBodyRef`
+  / `mutNavAgentRef` / `mutBoundingVolume`) sets
+  `c.hashDirty = true` on the touched chunk.
+
+When adding a new built-in component, the new `mut<Foo>()`
+setter on `EntityStorage` MUST follow the same pattern — set
+the chunk's `hashDirty` after the mask check, before returning
+the pointer. The chunk hash helper `hashChunkContent()` in
+`src/EngineImpl.cpp` also needs an `if (c.mask.has(...))
+mixVecBytes(c.foos.data(), sizeof(Foo));` arm added in the
+appropriate component-enum order.
+
+When adding a new chunk-mutating method to `ArchetypeTable`
+itself, set `dirty` at the end.
+
+**Concurrency.** `hashDirty` is a plain `bool`, not `std::atomic`.
+Safe because:
+- Single-threaded `commitBuffer`: only the sim thread writes; no
+  race.
+- Sharded `commitBuffersSharded` Pass C: workers dispatch one job
+  per chunk bin, so each worker writes to at most one chunk's
+  `hashDirty`. The `std::latch` after Pass C provides the
+  acquire-release synchronization for the end-of-step reader.
+- Pass B (sim thread, global lane) and Pass C (workers) are
+  sequential, not concurrent — Pass B finishes before Pass C
+  dispatches.
+
+Future paths that write chunks from multiple threads concurrently
+will need to either serialize per-chunk OR upgrade `hashDirty`
+to `std::atomic<bool>` with relaxed semantics.
+
+**Chunk hash function (`hashChunkContent`).** FNV-1a-64 over:
+1. `mask.bits()` (8 bytes) — distinguishes archetype shape.
+2. `entities.size()` (8 bytes) — distinguishes empty-vs-populated.
+3. `entities[0..count]` raw bytes (8 bytes/row) — encodes entity
+   identity, so a different (handle, slot) assignment changes
+   the hash.
+4. Each built-in dense vector in component-enum order, gated by
+   `mask.has(...)` — `transforms` → `velocities` → `renderTags`
+   → `userData` → `accelerations` → `parents` → `healths` →
+   `factions` → `animationStates` → `physicsBodies` → `navAgents`
+   → `boundingVolumes`.
+5. Each user column in registration (ascending-bit) order:
+   `col.bit`, `col.stride`, then `col.bytes`.
+
+Row ordering within a chunk matters (a swap-and-pop reorder
+changes the hash). The contract is "byte-identical hash for same
+final per-archetype state INCLUDING within-chunk row order," not
+"byte-identical hash for same multiset of entity contents." This
+is the slightly tighter invariant; loosening to multiset would
+require an O(N log N) sort per chunk per hash, which isn't worth
+the work for the common case where row order is itself a
+deterministic function of the command stream.
+
+**Combine order.** `finalizeCommitHash()` sorts chunks by
+`mask.bits()` ascending before folding. This makes the final
+hash invariant under archetype-creation order across engine
+instances. Empty chunks are included (their mask + 0-count
+fingerprint distinguishes engines whose archetype inventories
+differ).
+
+**`Config::legacyCommitHash` opt-out semantics.** When `true`,
+the engine keeps the v1.x byte-mix path bit-for-bit:
+- `commitHashAcc_` is reset to FNV basis at step start.
+- Every applied command's `hashCommandImpl` contribution is mixed
+  into `commitHashAcc_`.
+- `step()` publishes `commitHashAcc_` directly to
+  `stats_.commitHash`.
+- The end-of-step `finalizeCommitHash` rollup is SKIPPED entirely.
+
+The two paths are independent; you can flip the flag at any
+`Config{}` boundary without engine state contamination. Both are
+deterministic across runs and machines.
+
+**Tests.** `tests/archetype_hash_determinism_test.cpp` pins the
+v1.3 contract (same-input → same hash; same state via different
+order → same hash; sharded vs single-threaded → same hash; etc).
+`tests/v1_2_legacy_commit_hash_test.cpp` pins the v1.x contract
+under `legacyCommitHash = true` (and is the canonical artifact
+that gets removed when the flag does).
+
+**Paused step semantic — unchanged.** Both paths short-circuit
+paused steps to `stats_.commitHash = 0xcbf29ce484222325ull` (FNV
+basis) via the same paused branch in `step()`. The new path's
+end-of-step rollup is never reached on a paused step.

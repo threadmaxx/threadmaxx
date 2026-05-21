@@ -151,6 +151,8 @@ std::uint32_t ArchetypeTable::insert(std::uint32_t archetypeIndex,
         const std::size_t old = col.bytes.size();
         col.bytes.resize(old + col.stride, std::byte{0});
     }
+    // §3.6 batch 30 — chunk content changed; the cachedHash is stale.
+    c.hashDirty = true;
     return row;
 }
 
@@ -199,6 +201,8 @@ std::uint32_t ArchetypeTable::removeSwapPop(std::uint32_t archetypeIndex,
     for (auto& col : c.userColumns) {
         col.bytes.resize(col.bytes.size() - col.stride);
     }
+    // §3.6 batch 30 — chunk content changed; the cachedHash is stale.
+    c.hashDirty = true;
     return swappedSlot;
 }
 

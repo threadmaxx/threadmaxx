@@ -80,6 +80,34 @@ struct ArchetypeChunk {
     /// has no user bits set.
     std::vector<UserComponentColumn> userColumns;
 
+    /// §3.6 batch 30 — per-archetype hash rollup. The chunk's current
+    /// state-hash, lazily refreshed by `EngineImpl::finalizeCommitHash`
+    /// at the end of each step when `hashDirty == true`. The FNV-1a-64
+    /// offset basis (`0xcbf29ce484222325`) represents an "empty / never
+    /// computed" chunk fingerprint; the first time the chunk is touched
+    /// and the new-hash path runs, the value is replaced with the real
+    /// content hash.
+    ///
+    /// `mutable` because the end-of-step rollup must be able to refresh
+    /// the cache through a const archetype view (e.g. when called
+    /// during a `WorldView` read pass).
+    mutable std::uint64_t cachedHash = 0xcbf29ce484222325ull;
+
+    /// §3.6 batch 30 — set to `true` whenever the chunk's entity
+    /// list / dense arrays / user columns change. `EngineImpl::insert
+    /// / removeSwapPop / migrate` mark dirty during commit; the
+    /// per-handle setters in `EntityStorage::mut*()` also mark dirty
+    /// for in-place writes. Cleared by `finalizeCommitHash` after a
+    /// fresh `cachedHash` is computed.
+    ///
+    /// Plain `bool` is safe because (a) within a single-threaded
+    /// commit pass only the sim thread writes, and (b) the sharded
+    /// commit's Pass C dispatches one job per chunk bin so each chunk's
+    /// flag is set by at most one worker, with the `std::latch` after
+    /// Pass C providing the acquire-release synchronization for the
+    /// end-of-step reader.
+    mutable bool hashDirty = true;
+
     /// True iff the chunk's archetype mask carries component @p c. Used
     /// to gate dense-vector access on the few components that ride in
     /// archetype-mask-determined storage rather than always-present.

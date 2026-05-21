@@ -63,6 +63,8 @@ set(THREADMAXX_TESTS
     cancellation_test
     commit_hash_test
     sharded_commit_test
+    archetype_hash_determinism_test
+    v1_2_legacy_commit_hash_test
     event_channel_lockfree_test
     world_view_test
     commit_soak_test
