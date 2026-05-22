@@ -11,6 +11,18 @@
 // Uses `Engine::reserveEntityHandle` (§3.5) inside `preStep` so the
 // freshly-reserved handle is available before any commit. The actual
 // spawn lives in `update`, batched into one `single()` callback.
+//
+// 2026-05-22 audit (round 2) — also owns the player-death respawn
+// pipeline. When the player's `EntityDied` event fires, the system
+// records the death timestamp in `WorldState::playerDeathTime`
+// (suppressing the loot drop / corpse tag for the player handle)
+// and disables the sword. After `kRespawnDelaySeconds` of sim time
+// it teleports the player back to `WorldState::playerSpawnPos`,
+// restores HP to max, re-enables the sword, and resets the
+// transient `PlayerState` motion fields. The NPC brain treats the
+// dead player as out-of-AoI during the delay (`NPCBrainSystem`
+// 2026-05-22 round-2 change), so combatants disengage and the
+// world is calm when the player reappears.
 
 #pragma once
 

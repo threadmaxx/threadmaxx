@@ -4,18 +4,22 @@
 #include <threadmaxx/Engine.hpp>
 #include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/UserComponent.hpp>
+#include <threadmaxx/World.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <utility>
 
 namespace rpg {
 
-void RespawnSystem::preStep(threadmaxx::SystemContext&) {
+void RespawnSystem::preStep(threadmaxx::SystemContext& ctx) {
     drops_.clear();
     disableSwordOnDeath_ = false;
     auto evs = engine_->events<EntityDied>().drainTick();
     const auto playerH =
         worldState_ ? worldState_->player : threadmaxx::EntityHandle{};
+    const float dt = static_cast<float>(ctx.dt());
+    const float nowSec = static_cast<float>(ctx.tick()) * dt;
     for (const auto& d : evs) {
         // 2026-05-22 audit fix — when the PLAYER is the death
         // event's target, additionally flag the sword for
@@ -26,8 +30,18 @@ void RespawnSystem::preStep(threadmaxx::SystemContext&) {
         // The corpse pickup drop is suppressed for the player
         // (a player-death gold pile would look like a respawn
         // marker, not a game-over indicator).
+        //
+        // 2026-05-22 audit (round 2) — also stamp the death
+        // timestamp on `WorldState::playerDeathTime`. The `update`
+        // path below polls this to schedule the respawn.
         if (playerH.valid() && d.entity == playerH) {
             disableSwordOnDeath_ = true;
+            if (worldState_) {
+                worldState_->playerDeathTime = nowSec;
+            }
+            std::printf("[rpg_demo] player died at t=%.2fs; respawn in %.1fs\n",
+                        static_cast<double>(nowSec),
+                        static_cast<double>(kRespawnDelaySeconds));
             continue;
         }
 
@@ -46,18 +60,56 @@ void RespawnSystem::preStep(threadmaxx::SystemContext&) {
 }
 
 void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
-    // 2026-05-22 audit fix — also fire the sword-disable on
-    // player death even when no NPC drops are pending.
     const auto sword =
         worldState_ ? worldState_->sword : threadmaxx::EntityHandle{};
+    const auto playerH =
+        worldState_ ? worldState_->player : threadmaxx::EntityHandle{};
     const bool disableSword = disableSwordOnDeath_ &&
                               sword.valid() &&
                               ctx.world().alive(sword) &&
                               !ctx.world().hasTag(sword, threadmaxx::Component::DisabledTag);
-    if (drops_.empty() && !disableSword) return;
+
+    // 2026-05-22 audit (round 2) — player respawn pump. After
+    // `kRespawnDelaySeconds` of sim time has elapsed since the
+    // recorded death, schedule the respawn: full HP + spawn-point
+    // teleport + sword re-enable + PlayerState motion reset.
+    const float dt     = static_cast<float>(ctx.dt());
+    const float nowSec = static_cast<float>(ctx.tick()) * dt;
+    bool doRespawn = false;
+    threadmaxx::Vec3 spawnPos{0.0f, 1.0f, 0.0f};
+    PlayerState resetState{};
+    if (worldState_ && worldState_->playerDeathTime >= 0.0f &&
+        playerH.valid() && ctx.world().alive(playerH)) {
+        const float elapsed = nowSec - worldState_->playerDeathTime;
+        if (elapsed >= kRespawnDelaySeconds) {
+            doRespawn = true;
+            spawnPos  = worldState_->playerSpawnPos;
+            // Preserve persistent fields (kills, pickups, yaw, etc.);
+            // reset transient motion / combat fields. Read the live
+            // PlayerState so we don't clobber kill / pickup counters.
+            if (const auto* livePs = threadmaxx::user::tryGet<PlayerState>(
+                    ctx.world(), ids_->playerState, playerH)) {
+                resetState = *livePs;
+            }
+            resetState.verticalVel     = 0.0f;
+            resetState.airborne        = 0u;
+            resetState.sprinting       = 0u;
+            resetState.stamina         = kStaminaMax;
+            resetState.swordSwingTimer = 0.0f;
+            resetState.blockTimer      = 0.0f;
+            worldState_->playerDeathTime = -1.0f;
+            std::printf("[rpg_demo] respawning player at (%.2f, %.2f, %.2f)\n",
+                        static_cast<double>(spawnPos.x),
+                        static_cast<double>(spawnPos.y),
+                        static_cast<double>(spawnPos.z));
+        }
+    }
+
+    if (drops_.empty() && !disableSword && !doRespawn) return;
 
     const auto idsCube   = ids_->cubeRender;
     const auto idsPickup = ids_->pickup;
+    const auto idsPS     = ids_->playerState;
     // §3.11 batch 9b.2b — match the floor-pickup meshId so killed-NPC
     // drops draw with the same pyramid mesh (zero = default cube when
     // the renderer callback wasn't wired).
@@ -66,10 +118,30 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
     auto plans = drops_;  // copy by value into the lambda
 
     ctx.single([plans = std::move(plans), idsCube, idsPickup, pickupMeshId,
-                disableSword, sword]
+                disableSword, sword, doRespawn, playerH, spawnPos,
+                resetState, idsPS]
                (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
         if (disableSword) {
             cb.addTag(sword, threadmaxx::Component::DisabledTag);
+        }
+        if (doRespawn) {
+            // Teleport + full heal + reset motion. The orientation
+            // is rebuilt next tick by PlayerInputSystem from
+            // PlayerState::yawRadians (preserved above), so leaving
+            // the quat at identity here is safe.
+            threadmaxx::Transform newT{};
+            newT.position    = spawnPos;
+            newT.scale       = {1.0f, 1.8f, 1.0f};
+            newT.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            cb.setTransform(playerH, newT);
+            cb.setHealth(playerH,
+                         threadmaxx::Health{kPlayerMaxHP, kPlayerMaxHP});
+            cb.setVelocity(playerH,
+                           threadmaxx::Velocity{{0, 0, 0}, {0, 0, 0}});
+            threadmaxx::addUserComponent(cb, idsPS, playerH, resetState);
+            if (sword.valid()) {
+                cb.removeTag(sword, threadmaxx::Component::DisabledTag);
+            }
         }
         for (const auto& p : plans) {
             // §3.11.1 batch D1 — corpse: flip DisabledTag so the

@@ -28,6 +28,7 @@ enum : std::uint32_t {
     kEdgeInteract      = 1u << 8,   // F       — interact with nearby target
     kEdgeJump          = 1u << 9,   // Space   — jump when grounded
     kEdgeCameraToggle  = 1u << 10,  // R       — toggle first/third-person
+    kEdgeSprint        = 1u << 11,  // LShift  — sprint trigger (requires W/Up held)
 };
 
 /// Polled-per-tick analog inputs + edge bits. Filled in by the main
@@ -36,6 +37,11 @@ struct InputState {
     /// Movement axes: forward (-1..1) and strafe (-1..1).
     float forward = 0.0f;
     float strafe  = 0.0f;
+    /// 2026-05-22 audit (round 2) — non-zero while W or Up is the
+    /// active forward direction (i.e. forward axis = +1). Used by
+    /// PlayerInputSystem to gate sprint activation/maintenance.
+    /// Strafe / backward inputs cannot sprint.
+    std::uint32_t forwardKeyHeld = 0u;
 
     /// Camera control: yaw / pitch deltas in radians.
     float yawDelta   = 0.0f;

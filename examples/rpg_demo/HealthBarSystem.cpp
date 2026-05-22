@@ -10,24 +10,21 @@ namespace rpg {
 
 namespace {
 
-// 2026-05-20 — HP bar rendered as a stack of debug lines (the
-// Vulkan reference renderer doesn't yet implement debug-text
-// rasterisation, so the prior `addDebugText` version was silent —
-// the user reported "no read indicator of HP"). We draw a 3-line
-// stack to give the bar visible thickness: a dim background
-// segment + a proportionally-shorter foreground segment for the
-// current HP. Colour: green > 66 %, yellow > 33 %, red below.
+// 2026-05-20 — HP bar rendered as a debug line. The Vulkan
+// reference renderer doesn't yet implement debug-text
+// rasterisation, so the prior `addDebugText` version was silent.
 //
-// 2026-05-22 audit fix — the bar is now camera-billboarded. The
-// pre-fix code drew along the world X axis, so the bar
-// disappeared edge-on once the camera yaw passed ±45°. We now
-// take `right = normalize(camera.right)` (the row 0 of the view
-// matrix projected onto the world XZ plane) and `up = world Y`
-// so the bar always faces the main camera.
-constexpr float kBarHalfWidth   = 0.55f;
-constexpr float kBarHeight      = 1.55f;   // above entity origin
-constexpr float kBarStackStep   = 0.05f;
-constexpr int   kBarStackLines  = 3;
+// 2026-05-22 audit fix — bar is camera-billboarded; we take
+// `right = normalize(cross(camera.forward, worldUp))` projected
+// onto XZ so it always faces the main camera.
+//
+// 2026-05-22 audit (round 2) — collapsed the 3-line stack into a
+// single bar and widened it (kBarHalfWidth 0.55 → 0.95). The
+// debug-line renderer doesn't expose per-segment thickness, so
+// "thicker" comes from "longer" (more horizontal pixels at the
+// same screen distance) + a slightly higher overlay altitude.
+constexpr float kBarHalfWidth   = 0.95f;
+constexpr float kBarHeight      = 1.65f;   // above entity origin
 
 inline std::uint32_t hpColor(float frac) {
     if (frac < 0.33f) return 0xFF4040FFu;   // red    (ABGR)
@@ -96,24 +93,22 @@ void HealthBarSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             const float mx = lx + rightBasis.x * fillSpan;
             const float mz = lz + rightBasis.z * fillSpan;
 
-            // Stack of horizontal lines = thick bar (vertical
-            // offset uses world Y; the bar's WIDTH axis uses the
-            // camera-right basis).
+            // Single billboarded bar: dark grey background + the
+            // proportional fill segment. (The debug-line renderer
+            // does not expose per-segment thickness; making the bar
+            // visibly "wider" comes from a longer kBarHalfWidth.)
             constexpr std::uint32_t kBg = 0xFF202020u;  // dark grey
             const std::uint32_t fg = hpColor(frac);
-            for (int k = 0; k < kBarStackLines; ++k) {
-                const float y = cy + k * kBarStackStep;
-                threadmaxx::DebugLine bgLine;
-                bgLine.a = {lx, y, lz};
-                bgLine.b = {rx, y, rz};
-                bgLine.colorRGBA = kBg;
-                b.addDebugLine(bgLine);
-                threadmaxx::DebugLine fgLine;
-                fgLine.a = {lx, y, lz};
-                fgLine.b = {mx, y, mz};
-                fgLine.colorRGBA = fg;
-                b.addDebugLine(fgLine);
-            }
+            threadmaxx::DebugLine bgLine;
+            bgLine.a = {lx, cy, lz};
+            bgLine.b = {rx, cy, rz};
+            bgLine.colorRGBA = kBg;
+            b.addDebugLine(bgLine);
+            threadmaxx::DebugLine fgLine;
+            fgLine.a = {lx, cy, lz};
+            fgLine.b = {mx, cy, mz};
+            fgLine.colorRGBA = fg;
+            b.addDebugLine(fgLine);
         }
     }
 }

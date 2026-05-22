@@ -188,6 +188,11 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     const auto& hmap = *worldState_.heightmap;
     const float playerHeight = 1.8f;
     const float playerBaseY  = hmap.heightAt(0.0f, 0.0f) + playerHeight * 0.5f;
+    // 2026-05-22 audit (round 2) — capture the spawn position for
+    // RespawnSystem. After a player death, RespawnSystem teleports
+    // the player back to this exact transform after the respawn
+    // delay.
+    worldState_.playerSpawnPos = {0.0f, playerBaseY, 0.0f};
 
     // ---- Player -------------------------------------------------------------
     {

@@ -55,9 +55,17 @@ struct NpcState {
         Retreat = 4,
     };
     std::uint32_t mode       = Idle;
-    float         stateTimer = 0.0f;     // seconds since last transition
-    float         targetX    = 0.0f;     // wander/flee waypoint
-    float         targetZ    = 0.0f;
+    /// 2026-05-22 audit fix — was a *cumulative* per-tick counter
+    /// (`stateTimer += dt`), but the brain's skip-write filter
+    /// (memcmp with this field masked to zero) meant the timer was
+    /// never persisted, so Idle/Wander/Retreat never transitioned.
+    /// Reinterpreted as the simulation-time *timestamp* at which the
+    /// current state was entered. `elapsed = nowSec - stateEntryTime`.
+    /// Written only on transitions, so the skip-write filter no
+    /// longer needs a special mask.
+    float         stateEntryTime = 0.0f;  // sec; updated only on transition
+    float         targetX        = 0.0f;  // wander/flee waypoint
+    float         targetZ        = 0.0f;
     /// Awareness radius — the NPC notices the player within this range.
     float         aoiRadius  = 6.0f;
     /// 2026-05-20 — per-NPC retreat disposition in [0, 1]. Rolled once
@@ -66,10 +74,13 @@ struct NpcState {
     /// the death. Deterministic across runs (spawned from the demo's
     /// seeded RNG).
     float         fleeRoll   = 0.0f;
-    /// 2026-05-20 — cooldown between NPC-to-player melee swings, in
-    /// seconds. NPCs in Fight state can damage the player when this
-    /// drops to 0 and they're inside `kNpcAttackRange`.
-    float         attackCooldown = 0.0f;
+    /// 2026-05-22 audit fix — was the cumulative cooldown (decremented
+    /// per tick), but per-tick decrements weren't persisted. Now stores
+    /// the *timestamp* of the last melee swing; the brain allows a
+    /// new attack when `nowSec - lastAttackTime >= kNpcAttackCooldown`.
+    /// Initial sentinel `-1000.0f` ensures the first swing always
+    /// passes the cooldown check.
+    float         lastAttackTime = -1000.0f;
 };
 
 /// Player-only metadata.
@@ -122,6 +133,18 @@ struct PlayerState {
     std::uint32_t firstPerson      = 0u;
     /// Lifetime damage-dealt counter; surfaced in the HUD.
     std::uint32_t kills            = 0;
+    /// 2026-05-22 audit — sprint stamina in seconds-equivalent. While
+    /// `sprinting != 0` it drains at `kStaminaDrainRate`; while idle
+    /// it regenerates at `kStaminaRegenRate`. Sprinting cuts off at
+    /// zero (sprinting flag flips back to 0) and resumes only after
+    /// regenerating past `kStaminaResumeThreshold`.
+    float         stamina          = 1.0f;   // 0..kStaminaMax
+    /// 2026-05-22 audit — non-zero while the sprint multiplier is
+    /// active. Set on (W/Up held AND Shift edge AND stamina > 0);
+    /// cleared on (forward axis released OR stamina exhausted).
+    /// Stored as uint32 to keep PlayerState padding-free (see layout
+    /// note above).
+    std::uint32_t sprinting        = 0u;
 };
 
 /// Pickup tag — collected via spatial-hash overlap with the player.
@@ -382,16 +405,42 @@ struct WorldState {
     /// Tests can override before `engine.initialize()` to keep boots
     /// fast.
     std::uint32_t terrainCellsPerSide = 0;
+
+    /// 2026-05-22 audit (round 2) — player spawn position, captured
+    /// during `DemoGame::onSetup`. RespawnSystem rewrites the
+    /// player's Transform to this position after the post-death
+    /// delay so the player returns to a known-safe location.
+    threadmaxx::Vec3 playerSpawnPos{0.0f, 1.0f, 0.0f};
+    /// 2026-05-22 audit (round 2) — sim-time (seconds) at which the
+    /// player's `EntityDied` event was observed. `-1.0f` means the
+    /// player is alive (no respawn pending). RespawnSystem clears it
+    /// back to `-1.0f` after the respawn lands. Read-only outside
+    /// RespawnSystem.
+    float            playerDeathTime = -1.0f;
 };
 
 /// 2026-05-22 audit refactor — jump + block tuning. The Space-edge
 /// kicks `verticalVel = kJumpVelocity` if the player is grounded;
 /// gravity decelerates each tick; TerrainAttachSystem resets both
 /// `verticalVel` and `airborne` when contact resumes.
-constexpr float kJumpVelocity       = 5.5f;    // m/s initial upward
-constexpr float kGravity            = -18.0f;  // m/s² (slightly heavy)
+/// 2026-05-22 audit (round 2) — peak height was ~0.84m (barely above
+/// a cube). Bumped velocity + slightly reduced gravity for a peak of
+/// ~1.95m and total hangtime of ~0.9s — visible and decisive.
+constexpr float kJumpVelocity       = 8.5f;    // m/s initial upward
+constexpr float kGravity            = -18.5f;  // m/s² (gentler hang)
 constexpr float kGroundedSlack      = 0.02f;   // m — terrain hysteresis
 constexpr float kBlockSeconds       = 0.40f;   // hold window per block press
+
+/// 2026-05-22 audit (round 2) — sprint tuning. Held LeftShift while
+/// W/Up is also held activates the sprint multiplier; it drains
+/// stamina at `kStaminaDrainRate`/sec and ends when (a) the forward
+/// axis releases OR (b) stamina hits zero. Stamina regenerates
+/// while not sprinting.
+constexpr float kStaminaMax            = 1.0f;
+constexpr float kStaminaDrainRate      = 0.25f;   // sec stamina per sec sprint → 4s burst
+constexpr float kStaminaRegenRate      = 0.15f;   // sec stamina per idle sec
+constexpr float kStaminaResumeThreshold = 0.20f;  // must regen past this after exhaust
+constexpr float kSprintMultiplier      = 1.7f;    // applied to PlayerState.runSpeed
 
 /// 2026-05-22 audit refactor — pitch clamp ± 80°. Matches the spec's
 /// "clamp pitch to a reasonable range" requirement.
@@ -424,6 +473,17 @@ constexpr float kRetreatChance      = 0.5f;    // fraction that flees on low HP
 constexpr float kNpcAttackRange     = 1.6f;    // melee reach (world units)
 constexpr float kNpcAttackDamage    = 8.0f;    // HP per hit
 constexpr float kNpcAttackCooldown  = 1.0f;    // seconds between swings
+
+/// 2026-05-22 audit (round 2) — guaranteed-hit radius around the
+/// player. CombatSystem's tip-arc samples can miss enemies that
+/// have closed inside the sword's swing radius; a player-centric
+/// near-range pass picks them up so adjacent enemies always register
+/// damage on a swing.
+constexpr float kNearHitRadius      = 1.4f;
+/// 2026-05-22 audit (round 2) — player respawn delay after death.
+/// At dt=1/60s this is 3 seconds — enough to register the death
+/// (HUD prints, particles fade), not so long the demo feels frozen.
+constexpr float kRespawnDelaySeconds = 3.0f;
 
 /// §3.11.5 batch D5 — scale-stress entity counts. Tuned so the
 /// rpg_demo intentionally pushes the engine past 16.67ms/tick on

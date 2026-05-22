@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 
 namespace rpg {
 
@@ -22,7 +23,38 @@ bool       g_mouseInitialized = false;
 std::atomic<int64_t> g_mouseDx{0};
 std::atomic<int64_t> g_mouseDy{0};
 
-constexpr float kMouseSensitivity = 0.0025f;  // radians per pixel
+// 2026-05-22 audit (round 2) — per-axis last-press counter. The
+// keyCallback fires for every press (rising edge); we stamp the
+// pressed key with a monotonically increasing counter so
+// pollContinuousInput can ask "which forward / strafe key was
+// pressed most recently and is still held?". This gives us
+// "non-stackable" WASD: holding W then tapping S immediately
+// reverses direction (S wins because it was pressed last), and
+// releasing S returns to W rather than zero. Releasing W while S
+// is held stays at S.
+//
+// Each press increments a global counter and writes it to the
+// per-key slot. Pollers read the per-key counter; the larger value
+// is the more recent press. Wrap-around is fine for our purposes —
+// reach is in the trillions of ticks.
+std::atomic<std::uint64_t> g_pressCounter{0};
+std::atomic<std::uint64_t> g_pressTimeW{0};
+std::atomic<std::uint64_t> g_pressTimeS{0};
+std::atomic<std::uint64_t> g_pressTimeUp{0};
+std::atomic<std::uint64_t> g_pressTimeDown{0};
+std::atomic<std::uint64_t> g_pressTimeA{0};
+std::atomic<std::uint64_t> g_pressTimeD{0};
+std::atomic<std::uint64_t> g_pressTimeLeft{0};
+std::atomic<std::uint64_t> g_pressTimeRight{0};
+
+// 2026-05-22 audit (round 2) — signs flipped. User reported that
+// the mouse and Q/E yaw were "opposite to what I want". Forward in
+// PlayerInputSystem is `(-sin(yaw), sp, -cos(yaw))`, so positive
+// yaw rotates the view to look LEFT (toward -X). The natural
+// expectation is "mouse right → look right", which means a
+// positive mouse-delta should decrease yaw. Flipped accordingly.
+constexpr float kMouseSensitivity = -0.0025f;  // radians per pixel (sign flipped)
+constexpr float kKeyYawRate       =  0.030f;   // base step before sign
 
 void keyCallback(GLFWwindow* /*window*/, int key, int /*scancode*/,
                  int action, int /*mods*/) {
@@ -40,6 +72,52 @@ void keyCallback(GLFWwindow* /*window*/, int key, int /*scancode*/,
         case GLFW_KEY_F:     bit = kEdgeInteract;     break;
         case GLFW_KEY_SPACE: bit = kEdgeJump;         break;
         case GLFW_KEY_R:     bit = kEdgeCameraToggle; break;
+        case GLFW_KEY_LEFT_SHIFT:
+        case GLFW_KEY_RIGHT_SHIFT:
+            bit = kEdgeSprint;
+            break;
+        // Movement keys: stamp the press counter for non-stack
+        // tie-break. No edge bit emitted — these are polled axes.
+        case GLFW_KEY_W:
+            g_pressTimeW.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
+        case GLFW_KEY_S:
+            g_pressTimeS.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
+        case GLFW_KEY_UP:
+            g_pressTimeUp.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
+        case GLFW_KEY_DOWN:
+            g_pressTimeDown.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
+        case GLFW_KEY_A:
+            g_pressTimeA.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
+        case GLFW_KEY_D:
+            g_pressTimeD.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
+        case GLFW_KEY_LEFT:
+            g_pressTimeLeft.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
+        case GLFW_KEY_RIGHT:
+            g_pressTimeRight.store(
+                g_pressCounter.fetch_add(1, std::memory_order_acq_rel) + 1,
+                std::memory_order_release);
+            return;
         default: return;
     }
     g_input.edges.fetch_or(bit, std::memory_order_release);
@@ -93,6 +171,21 @@ void focusCallback(GLFWwindow* /*window*/, int focused) {
     }
 }
 
+// 2026-05-22 audit (round 2) — resolve a +/- axis pair into a
+// single -1 / 0 / +1 sign with "most recently pressed of the held
+// keys wins". `posHeld` / `negHeld` are bool snapshots of
+// `glfwGetKey == GLFW_PRESS` for the two ends; `posStamp` /
+// `negStamp` are the per-key press counters.
+float resolveAxisPair(bool posHeld, std::uint64_t posStamp,
+                      bool negHeld, std::uint64_t negStamp) noexcept {
+    if (posHeld && negHeld) {
+        return (posStamp >= negStamp) ? 1.0f : -1.0f;
+    }
+    if (posHeld) return  1.0f;
+    if (negHeld) return -1.0f;
+    return 0.0f;
+}
+
 } // namespace
 
 InputState& input() { return g_input; }
@@ -116,40 +209,70 @@ void installInputCallbacks(GLFWwindow* window) {
 
 void pollContinuousInput(GLFWwindow* window, double /*dtSeconds*/) {
     // ---- Movement axes (player-local, rotated to world by yaw in
-    // PlayerInputSystem). W/Up = forward; S/Down = back; A/Left =
-    // strafe left; D/Right = strafe right.
-    float fwd = 0.0f, str = 0.0f;
-    if (glfwGetKey(window, GLFW_KEY_W)     == GLFW_PRESS) fwd += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_S)     == GLFW_PRESS) fwd -= 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS) fwd += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) fwd -= 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_D)     == GLFW_PRESS) str += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_A)     == GLFW_PRESS) str -= 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) str += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS) str -= 1.0f;
+    // PlayerInputSystem). 2026-05-22 audit (round 2) — non-stacking:
+    // pressing W then tapping S without releasing W now flips to
+    // backward (S wins because it was pressed later). Resolved via
+    // the per-key press counter stamped by keyCallback.
+    const bool wHeld     = glfwGetKey(window, GLFW_KEY_W)     == GLFW_PRESS;
+    const bool sHeld     = glfwGetKey(window, GLFW_KEY_S)     == GLFW_PRESS;
+    const bool upHeld    = glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS;
+    const bool downHeld  = glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS;
+    const bool aHeld     = glfwGetKey(window, GLFW_KEY_A)     == GLFW_PRESS;
+    const bool dHeld     = glfwGetKey(window, GLFW_KEY_D)     == GLFW_PRESS;
+    const bool leftHeld  = glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS;
+    const bool rightHeld = glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+
+    // Each axis: collapse W/Up into a single "forward+" slot using
+    // the more recent of the two press stamps. Same for S/Down,
+    // A/Left, D/Right. Then resolve the +/- pair.
+    const std::uint64_t tW   = g_pressTimeW.load(std::memory_order_acquire);
+    const std::uint64_t tS   = g_pressTimeS.load(std::memory_order_acquire);
+    const std::uint64_t tUp  = g_pressTimeUp.load(std::memory_order_acquire);
+    const std::uint64_t tDn  = g_pressTimeDown.load(std::memory_order_acquire);
+    const std::uint64_t tA   = g_pressTimeA.load(std::memory_order_acquire);
+    const std::uint64_t tD   = g_pressTimeD.load(std::memory_order_acquire);
+    const std::uint64_t tL   = g_pressTimeLeft.load(std::memory_order_acquire);
+    const std::uint64_t tR   = g_pressTimeRight.load(std::memory_order_acquire);
+
+    const bool fwdPosHeld = wHeld || upHeld;
+    const bool fwdNegHeld = sHeld || downHeld;
+    const std::uint64_t fwdPosStamp = (tW > tUp ? tW : tUp);
+    const std::uint64_t fwdNegStamp = (tS > tDn ? tS : tDn);
+    const bool strPosHeld = dHeld || rightHeld;
+    const bool strNegHeld = aHeld || leftHeld;
+    const std::uint64_t strPosStamp = (tD > tR ? tD : tR);
+    const std::uint64_t strNegStamp = (tA > tL ? tA : tL);
+
+    const float fwd = resolveAxisPair(fwdPosHeld, fwdPosStamp,
+                                      fwdNegHeld, fwdNegStamp);
+    const float str = resolveAxisPair(strPosHeld, strPosStamp,
+                                      strNegHeld, strNegStamp);
     // Diagonal-speed clamp (spec acceptance criterion).
-    const float mag2 = fwd * fwd + str * str;
+    float fwdOut = fwd, strOut = str;
+    const float mag2 = fwdOut * fwdOut + strOut * strOut;
     if (mag2 > 1.0f) {
         const float inv = 1.0f / std::sqrt(mag2);
-        fwd *= inv;
-        str *= inv;
+        fwdOut *= inv;
+        strOut *= inv;
     }
-    g_input.forward = fwd;
-    g_input.strafe  = str;
+    g_input.forward = fwdOut;
+    g_input.strafe  = strOut;
+    // PlayerInputSystem reads this to decide whether sprint can
+    // activate / persist (W/Up must still be the active forward
+    // direction — strafing or going backwards cancels sprint).
+    g_input.forwardKeyHeld = (fwdOut > 0.0f && (wHeld || upHeld)) ? 1u : 0u;
 
     // ---- Camera yaw / pitch deltas (per-tick, additive).
     //
-    // Mouse look is the primary source — pull the accumulated
-    // micropixel deltas and convert to radians. Q/E are an
-    // accessibility fallback that adds a constant rate per tick
-    // (held-key turn). Both feed the SAME yaw accumulator in
-    // CameraSystem so they compose without ordering surprises.
+    // 2026-05-22 audit (round 2) — Mouse-X and Q/E signs flipped so
+    // "mouse right / E → look right". Q now turns left, E turns
+    // right. Mouse-Y kept inverted-Y-OFF (standard FPS feel).
     const int64_t mdx = g_mouseDx.exchange(0, std::memory_order_acq_rel);
     const int64_t mdy = g_mouseDy.exchange(0, std::memory_order_acq_rel);
     float yawD   = static_cast<float>(mdx) * (0.001f * kMouseSensitivity);
     float pitchD = static_cast<float>(mdy) * (0.001f * kMouseSensitivity);
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) yawD -= 0.030f;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) yawD += 0.030f;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) yawD += kKeyYawRate;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) yawD -= kKeyYawRate;
     g_input.yawDelta   = yawD;
     g_input.pitchDelta = pitchD;
     // Zoom: scroll wheel only (set by the GLFW scroll callback).

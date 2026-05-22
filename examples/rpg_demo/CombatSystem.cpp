@@ -141,6 +141,32 @@ void CombatSystem::update(threadmaxx::SystemContext& ctx) {
         return false;
     };
 
+    // 2026-05-22 audit (round 2) — close-range guaranteed-hit pass.
+    // The tip-arc samples below test small sphere overlaps at the
+    // far end of the blade; an enemy that has closed inside the
+    // swing radius (e.g. NPC at 0.3 m) falls between the swing arc
+    // and the player's body, missing every sample. We add a
+    // player-centric overlap test: any candidate within
+    // `kNearHitRadius` of the player's position counts as a hit on
+    // every swing regardless of blade-tip geometry. Same per-hit
+    // bookkeeping (`alreadyHit`) prevents double-billing alongside
+    // the tip pass.
+    const float nearR2 = kNearHitRadius * kNearHitRadius;
+    for (const auto& c : cand) {
+        const float dx = c.pos.x - pT->position.x;
+        const float dy = c.pos.y - pT->position.y;
+        const float dz = c.pos.z - pT->position.z;
+        if (dx * dx + dy * dy + dz * dz > nearR2) continue;
+        if (wasHit(c.entity)) continue;
+        DamageDealt ev;
+        ev.attacker = player;
+        ev.target   = c.entity;
+        ev.amount   = kSwordDamage;
+        ev.posX = c.pos.x; ev.posY = c.pos.y; ev.posZ = c.pos.z;
+        chDamage.emit(ev);
+        alreadyHit.push_back(c.entity);
+    }
+
     const float tipR2 = kSwordTipRadius * kSwordTipRadius;
     // Sample positions along the player-local X-axis chop arc. Same
     // arc as the visible animation in PlayerInputSystem.

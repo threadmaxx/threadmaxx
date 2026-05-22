@@ -47,6 +47,7 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     const bool interactEdge  = (edges & kEdgeInteract) != 0;
     const bool jumpEdge      = (edges & kEdgeJump) != 0;
     const bool cameraToggle  = (edges & kEdgeCameraToggle) != 0;
+    const bool sprintEdge    = (edges & kEdgeSprint) != 0;
     if (edges & kEdgeAimToggle) {
         // 2026-05-20 — V toggles the over-the-shoulder PIP. We flip
         // it here because PlayerInputSystem is the one that owns
@@ -74,13 +75,40 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     // camera; the spec's R-key cycles between first and third.
     if (cameraToggle) updated.firstPerson = updated.firstPerson ? 0u : 1u;
 
+    // ---- Sprint state machine + stamina drain/regen.
+    //
+    // 2026-05-22 audit (round 2) — Shift edge → sprinting while W/Up
+    // is held and stamina is available. Drain while sprinting,
+    // regen while not. Sprint cancels on (release-of-W/Up OR stamina
+    // exhausted); re-activation requires stamina to recover past
+    // `kStaminaResumeThreshold` so the player can't stutter-sprint
+    // forever against the floor.
+    const bool forwardKeyHeld = (input().forwardKeyHeld != 0u);
+    if (updated.sprinting != 0u) {
+        if (!forwardKeyHeld || updated.stamina <= 0.0f) {
+            updated.sprinting = 0u;
+            updated.stamina   = std::max(0.0f, updated.stamina);
+        }
+    } else if (sprintEdge && forwardKeyHeld &&
+               updated.stamina >= kStaminaResumeThreshold) {
+        updated.sprinting = 1u;
+    }
+    if (updated.sprinting != 0u) {
+        updated.stamina = std::max(0.0f, updated.stamina - kStaminaDrainRate * dt);
+        if (updated.stamina <= 0.0f) updated.sprinting = 0u;
+    } else {
+        updated.stamina = std::min(kStaminaMax,
+                                   updated.stamina + kStaminaRegenRate * dt);
+    }
+
     // ---- Player-local movement vector.
     //
     // Movement axes from Input come in as raw inputs in player-
     // local space (forward = -Z, strafe = +X). We rotate by yaw to
     // produce world-space velocity. yaw=0 → facing -Z (matches
     // the camera placement in CameraSystem).
-    const float speed = updated.runSpeed;
+    float speed = updated.runSpeed;
+    if (updated.sprinting != 0u) speed *= kSprintMultiplier;
     const float yaw   = updated.yawRadians;
     const float cosY  = std::cos(yaw);
     const float sinY  = std::sin(yaw);

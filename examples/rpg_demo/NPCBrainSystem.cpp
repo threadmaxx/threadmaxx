@@ -15,7 +15,6 @@
 #  include <threadmaxx_simd/vec3_ops.hpp>
 #endif
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -75,22 +74,34 @@ NPCBrainSystem::NPCBrainSystem(threadmaxx::Engine* engine,
 void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
     const auto& w = ctx.world();
     const auto player = worldState_->player;
-    if (!player.valid() || !w.alive(player)) return;
 
-    // 2026-05-22 audit fix — treat the player as "gone" if its
-    // HP has dropped to zero OR the corpse-disable tag is set.
-    // Pre-fix the brain only checked `alive(player)`, which is
-    // true even after RespawnSystem flips DisabledTag on a dead
-    // player — so NPCs in Fight state kept emitting
+    // 2026-05-22 audit fix — treat the player as "gone" if its HP has
+    // dropped to zero OR the corpse-disable tag is set. Pre-fix the
+    // brain only checked `alive(player)`; NPCs in Fight kept emitting
     // DamageDealt events at a corpse forever.
-    if (w.hasTag(player, threadmaxx::Component::DisabledTag)) return;
-    if (const auto* hp = w.tryGetHealth(player); hp && hp->current <= 0.0f) {
-        return;
-    }
+    //
+    // 2026-05-22 audit (round 2) — instead of early-returning, push
+    // the "player position" out to infinity so every NPC's distance
+    // check fires the out-of-AoI transition and they wind back to
+    // Idle/Wander. Pre-round-2 the early-return left NPCs in stale
+    // Fight state with stale velocity; when the player respawned the
+    // mob immediately ran at the new spawn location with no chance to
+    // disengage.
+    const bool playerDead =
+        !player.valid() || !w.alive(player) ||
+        w.hasTag(player, threadmaxx::Component::DisabledTag) ||
+        [&] {
+            const auto* hp = w.tryGetHealth(player);
+            return hp && hp->current <= 0.0f;
+        }();
 
-    const auto& playerT = w.get<threadmaxx::Transform>(player);
-    const threadmaxx::Vec3 pp = playerT.position;
+    threadmaxx::Vec3 pp{1.0e6f, 0.0f, 1.0e6f};   // sentinel: far away
+    if (!playerDead) {
+        const auto& playerT = w.get<threadmaxx::Transform>(player);
+        pp = playerT.position;
+    }
     const float dt = static_cast<float>(ctx.dt());
+    const float nowSec = static_cast<float>(ctx.tick()) * dt;
     // §3.11.8 batch D8 — slope-reject in the Wander target picker.
     // Borrowed pointer; safe under the read-only access this worker
     // makes during update.
@@ -173,9 +184,12 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
         static_cast<std::uint32_t>(slices.size());
     const auto* diffsData = diffs.data();
 
+    const float nowSecLocal = nowSec;
+    const bool  playerDeadLocal = playerDead;
     dispatchOrInline(ctx, total,
         [&ctx, slicesPtr, sliceCount, diffsData, npcIdLocal,
-         pp, dt, tickSalt, playerHandle, &damageChan, hmap]
+         pp, dt, tickSalt, playerHandle, &damageChan, hmap,
+         nowSecLocal, playerDeadLocal]
         (threadmaxx::Range r, threadmaxx::CommandBuffer& cb) {
             // Find starting slice for r.begin via linear scan.
             std::uint32_t si = 0;
@@ -210,11 +224,10 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
 
                 const NpcState st = slice.npcSpan[row];
                 NpcState next = st;
-                next.stateTimer += dt;
-                if (next.attackCooldown > 0.0f) {
-                    next.attackCooldown =
-                        std::max(0.0f, next.attackCooldown - dt);
-                }
+                // 2026-05-22 audit fix — `stateEntryTime` is a
+                // *timestamp* that only moves on transitions. Local
+                // `elapsed` is recomputed each tick from the snapshot.
+                const float elapsed = nowSecLocal - st.stateEntryTime;
                 threadmaxx::Vec3 vel{0, 0, 0};
 
                 const bool hostile = (fac.id == kFactionHostile);
@@ -227,11 +240,11 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                 switch (next.mode) {
                 case NpcState::Idle: {
                     const float aoiSq = next.aoiRadius * next.aoiRadius;
-                    if (distToPlayerSq < aoiSq) {
-                        next.mode       = hostile ? NpcState::Fight
-                                                  : NpcState::Flee;
-                        next.stateTimer = 0.0f;
-                    } else if (next.stateTimer >= kIdleDur) {
+                    if (!playerDeadLocal && distToPlayerSq < aoiSq) {
+                        next.mode           = hostile ? NpcState::Fight
+                                                      : NpcState::Flee;
+                        next.stateEntryTime = nowSecLocal;
+                    } else if (elapsed >= kIdleDur) {
                         // §3.11.8 batch D8 — slope-reject loop. Up to
                         // `kMaxSlopeRejectAttempts` re-rolls when the
                         // candidate target falls on a steep cell. If
@@ -249,10 +262,10 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                             if (!hmap || hmap->slopeAt(tx, tz) < kSlopeRejectThreshold)
                                 break;
                         }
-                        next.targetX   = tx;
-                        next.targetZ   = tz;
-                        next.mode      = NpcState::Wander;
-                        next.stateTimer = 0.0f;
+                        next.targetX        = tx;
+                        next.targetZ        = tz;
+                        next.mode           = NpcState::Wander;
+                        next.stateEntryTime = nowSecLocal;
                     }
                     break;
                 }
@@ -261,13 +274,13 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                     const float dz = next.targetZ - tr.position.z;
                     const float d2 = dx * dx + dz * dz;
                     const float aoiSq = next.aoiRadius * next.aoiRadius;
-                    if (distToPlayerSq < aoiSq) {
-                        next.mode = hostile ? NpcState::Fight
-                                            : NpcState::Flee;
-                        next.stateTimer = 0.0f;
-                    } else if (next.stateTimer >= kWanderDur || d2 < 0.25f) {
-                        next.mode = NpcState::Idle;
-                        next.stateTimer = 0.0f;
+                    if (!playerDeadLocal && distToPlayerSq < aoiSq) {
+                        next.mode           = hostile ? NpcState::Fight
+                                                      : NpcState::Flee;
+                        next.stateEntryTime = nowSecLocal;
+                    } else if (elapsed >= kWanderDur || d2 < 0.25f) {
+                        next.mode           = NpcState::Idle;
+                        next.stateEntryTime = nowSecLocal;
                     } else {
                         const float d = std::sqrt(d2);
                         vel.x = (dx / d) * kWanderSpeed;
@@ -277,9 +290,9 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                 }
                 case NpcState::Flee: {
                     const float d = distXZ();
-                    if (d > next.aoiRadius * 1.8f) {
-                        next.mode = NpcState::Idle;
-                        next.stateTimer = 0.0f;
+                    if (playerDeadLocal || d > next.aoiRadius * 1.8f) {
+                        next.mode           = NpcState::Idle;
+                        next.stateEntryTime = nowSecLocal;
                     } else if (d > 0.01f) {
                         vel.x = (diff.x / d) * kFleeSpeed;
                         vel.z = (diff.z / d) * kFleeSpeed;
@@ -288,12 +301,15 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                 }
                 case NpcState::Fight: {
                     const float d = distXZ();
-                    if (lowHp && next.fleeRoll < kRetreatChance) {
-                        next.mode = NpcState::Retreat;
-                        next.stateTimer = 0.0f;
+                    if (playerDeadLocal) {
+                        next.mode           = NpcState::Idle;
+                        next.stateEntryTime = nowSecLocal;
+                    } else if (lowHp && next.fleeRoll < kRetreatChance) {
+                        next.mode           = NpcState::Retreat;
+                        next.stateEntryTime = nowSecLocal;
                     } else if (d > next.aoiRadius * 1.8f) {
-                        next.mode = NpcState::Wander;
-                        next.stateTimer = 0.0f;
+                        next.mode           = NpcState::Wander;
+                        next.stateEntryTime = nowSecLocal;
                         next.targetX = pp.x; next.targetZ = pp.z;
                     } else if (d > kFightStopDist) {
                         if (d > 0.01f) {
@@ -301,22 +317,22 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                             vel.z = (-diff.z / d) * kChargeSpeed;
                         }
                     }
-                    if (d < kNpcAttackRange &&
-                        next.attackCooldown <= 0.0f) {
+                    if (!playerDeadLocal && d < kNpcAttackRange &&
+                        (nowSecLocal - next.lastAttackTime) >= kNpcAttackCooldown) {
                         DamageDealt hit;
                         hit.attacker = chunk->entities[row];
                         hit.target   = playerHandle;
                         hit.amount   = kNpcAttackDamage;
                         hit.posX = pp.x; hit.posY = pp.y; hit.posZ = pp.z;
                         damageChan.emit(hit);
-                        next.attackCooldown = kNpcAttackCooldown;
+                        next.lastAttackTime = nowSecLocal;
                     }
                     break;
                 }
                 case NpcState::Retreat: {
-                    if (next.stateTimer >= kRetreatDur) {
-                        next.mode = NpcState::Wander;
-                        next.stateTimer = 0.0f;
+                    if (elapsed >= kRetreatDur || playerDeadLocal) {
+                        next.mode           = NpcState::Wander;
+                        next.stateEntryTime = nowSecLocal;
                         next.targetX = tr.position.x + diff.x;
                         next.targetZ = tr.position.z + diff.z;
                     } else {
@@ -330,11 +346,15 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                 }
                 }
 
-                // Skip-when-equal writes — see rev 2 notes.
-                NpcState cmpA = next;  cmpA.stateTimer = 0.0f;
-                NpcState cmpB = st;    cmpB.stateTimer = 0.0f;
+                // 2026-05-22 audit fix — straight memcmp. With the
+                // stateTimer-as-cumulative-counter scheme replaced by
+                // an entry-time *timestamp* (only updated on
+                // transitions), the field stops changing tick-to-tick
+                // in steady state. Same story for `lastAttackTime`.
+                // The skip-write filter no longer needs to mask
+                // anything; equal-bytes means "nothing changed".
                 const bool stateMeaningfullyChanged =
-                    std::memcmp(&cmpA, &cmpB, sizeof(NpcState)) != 0;
+                    std::memcmp(&next, &st, sizeof(NpcState)) != 0;
                 if (stateMeaningfullyChanged) {
                     threadmaxx::addUserComponent(cb, npcIdLocal,
                         chunk->entities[row], next);
