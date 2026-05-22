@@ -14,7 +14,8 @@ namespace rpg {
 
 void RespawnSystem::preStep(threadmaxx::SystemContext& ctx) {
     drops_.clear();
-    disableSwordOnDeath_ = false;
+    disableSwordOnDeath_  = false;
+    disablePlayerOnDeath_ = false;
     auto evs = engine_->events<EntityDied>().drainTick();
     const auto playerH =
         worldState_ ? worldState_->player : threadmaxx::EntityHandle{};
@@ -35,7 +36,8 @@ void RespawnSystem::preStep(threadmaxx::SystemContext& ctx) {
         // timestamp on `WorldState::playerDeathTime`. The `update`
         // path below polls this to schedule the respawn.
         if (playerH.valid() && d.entity == playerH) {
-            disableSwordOnDeath_ = true;
+            disableSwordOnDeath_  = true;
+            disablePlayerOnDeath_ = true;
             if (worldState_) {
                 worldState_->playerDeathTime = nowSec;
             }
@@ -68,6 +70,15 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
                               sword.valid() &&
                               ctx.world().alive(sword) &&
                               !ctx.world().hasTag(sword, threadmaxx::Component::DisabledTag);
+    // 2026-05-22 audit (round 3) — also flip DisabledTag on the
+    // player itself so the renderer hides the corpse. Pre-fix the
+    // dead player remained visible (and the camera kept tracking the
+    // body) for the full 3-second respawn delay; users reported the
+    // game "looked frozen" because the player cube was still there.
+    const bool disablePlayer = disablePlayerOnDeath_ &&
+                               playerH.valid() &&
+                               ctx.world().alive(playerH) &&
+                               !ctx.world().hasTag(playerH, threadmaxx::Component::DisabledTag);
 
     // 2026-05-22 audit (round 2) — player respawn pump. After
     // `kRespawnDelaySeconds` of sim time has elapsed since the
@@ -105,7 +116,7 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
         }
     }
 
-    if (drops_.empty() && !disableSword && !doRespawn) return;
+    if (drops_.empty() && !disableSword && !disablePlayer && !doRespawn) return;
 
     const auto idsCube   = ids_->cubeRender;
     const auto idsPickup = ids_->pickup;
@@ -118,11 +129,14 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
     auto plans = drops_;  // copy by value into the lambda
 
     ctx.single([plans = std::move(plans), idsCube, idsPickup, pickupMeshId,
-                disableSword, sword, doRespawn, playerH, spawnPos,
-                resetState, idsPS]
+                disableSword, disablePlayer, sword, doRespawn, playerH,
+                spawnPos, resetState, idsPS]
                (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
         if (disableSword) {
             cb.addTag(sword, threadmaxx::Component::DisabledTag);
+        }
+        if (disablePlayer) {
+            cb.addTag(playerH, threadmaxx::Component::DisabledTag);
         }
         if (doRespawn) {
             // Teleport + full heal + reset motion. The orientation
@@ -139,6 +153,11 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
             cb.setVelocity(playerH,
                            threadmaxx::Velocity{{0, 0, 0}, {0, 0, 0}});
             threadmaxx::addUserComponent(cb, idsPS, playerH, resetState);
+            // 2026-05-22 audit (round 3) — un-hide the player +
+            // sword. Symmetric with `disablePlayer` / `disableSword`
+            // above. If the player is no longer DisabledTag'd (e.g.
+            // someone else cleared it) the removeTag is a no-op.
+            cb.removeTag(playerH, threadmaxx::Component::DisabledTag);
             if (sword.valid()) {
                 cb.removeTag(sword, threadmaxx::Component::DisabledTag);
             }

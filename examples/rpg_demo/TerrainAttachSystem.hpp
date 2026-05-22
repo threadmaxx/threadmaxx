@@ -4,6 +4,8 @@
 
 #include "DemoTypes.hpp"
 
+namespace threadmaxx { class Engine; }
+
 namespace rpg {
 
 /// §3.11 batch D8 — snaps mover Y to the terrain.
@@ -30,8 +32,14 @@ public:
     /// jump-landing path can write PlayerState back via the user-
     /// component pipe. Pre-refactor TerrainAttach unconditionally
     /// snapped player Y to ground, making the Space jump invisible.
+    /// 2026-05-22 audit (round 3) — optionally takes an Engine* so it
+    /// can emit `DamageDealt` events for entities that cross the
+    /// terrain edge (`±kFallDeathHalfExtent` in XZ or below
+    /// `kFallDeathFloorY` in Y). When null (headless tests) the
+    /// fall-death path silently no-ops.
     TerrainAttachSystem(const WorldState* worldState,
-                        UserComponentIds* ids = nullptr) noexcept;
+                        UserComponentIds* ids = nullptr,
+                        threadmaxx::Engine* engine = nullptr) noexcept;
 
     const char* name() const noexcept override { return "terrain-attach"; }
     threadmaxx::ComponentSet reads() const noexcept override {
@@ -48,8 +56,9 @@ public:
     void update(threadmaxx::SystemContext& ctx) override;
 
 private:
-    const WorldState* worldState_ = nullptr;
-    UserComponentIds* ids_        = nullptr;
+    const WorldState*   worldState_ = nullptr;
+    UserComponentIds*   ids_        = nullptr;
+    threadmaxx::Engine* engine_     = nullptr;
 };
 
 } // namespace rpg

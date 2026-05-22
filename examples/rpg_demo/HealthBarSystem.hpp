@@ -24,8 +24,12 @@ public:
     /// billboard against the main camera's basis. Pre-fix the bar
     /// was drawn along the world X axis only and disappeared
     /// edge-on when the camera rotated past 45°.
-    explicit HealthBarSystem(const WorldState* worldState = nullptr) noexcept
-        : worldState_(worldState) {}
+    /// 2026-05-22 audit (round 3) — also takes `UserComponentIds*`
+    /// so it can pull `PlayerState.stamina` for the second bar drawn
+    /// below the player's HP bar.
+    explicit HealthBarSystem(const WorldState* worldState = nullptr,
+                             const UserComponentIds* ids = nullptr) noexcept
+        : worldState_(worldState), ids_(ids) {}
 
     const char* name() const noexcept override { return "health-bar"; }
     threadmaxx::ComponentSet reads()  const noexcept override {
@@ -49,6 +53,7 @@ public:
 private:
     const threadmaxx::World* world_ = nullptr;
     const WorldState*        worldState_ = nullptr;
+    const UserComponentIds*  ids_ = nullptr;
 };
 
 } // namespace rpg

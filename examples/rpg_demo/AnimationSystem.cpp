@@ -44,6 +44,24 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
     };
     std::vector<PendingY> pending;
 
+    // 2026-05-22 audit (round 3) — skip the player. The player's Y
+    // is owned end-to-end by PlayerInputSystem (jump integration) and
+    // TerrainAttachSystem (ground snap). AnimationSystem overwriting it
+    // here was:
+    //   (a) cancelling jumps — the integrated Y was clobbered with
+    //       `terrain + bob` every tick after PlayerInputSystem ran,
+    //       so the player's apparent jump height was capped by `bob`
+    //       (~10 cm) instead of `kJumpVelocity * dt` integration.
+    //   (b) sinking the player into terrain — when `sin(...) * amp`
+    //       went negative the player's center Y dipped below
+    //       `heightAt + halfHeight`, putting the cube's bottom face
+    //       below the ground.
+    // The user-visible head-bob for the player is a render-only
+    // effect (best applied in CubeRenderSystem if desired); the
+    // simulation transform should match the physics.
+    const auto playerH =
+        worldState_ ? worldState_->player : threadmaxx::EntityHandle{};
+
     const auto chunkCount = w.archetypeChunkCount();
     for (std::size_t i = 0; i < chunkCount; ++i) {
         const auto& chunk = w.archetypeChunk(i);
@@ -55,6 +73,7 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
         auto animSpan = threadmaxx::user::chunkSpan<AnimState>(chunk, animId);
         const auto n = chunk.entities.size();
         for (std::size_t r = 0; r < n; ++r) {
+            if (playerH.valid() && chunk.entities[r] == playerH) continue;
             const auto& tr  = chunk.transforms[r];
             const auto& a   = animSpan[r];
             float speed = 0.0f;
@@ -65,8 +84,16 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
             }
             constexpr float kRefSpeed = 4.0f;
             const float ratio = std::min(speed / kRefSpeed, 1.0f);
-            const float bob = std::sin(static_cast<float>(simTime) *
-                                       a.frequency + a.phase) *
+            // 2026-05-22 audit (round 3) — positive-only bob. Pre-fix
+            // `sin(...) * amp` swung in [-amp, +amp], pushing the
+            // entity's center below the spawn-time baseline on the
+            // downstroke. With `kNpcHalfHeight = 0.8` and `amp = 0.20`
+            // the NPC's feet visibly dipped 20 cm into the terrain
+            // tile beneath them. Remapping to `(sin*0.5 + 0.5) * amp`
+            // keeps the bob in [0, amp] — a "footstep-rise" pattern
+            // that's always above the ground.
+            const float bob = (std::sin(static_cast<float>(simTime) *
+                                        a.frequency + a.phase) * 0.5f + 0.5f) *
                               a.amplitude * ratio;
             // §3.11.8 batch D8 — terrain-aware bob baseline.
             const float baseline = hmap

@@ -313,9 +313,33 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     (void)kPlayWidth;  // pre-D8 constant retained for diff readability.
 
     // ---- NPCs ---------------------------------------------------------------
+    //
+    // 2026-05-22 audit (round 3) — spread spawns across the full
+    // playable terrain. The legacy `kPlayWidth * 0.45` (±27m) clustered
+    // every entity within a tiny dot at world origin while the terrain
+    // itself spans ±128m — the rest of the map looked uninhabited.
+    //
+    // To keep gameplay engaging from tick 0 (and to keep the npc-brain
+    // test deterministic), we seed the FIRST ~kStarterClusterFrac of
+    // NPCs/pickups in a tight ring around the player and spread the
+    // rest across the full terrain. The starter cluster guarantees at
+    // least a handful of hostiles inside the player's AoI on boot;
+    // the broad spread fills the rest of the map.
+    constexpr float kStarterHalfExtent = 27.0f;                 // legacy radius
+    const float     kBroadHalfExtent   = kTerrainExtent * 0.45f; // ~115m
+    constexpr float kStarterClusterFrac = 0.30f;                 // 30% near player
     std::mt19937 rng(0xBEEFCAFEu);
-    std::uniform_real_distribution<float> px(-kPlayWidth * 0.45f, kPlayWidth * 0.45f);
+    std::uniform_real_distribution<float> pxStarter(-kStarterHalfExtent, kStarterHalfExtent);
+    std::uniform_real_distribution<float> pxBroad(-kBroadHalfExtent, kBroadHalfExtent);
     std::uniform_real_distribution<float> hostility(0.0f, 1.0f);
+    auto sampleSpawnXZ = [&](std::uint32_t i, std::uint32_t total) {
+        const std::uint32_t starterCount =
+            static_cast<std::uint32_t>(static_cast<float>(total) * kStarterClusterFrac);
+        if (i < starterCount) {
+            return std::pair<float, float>(pxStarter(rng), pxStarter(rng));
+        }
+        return std::pair<float, float>(pxBroad(rng), pxBroad(rng));
+    };
     worldState_.hostileSpawnCount = 0;
     constexpr float kNpcHalfHeight = 0.8f;  // matches scale.y/2 below
     for (std::uint32_t i = 0; i < worldState_.npcCount; ++i) {
@@ -324,8 +348,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         // re-snaps each tick via TerrainAttachSystem; this is only
         // here so the very first render frame doesn't show NPCs
         // floating at the pre-D8 default of y=1.
-        const float npcX = px(rng);
-        const float npcZ = px(rng);
+        const auto [npcX, npcZ] = sampleSpawnXZ(i, worldState_.npcCount);
         const float npcY = hmap.heightAt(npcX, npcZ) + kNpcHalfHeight;
         const threadmaxx::Vec3 pos{npcX, npcY, npcZ};
         const bool hostile = hostility(rng) < 0.6f;
@@ -386,8 +409,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         // §3.11.8 batch D8 — pickup Y also follows the terrain.
         // Pickups are static after spawn, so this is a one-shot snap
         // rather than a per-tick `TerrainAttachSystem` consumer.
-        const float pkX = px(rng);
-        const float pkZ = px(rng);
+        const auto [pkX, pkZ] = sampleSpawnXZ(i, worldState_.pickupCount);
         const float pkY = hmap.heightAt(pkX, pkZ) + kPickupHalfHeight;
         const threadmaxx::Vec3 pos{pkX, pkY, pkZ};
 
@@ -435,7 +457,8 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // (which integrates X/Z) and AnimationSystem (which bobs Y). The
     // bob then oscillates around the just-applied terrain Y rather
     // than the stale `AnimState::baseY` from spawn time.
-    engine.registerSystem(std::make_unique<TerrainAttachSystem>(&worldState_, &ids_));
+    engine.registerSystem(std::make_unique<TerrainAttachSystem>(
+        &worldState_, &ids_, &engine));
     // §3.11.6 batch D6 — Y-bob animation runs AFTER TerrainAttachSystem
     // and BEFORE HierarchySystem (so Parent-attached children inherit
     // the bobbed Y).
@@ -469,7 +492,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // tests + builds where the renderer-side registration callback
     // wasn't wired).
     engine.registerSystem(std::make_unique<SkinnedRenderSystem>(&worldState_));
-    engine.registerSystem(std::make_unique<HealthBarSystem>(&worldState_));
+    engine.registerSystem(std::make_unique<HealthBarSystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<DebugOverlaySystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<SaveLoadSystem>(
         &engine, &worldState_, &ids_,

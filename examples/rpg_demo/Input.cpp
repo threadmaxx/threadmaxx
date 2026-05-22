@@ -266,11 +266,16 @@ void pollContinuousInput(GLFWwindow* window, double /*dtSeconds*/) {
     //
     // 2026-05-22 audit (round 2) — Mouse-X and Q/E signs flipped so
     // "mouse right / E → look right". Q now turns left, E turns
-    // right. Mouse-Y kept inverted-Y-OFF (standard FPS feel).
+    // right.
+    // 2026-05-22 audit (round 3) — Mouse-Y also flipped per user
+    // feedback. Mouse up (mdy < 0) now produces a positive pitchD,
+    // raising `pitchRadians` and tilting the view up. Inline negation
+    // of `kMouseSensitivity` here keeps the yaw sign convention
+    // unchanged.
     const int64_t mdx = g_mouseDx.exchange(0, std::memory_order_acq_rel);
     const int64_t mdy = g_mouseDy.exchange(0, std::memory_order_acq_rel);
-    float yawD   = static_cast<float>(mdx) * (0.001f * kMouseSensitivity);
-    float pitchD = static_cast<float>(mdy) * (0.001f * kMouseSensitivity);
+    float yawD   = static_cast<float>(mdx) * (0.001f *  kMouseSensitivity);
+    float pitchD = static_cast<float>(mdy) * (0.001f * -kMouseSensitivity);
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) yawD += kKeyYawRate;
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) yawD -= kKeyYawRate;
     g_input.yawDelta   = yawD;

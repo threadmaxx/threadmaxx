@@ -125,6 +125,28 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
         updated.blockTimer = std::max(0.0f, updated.blockTimer - dt);
     }
 
+    // ---- HP regen.
+    //
+    // 2026-05-22 audit (round 3) — slow passive heal at
+    // `kPlayerHpRegenRate` HP/sec, applied as long as the player is
+    // alive and not at full HP. Computed here (already inside the
+    // single() write path) so it shares the same per-tick commit as
+    // the other player-state updates. We use the LIVE Health snapshot
+    // (already fetched at the top of update) so the increment composes
+    // with damage from the same tick.
+    float newHpCurrent = -1.0f;  // sentinel: don't write
+    float newHpMax     = 0.0f;
+    if (const auto* hp = w.tryGetHealth(player); hp) {
+        if (hp->current > 0.0f && hp->current < hp->max) {
+            const float candidate = std::min(hp->max, hp->current +
+                                             kPlayerHpRegenRate * dt);
+            if (candidate != hp->current) {
+                newHpCurrent = candidate;
+                newHpMax     = hp->max;
+            }
+        }
+    }
+
     // ---- Action edges.
     if (attackEdge && updated.swordSwingTimer <= 0.0f) {
         updated.swordSwingTimer = kSwordSwingSeconds;
@@ -227,12 +249,16 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
 
     const auto idsPS = ids_->playerState;
     ctx.single([player, vx, vz, updated, idsPS, newT,
-                sword, swordParent, writeSwordParent]
+                sword, swordParent, writeSwordParent,
+                newHpCurrent, newHpMax]
                (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
         cb.setVelocity(player, threadmaxx::Velocity{{vx, 0.0f, vz}, {0, 0, 0}});
         cb.setTransform(player, newT);
         threadmaxx::addUserComponent(cb, idsPS, player, updated);
         if (writeSwordParent) cb.setParent(sword, swordParent);
+        if (newHpCurrent >= 0.0f) {
+            cb.setHealth(player, threadmaxx::Health{newHpCurrent, newHpMax});
+        }
     });
 }
 

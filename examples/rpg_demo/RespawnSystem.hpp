@@ -70,6 +70,12 @@ private:
     /// the target of an `EntityDied` event. `update` then disables
     /// the worldState_->sword in the same tick's commit phase.
     bool                  disableSwordOnDeath_ = false;
+    /// 2026-05-22 audit (round 3) — set alongside `disableSwordOnDeath_`
+    /// when the player dies. `update` adds `DisabledTag` to the player
+    /// so the renderer hides the corpse (instead of leaving it in the
+    /// world frozen mid-action). The respawn pump removes the tag
+    /// alongside the teleport / heal.
+    bool                  disablePlayerOnDeath_ = false;
 };
 
 } // namespace rpg

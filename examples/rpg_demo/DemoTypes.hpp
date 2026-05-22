@@ -442,6 +442,13 @@ constexpr float kStaminaRegenRate      = 0.15f;   // sec stamina per idle sec
 constexpr float kStaminaResumeThreshold = 0.20f;  // must regen past this after exhaust
 constexpr float kSprintMultiplier      = 1.7f;    // applied to PlayerState.runSpeed
 
+/// 2026-05-22 audit (round 3) — slow out-of-combat HP regen for the
+/// player. ~2 HP/sec means a full heal from 0 to `kPlayerMaxHP` takes
+/// 50 seconds, slow enough that combat decisions still matter but
+/// fast enough that a player who survives a fight isn't permanently
+/// at low HP. Applied in PlayerInputSystem; NPCs do not regen.
+constexpr float kPlayerHpRegenRate     = 2.0f;    // HP/sec
+
 /// 2026-05-22 audit refactor — pitch clamp ± 80°. Matches the spec's
 /// "clamp pitch to a reasonable range" requirement.
 constexpr float kPitchMinRadians    = -1.396f;
@@ -522,6 +529,20 @@ constexpr std::uint32_t  kHeightmapSeed              = 0xD8000001u;
 /// a steep target beats standing still forever.
 constexpr float          kSlopeRejectThreshold       = 0.35f;
 constexpr int            kMaxSlopeRejectAttempts     = 3;
+
+/// 2026-05-22 audit (round 3) — fall-to-death threshold. Once an
+/// entity's XZ position crosses outside `±kFallDeathHalfExtent` the
+/// `TerrainAttachSystem` emits a lethal `DamageDealt` against it
+/// (the value sits intentionally above any per-tick combat damage so
+/// a single tick zeroes Health). The bound is the terrain tile grid
+/// edge — the heightmap clamps queries to that extent, so once
+/// crossed there's no ground physics under the cube any longer.
+constexpr float          kFallDeathHalfExtent        = kTerrainExtent * 0.5f;
+constexpr float          kFallDeathDamage            = 1.0e6f;  // overkill
+/// Absolute-Y floor below which any entity dies. The terrain's
+/// `minHeight` is around -7m; this catches anything that ends up
+/// well below the world.
+constexpr float          kFallDeathFloorY            = -50.0f;
 
 /// §3.11.9 batch D9 — particle burst tuning. Counts are intentionally
 /// modest in normal play (the demo's pre-D9 NPCs only emit when an

@@ -4,19 +4,23 @@
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Components.hpp>
+#include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/System.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
 #include <threadmaxx/internal/Archetype.hpp>
 
+#include <cmath>
 #include <utility>
 #include <vector>
 
 namespace rpg {
 
 TerrainAttachSystem::TerrainAttachSystem(const WorldState* worldState,
-                                         UserComponentIds* ids) noexcept
-    : worldState_(worldState), ids_(ids) {}
+                                         UserComponentIds* ids,
+                                         threadmaxx::Engine* engine) noexcept
+    : worldState_(worldState), ids_(ids), engine_(engine) {}
 
 void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
     if (!worldState_) return;
@@ -49,7 +53,18 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
         PlayerState              state;
         bool                     write;
     };
-    std::vector<Pending> writes;
+    // 2026-05-22 audit (round 3) — fall-to-death emission queue.
+    // Populated for entities whose XZ has crossed `±kFallDeathHalfExtent`
+    // OR whose Y has gone below `kFallDeathFloorY`. Drained after the
+    // chunk walk into `engine_->events<DamageDealt>()`. Only entities
+    // with `Health` qualify — the lethal-damage pipeline goes through
+    // `DamageSystem` which checks Health presence already.
+    struct FallVictim {
+        threadmaxx::EntityHandle e;
+        threadmaxx::Vec3         pos;
+    };
+    std::vector<Pending>    writes;
+    std::vector<FallVictim> fallVictims;
     PlayerLand landing{{}, {}, false};
 
     const auto playerH =
@@ -62,9 +77,42 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
         if (!chunk.mask.has(threadmaxx::Component::Velocity))  continue;
         if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
 
+        const bool chunkHasHealth =
+            chunk.mask.has(threadmaxx::Component::Health);
+
         const auto n = chunk.entities.size();
         for (std::size_t r = 0; r < n; ++r) {
             const auto& tr = chunk.transforms[r];
+            // ---- Fall-to-death detection.
+            //
+            // 2026-05-22 audit (round 3) — entities that cross past
+            // the terrain tile grid lose their physical ground (the
+            // heightmap clamps to the boundary so they'd just float)
+            // and entities that end up below the world's Y floor are
+            // off-screen forever. Both cases route to the death
+            // pipeline by emitting a `DamageDealt` of `kFallDeathDamage`
+            // — DamageSystem applies it, drops `Health.current` to 0,
+            // and emits `EntityDied` like any other kill blow.
+            //
+            // Only entities with `Health` qualify; the engine doesn't
+            // damage entities without a Health column.
+            if (chunkHasHealth) {
+                const bool offTerrain =
+                    std::abs(tr.position.x) > kFallDeathHalfExtent ||
+                    std::abs(tr.position.z) > kFallDeathHalfExtent;
+                const bool belowFloor = tr.position.y < kFallDeathFloorY;
+                if (offTerrain || belowFloor) {
+                    const bool alreadyDead =
+                        chunk.healths[r].current <= 0.0f;
+                    if (!alreadyDead) {
+                        fallVictims.push_back({chunk.entities[r], tr.position});
+                    }
+                    // Skip the normal snap path; the entity is dying
+                    // this tick. Keeps it from snapping to the
+                    // clamped-boundary terrain Y mid-fall.
+                    continue;
+                }
+            }
             const float halfY = tr.scale.y * 0.5f;
             const float groundY = hmap->heightAt(tr.position.x, tr.position.z) + halfY;
             const bool isPlayer = playerH.valid() &&
@@ -96,6 +144,24 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
             threadmaxx::Transform out = tr;
             out.position.y = groundY;
             writes.push_back({chunk.entities[r], out});
+        }
+    }
+
+    // 2026-05-22 audit (round 3) — emit fall-death damage events.
+    // Engine-bound; outside the engine (headless tests) we silently
+    // drop the events. Emitted on the sim thread inside this `update`
+    // call so the next tick's `DamageSystem::preStep` picks them up.
+    if (engine_ && !fallVictims.empty()) {
+        auto& chDamage = engine_->events<DamageDealt>();
+        for (const auto& v : fallVictims) {
+            DamageDealt ev;
+            ev.attacker = {};                  // environmental kill
+            ev.target   = v.e;
+            ev.amount   = kFallDeathDamage;
+            ev.posX = v.pos.x;
+            ev.posY = v.pos.y;
+            ev.posZ = v.pos.z;
+            chDamage.emit(ev);
         }
     }
 
