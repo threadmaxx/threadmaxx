@@ -83,20 +83,38 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     // exhausted); re-activation requires stamina to recover past
     // `kStaminaResumeThreshold` so the player can't stutter-sprint
     // forever against the floor.
+    //
+    // 2026-05-22 audit (round 4) — full depletion (sprint drain OR
+    // jump cost zeroing) sets `staminaRecoveryDelay = kStaminaRecoveryDelaySeconds`.
+    // While the delay is > 0 stamina does NOT regen, giving the
+    // exhaustion beat the player feels. Sprint re-activation is
+    // also gated on the delay so a player can't stutter the moment
+    // the threshold reopens.
     const bool forwardKeyHeld = (input().forwardKeyHeld != 0u);
+    if (updated.staminaRecoveryDelay > 0.0f) {
+        updated.staminaRecoveryDelay =
+            std::max(0.0f, updated.staminaRecoveryDelay - dt);
+    }
     if (updated.sprinting != 0u) {
         if (!forwardKeyHeld || updated.stamina <= 0.0f) {
             updated.sprinting = 0u;
             updated.stamina   = std::max(0.0f, updated.stamina);
         }
     } else if (sprintEdge && forwardKeyHeld &&
+               updated.staminaRecoveryDelay <= 0.0f &&
                updated.stamina >= kStaminaResumeThreshold) {
         updated.sprinting = 1u;
     }
     if (updated.sprinting != 0u) {
+        const float before = updated.stamina;
         updated.stamina = std::max(0.0f, updated.stamina - kStaminaDrainRate * dt);
-        if (updated.stamina <= 0.0f) updated.sprinting = 0u;
-    } else {
+        if (updated.stamina <= 0.0f) {
+            updated.sprinting = 0u;
+            if (before > 0.0f) {
+                updated.staminaRecoveryDelay = kStaminaRecoveryDelaySeconds;
+            }
+        }
+    } else if (updated.staminaRecoveryDelay <= 0.0f) {
         updated.stamina = std::min(kStaminaMax,
                                    updated.stamina + kStaminaRegenRate * dt);
     }
@@ -125,7 +143,7 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
         updated.blockTimer = std::max(0.0f, updated.blockTimer - dt);
     }
 
-    // ---- HP regen.
+    // ---- HP regen + combat timer.
     //
     // 2026-05-22 audit (round 3) — slow passive heal at
     // `kPlayerHpRegenRate` HP/sec, applied as long as the player is
@@ -134,12 +152,33 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     // the other player-state updates. We use the LIVE Health snapshot
     // (already fetched at the top of update) so the increment composes
     // with damage from the same tick.
+    //
+    // 2026-05-22 audit (round 4) — combat slowdown. Comparing the
+    // live HP snapshot against `prevHp_` (cached system member,
+    // initialized to -1.0f sentinel on first tick) detects an
+    // incoming hit. On detect, `combatTimer` resets to
+    // `kCombatTimerSeconds`; while > 0 the effective regen rate is
+    // scaled by `kPlayerHpRegenInCombatScale`. The timer decrements
+    // at the same dt below.
+    if (updated.combatTimer > 0.0f) {
+        updated.combatTimer = std::max(0.0f, updated.combatTimer - dt);
+    }
     float newHpCurrent = -1.0f;  // sentinel: don't write
     float newHpMax     = 0.0f;
     if (const auto* hp = w.tryGetHealth(player); hp) {
+        // Drop-detection: skip the very first tick (sentinel) and
+        // require a non-trivial drop so a regen-write rounding error
+        // doesn't accidentally retrigger combat.
+        if (prevHp_ >= 0.0f && hp->current + 0.01f < prevHp_) {
+            updated.combatTimer = kCombatTimerSeconds;
+        }
+        prevHp_ = hp->current;
         if (hp->current > 0.0f && hp->current < hp->max) {
+            const float regenRate = (updated.combatTimer > 0.0f)
+                ? kPlayerHpRegenRate * kPlayerHpRegenInCombatScale
+                : kPlayerHpRegenRate;
             const float candidate = std::min(hp->max, hp->current +
-                                             kPlayerHpRegenRate * dt);
+                                             regenRate * dt);
             if (candidate != hp->current) {
                 newHpCurrent = candidate;
                 newHpMax     = hp->max;
@@ -177,9 +216,22 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     // it via the camera system reading the same field.
     const threadmaxx::Transform& currentT = w.get<threadmaxx::Transform>(player);
     threadmaxx::Transform newT = currentT;
-    if (jumpEdge && updated.airborne == 0u) {
+    // 2026-05-22 audit (round 4) — jump now costs `kJumpStaminaCost`.
+    // Refused (press silently consumed) if the player is gassed
+    // (stamina below cost OR recovery-delay still ticking). Cost is
+    // subtracted only on a successful jump. If the deduction zeroes
+    // stamina, the depletion delay activates so the next jump /
+    // sprint waits for the recovery beat.
+    if (jumpEdge && updated.airborne == 0u &&
+        updated.staminaRecoveryDelay <= 0.0f &&
+        updated.stamina >= kJumpStaminaCost) {
         updated.verticalVel = kJumpVelocity;
         updated.airborne    = 1u;
+        const float beforeStamina = updated.stamina;
+        updated.stamina    = std::max(0.0f, updated.stamina - kJumpStaminaCost);
+        if (updated.stamina <= 0.0f && beforeStamina > 0.0f) {
+            updated.staminaRecoveryDelay = kStaminaRecoveryDelaySeconds;
+        }
     }
     if (updated.airborne != 0u) {
         updated.verticalVel += kGravity * dt;

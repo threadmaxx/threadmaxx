@@ -71,6 +71,8 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
         worldState_ ? worldState_->player : threadmaxx::EntityHandle{};
     const auto idsPS = ids_ ? ids_->playerState : threadmaxx::UserComponentId{};
 
+    const float dt = static_cast<float>(ctx.dt());
+
     for (std::size_t i = 0; i < chunkCount; ++i) {
         const auto& chunk = w.archetypeChunk(i);
         if (!chunk.mask.has(threadmaxx::Component::Transform)) continue;
@@ -83,40 +85,70 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
         const auto n = chunk.entities.size();
         for (std::size_t r = 0; r < n; ++r) {
             const auto& tr = chunk.transforms[r];
-            // ---- Fall-to-death detection.
-            //
-            // 2026-05-22 audit (round 3) — entities that cross past
-            // the terrain tile grid lose their physical ground (the
-            // heightmap clamps to the boundary so they'd just float)
-            // and entities that end up below the world's Y floor are
-            // off-screen forever. Both cases route to the death
-            // pipeline by emitting a `DamageDealt` of `kFallDeathDamage`
-            // — DamageSystem applies it, drops `Health.current` to 0,
-            // and emits `EntityDied` like any other kill blow.
-            //
-            // Only entities with `Health` qualify; the engine doesn't
-            // damage entities without a Health column.
-            if (chunkHasHealth) {
-                const bool offTerrain =
-                    std::abs(tr.position.x) > kFallDeathHalfExtent ||
-                    std::abs(tr.position.z) > kFallDeathHalfExtent;
-                const bool belowFloor = tr.position.y < kFallDeathFloorY;
-                if (offTerrain || belowFloor) {
-                    const bool alreadyDead =
-                        chunk.healths[r].current <= 0.0f;
-                    if (!alreadyDead) {
-                        fallVictims.push_back({chunk.entities[r], tr.position});
-                    }
-                    // Skip the normal snap path; the entity is dying
-                    // this tick. Keeps it from snapping to the
-                    // clamped-boundary terrain Y mid-fall.
-                    continue;
-                }
-            }
-            const float halfY = tr.scale.y * 0.5f;
-            const float groundY = hmap->heightAt(tr.position.x, tr.position.z) + halfY;
             const bool isPlayer = playerH.valid() &&
                                   chunk.entities[r] == playerH;
+            const bool offTerrain =
+                std::abs(tr.position.x) > kFallDeathHalfExtent ||
+                std::abs(tr.position.z) > kFallDeathHalfExtent;
+            const bool belowFloor = tr.position.y < kFallDeathFloorY;
+
+            // ---- Lethal: below the world's Y floor.
+            //
+            // 2026-05-22 audit (round 4) — only the Y-floor crossing
+            // is instantly lethal now. Walking past the XZ edge used
+            // to be an instant kill (round 3) but that read as
+            // "invisible wall of death" rather than "you fell off
+            // the edge." The fall mechanic below replaces it: past
+            // the edge entities lose ground contact and start
+            // dropping; lethal damage fires when they cross the
+            // floor.
+            if (chunkHasHealth && belowFloor) {
+                const bool alreadyDead =
+                    chunk.healths[r].current <= 0.0f;
+                if (!alreadyDead) {
+                    fallVictims.push_back({chunk.entities[r], tr.position});
+                }
+                continue;
+            }
+
+            // ---- Off-terrain: skip the ground snap, let the entity
+            //      fall toward the Y floor.
+            //
+            // For the PLAYER we don't write Y here — PlayerInputSystem
+            // owns the player's vertical integration via the airborne
+            // path. We just promote them to airborne (with
+            // verticalVel = 0) so the next tick's PlayerInputSystem
+            // starts pulling them down. If they're already airborne
+            // (mid-jump that walked off the edge), do nothing — their
+            // ongoing integration is the fall.
+            //
+            // For NON-PLAYER entities (NPCs, particles) we don't have
+            // a per-entity Y velocity to integrate, so we write a
+            // constant-rate Y decrement directly into the Transform.
+            // This is precise enough for a visible fall before the
+            // entity passes the Y floor.
+            if (offTerrain) {
+                if (isPlayer) {
+                    const PlayerState* ps =
+                        threadmaxx::user::tryGet<PlayerState>(w, idsPS, playerH);
+                    if (ps && ps->airborne == 0u) {
+                        landing.e                 = playerH;
+                        landing.state             = *ps;
+                        landing.state.verticalVel = 0.0f;
+                        landing.state.airborne    = 1u;
+                        landing.write             = true;
+                    }
+                    // Player Y owned by PlayerInputSystem from here on.
+                    continue;
+                }
+                threadmaxx::Transform out = tr;
+                out.position.y = tr.position.y + kOffTerrainFallSpeed * dt;
+                writes.push_back({chunk.entities[r], out});
+                continue;
+            }
+
+            const float halfY = tr.scale.y * 0.5f;
+            const float groundY = hmap->heightAt(tr.position.x, tr.position.z) + halfY;
             if (isPlayer) {
                 const PlayerState* ps =
                     threadmaxx::user::tryGet<PlayerState>(w, idsPS, playerH);

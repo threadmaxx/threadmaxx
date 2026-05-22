@@ -145,6 +145,21 @@ struct PlayerState {
     /// Stored as uint32 to keep PlayerState padding-free (see layout
     /// note above).
     std::uint32_t sprinting        = 0u;
+    /// 2026-05-22 audit (round 4) — seconds until stamina regen
+    /// resumes after a full depletion. Set to
+    /// `kStaminaRecoveryDelaySeconds` whenever stamina crosses to
+    /// 0 (from sprint drain OR jump cost). Counts down each tick;
+    /// while > 0, no regen is applied. Lets the player feel the
+    /// "out of breath" beat before sprinting/jumping again.
+    float         staminaRecoveryDelay = 0.0f;
+    /// 2026-05-22 audit (round 4) — seconds remaining where the
+    /// player is considered "in combat". Set to
+    /// `kCombatTimerSeconds` whenever the player's Health drops
+    /// (detected by comparing the live snapshot against the
+    /// system-cached previous HP). While > 0, HP regen is scaled
+    /// down by `kPlayerHpRegenInCombatScale`. Counts down each
+    /// tick.
+    float         combatTimer      = 0.0f;
 };
 
 /// Pickup tag — collected via spatial-hash overlap with the player.
@@ -448,6 +463,34 @@ constexpr float kSprintMultiplier      = 1.7f;    // applied to PlayerState.runS
 /// fast enough that a player who survives a fight isn't permanently
 /// at low HP. Applied in PlayerInputSystem; NPCs do not regen.
 constexpr float kPlayerHpRegenRate     = 2.0f;    // HP/sec
+/// 2026-05-22 audit (round 4) — in-combat HP regen multiplier. When
+/// `PlayerState.combatTimer > 0` the effective regen rate becomes
+/// `kPlayerHpRegenRate * kPlayerHpRegenInCombatScale` (≈ 0.3 HP/sec).
+/// Forces the player to disengage to recover meaningfully.
+constexpr float kPlayerHpRegenInCombatScale = 0.15f;
+/// 2026-05-22 audit (round 4) — seconds the player remains "in
+/// combat" after the last incoming hit. Refreshes every time the
+/// Health snapshot drops below the last seen value.
+constexpr float kCombatTimerSeconds    = 4.0f;
+/// 2026-05-22 audit (round 4) — stamina cost of a single jump.
+/// Subtracted from `PlayerState.stamina` at jump press. If the
+/// stamina remaining is below this AND the player is grounded the
+/// jump press is consumed but no jump fires (you can't jump while
+/// gassed). If the cost zeros the stamina the recovery delay
+/// activates just like a sprint depletion.
+constexpr float kJumpStaminaCost       = 0.20f;
+/// 2026-05-22 audit (round 4) — pause before stamina regen resumes
+/// after a full depletion. Combined with the existing
+/// `kStaminaResumeThreshold` this gives sprints / jumps a clear
+/// recovery beat instead of a stutter-start.
+constexpr float kStaminaRecoveryDelaySeconds = 2.0f;
+/// 2026-05-22 audit (round 4) — fall speed (m/s) applied to
+/// non-player entities that cross past the terrain XZ extent.
+/// Constant rather than gravity-accelerated because NPCs/particles
+/// don't carry a per-entity vertical velocity; the constant produces
+/// a visible fall before the entity passes `kFallDeathFloorY` and
+/// the lethal damage event fires.
+constexpr float kOffTerrainFallSpeed   = -12.0f;
 
 /// 2026-05-22 audit refactor — pitch clamp ± 80°. Matches the spec's
 /// "clamp pitch to a reasonable range" requirement.

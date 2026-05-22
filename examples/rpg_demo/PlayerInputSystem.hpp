@@ -37,6 +37,12 @@ private:
     /// trailing edge so we re-issue the resting Parent localOffset
     /// once when the swing ends.
     float             prevSwingTimer_ = 0.0f;
+    /// 2026-05-22 audit (round 4) — last-tick player HP, used to
+    /// detect an incoming hit (HP drop). On detect we refresh
+    /// `PlayerState.combatTimer` so the HP regen slows. Sentinel
+    /// `-1.0f` means "first tick after init / respawn"; the first
+    /// tick seeds prevHp_ without flagging a drop.
+    float             prevHp_         = -1.0f;
 };
 
 } // namespace rpg

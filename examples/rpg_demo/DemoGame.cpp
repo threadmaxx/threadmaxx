@@ -269,7 +269,19 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // Stress mode → 256×256 = 65 536 tiles. Normal mode → 32×32 =
     // 1 024 tiles. Headless tests can override the cell count via
     // `WorldState::terrainCellsPerSide` before `engine.initialize()`.
-    constexpr float kTileThickness = 0.4f;
+    //
+    // 2026-05-22 audit (round 4) — tile thickness bumped from 0.4 m
+    // (the round-3 "thin slab" form) to 6.0 m. The slab's TOP face is
+    // still anchored at `heightAt(center)` so gameplay (snap-Y, brain
+    // queries) is unaffected, but the slab now extends 6 m below its
+    // top. Adjacent tiles at different heights now overlap deeply in
+    // their lower half — when a viewer looks obliquely they see the
+    // top of the higher tile plus the unbroken vertical wall of the
+    // shorter tile underneath, instead of the round-3 "side wall of
+    // every cell exposed in pinhole sky-views" pattern that produced
+    // the beehive look. Heightmap variance is in the ±7 m band, so
+    // 6 m of slab depth covers every realistic neighbour step.
+    constexpr float kTileThickness = 6.0f;
     const std::uint32_t cells = worldState_.terrainCellsPerSide;
     const float terrainExtent = kTerrainExtent;
     const float tileSize      = terrainExtent / static_cast<float>(cells);
