@@ -270,18 +270,31 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // 1 024 tiles. Headless tests can override the cell count via
     // `WorldState::terrainCellsPerSide` before `engine.initialize()`.
     //
-    // 2026-05-22 audit (round 4) — tile thickness bumped from 0.4 m
-    // (the round-3 "thin slab" form) to 6.0 m. The slab's TOP face is
-    // still anchored at `heightAt(center)` so gameplay (snap-Y, brain
-    // queries) is unaffected, but the slab now extends 6 m below its
-    // top. Adjacent tiles at different heights now overlap deeply in
-    // their lower half — when a viewer looks obliquely they see the
-    // top of the higher tile plus the unbroken vertical wall of the
-    // shorter tile underneath, instead of the round-3 "side wall of
-    // every cell exposed in pinhole sky-views" pattern that produced
-    // the beehive look. Heightmap variance is in the ±7 m band, so
-    // 6 m of slab depth covers every realistic neighbour step.
-    constexpr float kTileThickness = 6.0f;
+    // 2026-05-22 audit (round 7) — slab placement uses a SHARED FLOOR
+    // so neighbouring tiles always overlap vertically, eliminating the
+    // "beehive" sky-gap that persisted into round 4/5/6.
+    //
+    // Round 4 made every slab a fixed 6 m thick, hoping that would
+    // cover the typical neighbour step. The heightmap range is ~11 m
+    // (kHeightScale = 12 × fbm range ≈ 0.94), so a tall tile at h≈11
+    // had its bottom at 5 while a neighbour at h≈0 had its top at 0 —
+    // a 5 m vertical sky-gap between them, viewed obliquely as the
+    // beehive honeycomb. ChatGPT's round-7 review (matrix convention /
+    // shader multiply order / projection) ruled out the renderer; the
+    // root cause was purely geometric.
+    //
+    // Round-7 fix: every slab extends from `heightAt(center)` DOWN to
+    // a common floor below `minHeight`. Adjacent tiles share that
+    // floor regardless of their top, so two cells differing by N m
+    // now share (N + slab-min-thickness) m of overlapping wall. From
+    // any angle, the side wall of the taller slab is backed by the
+    // shorter slab's wall, never by sky.
+    //
+    // The slab top is still anchored at `heightAt(center)`, so all
+    // gameplay paths (snap-Y, brain slope-reject, AnimationSystem
+    // baseY tracking) keep their existing contract.
+    constexpr float kSlabFloorPad = 2.0f;  // floor sits this far below minHeight
+    const float     slabFloorY    = hmap.minHeight() - kSlabFloorPad;
     const std::uint32_t cells = worldState_.terrainCellsPerSide;
     const float terrainExtent = kTerrainExtent;
     const float tileSize      = terrainExtent / static_cast<float>(cells);
@@ -301,14 +314,15 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
 
             const auto tileH = engine.reserveEntityHandle();
             threadmaxx::Bundle bd = {};
-            // 2026-05-22 — slab top sits at heightAt(center). Tile
-            // center Y = h - thickness/2 so the top face matches the
-            // continuous heightmap. Neighbouring tiles share the same
-            // top-edge convention so step heights between tiles equal
-            // the local heightmap gradient × tileSize, never the full
-            // tile height.
-            bd.transform.position = {worldX, h - kTileThickness * 0.5f, worldZ};
-            bd.transform.scale    = {tileSize, kTileThickness, tileSize};
+            // 2026-05-22 audit (round 7) — slab top sits at
+            // `heightAt(center)`; slab bottom sits at the shared
+            // `slabFloorY`. Thickness varies per tile (taller cells
+            // have taller slabs), but every slab anchors to the same
+            // floor so adjacent walls always overlap.
+            const float slabThickness = h - slabFloorY;
+            const float slabCenterY   = (h + slabFloorY) * 0.5f;
+            bd.transform.position = {worldX, slabCenterY, worldZ};
+            bd.transform.scale    = {tileSize, slabThickness, tileSize};
             bd.faction.id         = kFactionNeutral;
             bd.initialMask        = threadmaxx::ComponentSet{
                 threadmaxx::Component::Transform,

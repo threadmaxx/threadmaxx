@@ -66,6 +66,12 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
     std::vector<Pending>    writes;
     std::vector<FallVictim> fallVictims;
     PlayerLand landing{{}, {}, false};
+    // 2026-05-22 audit (round 6) — captured at the moment the
+    // player crosses back to the ground; emitted as a `JumpLanded`
+    // event after the chunk walk. Local scope so this stays a
+    // per-tick value, not system state.
+    threadmaxx::Vec3 landingPos{0.0f, 0.0f, 0.0f};
+    float            impactSpeed = 0.0f;
 
     const auto playerH =
         worldState_ ? worldState_->player : threadmaxx::EntityHandle{};
@@ -159,7 +165,15 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
                     // verticalVel is non-positive (descending).
                     const float gap = tr.position.y - groundY;
                     if (gap <= kGroundedSlack && ps->verticalVel <= 0.0f) {
-                        // Snap + land.
+                        // Snap + land. Capture the impact velocity
+                        // BEFORE we zero it so the JumpLanded event
+                        // can carry it (the event itself is emitted
+                        // after the chunk walk, alongside the fall
+                        // damage events, so a one-shot transient
+                        // matches the audit's "events drain at tick
+                        // boundary" convention).
+                        impactSpeed = -ps->verticalVel;  // descend = negative vel → positive impact
+                        landingPos  = {tr.position.x, groundY, tr.position.z};
                         threadmaxx::Transform out = tr;
                         out.position.y = groundY;
                         writes.push_back({chunk.entities[r], out});
@@ -195,6 +209,22 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
             ev.posZ = v.pos.z;
             chDamage.emit(ev);
         }
+    }
+
+    // 2026-05-22 audit (round 6) — emit JumpLanded for the player
+    // whenever a mid-jump descent crossed back to the ground this
+    // tick. ParticleEmitterSystem drains the channel and bursts a
+    // dust puff at the landing position. Headless / engine-null
+    // path silently drops it.
+    if (engine_ && landing.write && landing.e.valid() &&
+        landing.e == playerH) {
+        JumpLanded ev;
+        ev.entity      = playerH;
+        ev.posX        = landingPos.x;
+        ev.posY        = landingPos.y;
+        ev.posZ        = landingPos.z;
+        ev.impactSpeed = impactSpeed;
+        engine_->events<JumpLanded>().emit(ev);
     }
 
     if (writes.empty() && !landing.write) return;

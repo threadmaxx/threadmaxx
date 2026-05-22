@@ -1,12 +1,17 @@
 // §3.11.8 batch D8 — Heightmap correctness + slope-reject gameplay test.
 //
+// 2026-05-22 audit (round 6) — `heightAt` is back to BILINEAR smoothing
+// after the round-5 step function caused player Y to snap at cell
+// boundaries (felt like "tripping"). The tests below verify bilinear
+// correctness; the boundary-jump check was removed.
+//
 // Two halves:
 //
 // 1. Pure-data check: construct a Heightmap and verify
-//    `heightAt(cellCenter)` matches the cell sample exactly,
-//    bilinear midpoint between two known cells matches the average,
-//    and queries outside the world extent clamp to the boundary
-//    rather than reading out-of-bounds.
+//    `heightAt(cellOrigin)` matches the cell sample exactly,
+//    `heightAt(cellMidpoint)` matches the 4-corner average (bilinear
+//    weight 0.5/0.5), and queries outside the world extent clamp to
+//    the boundary rather than reading out-of-bounds.
 //
 // 2. Slope-reject behavior: find a steep cell in the same heightmap,
 //    verify `slopeAt` reports a value above the rejection threshold
@@ -39,11 +44,10 @@ int main() {
                    rpg::kTerrainExtent,
                    rpg::kHeightmapSeed);
 
-    // ---- 1. Direct grid samples match heightAt at cell centers --------------
+    // ---- 1. Direct grid samples match heightAt at cell origins --------------
     // Cell `(ix, iz)` covers `[-extent/2 + ix*cs, -extent/2 + (ix+1)*cs]`.
-    // Its center is at world `(-extent/2 + (ix + 0.5)*cs, ...)`. heightAt
-    // at the cell *origin* should equal sampleCell(ix, iz) exactly
-    // (bilinear weight is 1 at the corner).
+    // A query at the cell origin lands inside cell `(ix, iz)`; the
+    // step-function `heightAt` returns `sampleCell(ix, iz)` exactly.
     const float half     = hmap.worldExtent() * 0.5f;
     const float cellSize = hmap.cellSize();
     int sampleCount = 0;
@@ -64,8 +68,9 @@ int main() {
     CHECK(sampleCount == 16);
 
     // ---- 2. Bilinear midpoint matches corner average -----------------------
-    // Pick an interior cell and query its mid-point. The expected
-    // value is the average of the 4 corner samples (bilinear with
+    // 2026-05-22 audit (round 6) — heightAt is back to bilinear smoothing
+    // after the round-5 step function read as "tripping" in-game. Mid-cell
+    // query equals the average of the 4 corner samples (bilinear with
     // u = v = 0.5).
     {
         const std::uint32_t ix = 40, iz = 70;

@@ -209,6 +209,24 @@ struct EntityDied {
     float                    posZ = 0.0f;
 };
 
+/// 2026-05-22 audit (round 6) — emitted by `TerrainAttachSystem` when
+/// an entity transitions from airborne to grounded. Position is the
+/// landing point. v1 only the player path is wired (the input system
+/// owns its airborne flag), but the event payload is entity-shaped
+/// so future NPC vertical motion can re-use the same channel.
+struct JumpLanded {
+    threadmaxx::EntityHandle entity;
+    /// Landing position in world space — particle burst origin.
+    float                    posX = 0.0f;
+    float                    posY = 0.0f;
+    float                    posZ = 0.0f;
+    /// Magnitude of the impact velocity (m/s, downward → positive
+    /// here). Reserved for sound/animation scaling; particles use
+    /// the constant burst tuning so the count doesn't explode on
+    /// big falls.
+    float                    impactSpeed = 0.0f;
+};
+
 /// §3.11.4 batch D4: persistent quest state. Two slots are seeded in
 /// `DemoGame::onSetup`:
 ///   [0] "Collect 25 pickups"      (target = 25)
@@ -594,12 +612,18 @@ constexpr float          kFallDeathFloorY            = -50.0f;
 constexpr std::uint32_t kParticlesPerSwordHit       = 14u;
 constexpr std::uint32_t kParticlesPerDeath          = 32u;
 constexpr std::uint32_t kParticlesPerPickup         = 10u;
+/// Round 6 — jump-landing burst. Dust-colored, low and outward;
+/// `kParticleLandingSpeed` is intentionally smaller than `kParticleDustSpeed`
+/// so the cloud puffs at the feet rather than launching upward.
+constexpr std::uint32_t kParticlesPerLanding        = 12u;
 constexpr float         kParticleSparkLifeSeconds   = 0.45f;
 constexpr float         kParticleDustLifeSeconds    = 0.65f;
 constexpr float         kParticlePuffLifeSeconds    = 0.80f;
+constexpr float         kParticleLandingLifeSeconds = 0.55f;
 constexpr float         kParticleSparkSpeed         = 6.0f;
 constexpr float         kParticleDustSpeed          = 2.5f;
 constexpr float         kParticlePuffSpeed          = 1.5f;
+constexpr float         kParticleLandingSpeed       = 1.8f;
 constexpr float         kParticleScale              = 0.08f;
 
 /// §3.11.2 batch D2 — multi-camera layout (normalized viewport coords).

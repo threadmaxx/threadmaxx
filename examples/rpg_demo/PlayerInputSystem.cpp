@@ -273,16 +273,19 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
         //
         // 2026-05-22 audit (round 5) — switch FPV rest pose from a
         // strictly-horizontal blade pointing forward (essentially
-        // invisible to the camera — only its near end pokes into
-        // view) to a DIAGONAL pose: hilt held mid-chest right of the
-        // camera, blade tilted up by ~30° around the local X axis so
-        // the blade enters the upper-right of the FPV viewport. The
-        // diagonal hides the previous "horizontal sliver" problem
-        // without needing to introduce a separate FPV sword model.
-        // TPV is unchanged.
-        constexpr float kFpvRestPitchRad = 0.52f;  // ~30°
+        // invisible to the camera) to a DIAGONAL pose: hilt held
+        // right of the camera, blade tilted up around the local X
+        // axis so the blade enters the upper-right of the FPV
+        // viewport.
+        //
+        // Round 6 — drop hilt Y from 0.35 → 0.05 (clearly below the
+        // mid-line of the viewport now that the camera moved up to
+        // 0.85 m) and reduce the X-pitch from 30° → 20° so the
+        // blade reads as "slightly upward diagonal" rather than
+        // "raised to strike". TPV is unchanged.
+        constexpr float kFpvRestPitchRad = 0.35f;  // ~20°
         if (updated.firstPerson != 0u) {
-            swordParent.localOffset.position = {0.45f, 0.35f, -0.55f};
+            swordParent.localOffset.position = {0.45f, 0.05f, -0.55f};
             swordParent.localOffset.scale    = {0.12f, 0.12f, 1.0f};
         } else {
             swordParent.localOffset.position = {0.5f, 0.8f, -0.8f};

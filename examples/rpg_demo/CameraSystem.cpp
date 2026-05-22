@@ -96,11 +96,26 @@ threadmaxx::Camera buildPerspective(threadmaxx::Vec3 eye,
     };
     const float fy = 1.0f / std::tan(fovY * 0.5f);
     const float nf = 1.0f / (nearZ - farZ);
+    // 2026-05-22 audit (round 6) — switched from a GL-style projection
+    // (NDC z ∈ [-1, +1]) to a Vulkan-style projection (NDC z ∈ [0, 1]).
+    // Vulkan's clip test discards vertices with clip.z outside [0, w]; a
+    // GL projection produces clip.z = -w at the near plane, so vertices
+    // close to the camera got clipped and partially-clipped polygons
+    // showed up as "the top face of cubes is missing at certain
+    // angles" — exactly the bug the user reported in round 6.
+    //
+    // GL form (the old one):   m22 = (f+n)/(n-f), m32 = 2fn/(n-f)
+    //                          → near→clip.z=-w (NDC z=-1), far→clip.z=w (NDC z=1)
+    // Vulkan form (this one):  m22 = f/(n-f),     m32 = fn/(n-f)
+    //                          → near→clip.z=0  (NDC z=0),  far→clip.z=w (NDC z=1)
+    //
+    // Y is still flipped via the viewport height < 0 trick in
+    // VulkanRenderer; this projection independently fixes Z.
     cam.projection = {
-        fy / aspect, 0,  0,                            0,
-        0,           fy, 0,                            0,
-        0,           0,  (farZ + nearZ) * nf,          -1.0f,
-        0,           0,  (2.0f * farZ * nearZ) * nf,   0,
+        fy / aspect, 0,  0,                  0,
+        0,           fy, 0,                  0,
+        0,           0,  farZ * nf,          -1.0f,
+        0,           0,  farZ * nearZ * nf,  0,
     };
     return cam;
 }
@@ -177,7 +192,11 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     // In FPV the previous form computed `fwd.y = sp` directly, which
     // pointed DOWN for negative pitch → mouse-up → look-down ✗. The
     // fix is `fwd.y = -sp`, matching the TPV sign convention.
-    constexpr float kEyeHeightOffset = 0.75f;  // ≈ forehead on a 1.8m player
+    // 2026-05-22 audit (round 6) — raise from 0.75 → 0.85 (eye at
+    // 0.05 m below the top of the 1.8 m cube ≈ top-of-head). Round-5
+    // kept the eye at forehead height; the user reports it still
+    // reads as too low.
+    constexpr float kEyeHeightOffset = 0.85f;
     threadmaxx::Vec3 eye, target;
     if (firstPerson_) {
         eye = {

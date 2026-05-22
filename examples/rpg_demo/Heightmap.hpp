@@ -11,8 +11,25 @@ namespace rpg {
 ///
 /// Generates a `resolution × resolution` height grid via 4-octave fBm
 /// value noise at construction time, then answers `heightAt` /
-/// `slopeAt` queries via bilinear interpolation and central-difference
-/// finite differencing.
+/// `slopeAt` queries.
+///
+/// **2026-05-22 audit (round 5)** — `heightAt` is a STEP FUNCTION: it
+/// returns the height of whichever heightmap cell contains the query
+/// point, with no bilinear smoothing. The previous bilinear form
+/// caused two visible artifacts:
+///  - The "beehive" honeycomb pattern at oblique angles. Rendered
+///    tile slabs are flat-topped at their cell-center sample, but
+///    bilinear queries between centers landed BELOW the tile top on
+///    high-side approaches and ABOVE on low-side approaches — the
+///    player and entities clipped through tile-top corners visibly.
+///  - Asymmetric tile-edge climbing. Crossing from a low tile onto a
+///    higher one ramped the player upward smoothly (looks "correct"),
+///    but crossing from a high tile down sank the player into the
+///    high tile's flesh before popping out on the lower one ("through
+///    the edges"). Same artifact mirrored across direction.
+/// The step form snaps the player to the slab top of whichever tile
+/// they're standing in. Transitions are instantaneous (no slant) —
+/// exactly the "rectangular tiles" geometry the user asked for.
 ///
 /// World coords are centered: queries in `[-worldExtent/2,
 /// +worldExtent/2]` along each of X and Z map onto the grid; queries
@@ -68,6 +85,16 @@ public:
 
     /// Bilinearly-interpolated world-space height at `(x, z)`. Out-of-
     /// range queries clamp to the boundary.
+    ///
+    /// **2026-05-22 audit (round 6)** — reverted from the round-5
+    /// step-function form. The step function snapped player Y at
+    /// every cell boundary which read as "tripping" while walking.
+    /// Bilinear gives a continuous surface the player traverses
+    /// smoothly. The visual mismatch with the slab-center-tops is
+    /// hidden by the 6 m slab thickness and deeply-overlapping
+    /// neighbours, AND the round-6 renderer fix (Vulkan-correct
+    /// projection depth range) removes the close-camera artifact
+    /// that had previously been blamed on the bilinear shape.
     float heightAt(float x, float z) const noexcept {
         const float half = extent_ * 0.5f;
         const float gx = (x + half) * invCellSize_;

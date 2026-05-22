@@ -1859,3 +1859,221 @@ Per-tick UC mutation scales O(live particles) and shows up
 immediately in `commitDurationSeconds`; one-shot
 `addUserComponent` at spawn time disappears into the noise
 floor.
+
+## §3.11.x rpg_demo audit (round 5) — flat-top terrain, FPV polish
+
+Demo-side only; no engine changes. Shipped 2026-05-22. Four
+fixes; the headline insight is that the heightmap's *bilinear*
+sampling was the latent source of two seemingly-distinct
+artifacts (beehive rendering AND asymmetric edge climbing).
+
+**Heightmap is now a step function.** `Heightmap::heightAt`
+returns the cell value for whichever heightmap cell contains the
+query point — no bilinear interpolation. The previous bilinear
+form produced a slanted "continuous surface" reading; with the
+6 m-thick terrain slabs each anchored at `heightAt(cellCenter)`,
+the slabs had flat tops while the player snap-position
+interpolated smoothly between centers. That mismatch was the
+beehive artifact: from oblique angles you'd see the tile-top
+corners poking through the player's bilinear-interpolated
+ground level, looking like a honeycomb. The same mismatch
+caused the asymmetric edge-climb feel: walking *up* onto a
+higher tile ramped Y up smoothly (looks correct) but walking
+*down* off a high tile sank the player into the high tile's
+flesh until they crossed the boundary into the lower cell
+("through the edge" feel from one direction only). Step
+function gives flat-top tiles with instantaneous Y snaps at
+cell boundaries — exactly the "rectangular tiles, no slants"
+geometry the user requested. `slopeAt` was updated to compute
+gradients between adjacent grid cells (instead of `heightAt ±
+ε` central differences which would now report 0-or-∞ around a
+step function); slope-reject behavior is preserved.
+Test: `test_terrain_lookup.cpp` was updated — the bilinear-
+midpoint check became a "constant-across-cell" check, plus a
+new "step at cell boundary" check.
+
+**FPV mouse-Y inversion.** TPV's eye-orbit and FPV's eye-at-
+head paths had opposite pitch-sign conventions: in TPV,
+`eye.y = target.y + sin(pitch)*distance` (so negative pitch
+LOWERS the eye → looks UP), while FPV used `fwd.y = sin(pitch)`
+directly (negative pitch → looks DOWN). Round-3 had flipped
+mouse-Y at the input layer to match TPV; FPV was therefore
+inverted relative to mouse intent. Round-5 fix is in
+CameraSystem: FPV `fwd.y = -sin(pitch)` so both modes agree
+that "mouse up → look up".
+
+**FPV camera height.** `kEyeHeightOffset` raised from 0.4 → 0.75
+(eye sits 0.75 m above player center; player is 1.8 m tall, so
+eye is now ~0.15 m below the top of the player ≈ forehead). The
+prior 0.4 m offset put the eye at chest level (the "looking
+through the belly" sensation the user reported).
+
+**FPV sword diagonal rest pose.** The horizontal sword (long
+axis along player-local -Z) was essentially invisible in FPV —
+only the hilt end was inside the viewport; the blade extended
+forward parallel to the view direction, projecting as a sliver.
+PlayerInputSystem now applies a +30° X-axis rotation
+(`kFpvRestPitchRad = 0.52f`) to the sword's localOffset when
+`firstPerson != 0` AND not swinging. Combined with a slightly
+raised hilt position `(0.45, 0.35, -0.55)`, the blade tilts
+upward into the upper-right of the FPV viewport. TPV is
+unchanged. The swing animation still overrides orientation with
+the existing per-tick X-axis rotation by `a`, so the swing
+visual is identical in both modes; only the *rest* pose
+differs.
+
+When extending FPV polish further (e.g. weapon-bob, view-bob,
+crosshair): work in CameraSystem (camera transform) and the
+hierarchical render-frame DrawItem submission, not in the
+shared player Transform — both modes share that handle.
+
+## §3.11.x rpg_demo audit (round 6) — projection fix, smooth terrain, jump-land particles
+
+Demo-side only; no engine changes. Shipped 2026-05-22. Five
+fixes; the headline insight is that the round-5 "beehive +
+asymmetric climbing" symptoms were two SEPARATE bugs — the
+renderer's GL-style depth projection (which clips near-camera
+vertices) and the slab-render-Y vs. bilinear-walk-Y mismatch.
+Round 5 attacked the second one with a step function and broke
+walking ("tripping" Y snaps at cell boundaries). Round 6 reverts
+to smooth bilinear AND fixes the actual renderer bug, which is
+what was wrong all along.
+
+**Cube top-face renderer fix (the headline).** `CameraSystem.cpp`'s
+`buildPerspective` was emitting a GL-convention projection matrix
+(NDC z ∈ [-1, +1], with `m22 = (f+n)/(n-f)` and `m32 = 2fn/(n-f)`).
+Vulkan's clip test requires `0 ≤ clip.z ≤ clip.w`. With the GL
+form, near-plane vertices produce `clip.z = -clip.w` → outside the
+Vulkan clip range → clipped. Triangles straddling the boundary
+get partially clipped, which is the "I can see inside the cube"
+artifact the user reported: when a cube is close enough that some
+of its vertices land in the GL-only [-1, 0] depth range, those
+vertices get clipped and the polygon gets reshaped to fit the
+remaining vertices. Top-face artifacts because at oblique angles
+the top-front corner is often the closest vertex.
+
+Fixed by switching to a Vulkan-style projection (NDC z ∈ [0, 1]):
+`m22 = f/(n-f)`, `m32 = fn/(n-f)`. Near → clip.z = 0 and far →
+clip.z = w, fully inside the Vulkan clip range. Verified by
+180-tick smoke run with no validation errors. Cube tops now
+render correctly from every angle.
+
+The Y-flip viewport (`vp.height < 0`) is independent and
+unchanged — Y inversion is for making world +Y map to screen +Y;
+Z range is a separate concern. Same separation in
+`buildTopDownOrtho`: the ortho projection was already
+Vulkan-style (`m22 = 1/(n-f)`, `m32 = n/(n-f)`), which is why the
+minimap never showed the artifact. Only the perspective form was
+wrong.
+
+When adding a new perspective camera variant: use the Vulkan
+[0,1] form. The GL form is broken in Vulkan, full stop. The
+canonical derivation lives in `cam.projection`'s comment block
+in `CameraSystem.cpp`.
+
+**Heightmap reverted to bilinear smooth.** `Heightmap::heightAt`
+goes back to bilinear interpolation. Round-5's step function gave
+exact slab-top-match for the player but Y snapped at every cell
+boundary as the player walked across them → "tripping" feel. With
+the renderer fix above, the round-5 visual mismatch (beehive /
+through-the-edge) is gone — close-up cube rendering is now
+correct, so the original bilinear-vs-slab-top discrepancy is an
+invisible cosmetic detail hidden by the 6 m slab thickness.
+`slopeAt` is back to its `heightAt(x ± ε)` central-difference
+form. `test_terrain_lookup` reverted to the bilinear-midpoint
+assertion; the round-5 boundary-jump check was removed.
+
+**FPV camera height raised 0.75 → 0.85.** Eye now sits 0.05 m
+below the top of the 1.8 m player cube ≈ top-of-head. Round-5's
+0.75 was forehead; user reported it was still too low.
+
+**FPV sword pose adjusted.** Hilt Y dropped 0.35 → 0.05
+(`localOffset.position = {0.45, 0.05, -0.55}`), and X-axis pitch
+reduced 30° → 20° (`kFpvRestPitchRad = 0.35f`). Reads as a clear
+diagonal at rest with the tip slightly upward-forward — visible
+in the upper-right of the viewport but no longer "raised to
+strike". The swing animation still overrides with the
+`kSwingAngleStart..End` arc; only the rest pose changes.
+
+**Jump-landing particle burst.** New `JumpLanded` event in
+`DemoTypes.hpp` carrying `{ entity, posX/Y/Z, impactSpeed }`.
+`TerrainAttachSystem` captures landing position + impact velocity
+at the moment a mid-jump descent crosses back to ground and emits
+the event via `engine_->events<JumpLanded>()` after the chunk
+walk (same convention as fall-death damage events).
+`ParticleEmitterSystem` drains the channel in `preStep`, bursts
+`kParticlesPerLanding = 12` cool-toned dust particles at the
+landing position using a low `kParticleLandingSpeed = 1.8` so
+they puff outward at the feet rather than launch upward. v1
+wires only the player path; the event shape is entity-generic
+so NPC jumps can re-use the channel later.
+
+When adding new player-state transitions that warrant a visual
+hit (block-broken, sprint-end, mantling, etc.): follow the same
+pattern — POD event in `DemoTypes.hpp`, emit from whichever
+system observes the transition, drain and burst in
+`ParticleEmitterSystem::preStep`. Decouples the visual from the
+state machine and keeps burst tuning constants next to the rest
+in `DemoTypes.hpp`.
+
+## §3.11.x rpg_demo audit (round 7) — terrain slab shared floor
+
+Demo-side only; no engine changes. Shipped 2026-05-22. The
+"beehive" sky-gap that persisted across rounds 4, 5, and 6 had
+nothing to do with the renderer — round 6's Vulkan-correct
+projection did fix close-camera cube clipping, but the
+honeycomb-between-tiles pattern is purely geometric and survives
+unchanged through any projection fix.
+
+**Root cause.** Round 4 set every terrain slab to a fixed 6 m
+thickness, with `position.y = h - 3` so the top sits at
+`heightAt(center)` and the bottom at `h - 6`. The heightmap range
+is ~11 m (`kHeightScale = 12.0f` × fbm sum ≈ 0.94 = max ≈ 11.25).
+A tall tile at h ≈ 11 has its bottom at 5; an adjacent low tile
+at h ≈ 0 has its top at 0. The 5 m vertical gap between them is
+exposed sky — viewed obliquely across the grid, every tile shows
+its full 4 side walls instead of being backed by its neighbour,
+producing the honeycomb / open-box look the user reported.
+
+**Diagnosis path.** ChatGPT's review suggested matrix convention
+mismatch / shader multiply order / transposed camera data /
+extra projection fix / near plane. Verified end-to-end that the
+matrix path is correct: `Camera::view`/`projection` are
+column-major (documented in `render/Camera.hpp`),
+`VulkanRenderer.cpp` computes `vp = P * V` in column-major form,
+the GLSL push constant `mat4 viewProj` is column-major by
+default (no `layout(row_major)` qualifier), and the shader does
+`gl_Position = pc.viewProj * vec4(worldPos, 1.0)` — left-multiply
+of column vector by column-major matrix, the canonical form.
+No transpose, no double projection.
+
+The "see into cubes at certain angles" symptom from round 5 WAS
+the projection (round-6 GL→Vulkan ZO fix); the beehive symptom
+is independent.
+
+**Fix.** Terrain spawn in `examples/rpg_demo/DemoGame.cpp`:
+every slab now extends from `heightAt(center)` down to a SHARED
+floor `slabFloorY = hmap.minHeight() - kSlabFloorPad` (with
+`kSlabFloorPad = 2.0f`). Slab thickness varies per tile (tall
+cells have tall slabs), but every slab anchors to the same floor.
+Adjacent tiles differing by N m now share `(N + slab-min-thickness)`
+m of overlapping vertical wall — viewed from any angle, the
+taller slab's side wall is backed by the shorter slab's wall,
+never by sky. Slab top is still `heightAt(center)`, so all
+gameplay paths (`TerrainAttachSystem` snap-Y, `NPCBrainSystem`
+slope-reject, `AnimationSystem` baseY) keep their existing
+contract.
+
+The slab `bd.transform.scale.y = h - slabFloorY` and
+`bd.transform.position.y = (h + slabFloorY) * 0.5f`. No bench /
+test changes needed — `test_terrain_lookup` still asserts
+heightmap behavior; the slab geometry is purely a render-side
+display artifact.
+
+When tuning terrain visuals further: `kSlabFloorPad` controls
+how far below the heightmap minimum the slabs sink. 2 m is
+ample for the current ~11 m range. If `kHeightScale` is ever
+raised past, say, 30 m, the floor pad doesn't need to grow with
+it — it's a constant safety margin below the floor that the
+slab thickness handles automatically via `h - slabFloorY`.
+

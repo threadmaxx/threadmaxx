@@ -67,6 +67,24 @@ void ParticleEmitterSystem::preStep(threadmaxx::SystemContext& ctx) {
             bursts_.push_back(b);
         }
     }
+
+    // 2026-05-22 audit (round 6) — jump landings → low dust puff at
+    // the player's feet. Slightly cooler / dimmer color than the
+    // pickup dust so the two reads as visually distinct events.
+    {
+        const float color[4] = {0.78f, 0.72f, 0.62f, 1.0f};
+        const auto evs = engine_->events<JumpLanded>().drainTick();
+        for (const auto& ev : evs) {
+            Burst b;
+            b.x = ev.posX; b.y = ev.posY; b.z = ev.posZ;
+            b.count = kParticlesPerLanding;
+            b.speed = kParticleLandingSpeed;
+            b.lifeSeconds = kParticleLandingLifeSeconds;
+            b.color[0] = color[0]; b.color[1] = color[1];
+            b.color[2] = color[2]; b.color[3] = color[3];
+            bursts_.push_back(b);
+        }
+    }
 }
 
 void ParticleEmitterSystem::update(threadmaxx::SystemContext& ctx) {
