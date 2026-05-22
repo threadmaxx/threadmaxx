@@ -570,15 +570,25 @@ constexpr std::uint32_t kNormalNpcCount       = 50u;
 constexpr std::uint32_t kNormalPickupCount    = 100u;
 constexpr double        kTickBudgetSeconds    = 1.0 / 60.0;
 
-/// §3.11.8 batch D8 — terrain extent + tile counts. The terrain spans
-/// `[-kTerrainExtent/2, +kTerrainExtent/2]` along X and Z. Tiles are
-/// `cellsPerSide × cellsPerSide`; the same Heightmap resolution is
-/// used regardless (so normal-mode tiles sample a coarser version of
-/// the same continuous field stress-mode tiles see).
-constexpr float          kTerrainExtent              = 256.0f;
-constexpr std::uint32_t  kHeightmapResolution        = 128u;
-constexpr std::uint32_t  kStressTerrainCellsPerSide  = 256u;   // 65 536 tiles
-constexpr std::uint32_t  kNormalTerrainCellsPerSide  = 32u;    //  1 024 tiles
+/// §3.11.8 batch D8 — terrain extent + tile counts.
+///
+/// **2026-05-22 (round 9, voxel pivot)** — the heightmap cell size is
+/// now LOCKED to `Heightmap::blockUnit() = 1.0 m` and the visible
+/// block grid is one entity per heightmap cell. This guarantees that
+/// the boundary at which `heightAt` reports a different value is
+/// EXACTLY where the player visually crosses from one block to the
+/// next. Pre-round-9 the heightmap resolved at 2 m while visible
+/// tiles were 8 m wide, so the player stepped up/down at sub-tile
+/// boundaries ("in the middle of the block") — the round-9 alignment
+/// fixes that.
+///
+/// To keep entity count manageable, `kTerrainExtent` shrank to 48 m
+/// (was 256 m). Normal and stress modes now share the same terrain
+/// shape; stress mode differentiates only via NPC / pickup counts.
+constexpr float          kTerrainExtent              = 48.0f;
+constexpr std::uint32_t  kHeightmapResolution        = 48u;     // = kTerrainExtent / 1m
+constexpr std::uint32_t  kStressTerrainCellsPerSide  = 48u;     //  2304 columns
+constexpr std::uint32_t  kNormalTerrainCellsPerSide  = 48u;
 constexpr std::uint32_t  kHeightmapSeed              = 0xD8000001u;
 
 /// §3.11.8 batch D8 — NPCBrainSystem rejects a candidate Wander

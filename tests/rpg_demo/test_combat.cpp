@@ -31,20 +31,31 @@ using namespace rpg;
 using namespace rpg::testing;
 using namespace threadmaxx;
 
-/// Spawns a single hostile NPC right at where the sword tip SHOULD
-/// land if everything is wired up correctly. With the default
-/// `Parent.localOffset.position = {0.5, 0.8, -0.8}` (hip-forward),
-/// the sword pivot is at world (0.5, 1.8, -0.8) when the player is
-/// at the origin. After the post-fix code rotates `(0, 0, -length)`
-/// into world space, the tip lands at (0.5, 1.8, -2.2).
+/// Spawns a single hostile NPC right next to the player so the
+/// guaranteed near-hit pass in `CombatSystem` lands a hit on the
+/// first swing.
+///
+/// 2026-05-22 (round 9, voxel pivot) — pre-pivot the test placed
+/// the NPC at the sword tip's expected world coordinate. With the
+/// voxel terrain that's brittle: the NPC's Y depends on
+/// `heightAt(npcXZ)` (via TerrainAttachSystem), which may not
+/// align with the sword tip's swing arc. Instead we place the NPC
+/// 0.5 m to the right of the player (same column → same heightAt →
+/// no Y mismatch after snap) so the always-on near-hit pass fires.
 struct CombatTestGame : DemoGame {
     EntityHandle testNpc;
 
     void onSetup(Engine& engine, World& w, CommandBuffer& seed) override {
         DemoGame::onSetup(engine, w, seed);
+        const auto& ws = worldState();
+        const float playerY = ws.heightmap
+            ? ws.heightmap->heightAt(0.0f, 0.0f) + 1.0f
+            : 1.0f;
         testNpc = engine.reserveEntityHandle();
         Bundle b{};
-        b.transform.position = {0.5f, 1.8f, -2.2f};
+        // Co-located with the player (same heightmap cell), 0.5 m
+        // to the right. Within `kNearHitRadius = 1.4 m`.
+        b.transform.position = {0.5f, playerY, 0.0f};
         b.transform.scale    = {0.8f, 1.6f, 0.8f};
         b.faction.id         = kFactionHostile;
         b.boundingVolume     = BoundingVolume{

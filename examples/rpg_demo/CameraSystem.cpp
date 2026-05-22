@@ -196,7 +196,11 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     // 0.05 m below the top of the 1.8 m cube ≈ top-of-head). Round-5
     // kept the eye at forehead height; the user reports it still
     // reads as too low.
-    constexpr float kEyeHeightOffset = 0.85f;
+    //
+    // 2026-05-22 (round 9, voxel pivot) — player is now 2 m tall
+    // (halfY = 1.0); offset bumped to 0.95 to keep the eye ~5 cm
+    // below the top of the player cube.
+    constexpr float kEyeHeightOffset = 0.95f;
     threadmaxx::Vec3 eye, target;
     if (firstPerson_) {
         eye = {

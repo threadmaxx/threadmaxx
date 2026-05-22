@@ -185,8 +185,14 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // on top of the terrain at world origin. Half-scale.y is the
     // half-height that lifts the cube off the ground so its base
     // touches `heightAt(x, z)`.
+    //
+    // 2026-05-22 (round 9, voxel pivot) — the player is now exactly
+    // 2 blocks tall (`scale.y = 2.0`) so two stacked 1 m³ blocks
+    // match player height. halfY = 1 m, so spawning Y at
+    // `heightAt + 1` puts the player's feet flush with the top of
+    // the column directly underneath.
     const auto& hmap = *worldState_.heightmap;
-    const float playerHeight = 1.8f;
+    const float playerHeight = 2.0f;
     const float playerBaseY  = hmap.heightAt(0.0f, 0.0f) + playerHeight * 0.5f;
     // 2026-05-22 audit (round 2) — capture the spawn position for
     // RespawnSystem. After a player death, RespawnSystem teleports
@@ -200,7 +206,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         b.transform.position = {0, playerBaseY, 0};
         b.transform.scale    = {1.0f, playerHeight, 1.0f};
         b.faction.id         = kFactionPlayer;
-        b.boundingVolume     = cubeAABB({0, 1, 0}, 0.9f);
+        b.boundingVolume     = cubeAABB({0, 1, 0}, 1.0f);
         b.health             = threadmaxx::Health{kPlayerMaxHP, kPlayerMaxHP};
         b.initialMask        = threadmaxx::ComponentSet{
             threadmaxx::Component::Transform,
@@ -251,89 +257,69 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
             SwordTag{1.4f});
     }
 
-    // ---- Terrain (§3.11.8 batch D8) -----------------------------------------
+    // ---- Terrain (voxel grid, round 9) -------------------------------------
     //
-    // 2026-05-22 audit fix — replaced "column from y=0 to y=h" tiles
-    // with thin flat slabs centered on the heightmap's actual Y at
-    // the tile center. The previous form rendered each tile as a
-    // tall cube; adjacent tiles with different heights exposed their
-    // side walls, producing the "beehive" honeycomb look the user
-    // reported. Slabs let the heightmap's stepped sampling read as a
-    // tiled stair-stepped surface rather than a wall grid.
+    // 2026-05-22 (round 9, voxel pivot) — the terrain is now a true
+    // voxel grid. Per (cx, cz) column we spawn ONE 1 m³ block entity
+    // per integer height step from y=0.5 up through the column's
+    // quantized height. So a column whose `heightAt` returns 5 spawns
+    // 5 cubes at y ∈ {0.5, 1.5, 2.5, 3.5, 4.5}. This makes individual
+    // blocks visually read as proper cubes (X = Y = Z = 1 m) instead
+    // of the pre-round-9 tall-slab look, and the surface block of
+    // each column is the one entity the player snaps onto.
     //
-    // `cellsPerSide × cellsPerSide` grid of static tiles. Tiles
-    // intentionally do NOT carry `BoundingVolume` — collision/AOI
-    // queries don't care about ground, and skipping the bit keeps
-    // brain + combat queries lean.
+    // Heightmap cellSize == block-XZ size == 1 m, so the boundary at
+    // which `heightAt` reports a new value sits EXACTLY where the
+    // player visually crosses from one block to the next — closing
+    // the round-9 "block changes height in the middle" complaint.
     //
-    // Stress mode → 256×256 = 65 536 tiles. Normal mode → 32×32 =
-    // 1 024 tiles. Headless tests can override the cell count via
-    // `WorldState::terrainCellsPerSide` before `engine.initialize()`.
+    // Blocks intentionally do NOT carry `BoundingVolume` — combat /
+    // AOI queries skip the static-terrain archetype on the mask
+    // test, so leaving the bit off keeps those queries lean.
     //
-    // 2026-05-22 audit (round 7) — slab placement uses a SHARED FLOOR
-    // so neighbouring tiles always overlap vertically, eliminating the
-    // "beehive" sky-gap that persisted into round 4/5/6.
-    //
-    // Round 4 made every slab a fixed 6 m thick, hoping that would
-    // cover the typical neighbour step. The heightmap range is ~11 m
-    // (kHeightScale = 12 × fbm range ≈ 0.94), so a tall tile at h≈11
-    // had its bottom at 5 while a neighbour at h≈0 had its top at 0 —
-    // a 5 m vertical sky-gap between them, viewed obliquely as the
-    // beehive honeycomb. ChatGPT's round-7 review (matrix convention /
-    // shader multiply order / projection) ruled out the renderer; the
-    // root cause was purely geometric.
-    //
-    // Round-7 fix: every slab extends from `heightAt(center)` DOWN to
-    // a common floor below `minHeight`. Adjacent tiles share that
-    // floor regardless of their top, so two cells differing by N m
-    // now share (N + slab-min-thickness) m of overlapping wall. From
-    // any angle, the side wall of the taller slab is backed by the
-    // shorter slab's wall, never by sky.
-    //
-    // The slab top is still anchored at `heightAt(center)`, so all
-    // gameplay paths (snap-Y, brain slope-reject, AnimationSystem
-    // baseY tracking) keep their existing contract.
-    constexpr float kSlabFloorPad = 2.0f;  // floor sits this far below minHeight
-    const float     slabFloorY    = hmap.minHeight() - kSlabFloorPad;
-    const std::uint32_t cells = worldState_.terrainCellsPerSide;
-    const float terrainExtent = kTerrainExtent;
-    const float tileSize      = terrainExtent / static_cast<float>(cells);
-    const float halfExtent    = terrainExtent * 0.5f;
-    const float heightRange   = hmap.maxHeight() - hmap.minHeight();
+    // Tile count is `cellsPerSide² × avgColumnHeight`. With cells=48
+    // and heights in [0, 12] block units (average ~6), the demo
+    // spawns ~14 000 terrain cubes. Headless tests can pre-set
+    // `terrainCellsPerSide` to keep boot fast.
+    const float        blockUnit  = hmap.blockUnit();
+    const std::uint32_t cells     = worldState_.terrainCellsPerSide;
+    const float terrainExtent     = kTerrainExtent;
+    const float tileSize          = terrainExtent / static_cast<float>(cells);
+    const float halfExtent        = terrainExtent * 0.5f;
+    const float heightRange       = hmap.maxHeight() - hmap.minHeight();
     for (std::uint32_t cz = 0; cz < cells; ++cz) {
         for (std::uint32_t cx = 0; cx < cells; ++cx) {
             const float worldX = -halfExtent + (static_cast<float>(cx) + 0.5f) * tileSize;
             const float worldZ = -halfExtent + (static_cast<float>(cz) + 0.5f) * tileSize;
-            const float h      = hmap.heightAt(worldX, worldZ);
+            const float topY   = hmap.heightAt(worldX, worldZ);  // quantized
+            const std::uint32_t blockCount = static_cast<std::uint32_t>(
+                std::max(0.0f, std::round(topY / blockUnit)));
+            if (blockCount == 0) continue;  // sea level — no surface
             const float colorT = heightRange > 1e-3f
-                ? (h - hmap.minHeight()) / heightRange : 0.5f;
+                ? (topY - hmap.minHeight()) / heightRange : 0.5f;
             // 3-stop gradient: grass → rock → snow.
             const float r = 0.20f + colorT * 0.60f;
             const float g = 0.45f - colorT * 0.20f;
             const float b = 0.25f + colorT * 0.40f;
 
-            const auto tileH = engine.reserveEntityHandle();
-            threadmaxx::Bundle bd = {};
-            // 2026-05-22 audit (round 7) — slab top sits at
-            // `heightAt(center)`; slab bottom sits at the shared
-            // `slabFloorY`. Thickness varies per tile (taller cells
-            // have taller slabs), but every slab anchors to the same
-            // floor so adjacent walls always overlap.
-            const float slabThickness = h - slabFloorY;
-            const float slabCenterY   = (h + slabFloorY) * 0.5f;
-            bd.transform.position = {worldX, slabCenterY, worldZ};
-            bd.transform.scale    = {tileSize, slabThickness, tileSize};
-            bd.faction.id         = kFactionNeutral;
-            bd.initialMask        = threadmaxx::ComponentSet{
-                threadmaxx::Component::Transform,
-                threadmaxx::Component::Faction,
-                threadmaxx::Component::StaticTag,
-            };
-            seed.spawnBundle(tileH, bd);
-            threadmaxx::addUserComponent(seed, ids_.cubeRender, tileH,
-                CubeRender{{r, g, b, 1.0f}, 1.0f});
-            threadmaxx::addUserComponent(seed, ids_.terrainPatch, tileH,
-                TerrainPatch{cx, cz});
+            for (std::uint32_t k = 0; k < blockCount; ++k) {
+                const float blockY = (static_cast<float>(k) + 0.5f) * blockUnit;
+                const auto blockH = engine.reserveEntityHandle();
+                threadmaxx::Bundle bd = {};
+                bd.transform.position = {worldX, blockY, worldZ};
+                bd.transform.scale    = {tileSize, blockUnit, tileSize};
+                bd.faction.id         = kFactionNeutral;
+                bd.initialMask        = threadmaxx::ComponentSet{
+                    threadmaxx::Component::Transform,
+                    threadmaxx::Component::Faction,
+                    threadmaxx::Component::StaticTag,
+                };
+                seed.spawnBundle(blockH, bd);
+                threadmaxx::addUserComponent(seed, ids_.cubeRender, blockH,
+                    CubeRender{{r, g, b, 1.0f}, 1.0f});
+                threadmaxx::addUserComponent(seed, ids_.terrainPatch, blockH,
+                    TerrainPatch{cx, cz});
+            }
         }
     }
     (void)kPlayWidth;  // pre-D8 constant retained for diff readability.
@@ -351,8 +337,12 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // rest across the full terrain. The starter cluster guarantees at
     // least a handful of hostiles inside the player's AoI on boot;
     // the broad spread fills the rest of the map.
-    constexpr float kStarterHalfExtent = 27.0f;                 // legacy radius
-    const float     kBroadHalfExtent   = kTerrainExtent * 0.45f; // ~115m
+    // 2026-05-22 (round 9, voxel pivot) — terrain shrank to 48 m
+    // half-extent = 24 m. The starter ring now sits at ~half the
+    // playable area; the broad spread covers the full terrain.
+    const float     kStarterHalfExtent = std::min(12.0f,
+                                                  kTerrainExtent * 0.25f);
+    const float     kBroadHalfExtent   = kTerrainExtent * 0.45f; // ~21.6m
     constexpr float kStarterClusterFrac = 0.30f;                 // 30% near player
     std::mt19937 rng(0xBEEFCAFEu);
     std::uniform_real_distribution<float> pxStarter(-kStarterHalfExtent, kStarterHalfExtent);

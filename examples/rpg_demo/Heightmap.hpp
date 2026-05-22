@@ -44,13 +44,17 @@ public:
           maxH_(0.0f),
           heights_(static_cast<std::size_t>(resolution) * resolution, 0.0f)
     {
-        // fBm field rescaled to a height range that gives noticeable
-        // hills and produces gradients steep enough to actually trip
-        // the gameplay-side slope-reject threshold
-        // (`kSlopeRejectThreshold` in DemoTypes.hpp). At 12m scale and
-        // ~6 noise cycles across the world the steepest cells span
-        // >2m of vertical change per 2m of horizontal step. Verified
-        // by `test_terrain_lookup`.
+        // fBm field shifted to a NON-NEGATIVE range so every column
+        // can sit on a y=0 floor. The fbm helper returns values
+        // roughly in [-0.4, +0.6] for 4 octaves; we rescale to
+        // [0, kHeightScale] block units.
+        //
+        // 2026-05-22 (round 9, voxel pivot) — `kHeightScale` is now
+        // in BLOCK UNITS (= meters at default blockUnit). 12 blocks
+        // gives the player visible peaks at ~6× player-height (12 ÷
+        // 2-block-player) and produces enough adjacent-cell
+        // differentials to exercise the 1-block step-up cap on a
+        // typical traversal path.
         constexpr float kHeightScale = 12.0f;
         constexpr float kNoiseFreq   = 6.0f;
         float lo = +1.0e30f;
@@ -59,7 +63,10 @@ public:
             for (std::uint32_t x = 0; x < resolution; ++x) {
                 const float fx = static_cast<float>(x) / static_cast<float>(resolution) * kNoiseFreq;
                 const float fz = static_cast<float>(z) / static_cast<float>(resolution) * kNoiseFreq;
-                const float h  = fbm_(fx, fz, seed) * kHeightScale;
+                // Map raw fbm (~[-0.4, +0.6]) into [0, 1] then scale.
+                const float raw = fbm_(fx, fz, seed);
+                const float n01 = std::clamp(raw * 0.8f + 0.4f, 0.0f, 1.0f);
+                const float h   = n01 * kHeightScale;
                 heights_[static_cast<std::size_t>(z) * resolution + x] = h;
                 lo = std::min(lo, h);
                 hi = std::max(hi, h);
