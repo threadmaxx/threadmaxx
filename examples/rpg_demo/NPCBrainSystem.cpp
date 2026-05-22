@@ -1,5 +1,6 @@
 #include "NPCBrainSystem.hpp"
 
+#include "Heightmap.hpp"
 #include "ParallelDispatch.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
@@ -79,6 +80,12 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
     const auto& playerT = w.get<threadmaxx::Transform>(player);
     const threadmaxx::Vec3 pp = playerT.position;
     const float dt = static_cast<float>(ctx.dt());
+    // §3.11.8 batch D8 — slope-reject in the Wander target picker.
+    // Borrowed pointer; safe under the read-only access this worker
+    // makes during update.
+    const Heightmap* hmap = (worldState_ && worldState_->heightmap)
+                                ? worldState_->heightmap.get()
+                                : nullptr;
 
     // 2026-05-20 (rev 4) — flat-row parallelFor with cross-chunk slices.
     //
@@ -157,7 +164,7 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
 
     dispatchOrInline(ctx, total,
         [&ctx, slicesPtr, sliceCount, diffsData, npcIdLocal,
-         pp, dt, tickSalt, playerHandle, &damageChan]
+         pp, dt, tickSalt, playerHandle, &damageChan, hmap]
         (threadmaxx::Range r, threadmaxx::CommandBuffer& cb) {
             // Find starting slice for r.begin via linear scan.
             std::uint32_t si = 0;
@@ -214,10 +221,25 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
                                                   : NpcState::Flee;
                         next.stateTimer = 0.0f;
                     } else if (next.stateTimer >= kIdleDur) {
-                        const float a = rng.angle();
-                        const float d = rng.wanderDist();
-                        next.targetX   = tr.position.x + std::cos(a) * d;
-                        next.targetZ   = tr.position.z + std::sin(a) * d;
+                        // §3.11.8 batch D8 — slope-reject loop. Up to
+                        // `kMaxSlopeRejectAttempts` re-rolls when the
+                        // candidate target falls on a steep cell. If
+                        // every attempt is rejected we fall through
+                        // with the last sample — picking a steep
+                        // target is preferable to standing still
+                        // forever.
+                        float tx = tr.position.x;
+                        float tz = tr.position.z;
+                        for (int att = 0; att < kMaxSlopeRejectAttempts; ++att) {
+                            const float a = rng.angle();
+                            const float d = rng.wanderDist();
+                            tx = tr.position.x + std::cos(a) * d;
+                            tz = tr.position.z + std::sin(a) * d;
+                            if (!hmap || hmap->slopeAt(tx, tz) < kSlopeRejectThreshold)
+                                break;
+                        }
+                        next.targetX   = tx;
+                        next.targetZ   = tz;
                         next.mode      = NpcState::Wander;
                         next.stateTimer = 0.0f;
                     }

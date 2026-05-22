@@ -20,6 +20,8 @@ set(RPG_DEMO_TESTS
     test_preload
     test_asset_reload
     test_obj_loader
+    # §3.11.8 batch D8 — heightmap + slope-reject contract.
+    test_terrain_lookup
 )
 
 foreach(test ${RPG_DEMO_TESTS})

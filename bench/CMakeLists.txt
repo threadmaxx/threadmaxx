@@ -22,6 +22,8 @@ set(THREADMAXX_BENCHMARKS
     rpg_stress_probe
     # §3.7 batch 31 diagnostic — wave dispatch overhead at high wave counts
     wave_dispatch_bench
+    # §3.11.8 batch D8 — height-field + slope query workload
+    terrain_query_bench
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})
@@ -37,6 +39,13 @@ foreach(bench ${THREADMAXX_BENCHMARKS})
             -Wall -Wextra -Wpedantic -O2)
     endif()
 endforeach()
+
+# §3.11.8 batch D8 — `terrain_query_bench` needs the header-only
+# `Heightmap` from `examples/rpg_demo/`. Add the include dir for
+# that bench only (it doesn't link `rpg_demo_core`, just consumes
+# the header).
+target_include_directories(terrain_query_bench PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/rpg_demo)
 
 # §S4 close-out — SIMD kernels bench. Separate from the core bench
 # list because it needs `-mavx2 -mfma` on x86_64 to actually exercise

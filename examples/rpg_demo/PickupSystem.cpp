@@ -63,9 +63,16 @@ void PickupSystem::update(threadmaxx::SystemContext& ctx) {
             std::span<const threadmaxx::Vec3>(positions),
             std::span<const threadmaxx::Vec3>(playerBroadcast),
             std::span<threadmaxx::Vec3>(diffs));
+        // §3.11.8 batch D8 — XZ-only distance check. Pickups sit on
+        // the terrain at whatever Y the heightmap puts them; the
+        // player's Y depends on the ground under their feet. A 3D
+        // distance check would miss pickups whenever the player was
+        // on a hill above them. The original 3D check was load-bearing
+        // for nothing the game cares about — pickups are always on
+        // the ground.
         for (std::size_t r = 0; r < n; ++r) {
             const auto& d = diffs[r];
-            if (d.x * d.x + d.y * d.y + d.z * d.z > kPickRadiusSq) continue;
+            if (d.x * d.x + d.z * d.z > kPickRadiusSq) continue;
             const auto e = chunk.entities[r];
             if (e == player) continue;
             hits.push_back(e);
@@ -76,9 +83,8 @@ void PickupSystem::update(threadmaxx::SystemContext& ctx) {
         for (std::size_t r = 0; r < n; ++r) {
             const auto& tp = chunk.transforms[r].position;
             const float dx = tp.x - pT.position.x;
-            const float dy = tp.y - pT.position.y;
             const float dz = tp.z - pT.position.z;
-            if (dx * dx + dy * dy + dz * dz > kPickRadiusSq) continue;
+            if (dx * dx + dz * dz > kPickRadiusSq) continue;
             const auto e = chunk.entities[r];
             if (e == player) continue;
             hits.push_back(e);

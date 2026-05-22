@@ -71,46 +71,79 @@ never have to maintain two parallel rpg-shaped workloads.
 These are sequenced for the next sprint. No new sibling
 libraries; each batch sits on top of v1.2 engine functionality.
 
-### Batch D8 — Larger + uneven terrain
+### Batch D8 — Larger + uneven terrain  ✅ landed 2026-05-22
 
-**Gameplay deliverable.** Terrain grows from 60×60 flat cells
-to 256×256 with elevation. A height-field generated at boot
-via fBm noise gives hills, valleys, and a plateau. The player
-walks up slopes (smooth interpolation); NPCs avoid steep
-faces (slope threshold drops `Wander` candidates).
+**Gameplay deliverable shipped.** Replaced the single 60×60
+flat ground cube with a `cellsPerSide × cellsPerSide` grid
+of static tile entities whose heights follow a 4-octave fBm
+height field. Stress mode spawns 65 536 tiles (256×256);
+normal mode spawns 1 024 (32×32). Tile colors run a 3-stop
+gradient (grass → rock → snow) based on relative height.
+Player and NPCs Y-snap to the terrain each tick via the new
+`TerrainAttachSystem`. `NPCBrainSystem` rejects Wander
+targets whose `slopeAt` exceeds 0.35 (~19°) with up to 3
+re-rolls before falling through. `PickupSystem` switched to
+XZ-only distance check (the pre-D8 3D check would have
+missed pickups whenever the player was on a hilltop above
+them).
 
-**Engine evidence.**
-- The terrain is ~65k static entities — 6× the previous
-  static count. Exercises `StaticTag` chunk skip in
-  iteration on a chunk that's now genuinely large.
-- Height-field lookup is a per-NPC, per-tick query at peak.
-  Tests `SpatialHash` cell-radius queries at terrain scale
-  AND tests whether the linear-scan fallback inside
-  `MovementSystem` becomes a hot path.
-- New bench: `bench/terrain_query_bench` — height-field +
-  slope queries at 16k / 64k / 256k cells, single-threaded
-  vs `forEachChunk`-driven parallel slope evaluation.
+**Game-side artifacts that shipped.**
+- `examples/rpg_demo/Heightmap.hpp` — header-only,
+  deterministic seeded fBm + bilinear `heightAt` +
+  central-difference `slopeAt`. Borrowed by
+  `TerrainAttachSystem`, `NPCBrainSystem`,
+  `AnimationSystem`'s bob baseline, and the bench.
+- `TerrainPatch` UserComponent on terrain entities
+  (`cellX`, `cellZ`); lives on the static terrain archetype
+  so brain / combat queries skip the archetype on the
+  chunk-mask test.
+- `WorldState::heightmap` (`std::shared_ptr<const Heightmap>`)
+  + `WorldState::terrainCellsPerSide`. Tests can pre-seed
+  `terrainCellsPerSide` to keep boot fast.
+- `TerrainAttachSystem` — iterates `Transform + Velocity`
+  chunks, writes `position.y = heightAt(x, z) + scale.y/2`
+  via `ctx.single` when it changes. Registered between
+  `MovementSystem` and `AnimationSystem`.
 
-**Game-side artifacts.**
-- `Heightmap` POD (game-side, not a built-in component) +
-  `WorldState::heightAt(x, z) -> float` accessor.
-- `TerrainPatch` UserComponent on terrain entities carrying
-  the patch's (x, z) cell coordinate.
-- `RoadGraph` follow-on (D8-stretch): pre-baked walkable
-  path overlay so NPCs in D11 routines have a stable
-  network.
+**Test that shipped.** `tests/rpg_demo/test_terrain_lookup.cpp` —
+heightmap determinism (same seed → byte-identical field),
+cell-center exact match (`heightAt(cellCorner) ==
+sampleCell(...)`), bilinear midpoint = corner average,
+out-of-bounds clamp, slope-threshold reachability (23 cells
+above threshold at the configured parameters). 13 rpg_demo
+tests total, 113 tree-wide.
 
-**Tests.** `tests/rpg_demo/test_terrain_lookup.cpp` —
-sample 16 known (x, z) positions, verify height-field
-interpolation matches the noise function within ε; verify
-slope rejection at known steep cell.
+**Bench that shipped.** `bench/terrain_query_bench.cpp`
+(opt-in, behind `THREADMAXX_BUILD_BENCHMARKS=ON`). Four
+shapes at three scales: scalar `heightAt`, scalar `slopeAt`,
+parallel `forEachChunk` `heightAt`, parallel `forEachChunk`
+`slopeAt` — at 16k / 64k / 256k entities. CSV columns match
+the standard §3.9 schema. Headline numbers at 256k entities:
 
-**Engine extension trigger:** if the per-NPC height query at
-256×256 dominates `MovementSystem::update`, that's a signal
-to either (a) extend `SpatialHash` with a height-aware
-variant, or (b) introduce a sibling library
-(`threadmaxx_terrain`) that owns chunked height-field data.
-Both are deferred until the bench says so.
+| label                        | ns/query |
+|------------------------------|---------:|
+| `height_single_threaded`     |    12.91 |
+| `slope_single_threaded`      |    41.61 |
+| `height_forEachChunk` (×4w)  |     3.75 |
+| `slope_forEachChunk`  (×4w)  |    10.69 |
+
+The 3.4× parallel speedup confirms the engine path is the
+right shape for this workload.
+
+**What this did NOT need (compared to the plan).**
+- No `SpatialHash` height-aware variant.
+- No `threadmaxx_terrain` sibling library.
+- No `RoadGraph` (deferred to D11 where it'll be more
+  natural alongside NPC schedules).
+- No engine-side code touched. v1.2's `forEachChunk` + chunk
+  filtering + `WorldView` did everything D8 needed.
+
+**Engine extension trigger.** **None fired.** The per-NPC
+slope query in `NPCBrainSystem` (at most one re-roll per
+NPC per ~1.5s) is sub-percent of `MovementSystem::update`'s
+cost. Parallel-bench evidence at 256k entities is 3.4×
+faster than serial — well under any threshold that would
+have justified the `threadmaxx_terrain` spinup.
 
 ### Batch D9 — Particles
 
@@ -571,7 +604,7 @@ the demo forced becomes the next OPTIMIZATION_PATH batch.
 
 ---
 
-**Last updated.** 2026-05-21, on the v1.2.0 tag commit.
-Refresh this doc when D8 lands (replace its planning block
-with the as-shipped writeup) or when a long-term batch
-trigger fires.
+**Last updated.** 2026-05-22 — D8 landed.
+Refresh this doc when the next short-term batch (D9) lands
+(replace its planning block with the as-shipped writeup) or
+when a long-term batch trigger fires.

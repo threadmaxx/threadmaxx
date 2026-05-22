@@ -1,11 +1,14 @@
 #pragma once
 
+#include "Heightmap.hpp"
+
 #include <threadmaxx/Components.hpp>
 #include <threadmaxx/Handles.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/render/Camera.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace rpg {
@@ -160,6 +163,18 @@ struct QuestProgressed {
 
 constexpr std::uint32_t kPickupQuestTarget = 25u;
 
+/// §3.11.8 batch D8 — per-terrain-tile metadata. Cells are arranged in
+/// a `cellsPerSide × cellsPerSide` grid centered on the world origin;
+/// the `(cellX, cellZ)` pair indexes into that grid. Game systems
+/// generally don't read this; it's here so the engine's archetype
+/// machinery has a distinct mask for terrain tiles versus other
+/// `Transform + Faction + StaticTag` static entities (e.g. props,
+/// buildings — once D13 lands those).
+struct TerrainPatch {
+    std::uint32_t cellX = 0;
+    std::uint32_t cellZ = 0;
+};
+
 /// Bundle of user-component ids. Registered once at startup; passed to
 /// every system that needs to read or write a UserComponent. Stored in
 /// the engine's resource registry so systems can fetch it lazily without
@@ -173,6 +188,8 @@ struct UserComponentIds {
     threadmaxx::UserComponentId swordTag;
     /// §3.11.6 batch D6 — procedural-animation parameters.
     threadmaxx::UserComponentId animState;
+    /// §3.11.8 batch D8 — terrain-tile cell coordinate.
+    threadmaxx::UserComponentId terrainPatch;
 };
 
 /// §3.11.6 batch D6 — procedural animation parameters.
@@ -263,6 +280,19 @@ struct WorldState {
     /// PlayerInputSystem. Decoupled from the sword-swing timer so
     /// you can leave the PIP open while running around.
     bool          aimPipVisible    = false;
+
+    /// §3.11.8 batch D8 — generated at boot in `DemoGame::onSetup`.
+    /// Borrowed (by raw pointer) by `TerrainAttachSystem` and
+    /// `NPCBrainSystem` to snap entities to the ground and to reject
+    /// over-steep Wander targets. `shared_ptr` so headless tests can
+    /// hold their own copy alongside the demo's.
+    std::shared_ptr<const Heightmap> heightmap;
+    /// §3.11.8 batch D8 — width/depth of the terrain grid in tiles.
+    /// Chosen at boot from `worldState_.stressMode`: stress uses
+    /// `kStressTerrainCellsPerSide`, otherwise `kNormalTerrainCellsPerSide`.
+    /// Tests can override before `engine.initialize()` to keep boots
+    /// fast.
+    std::uint32_t terrainCellsPerSide = 0;
 };
 
 /// §3.11.1 batch D1 — gameplay tuning constants.
@@ -308,6 +338,27 @@ constexpr std::uint32_t kStressPickupCount    = 5000u;
 constexpr std::uint32_t kNormalNpcCount       = 50u;
 constexpr std::uint32_t kNormalPickupCount    = 100u;
 constexpr double        kTickBudgetSeconds    = 1.0 / 60.0;
+
+/// §3.11.8 batch D8 — terrain extent + tile counts. The terrain spans
+/// `[-kTerrainExtent/2, +kTerrainExtent/2]` along X and Z. Tiles are
+/// `cellsPerSide × cellsPerSide`; the same Heightmap resolution is
+/// used regardless (so normal-mode tiles sample a coarser version of
+/// the same continuous field stress-mode tiles see).
+constexpr float          kTerrainExtent              = 256.0f;
+constexpr std::uint32_t  kHeightmapResolution        = 128u;
+constexpr std::uint32_t  kStressTerrainCellsPerSide  = 256u;   // 65 536 tiles
+constexpr std::uint32_t  kNormalTerrainCellsPerSide  = 32u;    //  1 024 tiles
+constexpr std::uint32_t  kHeightmapSeed              = 0xD8000001u;
+
+/// §3.11.8 batch D8 — NPCBrainSystem rejects a candidate Wander
+/// target with slopeAt > this threshold. The bilinearly-interpolated
+/// fBm field maxes out at gradient ~0.4 (tan⁻¹(0.4) ≈ 22°); the
+/// threshold sits at 0.35 (~19°) so realistic hillsides actually
+/// trigger the reject. Up to `kMaxSlopeRejectAttempts` re-rolls
+/// before falling through to whatever the last sample was — picking
+/// a steep target beats standing still forever.
+constexpr float          kSlopeRejectThreshold       = 0.35f;
+constexpr int            kMaxSlopeRejectAttempts     = 3;
 
 /// §3.11.2 batch D2 — multi-camera layout (normalized viewport coords).
 constexpr threadmaxx::Viewport kViewportMain    = {0.0f, 0.0f, 1.0f, 1.0f};

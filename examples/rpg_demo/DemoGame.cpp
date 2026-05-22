@@ -5,6 +5,7 @@
 #include "CombatSystem.hpp"
 #include "CubeRenderSystem.hpp"
 #include "DamageSystem.hpp"
+#include "Heightmap.hpp"
 #include "ObjLoader.hpp"
 #include "PreloadLoader.hpp"
 #include "QuestSystem.hpp"
@@ -19,6 +20,7 @@
 #include "RespawnSystem.hpp"
 #include "SaveLoadSystem.hpp"
 #include "SkinnedRenderSystem.hpp"
+#include "TerrainAttachSystem.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Components.hpp>
@@ -59,12 +61,22 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
                        threadmaxx::World&,
                        threadmaxx::CommandBuffer& seed) {
     // ---- Register user-components -------------------------------------------
-    ids_.cubeRender  = engine.registerUserComponent<CubeRender>();
-    ids_.npcState    = engine.registerUserComponent<NpcState>();
-    ids_.playerState = engine.registerUserComponent<PlayerState>();
-    ids_.pickup      = engine.registerUserComponent<Pickup>();
-    ids_.swordTag    = engine.registerUserComponent<SwordTag>();
-    ids_.animState   = engine.registerUserComponent<AnimState>();
+    ids_.cubeRender   = engine.registerUserComponent<CubeRender>();
+    ids_.npcState     = engine.registerUserComponent<NpcState>();
+    ids_.playerState  = engine.registerUserComponent<PlayerState>();
+    ids_.pickup       = engine.registerUserComponent<Pickup>();
+    ids_.swordTag     = engine.registerUserComponent<SwordTag>();
+    ids_.animState    = engine.registerUserComponent<AnimState>();
+    ids_.terrainPatch = engine.registerUserComponent<TerrainPatch>();
+
+    // §3.11.8 batch D8 — generate the heightmap once at boot. The
+    // resolution is fixed; only the tile count (i.e. how densely the
+    // continuous field is sampled into entities) scales with stress
+    // mode.
+    if (!worldState_.heightmap) {
+        worldState_.heightmap = std::make_shared<Heightmap>(
+            kHeightmapResolution, kTerrainExtent, kHeightmapSeed);
+    }
 
     // §3.11.7 batch D7 — register the simulated boot-time loader.
     // The engine pumps `update()` once per `step()`; `preloadUntil`
@@ -140,6 +152,15 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
                                                      : kNormalNpcCount;
     worldState_.pickupCount = worldState_.stressMode ? kStressPickupCount
                                                      : kNormalPickupCount;
+    // §3.11.8 batch D8 — terrain tile count. Tests are allowed to
+    // pre-seed `terrainCellsPerSide` themselves; if they don't, the
+    // default of 0 here means we pick from stress mode like the other
+    // counts.
+    if (worldState_.terrainCellsPerSide == 0) {
+        worldState_.terrainCellsPerSide = worldState_.stressMode
+            ? kStressTerrainCellsPerSide
+            : kNormalTerrainCellsPerSide;
+    }
 
     // §3.11.5 batch D5 — enable the tick budget + skip policy when
     // stress mode is on. The cosmetic systems (HUD / DebugOverlay /
@@ -156,11 +177,19 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     const auto playerH = engine.reserveEntityHandle();
     worldState_.player = playerH;
 
+    // §3.11.8 batch D8 — heightmap-aware initial Y. The player stands
+    // on top of the terrain at world origin. Half-scale.y is the
+    // half-height that lifts the cube off the ground so its base
+    // touches `heightAt(x, z)`.
+    const auto& hmap = *worldState_.heightmap;
+    const float playerHeight = 1.8f;
+    const float playerBaseY  = hmap.heightAt(0.0f, 0.0f) + playerHeight * 0.5f;
+
     // ---- Player -------------------------------------------------------------
     {
         threadmaxx::Bundle b = {};
-        b.transform.position = {0, 1, 0};
-        b.transform.scale    = {1.0f, 1.8f, 1.0f};
+        b.transform.position = {0, playerBaseY, 0};
+        b.transform.scale    = {1.0f, playerHeight, 1.0f};
         b.faction.id         = kFactionPlayer;
         b.boundingVolume     = cubeAABB({0, 1, 0}, 0.9f);
         b.health             = threadmaxx::Health{kPlayerMaxHP, kPlayerMaxHP};
@@ -176,9 +205,11 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         threadmaxx::addUserComponent(seed, ids_.cubeRender, playerH,
             CubeRender{{0.30f, 0.50f, 1.0f, 1.0f}, 1.0f});
         threadmaxx::addUserComponent(seed, ids_.playerState, playerH, PlayerState{});
-        // §3.11.6 batch D6 — player walk-bob.
+        // §3.11.6 batch D6 — player walk-bob. §3.11.8 batch D8 —
+        // `baseY` is now derived from the terrain underneath the
+        // player's spawn so the bob oscillates around the ground.
         threadmaxx::addUserComponent(seed, ids_.animState, playerH,
-            AnimState{/*baseY*/ 1.0f, /*phase*/ 0.0f,
+            AnimState{/*baseY*/ playerBaseY, /*phase*/ 0.0f,
                       /*freq*/ 8.0f, /*amp*/ 0.10f, 0.0f});
     }
 
@@ -211,33 +242,70 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
             SwordTag{1.4f});
     }
 
-    // ---- Terrain ------------------------------------------------------------
-    {
-        const auto terrainH = engine.reserveEntityHandle();
-        threadmaxx::Bundle b = {};
-        b.transform.position = {0, -0.5f, 0};
-        b.transform.scale    = {kPlayWidth, 0.2f, kPlayWidth};
-        b.faction.id         = kFactionNeutral;
-        b.boundingVolume     = cubeAABB({0, -0.5f, 0}, kPlayWidth * 0.5f);
-        b.initialMask        = threadmaxx::ComponentSet{
-            threadmaxx::Component::Transform,
-            threadmaxx::Component::Faction,
-            threadmaxx::Component::BoundingVolume,
-            threadmaxx::Component::StaticTag,
-        };
-        seed.spawnBundle(terrainH, b);
-        threadmaxx::addUserComponent(seed, ids_.cubeRender, terrainH,
-            CubeRender{{0.25f, 0.45f, 0.25f, 1.0f}, 1.0f});
+    // ---- Terrain (§3.11.8 batch D8) -----------------------------------------
+    //
+    // Replaces the pre-D8 single 60×60 ground cube with a
+    // `cellsPerSide × cellsPerSide` grid of static tiles. Each tile is
+    // a thin column from y=0 to `heightAt(cellCenter)`; visually that
+    // looks like a low-poly hill field. Tiles intentionally do NOT
+    // carry `BoundingVolume` — collision/AOI queries don't care about
+    // ground, and skipping the bit keeps brain + combat queries lean.
+    //
+    // Stress mode → 256×256 = 65 536 tiles. Normal mode → 32×32 =
+    // 1 024 tiles. Headless tests can override the cell count via
+    // `WorldState::terrainCellsPerSide` before `engine.initialize()`.
+    const std::uint32_t cells = worldState_.terrainCellsPerSide;
+    const float terrainExtent = kTerrainExtent;
+    const float tileSize      = terrainExtent / static_cast<float>(cells);
+    const float halfExtent    = terrainExtent * 0.5f;
+    const float heightRange   = hmap.maxHeight() - hmap.minHeight();
+    for (std::uint32_t cz = 0; cz < cells; ++cz) {
+        for (std::uint32_t cx = 0; cx < cells; ++cx) {
+            const float worldX = -halfExtent + (static_cast<float>(cx) + 0.5f) * tileSize;
+            const float worldZ = -halfExtent + (static_cast<float>(cz) + 0.5f) * tileSize;
+            const float h      = hmap.heightAt(worldX, worldZ);
+            const float colorT = heightRange > 1e-3f
+                ? (h - hmap.minHeight()) / heightRange : 0.5f;
+            // 3-stop gradient: grass → rock → snow.
+            const float r = 0.20f + colorT * 0.60f;
+            const float g = 0.45f - colorT * 0.20f;
+            const float b = 0.25f + colorT * 0.40f;
+
+            const auto tileH = engine.reserveEntityHandle();
+            threadmaxx::Bundle bd = {};
+            bd.transform.position = {worldX, h * 0.5f, worldZ};
+            bd.transform.scale    = {tileSize, std::max(0.4f, h), tileSize};
+            bd.faction.id         = kFactionNeutral;
+            bd.initialMask        = threadmaxx::ComponentSet{
+                threadmaxx::Component::Transform,
+                threadmaxx::Component::Faction,
+                threadmaxx::Component::StaticTag,
+            };
+            seed.spawnBundle(tileH, bd);
+            threadmaxx::addUserComponent(seed, ids_.cubeRender, tileH,
+                CubeRender{{r, g, b, 1.0f}, 1.0f});
+            threadmaxx::addUserComponent(seed, ids_.terrainPatch, tileH,
+                TerrainPatch{cx, cz});
+        }
     }
+    (void)kPlayWidth;  // pre-D8 constant retained for diff readability.
 
     // ---- NPCs ---------------------------------------------------------------
     std::mt19937 rng(0xBEEFCAFEu);
     std::uniform_real_distribution<float> px(-kPlayWidth * 0.45f, kPlayWidth * 0.45f);
     std::uniform_real_distribution<float> hostility(0.0f, 1.0f);
     worldState_.hostileSpawnCount = 0;
+    constexpr float kNpcHalfHeight = 0.8f;  // matches scale.y/2 below
     for (std::uint32_t i = 0; i < worldState_.npcCount; ++i) {
         const auto h = engine.reserveEntityHandle();
-        const threadmaxx::Vec3 pos{px(rng), 1.0f, px(rng)};
+        // §3.11.8 batch D8 — snap initial NPC Y to terrain. Movement
+        // re-snaps each tick via TerrainAttachSystem; this is only
+        // here so the very first render frame doesn't show NPCs
+        // floating at the pre-D8 default of y=1.
+        const float npcX = px(rng);
+        const float npcZ = px(rng);
+        const float npcY = hmap.heightAt(npcX, npcZ) + kNpcHalfHeight;
+        const threadmaxx::Vec3 pos{npcX, npcY, npcZ};
         const bool hostile = hostility(rng) < 0.6f;
         if (hostile) ++worldState_.hostileSpawnCount;
         const std::uint32_t fac = hostile ? kFactionHostile : kFactionFriendly;
@@ -290,9 +358,16 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     }
 
     // ---- Pickups ------------------------------------------------------------
+    constexpr float kPickupHalfHeight = 0.2f;
     for (std::uint32_t i = 0; i < worldState_.pickupCount; ++i) {
         const auto h = engine.reserveEntityHandle();
-        const threadmaxx::Vec3 pos{px(rng), 0.4f, px(rng)};
+        // §3.11.8 batch D8 — pickup Y also follows the terrain.
+        // Pickups are static after spawn, so this is a one-shot snap
+        // rather than a per-tick `TerrainAttachSystem` consumer.
+        const float pkX = px(rng);
+        const float pkZ = px(rng);
+        const float pkY = hmap.heightAt(pkX, pkZ) + kPickupHalfHeight;
+        const threadmaxx::Vec3 pos{pkX, pkY, pkZ};
 
         threadmaxx::Bundle b = {};
         b.transform.position = pos;
@@ -334,9 +409,14 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::make_unique<PlayerInputSystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<CameraSystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<MovementSystem>());
-    // §3.11.6 batch D6 — Y-bob animation runs AFTER MovementSystem
-    // (X/Z integrated from Velocity) and BEFORE HierarchySystem
-    // (so Parent-attached children inherit the bobbed Y).
+    // §3.11.8 batch D8 — snap movers to terrain Y between MovementSystem
+    // (which integrates X/Z) and AnimationSystem (which bobs Y). The
+    // bob then oscillates around the just-applied terrain Y rather
+    // than the stale `AnimState::baseY` from spawn time.
+    engine.registerSystem(std::make_unique<TerrainAttachSystem>(&worldState_));
+    // §3.11.6 batch D6 — Y-bob animation runs AFTER TerrainAttachSystem
+    // and BEFORE HierarchySystem (so Parent-attached children inherit
+    // the bobbed Y).
     engine.registerSystem(std::make_unique<AnimationSystem>(&ids_, &worldState_));
     // §3.11.1 batch D1 — hierarchy propagates the sword's world
     // transform AFTER MovementSystem updates the player's position.

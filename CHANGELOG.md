@@ -8,6 +8,58 @@ are documented in `include/threadmaxx/version.hpp`.
 The sibling `threadmaxx_simd` library has its own independent
 changelog at `include/threadmaxx_simd/CHANGELOG.md`.
 
+## [Unreleased]
+
+### Added (`examples/rpg_demo`, §3.11.8 batch D8)
+
+- **Larger, uneven terrain.** Replaced the single 60×60 flat ground
+  cube with a `cellsPerSide × cellsPerSide` grid of static tiles
+  whose heights follow a 4-octave fBm height field. Stress mode
+  spawns 65 536 tiles (256×256); normal mode spawns 1 024 (32×32).
+  Player and NPCs Y-snap to the terrain via the new
+  `TerrainAttachSystem`. NPCBrainSystem now rejects Wander targets
+  whose `slopeAt` exceeds `kSlopeRejectThreshold` (~19°) with up to
+  3 re-rolls. `PickupSystem` switched to XZ-only distance check
+  (3D Y-inclusive check would have missed pickups on hilltops).
+- **`Heightmap` (header-only).** Deterministic seeded fBm noise
+  with bilinear `heightAt` and central-difference `slopeAt`.
+  Borrowed by `TerrainAttachSystem`, `NPCBrainSystem`,
+  `AnimationSystem`'s bob baseline, and the new bench.
+- **`TerrainPatch` UserComponent.** Per-tile metadata
+  (`cellX`, `cellZ`); lives on the static terrain archetype so
+  brain / combat queries skip the archetype on the chunk-mask test.
+- **Test:** `tests/rpg_demo/test_terrain_lookup.cpp` — heightmap
+  determinism, bilinear correctness, out-of-bounds clamp, slope
+  threshold reachability (23 steep cells found at the configured
+  parameters). 13 total rpg_demo tests, 113 tree-wide.
+- **Bench:** `bench/terrain_query_bench.cpp` (opt-in) — measures
+  single-threaded vs `forEachChunk`-parallel `heightAt` /
+  `slopeAt` queries at 16k / 64k / 256k entity scales. CSV output
+  matches the §3.9 schema (label, workload, entities, workers,
+  grain, ns mean/stddev/p50/p95/p99, throughput, ns/query note).
+- **Engine evidence captured at 256k entities:**
+  `height_forEachChunk` 3.75 ns/query (4 workers, parallel)
+  vs `height_single_threaded` 12.91 ns/query — clean 3.4× speedup,
+  confirming the engine path is the right shape for this workload.
+
+### Changed
+
+- `AnimationSystem` now bobs around the *current* terrain Y rather
+  than the spawn-time `AnimState::baseY` when a heightmap is
+  installed. Pre-D8 behavior preserved when `WorldState::heightmap`
+  is null (headless tests can opt out).
+- `examples/rpg_demo/CMakeLists.txt` picks up `TerrainAttachSystem.cpp`.
+  `Heightmap` is header-only; the bench includes the header directly.
+- `tests/rpg_demo/test_animation.cpp` updated for the new
+  terrain-aware bob baseline.
+
+### Engine extension trigger (per GAME_EXTENSION.md §4 D8)
+
+None fired. At 256k synthetic entities the parallel `forEachChunk`
+path wins by 3.4× — no `SpatialHash` height-aware variant needed,
+no `threadmaxx_terrain` sibling-library spinup. v1.2's abstractions
+hold for D8.
+
 ## [1.2.0] — 2026-05-21 — Phase 8: workload-driven library tightening
 
 Additive minor release covering the Phase 8 work (batches 26–32). Two

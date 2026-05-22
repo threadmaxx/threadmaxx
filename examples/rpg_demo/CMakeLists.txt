@@ -51,6 +51,8 @@ add_library(rpg_demo_core STATIC
     # §3.11.7b.5 batch 9b.4.c — procedural 2-bone skinned demo
     SkinnedCapsule.cpp
     SkinnedRenderSystem.cpp
+    # §3.11.8 batch D8 — terrain attach (Heightmap is header-only).
+    TerrainAttachSystem.cpp
 )
 
 target_include_directories(rpg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

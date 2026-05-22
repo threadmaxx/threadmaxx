@@ -25,18 +25,30 @@ using namespace threadmaxx;
 
 struct AnimTestGame : DemoGame {
     EntityHandle bobNpc;
+    float        bobBaseline = 1.0f;  // expected Y around which the bob oscillates
     void onSetup(Engine& engine, World& w, CommandBuffer& seed) override {
         DemoGame::onSetup(engine, w, seed);
+        // §3.11.8 batch D8 — the AnimationSystem now derives the bob
+        // baseline from the heightmap when one is installed (which
+        // DemoGame::onSetup always does). Record the expected
+        // baseline here so the assertions below compare against the
+        // right value.
+        const auto& ws = worldState();
+        const float halfY = 0.8f;
+        const float spawnY = ws.heightmap
+            ? ws.heightmap->heightAt(30.0f, 30.0f) + halfY
+            : 1.0f;
+        bobBaseline = spawnY;
         bobNpc = engine.reserveEntityHandle();
         Bundle b{};
         // Place far from player so combat / pickup systems leave it
         // alone for the duration of the test.
-        b.transform.position = {30.0f, 1.0f, 30.0f};
+        b.transform.position = {30.0f, spawnY, 30.0f};
         b.transform.scale    = {0.8f, 1.6f, 0.8f};
         b.velocity           = Velocity{{2.0f, 0.0f, 0.0f}, {0,0,0}};
         b.faction.id         = kFactionNeutral;
         b.boundingVolume     = BoundingVolume{
-            {29.6f, 0.2f, 29.6f}, {30.4f, 1.8f, 30.4f}};
+            {29.6f, spawnY - 0.8f, 29.6f}, {30.4f, spawnY + 0.8f, 30.4f}};
         b.initialMask        = ComponentSet{
             Component::Transform,
             Component::Velocity,
@@ -47,7 +59,7 @@ struct AnimTestGame : DemoGame {
         addUserComponent(seed, ids().cubeRender, bobNpc,
             CubeRender{{0.5f, 0.7f, 0.5f, 1.0f}, 1.0f});
         AnimState anim;
-        anim.baseY     = 1.0f;
+        anim.baseY     = spawnY;
         anim.phase     = 0.0f;
         anim.frequency = 8.0f;
         anim.amplitude = 0.20f;
@@ -80,14 +92,15 @@ int main() {
             maxY = std::max(maxY, t->position.y);
         }
     }
-    std::printf("[test_animation] Y range = [%.3f, %.3f] (baseY=1.0, "
-                "amp=0.20)\n", minY, maxY);
+    std::printf("[test_animation] Y range = [%.3f, %.3f] (baseY=%.3f, "
+                "amp=0.20)\n", minY, maxY, game.bobBaseline);
     // Expect the bob to span ~ baseY ± amplitude * speed_ratio.
     // speed_ratio = min(2.0 / 4.0, 1.0) = 0.5; expected range
-    // = [1.0 - 0.10, 1.0 + 0.10] (approximately).
-    CHECK(minY < 0.97f);   // dipped below baseY
-    CHECK(maxY > 1.03f);   // rose above baseY
-    CHECK(maxY - minY > 0.05f);  // meaningful oscillation
+    // = [baseY - 0.10, baseY + 0.10] (approximately).
+    const float base = game.bobBaseline;
+    CHECK(minY < base - 0.03f);   // dipped below baseY
+    CHECK(maxY > base + 0.03f);   // rose above baseY
+    CHECK(maxY - minY > 0.05f);    // meaningful oscillation
 
     EXIT_WITH_RESULT();
 }

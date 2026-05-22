@@ -1692,3 +1692,69 @@ symbol has a one-line `@brief` (load-bearing methods get
 `tests/COVERAGE_AUDIT.md` entry if it's a non-trivial method
 not already exercised, (3) if it's an engine knob, add it to
 `doc/performance_tuning.md` under "the major knobs".
+
+## §3.11.8 batch D8 — larger + uneven terrain (rpg_demo)
+
+First batch from `GAME_EXTENSION.md` past the v1.2 line.
+Demo-side work only — `src/` / `include/` untouched. Shipped
+2026-05-22.
+
+**What landed.** Replaced the single 60×60 flat ground cube
+with a grid of static tile entities (32×32 = 1024 normal,
+256×256 = 65 536 stress) whose heights come from a 4-octave
+fBm noise field. New game-side modules:
+
+- `examples/rpg_demo/Heightmap.hpp` — header-only,
+  deterministic seeded fBm with bilinear `heightAt(x, z)`
+  and central-difference `slopeAt(x, z)`. Header-only so
+  `bench/terrain_query_bench.cpp` can include it without
+  linking `rpg_demo_core`.
+- `examples/rpg_demo/TerrainAttachSystem.{hpp,cpp}` —
+  iterates `Transform + Velocity` chunks and writes
+  `position.y = heightAt(x, z) + scale.y/2` via
+  `ctx.single` when it changes. Registered between
+  `MovementSystem` and `AnimationSystem`.
+- `TerrainPatch` UserComponent (`cellX`, `cellZ`) on each
+  tile. Makes terrain its own archetype so brain / combat
+  queries skip it on the chunk-mask test.
+- `WorldState::heightmap` (`std::shared_ptr<const Heightmap>`)
+  + `WorldState::terrainCellsPerSide`. Tests can pre-seed
+  `terrainCellsPerSide` to keep boot fast; setting it via
+  `worldState_.terrainCellsPerSide = N` before
+  `engine.initialize()` overrides the stress-mode default.
+
+**System changes:**
+
+- `NPCBrainSystem` Wander target picker slope-rejects via
+  `Heightmap::slopeAt` against `kSlopeRejectThreshold`
+  (0.35 ≈ 19°), up to `kMaxSlopeRejectAttempts` (3) re-rolls.
+- `AnimationSystem` bob baseline tracks the *current*
+  terrain Y rather than the spawn-time `AnimState::baseY`
+  when a heightmap is installed. Pre-D8 behavior preserved
+  when `WorldState::heightmap` is null.
+- `PickupSystem` switched to XZ-only distance (3D inclusion
+  would have missed pickups on hilltops above the player).
+
+**Test + bench:**
+
+- `tests/rpg_demo/test_terrain_lookup.cpp` — heightmap
+  determinism, bilinear correctness, out-of-bounds clamp,
+  slope threshold reachability. 13 rpg_demo tests total;
+  113 tree-wide on both `build/` and `build-werror/`.
+- `bench/terrain_query_bench.cpp` — opt-in
+  (`THREADMAXX_BUILD_BENCHMARKS=ON`). At 256k entities,
+  parallel `forEachChunk` heightAt = 3.75 ns/query vs
+  single-threaded 12.91 ns/query — 3.4× speedup. CSV
+  output to argv[1] or stdout.
+
+**Heightmap is header-only by design.** Originally shipped
+with a `.cpp` but moved to header-only on cleanup pass so
+the bench could include it without linking `rpg_demo_core`.
+Future game-side modules that benches might want to reuse
+should follow the same pattern.
+
+**Engine extension trigger: none fired.** Bench evidence
+shows v1.2's `forEachChunk` + chunk filtering + `WorldView`
+handle the workload cleanly. No `threadmaxx_terrain`
+sibling library; no `SpatialHash` height-aware variant; no
+`src/` modifications.

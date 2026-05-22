@@ -1,5 +1,7 @@
 #include "AnimationSystem.hpp"
 
+#include "Heightmap.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
@@ -27,6 +29,14 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
     const auto& w = ctx.world();
     const double simTime = static_cast<double>(ctx.tick()) * ctx.dt();
     const auto animId = ids_->animState;
+    // §3.11.8 batch D8 — when a heightmap is present, bob around the
+    // *current* terrain Y rather than the stale spawn-time `baseY`.
+    // Falls back to `a.baseY` when the demo runs without terrain
+    // (pre-D8 behavior, useful for headless tests that opt out of
+    // heightmap generation).
+    const Heightmap* hmap = (worldState_ && worldState_->heightmap)
+                                ? worldState_->heightmap.get()
+                                : nullptr;
 
     struct PendingY {
         threadmaxx::EntityHandle e;
@@ -58,8 +68,12 @@ void AnimationSystem::update(threadmaxx::SystemContext& ctx) {
             const float bob = std::sin(static_cast<float>(simTime) *
                                        a.frequency + a.phase) *
                               a.amplitude * ratio;
+            // §3.11.8 batch D8 — terrain-aware bob baseline.
+            const float baseline = hmap
+                ? hmap->heightAt(tr.position.x, tr.position.z) + tr.scale.y * 0.5f
+                : a.baseY;
             threadmaxx::Transform out = tr;
-            out.position.y = a.baseY + bob;
+            out.position.y = baseline + bob;
             if (out.position.y != tr.position.y) {
                 pending.push_back({chunk.entities[r], out});
             }
