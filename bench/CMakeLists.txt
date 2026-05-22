@@ -24,6 +24,8 @@ set(THREADMAXX_BENCHMARKS
     wave_dispatch_bench
     # §3.11.8 batch D8 — height-field + slope query workload
     terrain_query_bench
+    # §3.11.9 batch D9 — particle burst-spawn / destroy stress
+    particle_storm_bench
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})

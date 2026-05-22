@@ -1758,3 +1758,104 @@ shows v1.2's `forEachChunk` + chunk filtering + `WorldView`
 handle the workload cleanly. No `threadmaxx_terrain`
 sibling library; no `SpatialHash` height-aware variant; no
 `src/` modifications.
+
+## §3.11.9 batch D9 — particles (rpg_demo)
+
+Second post-v1.2 game-extension batch. Demo-side only; no
+`src/` or `include/` changes. Shipped 2026-05-22.
+
+**What landed.** Burst-spawn / age-out particle entities
+plumbed through the engine's typed event channels. Three
+spawn triggers (combat sword-hit, NPC death, pickup
+collect) push 10 – 32 particles each via
+`ParticleEmitterSystem`. Particles inherit the engine's
+existing `Velocity` integration through `MovementSystem`;
+the new `ParticleSystem` only destroys expired entries.
+
+- `examples/rpg_demo/DemoTypes.hpp` — `Particle` UC (32 B,
+  immutable after spawn — see below), `ParticleEmitter` UC
+  (reserved for D10+), `kParticles*` tuning constants
+  (`kParticlesPerSwordHit = 14`,
+  `kParticlesPerDeath = 32`, `kParticlesPerPickup = 10`).
+- `examples/rpg_demo/ParticleSystem.{hpp,cpp}` — scans
+  Particle-bearing chunks, derives remaining lifetime from
+  `tick * dt - spawnTimeSeconds`, batches `cb.destroy`
+  calls in one `ctx.single`. Reads / writes both `none()`
+  (destroy targets the implicit EntityStructural category).
+  `skippable() = true` so it drops first under tick-budget
+  pressure.
+- `examples/rpg_demo/ParticleEmitterSystem.{hpp,cpp}` —
+  `preStep` drains three event channels into a `Burst`
+  staging vector; `update` reserves all handles in one
+  `ctx.reserveHandles` batch and emits the spawns in one
+  `ctx.single`. Each particle gets a deterministic random
+  velocity hemisphere (the seeded `std::mt19937` lives on
+  the system instance).
+
+**`Particle` is immutable after spawn.** The naïve approach
+(`removeUserComponent + addUserComponent` to update
+remaining lifetime each tick) would migrate every particle
+twice per tick out of and back into the Particle chunk,
+defeating the chunk-stability premise that makes burst-
+spawn pressure on the commit path meaningful. The shipped
+design instead records `spawnTimeSeconds` once and lets
+both `ParticleSystem` and any future renderer derive
+elapsed = `simTime - spawnTimeSeconds` at read time. The
+`Particle::fadeSeconds` field is reserved but not yet
+consumed — adding visual alpha fade requires plumbing the
+UC id into `CubeRenderSystem` for an alpha multiply.
+
+**Test:** `tests/rpg_demo/test_particle_lifetime.cpp` —
+spawn 100 particles via the seed CommandBuffer with
+monotonic lifetimes (`(i+1) * 0.05s`), advance ticks past
+half-life and full-life, verify exactly the expected cohort
+is alive each time. A chunk-wide scan was tried but
+discarded: the demo's normal combat flow spawns its own
+background particles during the test run, so only the
+explicit handle-list count is reliable. 14 rpg_demo tests;
+114 tree-wide on both `build/` and `build-werror/`.
+
+**Bench:** `bench/particle_storm_bench.cpp` — opt-in
+(`THREADMAXX_BUILD_BENCHMARKS=ON`). Four scales: 1k / 5k /
+25k / 100k **particles/sec** (per-tick = `perSec / 60`
+round-half-up). Two CSV rows per scale: `particle_storm`
+for full step latency, `particle_storm_commit` for the
+commit-phase slice. Note column carries final-tick
+`commitHash` + mean live count.
+
+```
+                 entities/sec   step_mean   commit_mean   p99
+particle_storm       1k          0.18 ms      15 µs       219 µs
+                     5k          0.71 ms      52 µs       750 µs
+                    25k          2.99 ms     245 µs      3.23 ms
+                   100k         12.30 ms    1.75 ms     13.24 ms
+```
+
+Per-command commit cost ~530 ns at the 100k scale (1.75 ms
+/ 3.3k commits/tick). At 100k particles/sec the engine
+sustains 12.3 ms/tick — under the 60 Hz 16.7 ms budget.
+
+**Engine extension trigger: none fired.** Spec called out
+the §5.3 "transient lifetime component class" as a
+potential follow-on; bench evidence shows the v1.2 commit
+path handles 3.3k spawn+destroy commands/tick comfortably,
+so the deferred work stays deferred.
+
+**`particle_storm_bench` does NOT use an `IntegrateSystem`.**
+An earlier draft did, but at 100k particles/sec (≈ 50 k
+live) integrating every particle via `forEachWith` plus
+`cb.setTransform` emitted ~50k extra commands/tick — that
+dominated wall time and obscured the actual signal (burst-
+spawn + destroy pressure). The bench skips integration;
+particles sit still inside their bounding chunks. Movement
+is exercised in-game via `MovementSystem`, where the cost
+is amortized across the whole alive entity set rather than
+specifically attributable to particles.
+
+When adding more burst-spawn workloads in future batches
+(D10 weather, D15 audio markers if they spawn entities):
+follow the same "immutable UC + derive-at-read-time" pattern.
+Per-tick UC mutation scales O(live particles) and shows up
+immediately in `commitDurationSeconds`; one-shot
+`addUserComponent` at spawn time disappears into the noise
+floor.

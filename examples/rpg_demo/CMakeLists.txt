@@ -53,6 +53,9 @@ add_library(rpg_demo_core STATIC
     SkinnedRenderSystem.cpp
     # §3.11.8 batch D8 — terrain attach (Heightmap is header-only).
     TerrainAttachSystem.cpp
+    # §3.11.9 batch D9 — burst-spawn particle entities.
+    ParticleSystem.cpp
+    ParticleEmitterSystem.cpp
 )
 
 target_include_directories(rpg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -175,6 +175,54 @@ struct TerrainPatch {
     std::uint32_t cellZ = 0;
 };
 
+/// §3.11.9 batch D9 — short-lived visual particle. Spawned in bursts by
+/// `ParticleEmitterSystem` in response to combat / death / pickup
+/// events; aged out by `ParticleSystem`. Each particle is a regular
+/// ECS entity living in the same chunk storage as everything else —
+/// the bench gate is the burst-spawn / burst-destroy pressure on the
+/// commit path, not any specialized lifetime store.
+///
+/// The struct is set once at spawn and never mutated after that.
+/// `ParticleSystem` derives remaining lifetime from
+/// `engine.tick() * dt - spawnTimeSeconds`; once that crosses
+/// `initialLifetime` the particle's entity is destroyed via
+/// `cb.destroy`. Motion comes from the engine's existing `Velocity`
+/// component — particles spawn with both `Transform` and `Velocity`,
+/// and `MovementSystem` integrates them like any other moving entity.
+/// The `fadeSeconds` window at the tail of the lifetime is the
+/// declared cosmetic-fade budget; v1 leaves visual fade unimplemented
+/// (particles pop out at end of life) — adding fade only requires
+/// plumbing this UC id into `CubeRenderSystem` for an alpha-scale
+/// multiply, which is a future-polish item.
+///
+/// Keeping the UC immutable is deliberate: the alternative
+/// (`removeUserComponent` + `addUserComponent` to update remaining
+/// lifetime each tick) would migrate the entity twice per tick — out
+/// of the Particle chunk and back into it — which defeats the
+/// chunk-stability premise the burst-spawn/destroy bench is measuring.
+struct Particle {
+    float spawnTimeSeconds = 0.0f;
+    float initialLifetime  = 0.5f;
+    float color[4]         = {1.0f, 1.0f, 1.0f, 1.0f};
+    float fadeSeconds      = 0.2f;
+    float pad[2]           = {0.0f, 0.0f};   // pad to 32 bytes
+};
+
+/// §3.11.9 batch D9 — per-emitter parameters. Currently unused as a
+/// UserComponent (the emitter logic in `ParticleEmitterSystem` keys
+/// off engine event channels rather than per-entity emitter state),
+/// but reserved as a UC bit so D10+ can attach it to the player /
+/// sword / NPC torsos for tunable rates. Registering it now keeps the
+/// archetype layout stable as D10's burst content lands.
+struct ParticleEmitter {
+    float    rateHz       = 0.0f;
+    float    speed        = 2.0f;
+    float    lifeSeconds  = 0.5f;
+    float    sizeScale    = 0.08f;
+    float    color[4]     = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::uint32_t kind    = 0;   // 0=spark, 1=dust, 2=puff, 3=blood
+};
+
 /// Bundle of user-component ids. Registered once at startup; passed to
 /// every system that needs to read or write a UserComponent. Stored in
 /// the engine's resource registry so systems can fetch it lazily without
@@ -190,6 +238,11 @@ struct UserComponentIds {
     threadmaxx::UserComponentId animState;
     /// §3.11.8 batch D8 — terrain-tile cell coordinate.
     threadmaxx::UserComponentId terrainPatch;
+    /// §3.11.9 batch D9 — short-lived visual particle.
+    threadmaxx::UserComponentId particle;
+    /// §3.11.9 batch D9 — per-entity emitter knobs (reserved; see
+    /// `ParticleEmitter` doc).
+    threadmaxx::UserComponentId particleEmitter;
 };
 
 /// §3.11.6 batch D6 — procedural animation parameters.
@@ -359,6 +412,21 @@ constexpr std::uint32_t  kHeightmapSeed              = 0xD8000001u;
 /// a steep target beats standing still forever.
 constexpr float          kSlopeRejectThreshold       = 0.35f;
 constexpr int            kMaxSlopeRejectAttempts     = 3;
+
+/// §3.11.9 batch D9 — particle burst tuning. Counts are intentionally
+/// modest in normal play (the demo's pre-D9 NPCs only emit when an
+/// event fires, not per tick) but scale with `kStressNpcCount` in
+/// stress mode where the player can be hit by dozens of NPCs at once.
+constexpr std::uint32_t kParticlesPerSwordHit       = 14u;
+constexpr std::uint32_t kParticlesPerDeath          = 32u;
+constexpr std::uint32_t kParticlesPerPickup         = 10u;
+constexpr float         kParticleSparkLifeSeconds   = 0.45f;
+constexpr float         kParticleDustLifeSeconds    = 0.65f;
+constexpr float         kParticlePuffLifeSeconds    = 0.80f;
+constexpr float         kParticleSparkSpeed         = 6.0f;
+constexpr float         kParticleDustSpeed          = 2.5f;
+constexpr float         kParticlePuffSpeed          = 1.5f;
+constexpr float         kParticleScale              = 0.08f;
 
 /// §3.11.2 batch D2 — multi-camera layout (normalized viewport coords).
 constexpr threadmaxx::Viewport kViewportMain    = {0.0f, 0.0f, 1.0f, 1.0f};

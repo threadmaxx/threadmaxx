@@ -15,6 +15,8 @@
 #include "HudSystem.hpp"
 #include "MovementSystem.hpp"
 #include "NPCBrainSystem.hpp"
+#include "ParticleEmitterSystem.hpp"
+#include "ParticleSystem.hpp"
 #include "PickupSystem.hpp"
 #include "PlayerInputSystem.hpp"
 #include "RespawnSystem.hpp"
@@ -68,6 +70,8 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     ids_.swordTag     = engine.registerUserComponent<SwordTag>();
     ids_.animState    = engine.registerUserComponent<AnimState>();
     ids_.terrainPatch = engine.registerUserComponent<TerrainPatch>();
+    ids_.particle     = engine.registerUserComponent<Particle>();
+    ids_.particleEmitter = engine.registerUserComponent<ParticleEmitter>();
 
     // §3.11.8 batch D8 — generate the heightmap once at boot. The
     // resolution is fixed; only the tile count (i.e. how densely the
@@ -429,6 +433,13 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::make_unique<RespawnSystem>(
         &engine, &worldState_, &ids_));
     engine.registerSystem(std::make_unique<PickupSystem>(&engine, &worldState_, &ids_, brain_));
+    // §3.11.9 batch D9 — particle aging + burst emission. ParticleSystem
+    // (destroys expired entries) runs first; ParticleEmitterSystem (drains
+    // last-tick DamageDealt / EntityDied / PickupCollected and spawns new
+    // bursts) runs after Damage / Pickup so the channels have settled
+    // through one full tick before it consumes them.
+    engine.registerSystem(std::make_unique<ParticleSystem>(&engine, &ids_));
+    engine.registerSystem(std::make_unique<ParticleEmitterSystem>(&engine, &ids_));
     // §3.11.4 batch D4 — quest tracker. Registered AFTER Pickup +
     // Damage so its event subscriptions see the PickupCollected /
     // EntityDied events those systems emit in the same tick.

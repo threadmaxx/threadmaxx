@@ -145,50 +145,83 @@ cost. Parallel-bench evidence at 256k entities is 3.4×
 faster than serial — well under any threshold that would
 have justified the `threadmaxx_terrain` spinup.
 
-### Batch D9 — Particles
+### Batch D9 — Particles  ✅ landed 2026-05-22
 
-**Gameplay deliverable.** Sword-swing sparkles, footstep
-dust, damage hit-flashes, NPC death puffs. Up to ~5k
-particles in flight at peak combat. Each particle is an
-entity with a lifetime; particles die naturally and burst-
-spawn at events (`SwordHit`, `EntityDied`, etc.).
+**Shipped.** Burst-spawn particle entities driven by combat /
+death / pickup events. Each particle carries
+`Transform + Velocity + CubeRender + Particle` (the new
+UserComponent). Motion runs through the engine's existing
+`MovementSystem` — particles inherit the standard chunk
+storage and the value-only `setTransform` fast path — and
+`ParticleSystem` destroys entries whose remaining lifetime
+hit zero. `ParticleEmitterSystem` drains the typed
+`DamageDealt` / `EntityDied` / `PickupCollected` channels
+and burst-spawns 10 – 32 particles per event (rate × kind
+tuned in `DemoTypes.hpp`).
 
-**Engine evidence.**
-- Burst-spawn + auto-destroy is the stress test for the
-  command-buffer + commit path. 5k spawns + 5k destroys
-  per tick at peak combat — well beyond anything current
-  benches measure as a hot path.
-- Tests `ScratchArena` allocation in the per-tick particle-
-  spawn body (the bump allocator is finally exercised under
-  realistic per-frame churn).
-- Tests B30's per-archetype hash rollup under burst-spawn
-  pressure (every spawn dirties the particle chunk).
-- New bench: `bench/particle_storm_bench` — 1k / 5k / 25k /
-  100k particles/sec, measuring step time AND commit time
-  AND per-archetype rollup time AND ScratchArena hit rate.
+**`Particle` is immutable after spawn.** The engine derives
+remaining lifetime from `tick * dt - spawnTimeSeconds` at
+read time rather than mutating the UC each tick, which
+would migrate every particle entity twice per tick (out of
+and back into the Particle chunk) and defeat the chunk-
+stability premise the bench was meant to measure.
+Documented in `DemoTypes.hpp`'s comment block above the
+struct.
 
-**Game-side artifacts.**
-- `Particle` UserComponent: `{ lifetimeSecondsRemaining,
-  initialLifetime, color[4], velocityX/Y/Z, fadeSeconds }`.
-- `ParticleEmitter` UserComponent on entities that spawn
-  particles (sword, player feet, NPC death markers).
-- `ParticleSystem` (new ISystem): integrates lifetime,
-  destroys expired particles via `cb.destroy`, applies
-  velocity (Vec3 add against Transform).
-- `ParticleEmitterSystem`: subscribes to `SwordHit` etc.
-  events, spawns particles via `cb.spawnBundle`.
+**`ParticleEmitter` reserved (not used yet).** Spec called
+for a per-entity emitter UC; the actual emit path keys off
+engine event channels rather than per-entity state. The UC
+is still registered so the archetype layout is stable when
+D10+ attaches per-NPC emitter knobs.
 
-**Tests.** `tests/rpg_demo/test_particle_lifetime.cpp` —
-spawn 100 particles with known lifetimes, advance N ticks,
-verify exactly the expired ones are destroyed and survivors
-have decayed lifetime.
+**Game-side artifacts shipped.**
+- `examples/rpg_demo/DemoTypes.hpp`: `Particle`,
+  `ParticleEmitter`, and `kParticles*` tuning constants.
+- `examples/rpg_demo/ParticleSystem.{hpp,cpp}`: ages out
+  expired particles. `skippable()` so it drops first under
+  tick-budget pressure.
+- `examples/rpg_demo/ParticleEmitterSystem.{hpp,cpp}`:
+  drains last-tick events, reserves all handles in one
+  `ctx.reserveHandles` call, batches the spawns into one
+  `ctx.single` lambda.
 
-**Engine extension trigger:** if `particle_storm_bench` at
-100k particles/sec shows the commit path bottlenecking, the
-likely answer is the "transient lifetime" component class
-discussed in `FUTURE_WORK.md §5.3` (user-defined component
-packing). This is the first concrete profile evidence that
-would unblock that deferred work.
+**Test.** `tests/rpg_demo/test_particle_lifetime.cpp` —
+spawn 100 particles with `initialLifetime = (i+1) *
+0.05s`, advance the engine, verify exactly the expired
+cohort is destroyed at the midpoint and all are gone past
+the maximum lifetime. 14 rpg_demo tests; 114 tree-wide.
+
+**Bench.** `bench/particle_storm_bench.cpp` (opt-in) — burst-
+spawn + age-out workload at 1k / 5k / 25k / 100k
+particles/sec. At 60 Hz that's per-tick `N/60` (round-half-
+up). Two CSV rows per scale: full-step latency and commit-
+only latency. Note column carries the final-tick
+`commitHash` for determinism diffing.
+
+**Engine evidence at 100k particles/sec (≈ 50 k live):**
+
+```
+step_mean    = 12.30 ms       (within 60 Hz 16.7 ms budget)
+commit_mean  =  1.75 ms       (~14 % of step time)
+throughput   = 135 753 particles/sec sustained
+```
+
+Commit time scales linearly with command volume (~530
+ns/command at 3.3 k commits/tick), well within budget. The
+batch B30 per-archetype hash rollup folds into the same
+`commitDurationSeconds` slice without becoming a visible
+cost. **Engine extension trigger does NOT fire.** No need
+to spin up `FUTURE_WORK.md §5.3`'s transient-lifetime
+component class; v1.2's existing user-component plumbing
+sustains the workload.
+
+**Items intentionally not in v1.2:** visible alpha fade (the
+`Particle::fadeSeconds` field is reserved but not consumed
+yet — adding it requires plumbing the UC id into
+`CubeRenderSystem` for an alpha-scale multiply, future
+polish). Footstep-dust particles (would require per-tick
+emit from a velocity-aware emitter; deferred to D10's
+weather particle work).
 
 ### Batch D10 — Weather
 
@@ -604,7 +637,7 @@ the demo forced becomes the next OPTIMIZATION_PATH batch.
 
 ---
 
-**Last updated.** 2026-05-22 — D8 landed.
-Refresh this doc when the next short-term batch (D9) lands
+**Last updated.** 2026-05-22 — D9 landed.
+Refresh this doc when the next short-term batch (D10) lands
 (replace its planning block with the as-shipped writeup) or
 when a long-term batch trigger fires.

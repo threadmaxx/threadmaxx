@@ -22,6 +22,8 @@ set(RPG_DEMO_TESTS
     test_obj_loader
     # §3.11.8 batch D8 — heightmap + slope-reject contract.
     test_terrain_lookup
+    # §3.11.9 batch D9 — particle aging + destroy contract.
+    test_particle_lifetime
 )
 
 foreach(test ${RPG_DEMO_TESTS})

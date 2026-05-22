@@ -10,6 +10,50 @@ changelog at `include/threadmaxx_simd/CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Added (`examples/rpg_demo`, §3.11.9 batch D9)
+
+- **Particle bursts.** Combat hits, NPC deaths, and pickup collects
+  now emit short-lived particle entities. Each particle is a regular
+  ECS entity carrying `Transform + Velocity + CubeRender +
+  Particle` (a new UC); motion comes from the engine's existing
+  `MovementSystem`, and the new `ParticleSystem` destroys entries
+  whose `simulationTime - spawnTimeSeconds >= initialLifetime`.
+  `ParticleEmitterSystem` drains the typed `DamageDealt` /
+  `EntityDied` / `PickupCollected` channels each tick and burst-
+  spawns 10 – 32 particles per event with a deterministic random
+  velocity hemisphere.
+- **`Particle` + `ParticleEmitter` UserComponents.** `Particle` is
+  immutable after spawn (the engine derives remaining lifetime at
+  read time rather than mutating the UC, avoiding two archetype
+  migrations per particle per tick). `ParticleEmitter` is reserved
+  for D10+'s per-entity emitter knobs.
+- **Test:** `tests/rpg_demo/test_particle_lifetime.cpp` — spawn
+  100 particles with monotonically increasing lifetimes via the
+  seed CommandBuffer, advance ticks, verify exactly the expired
+  cohort is destroyed and survivors are still alive. 14 total
+  rpg_demo tests, 114 tree-wide.
+- **Bench:** `bench/particle_storm_bench.cpp` (opt-in) — burst-
+  spawn / age-out workload at 1k / 5k / 25k / 100k particles/sec
+  (the engine ticks at 60 Hz, so per-tick spawn = `perSec / 60`).
+  Two rows per scale: `particle_storm` for full step time,
+  `particle_storm_commit` for the commit-phase slice. Note column
+  carries the final-tick `commitHash` and mean live count for
+  determinism diffing.
+- **Engine evidence captured at 100k particles/sec (≈ 50 k live):**
+
+  ```
+  step_mean      = 12.30 ms       (within 60 Hz 16.7 ms budget)
+  commit_mean    =  1.75 ms       (~14 % of step time)
+  throughput     = 135 753 particles/sec sustained
+  ```
+
+  Commit time scales linearly with command volume (1.7 ms / 3.3k
+  commits-per-tick ≈ 530 ns/command). No bottleneck in the v1.2
+  commit path at this scale — the §3.11.9 spec's
+  "transient-lifetime component class" trigger does NOT fire. The
+  per-archetype hash rollup folds into `commitDurationSeconds`
+  without becoming a visible cost.
+
 ### Added (`examples/rpg_demo`, §3.11.8 batch D8)
 
 - **Larger, uneven terrain.** Replaced the single 60×60 flat ground
