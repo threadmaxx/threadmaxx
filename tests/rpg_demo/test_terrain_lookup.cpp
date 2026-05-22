@@ -1,23 +1,17 @@
 // §3.11.8 batch D8 — Heightmap correctness + slope-reject gameplay test.
 //
-// 2026-05-22 audit (round 6) — `heightAt` is back to BILINEAR smoothing
-// after the round-5 step function caused player Y to snap at cell
-// boundaries (felt like "tripping"). The tests below verify bilinear
-// correctness; the boundary-jump check was removed.
+// 2026-05-22 (round 9, voxel pivot) — `heightAt` is now a STEP
+// function that quantizes the raw fBm field to integer multiples of
+// `blockUnit` (1.0 m). Every query inside a cell returns the same
+// height — there's no interpolation. The tests below verify:
 //
-// Two halves:
-//
-// 1. Pure-data check: construct a Heightmap and verify
-//    `heightAt(cellOrigin)` matches the cell sample exactly,
-//    `heightAt(cellMidpoint)` matches the 4-corner average (bilinear
-//    weight 0.5/0.5), and queries outside the world extent clamp to
-//    the boundary rather than reading out-of-bounds.
-//
-// 2. Slope-reject behavior: find a steep cell in the same heightmap,
-//    verify `slopeAt` reports a value above the rejection threshold
-//    used by `NPCBrainSystem`. Confirms the integration contract:
-//    if the heightmap reports a cell as steep, the brain will refuse
-//    it.
+// 1. `heightAt(anyPointInsideCell) == floor(sampleCell(ix,iz))`.
+// 2. Adjacent-cell heights differ in integer block-unit steps —
+//    so a 1-block ledge is allowed traversal, ≥ 2-block is a wall.
+// 3. Out-of-range queries clamp to the boundary.
+// 4. Slope-reject still finds cells above the threshold (it now
+//    reports gradients in quantized units, but the noise field's
+//    range is enough to produce some > 0.35).
 
 #include "Check.hpp"
 #include "Heightmap.hpp"
@@ -44,12 +38,14 @@ int main() {
                    rpg::kTerrainExtent,
                    rpg::kHeightmapSeed);
 
-    // ---- 1. Direct grid samples match heightAt at cell origins --------------
+    // ---- 1. Direct grid samples → quantized heightAt at cell origin --------
     // Cell `(ix, iz)` covers `[-extent/2 + ix*cs, -extent/2 + (ix+1)*cs]`.
-    // A query at the cell origin lands inside cell `(ix, iz)`; the
-    // step-function `heightAt` returns `sampleCell(ix, iz)` exactly.
+    // The step-function heightAt returns `floor(sampleCell(ix,iz) /
+    // blockUnit) * blockUnit` everywhere inside the cell.
     const float half     = hmap.worldExtent() * 0.5f;
     const float cellSize = hmap.cellSize();
+    const float bu       = hmap.blockUnit();
+    auto quantize = [bu](float v) { return std::floor(v / bu) * bu; };
     int sampleCount = 0;
     for (std::uint32_t ix : {std::uint32_t(0), std::uint32_t(13),
                               std::uint32_t(rpg::kHeightmapResolution / 2),
@@ -57,46 +53,50 @@ int main() {
         for (std::uint32_t iz : {std::uint32_t(0), std::uint32_t(7),
                                   std::uint32_t(rpg::kHeightmapResolution / 3),
                                   std::uint32_t(rpg::kHeightmapResolution - 2)}) {
-            const float worldX = -half + static_cast<float>(ix) * cellSize;
-            const float worldZ = -half + static_cast<float>(iz) * cellSize;
+            // Sample near the cell center to dodge floating-point
+            // boundary ambiguity (a query exactly at the cell origin
+            // lands in cell (ix-1, iz-1) for negative coords thanks
+            // to `floor`-style indexing).
+            const float worldX = -half + (static_cast<float>(ix) + 0.5f) * cellSize;
+            const float worldZ = -half + (static_cast<float>(iz) + 0.5f) * cellSize;
             const float fromQuery  = hmap.heightAt(worldX, worldZ);
-            const float fromSample = hmap.sampleCell(ix, iz);
+            const float fromSample = quantize(hmap.sampleCell(ix, iz));
             CHECK(relErr(fromQuery, fromSample) < 1e-4f);
             ++sampleCount;
         }
     }
     CHECK(sampleCount == 16);
 
-    // ---- 2. Bilinear midpoint matches corner average -----------------------
-    // 2026-05-22 audit (round 6) — heightAt is back to bilinear smoothing
-    // after the round-5 step function read as "tripping" in-game. Mid-cell
-    // query equals the average of the 4 corner samples (bilinear with
-    // u = v = 0.5).
+    // ---- 2. heightAt is constant inside a cell -----------------------------
+    // Voxel terrain: every point inside the same cell reports the same
+    // quantized height. Sample 4 sub-cell positions in a representative
+    // cell and verify they all match.
     {
         const std::uint32_t ix = 40, iz = 70;
-        const float worldX = -half + (static_cast<float>(ix) + 0.5f) * cellSize;
-        const float worldZ = -half + (static_cast<float>(iz) + 0.5f) * cellSize;
-        const float corners[4] = {
-            hmap.sampleCell(ix,     iz    ),
-            hmap.sampleCell(ix + 1, iz    ),
-            hmap.sampleCell(ix,     iz + 1),
-            hmap.sampleCell(ix + 1, iz + 1),
-        };
-        const float expected = 0.25f * (corners[0] + corners[1] +
-                                         corners[2] + corners[3]);
-        const float got = hmap.heightAt(worldX, worldZ);
-        CHECK(relErr(got, expected) < 1e-4f);
+        const float ox = -half + (static_cast<float>(ix) + 0.5f) * cellSize;
+        const float oz = -half + (static_cast<float>(iz) + 0.5f) * cellSize;
+        const float h0 = hmap.heightAt(ox,                       oz);
+        const float h1 = hmap.heightAt(ox + 0.25f * cellSize,    oz);
+        const float h2 = hmap.heightAt(ox - 0.25f * cellSize,    oz + 0.25f * cellSize);
+        const float h3 = hmap.heightAt(ox,                       oz - 0.25f * cellSize);
+        CHECK(h0 == h1);
+        CHECK(h0 == h2);
+        CHECK(h0 == h3);
+        // Height is on the quantization grid.
+        CHECK(std::fabs(h0 - quantize(h0)) < 1e-6f);
     }
 
     // ---- 3. Out-of-bounds clamps to boundary -------------------------------
     {
-        const float hLeftEdge  = hmap.heightAt(-half, 0.0f);
+        // Sample slightly inside the boundary so the clamped query
+        // lands in the same cell as the OOB query.
+        const float hLeftEdge  = hmap.heightAt(-half + cellSize * 0.5f, 0.0f);
         const float hWayLeft   = hmap.heightAt(-half * 4.0f, 0.0f);
-        CHECK(relErr(hLeftEdge, hWayLeft) < 1e-4f);
+        CHECK(hLeftEdge == hWayLeft);
 
-        const float hRightEdge = hmap.heightAt(+half * 0.999f, 0.0f);
+        const float hRightEdge = hmap.heightAt(+half - cellSize * 0.5f, 0.0f);
         const float hWayRight  = hmap.heightAt(+half * 10.0f, 0.0f);
-        CHECK(relErr(hRightEdge, hWayRight) < 0.01f);
+        CHECK(hRightEdge == hWayRight);
     }
 
     // ---- 4. Slope rejection -----------------------------------------------

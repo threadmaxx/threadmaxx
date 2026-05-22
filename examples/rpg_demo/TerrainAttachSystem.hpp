@@ -1,8 +1,12 @@
 #pragma once
 
+#include <threadmaxx/Components.hpp>
 #include <threadmaxx/System.hpp>
 
 #include "DemoTypes.hpp"
+
+#include <cstdint>
+#include <vector>
 
 namespace threadmaxx { class Engine; }
 
@@ -59,6 +63,21 @@ private:
     const WorldState*   worldState_ = nullptr;
     UserComponentIds*   ids_        = nullptr;
     threadmaxx::Engine* engine_     = nullptr;
+
+    /// Per-entity previous XZ ground-pos cache for the step-up rule.
+    /// 2026-05-22 (round 9, voxel pivot) — when an entity tries to
+    /// walk into a cell whose quantized height exceeds its current
+    /// ground height by more than `kStepUpMax`, we revert its XZ to
+    /// `prevPos_[idx].pos` so it stops at the wall instead of
+    /// teleporting on top. The generation field guards against
+    /// reusing a stale entry after destroy+respawn (entity index
+    /// gets recycled but generation bumps).
+    struct PrevSlot {
+        threadmaxx::Vec3 pos;
+        std::uint32_t    generation = 0;
+        bool             valid      = false;
+    };
+    std::vector<PrevSlot> prevPos_;
 };
 
 } // namespace rpg

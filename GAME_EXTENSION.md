@@ -223,7 +223,178 @@ polish). Footstep-dust particles (would require per-tick
 emit from a velocity-aware emitter; deferred to D10's
 weather particle work).
 
-### Batch D10 — Weather
+### Batch D9.5 — Voxel terrain pivot  ✅ landed 2026-05-22
+
+**Why this exists.** Earlier rounds tried to make the heightmap-
+derived terrain look "smooth" — bilinear `heightAt`, edge-warped
+interpolation, slab-thickness tricks. They all introduced
+secondary artifacts (tripping, beehive walls, ambiguous slope-
+reject semantics) or required deeper renderer work the demo
+doesn't need. Round 9 pivots to **discrete Minecraft-style
+voxels**: every heightmap cell is one block tall; adjacent cells
+form vertical walls; traversal allows 1-block step-ups and rejects
+anything taller.
+
+This collapses three open problems (sloped sides, smooth Y curve,
+slope-reject thresholding) into one well-defined gameplay rule.
+
+**Shipped.**
+- `Heightmap::heightAt` is now a step function that quantizes the
+  raw fBm sample to integer multiples of `kBlockUnit` (1.0 m).
+  Every point inside a cell reads the same Y. Bilinear /
+  edge-warp interpolation is gone.
+- `Heightmap::blockUnit()` exposes the quantization step for
+  game-side code that needs it (currently just
+  `TerrainAttachSystem`'s step-up check).
+- `TerrainAttachSystem` enforces a **1-block step-up cap**: when
+  the entity's new XZ falls inside a cell whose quantized height
+  exceeds its previous-tick ground height by more than
+  `kStepUpMax` (1.0 + epsilon), revert XZ to the entity's last
+  safe position. Airborne players bypass (jumping clears walls).
+  Per-entity prev-XZ cached in `prevPos_` keyed by
+  `EntityHandle::index` with a generation guard for slot reuse.
+- The cosmetic Y-bob remains positive-only (round-3 contract)
+  but no longer interacts with the heightmap's now-discrete Y —
+  `baseY` snaps cleanly at every cell.
+
+**Game-side artifacts shipped.**
+- `examples/rpg_demo/DemoTypes.hpp`: `kStepUpMax` constant.
+- `examples/rpg_demo/Heightmap.hpp`: voxel doc block + `blockUnit()`
+  accessor + step-function `heightAt` + `quantize_` helper.
+- `examples/rpg_demo/TerrainAttachSystem.{hpp,cpp}`: `prevPos_`
+  cache + step-up rejection logic.
+
+**Tests updated.** `tests/rpg_demo/test_terrain_lookup.cpp` was
+re-shaped: cell-origin sampling → quantized exact match; "bilinear
+midpoint" check replaced with "every point inside a cell reads the
+same Y"; OOB clamp asserts equality (not relErr). Slope-reject
+still finds cells > 0.35 because the central-differences gradient
+of a quantized field still hits ≥ 0.5 at every 1-block boundary.
+
+`tests/rpg_demo/test_animation.cpp` was relaxed: the
+positive-only bob means `minY = base` always, so the assertion
+shifted from "swings above AND below baseY" to "swings at all"
+(`maxY - minY > 0.03`). The voxel pivot doesn't break the bob
+itself — entities that hit a wall keep their velocity vector and
+keep bobbing in place.
+
+**Engine evidence.** None — `Heightmap` is pure header-only
+demo-side code, and `TerrainAttachSystem` was already a normal
+ISystem. No engine changes. The per-entity prev-XZ cache lives
+in the system itself, not in storage; it's a small flat vector
+keyed by EntityHandle::index, bounded by the high-water entity
+count.
+
+**What's deferred to D10+** (the voxel gameplay tranche; see
+below).
+
+### Batch D10 — Voxel block attributes + visual variety
+
+**Gameplay deliverable.** Each terrain cube becomes a typed
+**block** with attributes: `BlockKind` (Grass / Dirt / Stone /
+Sand / Snow / Water / Wood), `hardness`, `walkable`, base color.
+The terrain spawn loop in `DemoGame::onSetup` samples block kind
+from the heightmap value (low → sand/water, mid → grass/dirt,
+high → stone/snow). Color comes from the block kind rather than
+the 3-stop heightmap-gradient hack. Non-walkable blocks (water)
+get a different surface contract — entities sink to a "water
+level" instead of being snapped to the top.
+
+**Engine evidence.**
+- First real exercise of a heterogeneous-archetype terrain world.
+  Pre-D10: every terrain entity has the same component mask
+  (`Transform + Faction + StaticTag + CubeRender + TerrainPatch`).
+  Post-D10: each block kind keeps that mask but additionally
+  carries a `BlockData` UserComponent with kind+attributes. All
+  blocks share one archetype (they all carry `BlockData`), so
+  archetype count is still small.
+- Tests the chunk-iteration path's tag-filtering on a realistic
+  ~1k-2k entity terrain workload (D8 already does this; D10
+  adds the variety without changing the shape).
+
+**Game-side artifacts.**
+- `BlockKind` enum + `BlockData` UserComponent.
+- A `kindAt(heightmap value, surface y) → BlockKind` mapping
+  function in `Heightmap.hpp` or a sibling header.
+- `BlockPaletteSystem` (one-shot at init?): assigns colors at
+  spawn time — no per-tick cost.
+
+**Test.** `tests/rpg_demo/test_block_palette.cpp` — verify the
+spawn-time kind distribution matches the heightmap height ranges
+(e.g. height < -2 m → Sand; height ≥ 9 m → Snow). Pure
+deterministic-data test.
+
+**Bench.** None — block-attribute work is one-shot at boot.
+
+**Engine extension trigger.** None expected.
+
+### Batch D11 — Harvestable blocks
+
+**Gameplay deliverable.** Player can break (left-click) and place
+(right-click) blocks. Breaking a block: the entity becomes a
+`DroppedItem` (small spinning cube of the block's color) for ~30
+seconds, then despawns. Pickup hooks into the existing
+PickupSystem path. Placing: spend a `DroppedItem` from inventory
+to spawn a new block at the cell the player is targeting.
+
+**Engine evidence.**
+- Tests the spawn/destroy churn path under realistic mid-tick
+  rates (~5-20 break/place events per minute). The B30
+  per-archetype hash rollup should handle this trivially since
+  the involved archetypes are small.
+- First test of `Engine::events<BlockBroken>()` /
+  `BlockPlaced` carrying enough info (cell coords, kind,
+  player) for downstream systems.
+- Tests `AssetReloaded` for the player's inventory UI — when a
+  block kind's color asset changes, the inventory icon updates.
+
+**Game-side artifacts.**
+- `Inventory` UserComponent on the player (small fixed-size
+  array of `{BlockKind, count}` stacks).
+- `BlockEditSystem` (new ISystem): drains `BlockBroken` /
+  `BlockPlaced` events from input, applies the change via
+  `cb.destroyEntity` / `cb.spawn`.
+- New typed events: `BlockBroken{cellX, cellZ, kind, breaker}`
+  and `BlockPlaced{cellX, cellZ, kind, placer}`.
+- `DroppedItem` UserComponent + matching cosmetic spawn logic.
+
+**Test.** `tests/rpg_demo/test_block_harvest.cpp` — spawn a 4×4
+terrain patch, break the center block via a synthetic
+`BlockBroken` event, verify the entity is destroyed in the next
+commit AND a `DroppedItem` appears at the cell. Place it elsewhere
+via `BlockPlaced`, verify the new entity exists with the right
+kind.
+
+**Bench.** `bench/block_edit_bench.cpp` — sustained edit rate
+(break + place pairs at 100 / 1k / 10k ops/sec) measured against
+`commit_mean` and per-frame variance. Stresses the spawn/destroy
+churn the B30 hash rollup is supposed to absorb cheaply.
+
+**Engine extension trigger.** If `commit_mean` at 10k ops/sec
+exceeds ~3 ms, the engine probably needs faster spawn paths
+(currently every spawn goes through `setMaskAndMigrate`). Most
+likely candidate: a bulk-spawn API that pre-allocates N slots
+in one chunk before any commits.
+
+### Batch D12 — Voxel chunking (renderer-side)
+
+**Trigger (currently NOT firing).** At normal-mode 32×32 = 1024
+terrain blocks the per-tile cube renders at ~steady framerate.
+At stress-mode 256×256 = 65 536 blocks the CPU-side draw item
+build is the next likely hot spot if D11 push edit rates up.
+
+**Possible scope (not committed).** Group adjacent same-kind
+blocks into a single "chunk" DrawItem with a baked sub-mesh.
+Render the chunk instead of N individual cubes. Edit operations
+invalidate the affected chunk(s); a background rebuilder
+regenerates the mesh off-thread (great use case for B20's
+`snapshotAsync` worker pattern).
+
+This is the kind of work that may justify a sibling library
+(`threadmaxx_voxel`?) if the chunking logic gets complex. But
+it's gated on D11's bench data showing a real bottleneck.
+
+### Batch D10 (deferred) — Weather
 
 **Gameplay deliverable.** Rain (particle burst from above
 camera, fades on ground contact), fog (camera-relative
@@ -637,7 +808,13 @@ the demo forced becomes the next OPTIMIZATION_PATH batch.
 
 ---
 
-**Last updated.** 2026-05-22 — D9 landed.
-Refresh this doc when the next short-term batch (D10) lands
-(replace its planning block with the as-shipped writeup) or
-when a long-term batch trigger fires.
+**Last updated.** 2026-05-22 — D9 landed, then D9.5 (voxel
+terrain pivot) landed as a follow-on. The original D10 (Weather)
+is deferred behind the voxel tranche (D10-D12 now cover block
+attributes, harvestable blocks, and renderer-side chunking).
+Weather will likely re-emerge as D13 or D14 once the voxel work
+settles.
+
+Refresh this doc when the next batch lands (replace its planning
+block with the as-shipped writeup) or when a long-term batch
+trigger fires.

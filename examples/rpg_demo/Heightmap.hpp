@@ -13,23 +13,14 @@ namespace rpg {
 /// value noise at construction time, then answers `heightAt` /
 /// `slopeAt` queries.
 ///
-/// **2026-05-22 audit (round 5)** — `heightAt` is a STEP FUNCTION: it
-/// returns the height of whichever heightmap cell contains the query
-/// point, with no bilinear smoothing. The previous bilinear form
-/// caused two visible artifacts:
-///  - The "beehive" honeycomb pattern at oblique angles. Rendered
-///    tile slabs are flat-topped at their cell-center sample, but
-///    bilinear queries between centers landed BELOW the tile top on
-///    high-side approaches and ABOVE on low-side approaches — the
-///    player and entities clipped through tile-top corners visibly.
-///  - Asymmetric tile-edge climbing. Crossing from a low tile onto a
-///    higher one ramped the player upward smoothly (looks "correct"),
-///    but crossing from a high tile down sank the player into the
-///    high tile's flesh before popping out on the lower one ("through
-///    the edges"). Same artifact mirrored across direction.
-/// The step form snaps the player to the slab top of whichever tile
-/// they're standing in. Transitions are instantaneous (no slant) —
-/// exactly the "rectangular tiles" geometry the user asked for.
+/// **2026-05-22 (round 9)** — pivoted to voxel-style terrain.
+/// `heightAt` is now a step function that quantizes the underlying
+/// noise field to integer multiples of `kBlockUnit` (1.0 m). Each
+/// heightmap cell becomes a single voxel column whose top sits at the
+/// quantized height; adjacent cells differing by N block units form
+/// an N-tall vertical wall. Game-side traversal code (`MovementSystem`,
+/// `TerrainAttachSystem`, `NPCBrainSystem`) is responsible for the
+/// 1-block step-up cap — `Heightmap` itself is purely a query API.
 ///
 /// World coords are centered: queries in `[-worldExtent/2,
 /// +worldExtent/2]` along each of X and Z map onto the grid; queries
@@ -38,7 +29,8 @@ namespace rpg {
 /// Deterministic: same `(resolution, worldExtent, seed)` triple
 /// produces a byte-identical height field. Used by D8's terrain spawn
 /// loop, the per-tick `TerrainAttachSystem`, `NPCBrainSystem`'s
-/// slope-reject path, and `bench/terrain_query_bench`.
+/// slope-reject path (now redundant with the step-up cap; kept as a
+/// secondary filter), and `bench/terrain_query_bench`.
 class Heightmap {
 public:
     Heightmap(std::uint32_t resolution,
@@ -83,40 +75,44 @@ public:
     float         maxHeight()   const noexcept { return maxH_; }
     float         cellSize()    const noexcept { return cellSize_; }
 
-    /// Bilinearly-interpolated world-space height at `(x, z)`. Out-of-
-    /// range queries clamp to the boundary.
+    /// Quantized world-space height at `(x, z)`. Out-of-range queries
+    /// clamp to the boundary.
     ///
-    /// **2026-05-22 audit (round 6)** — reverted from the round-5
-    /// step-function form. The step function snapped player Y at
-    /// every cell boundary which read as "tripping" while walking.
-    /// Bilinear gives a continuous surface the player traverses
-    /// smoothly. The visual mismatch with the slab-center-tops is
-    /// hidden by the 6 m slab thickness and deeply-overlapping
-    /// neighbours, AND the round-6 renderer fix (Vulkan-correct
-    /// projection depth range) removes the close-camera artifact
-    /// that had previously been blamed on the bilinear shape.
+    /// **2026-05-22 (round 9)** — pivoted to a Minecraft-style step
+    /// function. Each query falls inside exactly one heightmap cell;
+    /// the returned height is that cell's sample rounded down to the
+    /// nearest `kBlockUnit` (default 1.0 m), giving the world a
+    /// discrete grid look. No interpolation between cells — adjacent
+    /// cells differing by ≥ 2 block units form a sheer wall that
+    /// game-side movement code is expected to reject as a too-tall
+    /// step (see `TerrainAttachSystem`'s 1-block step-up rule).
+    ///
+    /// This makes `heightAt(cellOrigin) == quantize(sampleCell(...))`
+    /// AND `heightAt(cellMidpoint) == quantize(sampleCell(...))` —
+    /// every point inside a cell reads the same height. Bilinear /
+    /// smooth interpolation is gone; that was the previous "ramp"
+    /// look and doesn't fit voxel terrain.
     float heightAt(float x, float z) const noexcept {
         const float half = extent_ * 0.5f;
         const float gx = (x + half) * invCellSize_;
         const float gz = (z + half) * invCellSize_;
-        // Leave 1.0001 cells of headroom so ix+1 / iz+1 are valid.
-        const float maxIdx = static_cast<float>(res_) - 1.0001f;
+        // Clamp index to last valid cell. No ix+1 lookup needed for
+        // the step form, so the headroom is just one cell.
+        const float maxIdx = static_cast<float>(res_) - 1.0f;
         const float clampedX = std::clamp(gx, 0.0f, maxIdx);
         const float clampedZ = std::clamp(gz, 0.0f, maxIdx);
         const std::uint32_t ix = static_cast<std::uint32_t>(clampedX);
         const std::uint32_t iz = static_cast<std::uint32_t>(clampedZ);
-        const float fx = clampedX - static_cast<float>(ix);
-        const float fz = clampedZ - static_cast<float>(iz);
-        const std::size_t r = res_;
-        const float h00 = heights_[static_cast<std::size_t>(iz)     * r + ix];
-        const float h10 = heights_[static_cast<std::size_t>(iz)     * r + (ix + 1)];
-        const float h01 = heights_[static_cast<std::size_t>(iz + 1) * r + ix];
-        const float h11 = heights_[static_cast<std::size_t>(iz + 1) * r + (ix + 1)];
-        return (1.0f - fx) * (1.0f - fz) * h00
-             +        fx  * (1.0f - fz) * h10
-             + (1.0f - fx) *        fz  * h01
-             +        fx  *        fz  * h11;
+        const float raw = heights_[static_cast<std::size_t>(iz) * res_ + ix];
+        return quantize_(raw);
     }
+
+    /// World-space block unit. Cells whose sampled height differs by
+    /// less than `blockUnit` snap to the same quantized value;
+    /// vertical traversal in steps of `blockUnit` is treated as one
+    /// "block" by gameplay code (player + NPCs can step up exactly
+    /// one block per tick; ≥ 2 is a wall).
+    float blockUnit() const noexcept { return kBlockUnit; }
 
     /// Gradient magnitude (Δheight / Δworld) at `(x, z)` via central
     /// differences across one cell. Dimensionless: 0 = flat, ~1 = 45°.
@@ -155,6 +151,13 @@ private:
     }
     static float fade_(float t) noexcept {
         return t * t * (3.0f - 2.0f * t);
+    }
+    // Voxel quantization (round 9, 2026-05-22). Rounds toward
+    // -infinity so e.g. raw=5.7 → 5, raw=-0.3 → -1. Block boundaries
+    // sit at integer multiples of kBlockUnit.
+    static constexpr float kBlockUnit = 1.0f;
+    static float quantize_(float v) noexcept {
+        return std::floor(v / kBlockUnit) * kBlockUnit;
     }
     static float valueNoise_(float x, float y, std::uint32_t seed) noexcept {
         const float fxFloor = std::floor(x);

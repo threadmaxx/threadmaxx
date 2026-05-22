@@ -588,8 +588,29 @@ constexpr std::uint32_t  kHeightmapSeed              = 0xD8000001u;
 /// trigger the reject. Up to `kMaxSlopeRejectAttempts` re-rolls
 /// before falling through to whatever the last sample was — picking
 /// a steep target beats standing still forever.
+///
+/// 2026-05-22 (round 9, voxel pivot) — `slopeAt` is now central-
+/// differences over the QUANTIZED heightmap, so its values come in
+/// discrete jumps. The threshold is still meaningful as a secondary
+/// "don't pick targets on cliff edges" filter, but the primary
+/// traversal cap is `kStepUpMax` below (enforced in
+/// `TerrainAttachSystem`).
 constexpr float          kSlopeRejectThreshold       = 0.35f;
 constexpr int            kMaxSlopeRejectAttempts     = 3;
+
+/// 2026-05-22 (round 9, voxel pivot) — maximum Y-step in block units
+/// that an entity can climb in one tick of horizontal movement. With
+/// `Heightmap::blockUnit() = 1.0 m` and `kStepUpMax = 1.0f`, walking
+/// into a 1-block-tall ledge is allowed (entity auto-steps up);
+/// walking into a 2-block ledge is blocked (entity stops at the
+/// wall, XZ reverts). Applies to player + NPCs uniformly. The
+/// player's airborne jump path bypasses this (jumping over walls
+/// remains possible).
+///
+/// The small epsilon makes the comparison robust against
+/// floating-point noise from accumulated dt integration in
+/// `MovementSystem`.
+constexpr float          kStepUpMax                  = 1.0f + 1e-3f;
 
 /// 2026-05-22 audit (round 3) — fall-to-death threshold. Once an
 /// entity's XZ position crosses outside `±kFallDeathHalfExtent` the

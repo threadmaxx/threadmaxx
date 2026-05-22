@@ -154,42 +154,107 @@ void TerrainAttachSystem::update(threadmaxx::SystemContext& ctx) {
             }
 
             const float halfY = tr.scale.y * 0.5f;
-            const float groundY = hmap->heightAt(tr.position.x, tr.position.z) + halfY;
-            if (isPlayer) {
-                const PlayerState* ps =
-                    threadmaxx::user::tryGet<PlayerState>(w, idsPS, playerH);
-                if (ps && ps->airborne != 0u) {
-                    // Mid-jump path: don't snap. Player has crossed
-                    // back to/below the ground when `position.y -
-                    // groundY` <= kGroundedSlack AND the jump's
-                    // verticalVel is non-positive (descending).
-                    const float gap = tr.position.y - groundY;
-                    if (gap <= kGroundedSlack && ps->verticalVel <= 0.0f) {
-                        // Snap + land. Capture the impact velocity
-                        // BEFORE we zero it so the JumpLanded event
-                        // can carry it (the event itself is emitted
-                        // after the chunk walk, alongside the fall
-                        // damage events, so a one-shot transient
-                        // matches the audit's "events drain at tick
-                        // boundary" convention).
-                        impactSpeed = -ps->verticalVel;  // descend = negative vel → positive impact
-                        landingPos  = {tr.position.x, groundY, tr.position.z};
-                        threadmaxx::Transform out = tr;
-                        out.position.y = groundY;
-                        writes.push_back({chunk.entities[r], out});
-                        landing.e     = playerH;
-                        landing.state = *ps;
-                        landing.state.verticalVel = 0.0f;
-                        landing.state.airborne    = 0u;
-                        landing.write = true;
-                    }
-                    continue;
-                }
+
+            // 2026-05-22 audit (round 9, voxel pivot) — step-up
+            // rejection. If the new XZ falls inside a cell whose
+            // quantized height exceeds the entity's previous-tick
+            // ground height by more than `kStepUpMax` block units,
+            // revert XZ to the prev safe pos so the entity stops at
+            // the wall instead of teleporting on top. Airborne
+            // players bypass: jumping over walls is the intended
+            // escape hatch. Particles + dead-XZ entities (the
+            // off-terrain branch above) never reach here.
+            //
+            // The prev-pos cache is keyed by `EntityHandle::index`;
+            // the generation check filters stale entries from
+            // recycled slots.
+            const auto handle = chunk.entities[r];
+            const auto idx    = static_cast<std::size_t>(handle.index);
+            if (idx >= prevPos_.size()) prevPos_.resize(idx + 1);
+            PrevSlot& prev = prevPos_[idx];
+            const bool prevValid =
+                prev.valid && prev.generation == handle.generation;
+
+            const PlayerState* ps =
+                isPlayer ? threadmaxx::user::tryGet<PlayerState>(
+                              w, idsPS, playerH) : nullptr;
+            const bool playerAirborne = (ps && ps->airborne != 0u);
+
+            float finalX = tr.position.x;
+            float finalZ = tr.position.z;
+            const float candidateGroundY =
+                hmap->heightAt(finalX, finalZ);
+            const float prevGroundY = prevValid
+                ? hmap->heightAt(prev.pos.x, prev.pos.z)
+                : candidateGroundY;
+            bool reverted = false;
+            if (prevValid && !playerAirborne &&
+                candidateGroundY - prevGroundY > kStepUpMax) {
+                finalX   = prev.pos.x;
+                finalZ   = prev.pos.z;
+                reverted = true;
             }
-            if (tr.position.y == groundY) continue;
-            threadmaxx::Transform out = tr;
-            out.position.y = groundY;
-            writes.push_back({chunk.entities[r], out});
+
+            // Recompute the final ground based on the (possibly
+            // reverted) XZ. With the voxel heightmap this is either
+            // `candidateGroundY` (no revert) or `prevGroundY`
+            // (reverted).
+            const float groundOnly = reverted ? prevGroundY : candidateGroundY;
+            const float groundY    = groundOnly + halfY;
+
+            if (isPlayer && playerAirborne) {
+                // Mid-jump path: don't snap. Player has crossed
+                // back to/below the ground when `position.y -
+                // groundY` <= kGroundedSlack AND the jump's
+                // verticalVel is non-positive (descending).
+                const float gap = tr.position.y - groundY;
+                if (gap <= kGroundedSlack && ps->verticalVel <= 0.0f) {
+                    // Snap + land. Capture the impact velocity
+                    // BEFORE we zero it so the JumpLanded event
+                    // can carry it.
+                    impactSpeed = -ps->verticalVel;
+                    landingPos  = {finalX, groundY, finalZ};
+                    threadmaxx::Transform out = tr;
+                    out.position.x = finalX;
+                    out.position.z = finalZ;
+                    out.position.y = groundY;
+                    writes.push_back({handle, out});
+                    landing.e     = playerH;
+                    landing.state = *ps;
+                    landing.state.verticalVel = 0.0f;
+                    landing.state.airborne    = 0u;
+                    landing.write = true;
+                    prev.pos        = {finalX, groundOnly, finalZ};
+                    prev.generation = handle.generation;
+                    prev.valid      = true;
+                }
+                continue;
+            }
+
+            if (reverted || tr.position.y != groundY ||
+                tr.position.x != finalX || tr.position.z != finalZ) {
+                threadmaxx::Transform out = tr;
+                out.position.x = finalX;
+                out.position.z = finalZ;
+                out.position.y = groundY;
+                writes.push_back({handle, out});
+            }
+
+            // Note: on revert we deliberately DO NOT zero linear
+            // velocity. The entity "leans into the wall" — its XZ
+            // is restored each tick, but its velocity stays set by
+            // its owning system (PlayerInputSystem reads keys every
+            // tick; NPCBrainSystem re-issues every ~1.5s). Zeroing
+            // velocity here was tested and broken animation tests
+            // because the cosmetic Y-bob is gated on linear speed
+            // > 0 (the bob "footstep-rise" needs the speed signal).
+            // The 1-tick "into the wall" overshoot is sub-cm at
+            // typical NPC speeds and reverted before any visible
+            // frame, so the visual is identical to a hard stop.
+
+            prev.pos        = {finalX, groundOnly, finalZ};
+            prev.generation = handle.generation;
+            prev.valid      = true;
         }
     }
 
