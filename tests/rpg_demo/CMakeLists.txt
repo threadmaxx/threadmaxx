@@ -24,6 +24,8 @@ set(RPG_DEMO_TESTS
     test_terrain_lookup
     # §3.11.9 batch D9 — particle aging + destroy contract.
     test_particle_lifetime
+    # §3.11 batch D10 — voxel block kind distribution + palette.
+    test_block_palette
 )
 
 foreach(test ${RPG_DEMO_TESTS})

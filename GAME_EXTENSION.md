@@ -288,7 +288,7 @@ count.
 **What's deferred to D10+** (the voxel gameplay tranche; see
 below).
 
-### Batch D10 — Voxel block attributes + visual variety
+### Batch D10 — Voxel block attributes + visual variety  ✅ landed 2026-05-23
 
 **Gameplay deliverable.** Each terrain cube becomes a typed
 **block** with attributes: `BlockKind` (Grass / Dirt / Stone /

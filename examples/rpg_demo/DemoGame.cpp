@@ -72,6 +72,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     ids_.terrainPatch = engine.registerUserComponent<TerrainPatch>();
     ids_.particle     = engine.registerUserComponent<Particle>();
     ids_.particleEmitter = engine.registerUserComponent<ParticleEmitter>();
+    ids_.blockData    = engine.registerUserComponent<BlockData>();
 
     // §3.11.8 batch D8 — generate the heightmap once at boot. The
     // resolution is fixed; only the tile count (i.e. how densely the
@@ -286,7 +287,13 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     const float terrainExtent     = kTerrainExtent;
     const float tileSize          = terrainExtent / static_cast<float>(cells);
     const float halfExtent        = terrainExtent * 0.5f;
-    const float heightRange       = hmap.maxHeight() - hmap.minHeight();
+    // 2026-05-23 batch D10 — per-block kind + color. The legacy 3-stop
+    // heightmap-gradient color is gone; each cube now carries a
+    // `BlockData` UC whose `kind` is derived from `kindAt(topY, blockY)`
+    // (deterministic — see DemoTypes.hpp). Color comes from
+    // `blockKindColor`. This produces the proper layered look (grass
+    // top, dirt under, stone deep) and gives D11 the storage hook for
+    // harvest logic.
     for (std::uint32_t cz = 0; cz < cells; ++cz) {
         for (std::uint32_t cx = 0; cx < cells; ++cx) {
             const float worldX = -halfExtent + (static_cast<float>(cx) + 0.5f) * tileSize;
@@ -295,15 +302,14 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
             const std::uint32_t blockCount = static_cast<std::uint32_t>(
                 std::max(0.0f, std::round(topY / blockUnit)));
             if (blockCount == 0) continue;  // sea level — no surface
-            const float colorT = heightRange > 1e-3f
-                ? (topY - hmap.minHeight()) / heightRange : 0.5f;
-            // 3-stop gradient: grass → rock → snow.
-            const float r = 0.20f + colorT * 0.60f;
-            const float g = 0.45f - colorT * 0.20f;
-            const float b = 0.25f + colorT * 0.40f;
 
             for (std::uint32_t k = 0; k < blockCount; ++k) {
                 const float blockY = (static_cast<float>(k) + 0.5f) * blockUnit;
+                const BlockKind kind = kindAt(topY, blockY);
+                CubeRender cr;
+                blockKindColor(kind, cr.color);
+                cr.scale = 1.0f;
+
                 const auto blockH = engine.reserveEntityHandle();
                 threadmaxx::Bundle bd = {};
                 bd.transform.position = {worldX, blockY, worldZ};
@@ -315,10 +321,12 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
                     threadmaxx::Component::StaticTag,
                 };
                 seed.spawnBundle(blockH, bd);
-                threadmaxx::addUserComponent(seed, ids_.cubeRender, blockH,
-                    CubeRender{{r, g, b, 1.0f}, 1.0f});
+                threadmaxx::addUserComponent(seed, ids_.cubeRender, blockH, cr);
                 threadmaxx::addUserComponent(seed, ids_.terrainPatch, blockH,
                     TerrainPatch{cx, cz});
+                threadmaxx::addUserComponent(seed, ids_.blockData, blockH,
+                    BlockData{kind, blockKindHardness(kind),
+                              kind == BlockKind::Water ? 0u : 1u});
             }
         }
     }

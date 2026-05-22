@@ -267,6 +267,106 @@ struct TerrainPatch {
     std::uint32_t cellZ = 0;
 };
 
+/// §3.11 batch D10 — voxel block kind. Surfaces the "this is sand /
+/// grass / stone / snow" decision the terrain spawn loop makes from
+/// the heightmap. Reserved range: low surface heights → Sand, mid
+/// → Grass / Dirt (top surface vs. interior), high → Stone, very
+/// high → Snow. Water is reserved for a future "sub-sea-level" pass
+/// once D10's terrain mapping has a use for it.
+///
+/// Stored as `std::uint32_t` in `BlockData` (UserComponent blobs
+/// are memcpy'd into chunk byte buffers and FNV-hashed verbatim —
+/// any enum size mismatch or padding byte would silently break
+/// determinism; see the `PlayerState` layout note above).
+enum class BlockKind : std::uint32_t {
+    Sand  = 0,
+    Grass = 1,
+    Dirt  = 2,
+    Stone = 3,
+    Snow  = 4,
+    Water = 5,
+    Wood  = 6,
+};
+
+/// §3.11 batch D10 — per-block voxel attributes. Attached to every
+/// terrain cube spawned by `DemoGame::onSetup` after D10. Drives
+/// the cube's render color (read once at spawn time by the spawn
+/// loop) and is the future entry point for D11's harvest logic
+/// (which will consult `kind` + `hardness` to decide if a swing
+/// breaks the block and how long it takes).
+///
+/// `walkable` is a hint for traversal code — Water is the only
+/// kind that currently sets `walkable = 0`; pre-D10 traversal
+/// snaps every entity onto the top of every column regardless,
+/// so `walkable = 0` is a no-op until D11 wires it through.
+struct BlockData {
+    BlockKind     kind     = BlockKind::Grass;
+    float         hardness = 1.0f;
+    std::uint32_t walkable = 1u;  // 0/1 — see doc above
+};
+static_assert(sizeof(BlockData) == 12u,
+              "BlockData layout must be padding-free for hash determinism");
+
+/// §3.11 batch D10 — voxel block kind for a single cube within a
+/// column. `columnTopY` is the column's quantized surface height in
+/// world units; `blockY` is the cube's center Y. Layering:
+///
+///   - Top cube (blockY ≈ columnTopY − 0.5):
+///       columnTopY <  2 m  → Sand
+///       columnTopY <  6 m  → Grass
+///       columnTopY <  9 m  → Stone (bare rock outcrop)
+///       columnTopY ≥  9 m  → Snow
+///   - Sub-surface (≤ 2 cubes below top): Dirt
+///   - Deeper (≥ 3 cubes below top): Stone
+///
+/// Deterministic, pure function — no RNG, no state. Used by
+/// `DemoGame::onSetup`'s terrain loop AND `test_block_palette` to
+/// assert spawn-time distributions.
+inline BlockKind kindAt(float columnTopY, float blockY) noexcept {
+    const float depthFromTop = columnTopY - blockY - 0.5f;
+    if (depthFromTop < 0.5f) {  // top cube
+        if (columnTopY < 2.0f) return BlockKind::Sand;
+        if (columnTopY < 6.0f) return BlockKind::Grass;
+        if (columnTopY < 9.0f) return BlockKind::Stone;
+        return BlockKind::Snow;
+    }
+    return (depthFromTop < 2.5f) ? BlockKind::Dirt : BlockKind::Stone;
+}
+
+/// §3.11 batch D10 — RGB color for a `BlockKind`. Picked to read
+/// distinctly under the demo's Lambert lighting (mid-afternoon sun
+/// at sunAngle=1.2 rad). Returns an `{r, g, b, a=1}` quartet
+/// suitable for direct assignment to `CubeRender::color`.
+inline void blockKindColor(BlockKind k, float out[4]) noexcept {
+    switch (k) {
+        case BlockKind::Sand:  out[0] = 0.86f; out[1] = 0.78f; out[2] = 0.50f; break;
+        case BlockKind::Grass: out[0] = 0.32f; out[1] = 0.62f; out[2] = 0.28f; break;
+        case BlockKind::Dirt:  out[0] = 0.42f; out[1] = 0.28f; out[2] = 0.18f; break;
+        case BlockKind::Stone: out[0] = 0.55f; out[1] = 0.55f; out[2] = 0.58f; break;
+        case BlockKind::Snow:  out[0] = 0.92f; out[1] = 0.95f; out[2] = 0.98f; break;
+        case BlockKind::Water: out[0] = 0.18f; out[1] = 0.36f; out[2] = 0.60f; break;
+        case BlockKind::Wood:  out[0] = 0.48f; out[1] = 0.32f; out[2] = 0.18f; break;
+    }
+    out[3] = 1.0f;
+}
+
+/// §3.11 batch D10 — block hardness for harvest gating (D11).
+/// Returned in arbitrary "swing units"; Sand/Dirt soft, Stone/Snow
+/// firm, Wood between. Defaults to 1.0 for kinds without specific
+/// tuning.
+inline float blockKindHardness(BlockKind k) noexcept {
+    switch (k) {
+        case BlockKind::Sand:  return 0.4f;
+        case BlockKind::Grass: return 0.6f;
+        case BlockKind::Dirt:  return 0.7f;
+        case BlockKind::Stone: return 2.5f;
+        case BlockKind::Snow:  return 0.5f;
+        case BlockKind::Water: return 0.0f;
+        case BlockKind::Wood:  return 1.5f;
+    }
+    return 1.0f;
+}
+
 /// §3.11.9 batch D9 — short-lived visual particle. Spawned in bursts by
 /// `ParticleEmitterSystem` in response to combat / death / pickup
 /// events; aged out by `ParticleSystem`. Each particle is a regular
@@ -335,6 +435,8 @@ struct UserComponentIds {
     /// §3.11.9 batch D9 — per-entity emitter knobs (reserved; see
     /// `ParticleEmitter` doc).
     threadmaxx::UserComponentId particleEmitter;
+    /// §3.11 batch D10 — per-block voxel attributes.
+    threadmaxx::UserComponentId blockData;
 };
 
 /// §3.11.6 batch D6 — procedural animation parameters.
