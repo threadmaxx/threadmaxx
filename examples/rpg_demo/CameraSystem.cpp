@@ -156,16 +156,28 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     //
     // 2026-05-22 audit refactor — first/third-person split.
     //
-    // First-person: eye placed at the player's head (offset above
-    //   the entity center by ~0.4·height for a 1.8m-tall cube).
-    //   The forward vector is derived from yaw + pitch.
+    // First-person: eye placed at the player's head. Round-5 raises
+    //   the offset from 0.4 m to 0.75 m above the entity center: the
+    //   player cube is 1.8 m tall (half-height 0.9), so eye now sits
+    //   0.15 m below the top of the player ≈ forehead height. The
+    //   0.4 m offset put the eye at chest level which the user
+    //   described as "looking through the belly."
     //
     // Third-person: legacy orbit. Eye behind the player at
     //   `distance_`, looking at a point slightly above the
     //   player's center.
     //
     // Both modes use the same yaw / pitch source (PlayerState).
-    constexpr float kEyeHeightOffset = 0.4f;  // tunable per-entity
+    //
+    // 2026-05-22 audit (round 5) — FPV mouse-Y was inverted relative
+    // to TPV. Both modes share the same `pitch_` value (mouse-up
+    // decreases pitch); in TPV the eye sits at `target.y + sp*d`, so
+    // a negative pitch lowers the eye and the resulting forward
+    // vector points *up* toward the player → mouse-up → look-up ✓.
+    // In FPV the previous form computed `fwd.y = sp` directly, which
+    // pointed DOWN for negative pitch → mouse-up → look-down ✗. The
+    // fix is `fwd.y = -sp`, matching the TPV sign convention.
+    constexpr float kEyeHeightOffset = 0.75f;  // ≈ forehead on a 1.8m player
     threadmaxx::Vec3 eye, target;
     if (firstPerson_) {
         eye = {
@@ -173,11 +185,11 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             playerPos_.y + kEyeHeightOffset,
             playerPos_.z,
         };
-        // Forward is the same convention as movement: yaw=0 →
-        // facing -Z; pitch tilts up (+) / down (-).
+        // Forward at yaw=0, pitch=0 → (0,0,-1). Negative `sp`
+        // (mouse-up) → positive `-sp` → forward.y > 0 → look up.
         const threadmaxx::Vec3 fwd{
             -sy * cp,
-             sp,
+            -sp,
             -cy * cp,
         };
         target = {eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z};

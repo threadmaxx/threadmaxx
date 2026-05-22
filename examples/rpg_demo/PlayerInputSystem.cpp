@@ -270,8 +270,19 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
         // camera when in first-person view so it visibly hangs in
         // the player's right hand. Third-person keeps the legacy
         // hip-front pose.
+        //
+        // 2026-05-22 audit (round 5) — switch FPV rest pose from a
+        // strictly-horizontal blade pointing forward (essentially
+        // invisible to the camera — only its near end pokes into
+        // view) to a DIAGONAL pose: hilt held mid-chest right of the
+        // camera, blade tilted up by ~30° around the local X axis so
+        // the blade enters the upper-right of the FPV viewport. The
+        // diagonal hides the previous "horizontal sliver" problem
+        // without needing to introduce a separate FPV sword model.
+        // TPV is unchanged.
+        constexpr float kFpvRestPitchRad = 0.52f;  // ~30°
         if (updated.firstPerson != 0u) {
-            swordParent.localOffset.position = {0.3f, 0.1f, -0.6f};
+            swordParent.localOffset.position = {0.45f, 0.35f, -0.55f};
             swordParent.localOffset.scale    = {0.12f, 0.12f, 1.0f};
         } else {
             swordParent.localOffset.position = {0.5f, 0.8f, -0.8f};
@@ -288,13 +299,28 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
             };
             writeSwordParent = true;
         } else if (swingJustEnded) {
-            swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            // Snap back to the per-mode rest orientation.
+            if (updated.firstPerson != 0u) {
+                const float halfA = kFpvRestPitchRad * 0.5f;
+                swordParent.localOffset.orientation = {
+                    std::sin(halfA), 0.0f, 0.0f, std::cos(halfA),
+                };
+            } else {
+                swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            }
             writeSwordParent = true;
         } else {
             // Re-issue every tick so a first/third-person toggle
             // takes effect immediately (the pre-fix only wrote
             // when the swing state changed).
-            swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            if (updated.firstPerson != 0u) {
+                const float halfA = kFpvRestPitchRad * 0.5f;
+                swordParent.localOffset.orientation = {
+                    std::sin(halfA), 0.0f, 0.0f, std::cos(halfA),
+                };
+            } else {
+                swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            }
             writeSwordParent = true;
         }
     }
