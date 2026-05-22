@@ -36,14 +36,21 @@ private:
     WorldState*       worldState_ = nullptr;
     UserComponentIds* ids_        = nullptr;
 
-    // Per-tick cached state.
+    // Per-tick cached state. yaw_ / pitch_ are mirrored from
+    // PlayerState each tick — the canonical source is the player's
+    // user component, which PlayerInputSystem owns.
     threadmaxx::Vec3 playerPos_{0, 1, 0};
     float            yaw_       = 0.0f;
-    float            pitch_     = 0.45f;   // look slightly down
+    float            pitch_     = 0.0f;
     float            distance_  = 8.0f;
-    /// §3.11.2 batch D2 — true iff PlayerState.swordSwingTimer > 0
-    /// at the last `update`. `buildRenderFrame` checks this to decide
-    /// whether to push the aim-PIP camera into the render frame.
+    /// 2026-05-22 audit refactor — mirrored from
+    /// PlayerState.firstPerson. `buildRenderFrame` consults it to
+    /// choose between the eye-at-head FPS framing and the legacy
+    /// orbit framing.
+    bool             firstPerson_         = false;
+    /// §3.11.2 batch D2 — sticky aim-PIP toggle (V key).
+    /// `buildRenderFrame` checks this to decide whether to push the
+    /// aim-PIP camera into the render frame.
     bool             drawAimPipThisFrame_ = false;
 };
 

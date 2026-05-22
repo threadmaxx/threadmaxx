@@ -8,14 +8,26 @@ struct GLFWwindow;
 namespace rpg {
 
 /// Edge-triggered input bits — one tick per press, cleared on consume.
+///
+/// 2026-05-22 audit refactor — extended to match the RPG control spec
+/// (rpg_first_person_input_system_spec.md):
+///   * Attack moved from F to Mouse Left.
+///   * Mouse Right → block (new gameplay slot).
+///   * F → interact (new gameplay slot).
+///   * Space → jump.
+///   * R → toggle first/third-person camera.
 enum : std::uint32_t {
-    kEdgeSaveQuick    = 1u << 0,   // F5  — sync save
-    kEdgeLoadQuick    = 1u << 1,   // F9  — load
-    kEdgeTrace        = 1u << 2,   // F1  — toggle Chrome-trace
-    kEdgeAttack       = 1u << 3,   // F   — sword swing
-    kEdgeSaveAsync    = 1u << 4,   // F8  — async save (batch D3)
-    kEdgeReloadShader = 1u << 5,   // F12 — emit AssetReloaded (batch D7)
-    kEdgeAimToggle    = 1u << 6,   // V   — toggle aim PIP visibility
+    kEdgeSaveQuick     = 1u << 0,   // F5      — sync save
+    kEdgeLoadQuick     = 1u << 1,   // F9      — load
+    kEdgeTrace         = 1u << 2,   // F1      — toggle Chrome-trace
+    kEdgeAttack        = 1u << 3,   // Mouse L — primary action (sword swing)
+    kEdgeSaveAsync     = 1u << 4,   // F8      — async save (batch D3)
+    kEdgeReloadShader  = 1u << 5,   // F12     — emit AssetReloaded (batch D7)
+    kEdgeAimToggle     = 1u << 6,   // V       — toggle aim PIP visibility
+    kEdgeBlock         = 1u << 7,   // Mouse R — secondary action (block)
+    kEdgeInteract      = 1u << 8,   // F       — interact with nearby target
+    kEdgeJump          = 1u << 9,   // Space   — jump when grounded
+    kEdgeCameraToggle  = 1u << 10,  // R       — toggle first/third-person
 };
 
 /// Polled-per-tick analog inputs + edge bits. Filled in by the main

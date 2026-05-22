@@ -248,16 +248,23 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
 
     // ---- Terrain (§3.11.8 batch D8) -----------------------------------------
     //
-    // Replaces the pre-D8 single 60×60 ground cube with a
-    // `cellsPerSide × cellsPerSide` grid of static tiles. Each tile is
-    // a thin column from y=0 to `heightAt(cellCenter)`; visually that
-    // looks like a low-poly hill field. Tiles intentionally do NOT
-    // carry `BoundingVolume` — collision/AOI queries don't care about
-    // ground, and skipping the bit keeps brain + combat queries lean.
+    // 2026-05-22 audit fix — replaced "column from y=0 to y=h" tiles
+    // with thin flat slabs centered on the heightmap's actual Y at
+    // the tile center. The previous form rendered each tile as a
+    // tall cube; adjacent tiles with different heights exposed their
+    // side walls, producing the "beehive" honeycomb look the user
+    // reported. Slabs let the heightmap's stepped sampling read as a
+    // tiled stair-stepped surface rather than a wall grid.
+    //
+    // `cellsPerSide × cellsPerSide` grid of static tiles. Tiles
+    // intentionally do NOT carry `BoundingVolume` — collision/AOI
+    // queries don't care about ground, and skipping the bit keeps
+    // brain + combat queries lean.
     //
     // Stress mode → 256×256 = 65 536 tiles. Normal mode → 32×32 =
     // 1 024 tiles. Headless tests can override the cell count via
     // `WorldState::terrainCellsPerSide` before `engine.initialize()`.
+    constexpr float kTileThickness = 0.4f;
     const std::uint32_t cells = worldState_.terrainCellsPerSide;
     const float terrainExtent = kTerrainExtent;
     const float tileSize      = terrainExtent / static_cast<float>(cells);
@@ -277,8 +284,14 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
 
             const auto tileH = engine.reserveEntityHandle();
             threadmaxx::Bundle bd = {};
-            bd.transform.position = {worldX, h * 0.5f, worldZ};
-            bd.transform.scale    = {tileSize, std::max(0.4f, h), tileSize};
+            // 2026-05-22 — slab top sits at heightAt(center). Tile
+            // center Y = h - thickness/2 so the top face matches the
+            // continuous heightmap. Neighbouring tiles share the same
+            // top-edge convention so step heights between tiles equal
+            // the local heightmap gradient × tileSize, never the full
+            // tile height.
+            bd.transform.position = {worldX, h - kTileThickness * 0.5f, worldZ};
+            bd.transform.scale    = {tileSize, kTileThickness, tileSize};
             bd.faction.id         = kFactionNeutral;
             bd.initialMask        = threadmaxx::ComponentSet{
                 threadmaxx::Component::Transform,
@@ -417,7 +430,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // (which integrates X/Z) and AnimationSystem (which bobs Y). The
     // bob then oscillates around the just-applied terrain Y rather
     // than the stale `AnimState::baseY` from spawn time.
-    engine.registerSystem(std::make_unique<TerrainAttachSystem>(&worldState_));
+    engine.registerSystem(std::make_unique<TerrainAttachSystem>(&worldState_, &ids_));
     // §3.11.6 batch D6 — Y-bob animation runs AFTER TerrainAttachSystem
     // and BEFORE HierarchySystem (so Parent-attached children inherit
     // the bobbed Y).
@@ -451,7 +464,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // tests + builds where the renderer-side registration callback
     // wasn't wired).
     engine.registerSystem(std::make_unique<SkinnedRenderSystem>(&worldState_));
-    engine.registerSystem(std::make_unique<HealthBarSystem>());
+    engine.registerSystem(std::make_unique<HealthBarSystem>(&worldState_));
     engine.registerSystem(std::make_unique<DebugOverlaySystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<SaveLoadSystem>(
         &engine, &worldState_, &ids_,

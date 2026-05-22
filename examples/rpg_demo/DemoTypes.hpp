@@ -77,13 +77,49 @@ struct NpcState {
 /// §3.11.1 batch D1: added `swordSwingTimer` to drive the attack-window
 /// animation. While > 0 the sword's localOffset rotation kicks forward
 /// and the CombatSystem checks for hits in front of the player.
+///
+/// 2026-05-22 audit refactor — added `pitchRadians`, `verticalVel`,
+/// `blockTimer`, `firstPerson` to back the spec's full
+/// rpg_first_person_input_system_spec.md control set.
+/// Layout note: all fields are 4-byte sized so the struct has zero
+/// padding. UserComponent blobs are memcpy'd into chunk byte buffers
+/// and fed verbatim into the engine's commit-hash FNV; any
+/// uninitialized padding bytes would silently break determinism
+/// (see 2026-05-22 audit refactor). bools that look like they should
+/// be `bool` are stored as `std::uint32_t` for the same reason.
 struct PlayerState {
     std::uint32_t pickups          = 0;
+    /// Player facing yaw (camera-controlled). Movement vector is
+    /// rotated by this so W/S/A/D track the player's forward.
     float         yawRadians       = 0.0f;
+    /// Camera pitch (mouse Y). Clamped in CameraSystem; only used
+    /// for camera aim, never propagated into the player's
+    /// world-space orientation (movement stays horizontal).
+    float         pitchRadians     = 0.0f;
     float         runSpeed         = 5.0f;
     /// Seconds remaining in the current sword swing. Drives the sword's
     /// localOffset rotation and gates the combat damage check.
     float         swordSwingTimer  = 0.0f;
+    /// 2026-05-22 — seconds remaining in the current block window.
+    /// While > 0 the player's incoming-damage multiplier is halved
+    /// (handled in DamageSystem). Rising-edge consumed from mouse
+    /// right.
+    float         blockTimer       = 0.0f;
+    /// 2026-05-22 — vertical velocity for the spec's jump. Set on a
+    /// Space-edge if grounded; integrated each tick by
+    /// PlayerInputSystem against `kGravity`; zeroed by
+    /// TerrainAttachSystem when the player snaps back to the ground.
+    float         verticalVel      = 0.0f;
+    /// 2026-05-22 — non-zero while a jump is in flight (Y above the
+    /// terrain by more than `kGroundedSlack`). TerrainAttachSystem
+    /// resets it when contact resumes. Stored as uint32 (0/1) not
+    /// `bool` so the struct has no padding bytes — see layout note
+    /// above.
+    std::uint32_t airborne         = 0u;
+    /// 2026-05-22 — non-zero → first-person camera (eye at player
+    /// head, no body render). Toggled by R via kEdgeCameraToggle.
+    /// Default = 0 (third-person, the legacy demo behaviour).
+    std::uint32_t firstPerson      = 0u;
     /// Lifetime damage-dealt counter; surfaced in the HUD.
     std::uint32_t kills            = 0;
 };
@@ -347,6 +383,20 @@ struct WorldState {
     /// fast.
     std::uint32_t terrainCellsPerSide = 0;
 };
+
+/// 2026-05-22 audit refactor — jump + block tuning. The Space-edge
+/// kicks `verticalVel = kJumpVelocity` if the player is grounded;
+/// gravity decelerates each tick; TerrainAttachSystem resets both
+/// `verticalVel` and `airborne` when contact resumes.
+constexpr float kJumpVelocity       = 5.5f;    // m/s initial upward
+constexpr float kGravity            = -18.0f;  // m/s² (slightly heavy)
+constexpr float kGroundedSlack      = 0.02f;   // m — terrain hysteresis
+constexpr float kBlockSeconds       = 0.40f;   // hold window per block press
+
+/// 2026-05-22 audit refactor — pitch clamp ± 80°. Matches the spec's
+/// "clamp pitch to a reasonable range" requirement.
+constexpr float kPitchMinRadians    = -1.396f;
+constexpr float kPitchMaxRadians    =  1.396f;
 
 /// §3.11.1 batch D1 — gameplay tuning constants.
 constexpr float kSwordSwingSeconds  = 0.30f;

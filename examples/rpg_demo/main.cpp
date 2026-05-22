@@ -1,12 +1,17 @@
 // 3D RPG demo — §3.2 batch 10 main entry. Wires GLFW + Vulkan
 // renderer + threadmaxx engine + the DemoGame.
 //
-// Controls:
-//   W / S / Up / Down     forward / back
-//   A / D / Left / Right  strafe left / right
-//   Q / E                 rotate camera yaw
-//   Scroll wheel          zoom in / out
-//   F                     sword swing (combat)
+// Controls (rpg_first_person_input_system_spec.md):
+//   W / S / Up / Down     forward / back (player-local)
+//   A / D / Left / Right  strafe left / right (player-local)
+//   Mouse motion          rotate camera (player yaw + pitch)
+//   Q / E                 rotate camera yaw (keyboard fallback)
+//   Scroll wheel          zoom in / out (third-person only)
+//   Mouse Left            attack / sword swing
+//   Mouse Right           block
+//   F                     interact with nearby target
+//   Space                 jump (when grounded)
+//   R                     toggle first-person / third-person
 //   V                     toggle aim PIP camera
 //   F1                    toggle Chrome-trace capture (/tmp/rpg_demo_trace.*.json)
 //   F5                    synchronous quick-save

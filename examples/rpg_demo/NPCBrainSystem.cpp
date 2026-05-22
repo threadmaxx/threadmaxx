@@ -77,6 +77,17 @@ void NPCBrainSystem::update(threadmaxx::SystemContext& ctx) {
     const auto player = worldState_->player;
     if (!player.valid() || !w.alive(player)) return;
 
+    // 2026-05-22 audit fix — treat the player as "gone" if its
+    // HP has dropped to zero OR the corpse-disable tag is set.
+    // Pre-fix the brain only checked `alive(player)`, which is
+    // true even after RespawnSystem flips DisabledTag on a dead
+    // player — so NPCs in Fight state kept emitting
+    // DamageDealt events at a corpse forever.
+    if (w.hasTag(player, threadmaxx::Component::DisabledTag)) return;
+    if (const auto* hp = w.tryGetHealth(player); hp && hp->current <= 0.0f) {
+        return;
+    }
+
     const auto& playerT = w.get<threadmaxx::Transform>(player);
     const threadmaxx::Vec3 pp = playerT.position;
     const float dt = static_cast<float>(ctx.dt());

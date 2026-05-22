@@ -14,49 +14,44 @@ namespace rpg {
 
 namespace {
 
-constexpr float kPitchMin   = -1.3f;
-constexpr float kPitchMax   =  1.3f;
 constexpr float kMinDist    =  3.0f;
 constexpr float kMaxDist    =  18.0f;
 
 } // namespace
 
 void CameraSystem::update(threadmaxx::SystemContext& ctx) {
-    yaw_      += input().yawDelta;
-    pitch_     = std::clamp(pitch_ + input().pitchDelta, kPitchMin, kPitchMax);
+    // 2026-05-22 audit refactor — CameraSystem no longer owns the
+    // yaw / pitch accumulators. PlayerInputSystem applies the
+    // mouse-look + Q/E deltas to `PlayerState.{yawRadians,
+    // pitchRadians}` directly; CameraSystem just reads them.
+    // Pre-refactor CameraSystem ALSO wrote `PlayerState.yawRadians`
+    // back via `removeUserComponent + addUserComponent`, which
+    // forced a chunk migration every tick — gone now.
+    //
+    // Distance is still a CameraSystem-local field because zoom is
+    // a camera property, not a player intent. Scroll-wheel events
+    // arrive as additive deltas via input().zoomDelta; we consume
+    // them once per tick.
     distance_  = std::clamp(distance_ + input().zoomDelta, kMinDist, kMaxDist);
-    // Consume the zoom delta — yawDelta/pitchDelta are refreshed each
-    // poll so they don't accumulate.
     input().zoomDelta = 0.0f;
 
     const auto& w = ctx.world();
     const auto player = worldState_->player;
     if (!player.valid() || !w.alive(player)) return;
 
+    const PlayerState* ps =
+        threadmaxx::user::tryGet<PlayerState>(w, ids_->playerState, player);
+    if (!ps) return;
+
     const auto& tr = w.get<threadmaxx::Transform>(player);
-    playerPos_ = tr.position;
+    playerPos_  = tr.position;
+    yaw_        = ps->yawRadians;
+    pitch_      = ps->pitchRadians;
+    firstPerson_ = ps->firstPerson != 0u;
 
-    // 2026-05-20 — aim PIP visibility is now a sticky toggle on V,
+    // 2026-05-20 — aim PIP visibility is a sticky toggle on V,
     // flipped by PlayerInputSystem into WorldState::aimPipVisible.
-    // Pre-fix the PIP popped up automatically every time the sword
-    // swung (300 ms each press) which the user found jarring; this
-    // gives explicit control.
     drawAimPipThisFrame_ = worldState_ && worldState_->aimPipVisible;
-
-    // Push the updated yaw back into the player's state so movement
-    // matches the camera facing.
-    auto* ids = ids_;
-    const float yaw = yaw_;
-    ctx.single([player, ids, yaw, &w]
-               (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
-        const PlayerState* ps =
-            threadmaxx::user::tryGet<PlayerState>(w, ids->playerState, player);
-        if (!ps) return;
-        PlayerState updated = *ps;
-        updated.yawRadians = yaw;
-        threadmaxx::removeUserComponent(cb, ids->playerState, player);
-        threadmaxx::addUserComponent(cb, ids->playerState, player, updated);
-    });
 }
 
 namespace {
@@ -110,22 +105,7 @@ threadmaxx::Camera buildPerspective(threadmaxx::Vec3 eye,
     return cam;
 }
 
-// §3.11.2 batch D2 — top-down ortho looking straight down. View matrix
-// is the same as buildPerspective except up/forward differ; projection
-// is orthographic.
-//
-// 2026-05-20 — corrected the view matrix:
-//   * World +X → screen-right  (east on the map).
-//   * World -Z → screen-up     (i.e. negative Z is "north" of the map;
-//                               positive Z is below center).
-//   * World +Y → behind the camera (positive view-Z), so terrain
-//                geometry below the camera lands at negative view-Z
-//                = visible depth.
-// The pre-fix matrix had the sign flipped on the row that picks
-// world Z, so world +Z drifted off the top of the map instead of the
-// bottom — the user's "minimap directions are not correct" report.
-// At center.z == 0 the bug happened to cancel out, which is why
-// only off-center scenes exposed it.
+// §3.11.2 batch D2 — top-down ortho looking straight down.
 threadmaxx::Camera buildTopDownOrtho(threadmaxx::Vec3 center,
                                      float halfHeight, float aspect,
                                      float nearZ, float farZ) {
@@ -133,23 +113,11 @@ threadmaxx::Camera buildTopDownOrtho(threadmaxx::Vec3 center,
     cam.mode        = threadmaxx::ProjectionMode::Orthographic;
     cam.position    = {center.x, center.y + 40.0f, center.z};
     cam.forward     = {0.0f, -1.0f, 0.0f};
-    cam.up          = {0.0f, 0.0f, -1.0f};  // top of mini-map = world -Z
+    cam.up          = {0.0f, 0.0f, -1.0f};
     cam.nearZ       = nearZ;
     cam.farZ        = farZ;
     cam.aspect      = aspect;
     cam.orthoSize   = halfHeight;
-    // Column-major view matrix, derived from the same look-at
-    // convention as buildPerspective (rows = [s.{x,y,z}, u.{x,y,z},
-    // -f.{x,y,z}]) with f=(0,-1,0), s=(1,0,0), u=(0,0,-1):
-    //   col0 = (s.x, u.x, -f.x) = (1, 0, 0)
-    //   col1 = (s.y, u.y, -f.y) = (0, 0, 1)
-    //   col2 = (s.z, u.z, -f.z) = (0, -1, 0)
-    //   col3 = (-dot(s,eye), -dot(u,eye), +dot(f,eye), 1)
-    //        = (-center.x, +center.z, -cam.position.y, 1)
-    // The pre-fix matrix had col1 and col2 negated (storing R rather
-    // than R^T), so the eye no longer mapped to the origin once the
-    // player was off Z=0 — the user's "minimap directions are not
-    // correct" report.
     cam.view = {
         1, 0, 0, 0,
         0, 0, 1, 0,
@@ -175,40 +143,63 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     const float cp = std::cos(pitch_);
     const float sp = std::sin(pitch_);
 
-    const threadmaxx::Vec3 target{playerPos_.x, playerPos_.y + 1.2f, playerPos_.z};
-    const threadmaxx::Vec3 eye{
-        target.x + sy * cp * distance_,
-        target.y + sp * distance_,
-        target.z + cy * cp * distance_,
-    };
-
     const float fbW = static_cast<float>(worldState_->framebufferWidth);
     const float fbH = static_cast<float>(std::max(worldState_->framebufferHeight, 1u));
 
     // §3.11.2 batch D2 — emit up to three cameras per frame:
-    //   [0] main third-person (full screen).
-    //   [1] top-down mini-map (top-right corner).
-    //   [2] over-the-shoulder aim PIP (center, only when sword is drawn).
-    // Stash a copy in WorldState::activeCameras so CubeRenderSystem can
-    // run frustum culling against the same set.
+    //   [0] main camera (full screen) — first OR third-person.
+    //   [1] top-down mini-map (top-right corner; non-stress only).
+    //   [2] aim PIP (when sword is drawn).
     worldState_->activeCameras.clear();
 
-    // -- Main (full-screen perspective). --
+    // ---- Main camera ----
+    //
+    // 2026-05-22 audit refactor — first/third-person split.
+    //
+    // First-person: eye placed at the player's head (offset above
+    //   the entity center by ~0.4·height for a 1.8m-tall cube).
+    //   The forward vector is derived from yaw + pitch.
+    //
+    // Third-person: legacy orbit. Eye behind the player at
+    //   `distance_`, looking at a point slightly above the
+    //   player's center.
+    //
+    // Both modes use the same yaw / pitch source (PlayerState).
+    constexpr float kEyeHeightOffset = 0.4f;  // tunable per-entity
+    threadmaxx::Vec3 eye, target;
+    if (firstPerson_) {
+        eye = {
+            playerPos_.x,
+            playerPos_.y + kEyeHeightOffset,
+            playerPos_.z,
+        };
+        // Forward is the same convention as movement: yaw=0 →
+        // facing -Z; pitch tilts up (+) / down (-).
+        const threadmaxx::Vec3 fwd{
+            -sy * cp,
+             sp,
+            -cy * cp,
+        };
+        target = {eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z};
+    } else {
+        target = {playerPos_.x, playerPos_.y + 1.2f, playerPos_.z};
+        eye = {
+            target.x + sy * cp * distance_,
+            target.y + sp * distance_,
+            target.z + cy * cp * distance_,
+        };
+    }
+
     threadmaxx::Camera main = buildPerspective(
-        eye, target, {0, 1, 0}, /*fovY*/ 1.05f,
+        eye, target, {0, 1, 0}, /*fovY*/ firstPerson_ ? 1.20f : 1.05f,
         /*aspect*/ (fbW * kViewportMain.width) / (fbH * kViewportMain.height),
-        /*near*/ 0.1f, /*far*/ 200.0f);
+        /*near*/ firstPerson_ ? 0.05f : 0.1f, /*far*/ 200.0f);
     main.id       = kCameraIdMain;
     main.viewport = kViewportMain;
     worldState_->activeCameras.push_back(main);
     b.addCamera(main);
 
-    // -- Top-down mini-map (orthographic). --
-    // 2026-05-20 — skip the mini-map in stress mode. Adding a third
-    // camera at the same drawItem count triples the renderer's
-    // per-tick CPU + GPU instance work and was a measurable chunk
-    // of the 16.7ms budget. We still emit the main + (optional)
-    // aim-PIP cameras.
+    // ---- Top-down mini-map (orthographic). ----
     if (!worldState_->stressMode) {
         threadmaxx::Camera minimap = buildTopDownOrtho(
             playerPos_,
@@ -221,26 +212,19 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         b.addCamera(minimap);
     }
 
-    // -- Aim PIP (narrow FOV, only while sword is drawn). --
+    // ---- Aim PIP (narrow FOV, only while sticky-toggled on). ----
     if (drawAimPipThisFrame_) {
-        // 2026-05-20 — moved to a true over-the-shoulder framing.
-        // Pre-fix the eye was 1.5 units IN FRONT of the player and
-        // looked further forward, so the player wasn't even in
-        // shot — the PIP just showed empty terrain ahead. We now
-        // place the eye 2.5 units behind + 1.4 above + 0.8 to the
-        // right of the player and aim at a point ~6 units ahead of
-        // the player, so the player's silhouette is left-of-frame
-        // and the swing landing zone occupies the centre — which
-        // is what a third-person aim camera is for.
+        const threadmaxx::Vec3 pivot{
+            playerPos_.x, playerPos_.y + 1.2f, playerPos_.z};
         const threadmaxx::Vec3 aimEye{
-            target.x + sy * 2.5f - cy * 0.8f,
-            target.y + 1.4f,
-            target.z + cy * 2.5f + sy * 0.8f,
+            pivot.x + sy * 2.5f - cy * 0.8f,
+            pivot.y + 1.4f,
+            pivot.z + cy * 2.5f + sy * 0.8f,
         };
         const threadmaxx::Vec3 aimTgt{
-            target.x - sy * 6.0f,
-            target.y,
-            target.z - cy * 6.0f,
+            pivot.x - sy * 6.0f,
+            pivot.y,
+            pivot.z - cy * 6.0f,
         };
         threadmaxx::Camera aim = buildPerspective(
             aimEye, aimTgt, {0, 1, 0},

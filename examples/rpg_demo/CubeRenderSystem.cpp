@@ -62,6 +62,21 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
 
     const bool useDistanceCull =
         worldState_ != nullptr && worldState_->stressMode;
+    // 2026-05-22 audit refactor — in first-person mode the player's
+    // own body shouldn't render (you'd see the inside of a cube
+    // filling the screen). Read PlayerState from the world once
+    // per tick and capture the player handle + flag into the
+    // worker lambda.
+    threadmaxx::EntityHandle playerH{};
+    bool                     hidePlayerBody = false;
+    if (worldState_) {
+        playerH = worldState_->player;
+        if (playerH.valid() && w.alive(playerH)) {
+            const PlayerState* ps = threadmaxx::user::tryGet<PlayerState>(
+                w, ids_->playerState, playerH);
+            if (ps) hidePlayerBody = ps->firstPerson != 0u;
+        }
+    }
     // 2026-05-20 (rev 2) — radius tightened from 18m → 12m. The
     // 100k-NPC stress workload puts ~28 entities/m² in a 60×60 m
     // world; an 18m radius left ~10k visible instances which the
@@ -129,7 +144,8 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
     dispatchOrInline(ctx, total,
         [slicesPtr, sliceCount,
          itemsOut, boundsOut, centersOut, radiiOut,
-         &outCursor, useDistanceCull, pX, pZ, simTime]
+         &outCursor, useDistanceCull, pX, pZ, simTime,
+         playerH, hidePlayerBody]
         (threadmaxx::Range r, threadmaxx::CommandBuffer&) {
             // Find starting slice for r.begin. Linear scan — slice
             // count is tiny (≤ ~8 typically); cheaper than binary
@@ -148,6 +164,12 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                 const std::uint32_t row = flat - slice.beginFlat;
                 const auto& cr = slice.cubeSpan[row];
                 const auto& tr = slice.chunk->transforms[row];
+
+                // 2026-05-22 audit refactor — first-person body-hide.
+                if (hidePlayerBody && playerH.valid() &&
+                    slice.chunk->entities[row] == playerH) {
+                    continue;
+                }
 
                 if (useDistanceCull) {
                     const float dx = tr.position.x - pX;
@@ -169,7 +191,23 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                     tr.scale.y * cr.scale,
                     tr.scale.z * cr.scale,
                 };
-                if (slice.hasAnim) {
+                // 2026-05-22 audit fix — draw-time bob is now an
+                // ADDITIVE adjustment on top of the live transform,
+                // and it only runs in stress mode (where
+                // AnimationSystem is a no-op). The pre-fix code
+                // OVERWROTE `di.transform.position.y` with the
+                // spawn-time `a.baseY`, which froze every animated
+                // cube at its spawn Y — including the player. As the
+                // terrain-attached `tr.position.y` walked across the
+                // bumpy heightmap, the rendered cube stayed pinned
+                // at spawn Y, producing the "player floats up while
+                // the ground drops away" appearance the user
+                // reported. In non-stress mode AnimationSystem has
+                // already written `tr.position.y = heightAt + bob`,
+                // so the rendered cube faithfully tracks the ground.
+                // `useDistanceCull` is already gated on stress mode
+                // (see line ~64) so we reuse it as the stress flag.
+                if (slice.hasAnim && useDistanceCull) {
                     const auto& a = slice.animSpan[row];
                     float speed = 0.0f;
                     if (slice.hasVel) {
@@ -182,9 +220,7 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                         const float bob = std::sin(simTime * a.frequency +
                                                    a.phase) *
                                           a.amplitude * ratio;
-                        di.transform.position.y = a.baseY + bob;
-                    } else {
-                        di.transform.position.y = a.baseY;
+                        di.transform.position.y = tr.position.y + bob;
                     }
                 }
                 di.meshId     = cr.meshId;

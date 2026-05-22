@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace rpg {
 
@@ -18,106 +19,179 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     const auto& w = ctx.world();
     if (!w.alive(player)) return;
 
+    // 2026-05-22 audit fix — bail out cleanly when the player is
+    // dead. Pre-fix the input system kept reading WASD, kept
+    // setting velocity, and (worse) kept driving the sword-swing
+    // animation after the player's HP hit 0. We now drop input
+    // entirely once the corpse-disable tag flips on; this also
+    // covers the brief window between EntityDied being emitted
+    // and RespawnSystem committing the DisabledTag (the Health
+    // check matches the same condition the brain uses).
+    if (w.hasTag(player, threadmaxx::Component::DisabledTag)) return;
+    if (const auto* hp = w.tryGetHealth(player); hp && hp->current <= 0.0f) {
+        // Consume edge bits so they don't queue up for a respawn —
+        // the press is over by then. Movement axes are continuous,
+        // not edges, so they reset naturally on key release.
+        (void)takeEdges();
+        return;
+    }
+
     const PlayerState* ps =
         threadmaxx::user::tryGet<PlayerState>(w, ids_->playerState, player);
     if (!ps) return;
 
-    const float yaw   = ps->yawRadians;
-    const float speed = ps->runSpeed;
-    const float forward = input().forward;
-    const float strafe  = input().strafe;
-
-    const float cosY = std::cos(yaw);
-    const float sinY = std::sin(yaw);
-    // World-space velocity. yaw=0 → facing -Z (matches the camera math
-    // in CameraSystem). Strafe is rightward.
-    const float vx = (-sinY * forward + cosY * strafe) * speed;
-    const float vz = (-cosY * forward - sinY * strafe) * speed;
-
-    // §3.11.1 batch D1: consume the attack edge + age the swing timer.
-    // The edges are global; takeEdges() atomically reads + clears, so
-    // only one system per tick observes a given press.
+    // ---- Drain edge events once (atomic exchange).
     const std::uint32_t edges = takeEdges();
-    const bool attackPressed = (edges & kEdgeAttack) != 0;
+    const bool attackEdge    = (edges & kEdgeAttack) != 0;
+    const bool blockEdge     = (edges & kEdgeBlock) != 0;
+    const bool interactEdge  = (edges & kEdgeInteract) != 0;
+    const bool jumpEdge      = (edges & kEdgeJump) != 0;
+    const bool cameraToggle  = (edges & kEdgeCameraToggle) != 0;
     if (edges & kEdgeAimToggle) {
         // 2026-05-20 — V toggles the over-the-shoulder PIP. We flip
-        // it here because PlayerInputSystem is the one that owns the
-        // edges (takeEdges clears them atomically); routing through
-        // WorldState gives CameraSystem a stable per-tick read.
+        // it here because PlayerInputSystem is the one that owns
+        // the edges; routing through WorldState gives CameraSystem
+        // a stable per-tick read.
         worldState_->aimPipVisible = !worldState_->aimPipVisible;
     }
 
     PlayerState updated = *ps;
     const float dt = static_cast<float>(ctx.dt());
+
+    // ---- Apply mouse/Q/E yaw delta + pitch delta to PlayerState.
+    //
+    // The spec routes raw input → mapped (yawDelta/pitchDelta) →
+    // intent (yawRadians/pitchRadians on PlayerState) → state
+    // (player Transform.orientation built from yaw).
+    // PlayerInputSystem owns both the input drain and the player
+    // intent fields. CameraSystem reads them back for view-matrix
+    // construction.
+    updated.yawRadians   += input().yawDelta;
+    updated.pitchRadians  = std::clamp(updated.pitchRadians + input().pitchDelta,
+                                       kPitchMinRadians, kPitchMaxRadians);
+    // 2026-05-22 audit refactor — first/third-person toggle. Pre
+    // batch-15a the demo only had a single third-person follow
+    // camera; the spec's R-key cycles between first and third.
+    if (cameraToggle) updated.firstPerson = updated.firstPerson ? 0u : 1u;
+
+    // ---- Player-local movement vector.
+    //
+    // Movement axes from Input come in as raw inputs in player-
+    // local space (forward = -Z, strafe = +X). We rotate by yaw to
+    // produce world-space velocity. yaw=0 → facing -Z (matches
+    // the camera placement in CameraSystem).
+    const float speed = updated.runSpeed;
+    const float yaw   = updated.yawRadians;
+    const float cosY  = std::cos(yaw);
+    const float sinY  = std::sin(yaw);
+    const float forward = input().forward;
+    const float strafe  = input().strafe;
+    const float vx = (-sinY * forward + cosY * strafe) * speed;
+    const float vz = (-cosY * forward - sinY * strafe) * speed;
+
+    // ---- Action timers (decay).
     if (updated.swordSwingTimer > 0.0f) {
         updated.swordSwingTimer = std::max(0.0f, updated.swordSwingTimer - dt);
     }
-    if (attackPressed && updated.swordSwingTimer <= 0.0f) {
+    if (updated.blockTimer > 0.0f) {
+        updated.blockTimer = std::max(0.0f, updated.blockTimer - dt);
+    }
+
+    // ---- Action edges.
+    if (attackEdge && updated.swordSwingTimer <= 0.0f) {
         updated.swordSwingTimer = kSwordSwingSeconds;
     }
-    // §3.11 batch D-audit fix: write the player's world
-    // `Transform.orientation` from the camera yaw. Pre-fix the
-    // player's orientation was never updated, so the sword
-    // (Parent-attached child) extended in a fixed world direction
-    // regardless of which way the player was facing — combat could
-    // only "hit" entities at one specific world point. With this
-    // write, HierarchySystem propagates the rotation into the sword,
-    // and CombatSystem's tip computation rotates with the camera.
+    if (blockEdge) {
+        updated.blockTimer = kBlockSeconds;
+    }
+    if (interactEdge) {
+        // Minimal placeholder for interact — the spec's "F must
+        // activate nearby interactables when in range" requires a
+        // gameplay interactable system that doesn't exist yet.
+        // For now the press is observable via the log so a future
+        // InteractSystem can subscribe.
+        std::printf("[rpg_demo] interact (no nearby target)\n");
+    }
+
+    // ---- Jump + vertical velocity integration.
     //
-    // Yaw rotation around the world Y axis: q = (0, sin(yaw/2), 0,
-    // cos(yaw/2)).
-    const auto& currentT = w.get<threadmaxx::Transform>(player);
+    // The player walks on a heightmap whose Y is rewritten each
+    // tick by TerrainAttachSystem. Pre-refactor TerrainAttachSystem
+    // ALWAYS snapped Y down to terrain (no jump possible). The
+    // refactor's contract: TerrainAttachSystem snaps to ground only
+    // when `verticalVel <= 0 && !airborne`, and resets `airborne`
+    // when contact resumes. PlayerInputSystem owns the lift
+    // integration and the input-edge → verticalVel kick. We
+    // integrate Y here so the player's `Transform.position.y`
+    // moves smoothly upward during a jump and the camera tracks
+    // it via the camera system reading the same field.
+    const threadmaxx::Transform& currentT = w.get<threadmaxx::Transform>(player);
     threadmaxx::Transform newT = currentT;
+    if (jumpEdge && updated.airborne == 0u) {
+        updated.verticalVel = kJumpVelocity;
+        updated.airborne    = 1u;
+    }
+    if (updated.airborne != 0u) {
+        updated.verticalVel += kGravity * dt;
+        newT.position.y      = currentT.position.y + updated.verticalVel * dt;
+    }
+
+    // ---- Sync the player's world-space orientation to the yaw.
+    //
+    // The sword is Parent-attached and HierarchySystem propagates
+    // `position = parent.position + rotate(parent.orientation,
+    // local.position)`. CombatSystem's tip computation rotates
+    // through the same orientation, so this write keeps both the
+    // visible sword and the hit volume aligned with the camera
+    // forward.
     const float half = yaw * 0.5f;
     newT.orientation.x = 0.0f;
     newT.orientation.y = std::sin(half);
     newT.orientation.z = 0.0f;
     newT.orientation.w = std::cos(half);
 
-    // 2026-05-20 — visible sword-swing animation. Without this the
-    // F-press flipped a hidden hit-window flag and the sword cube
-    // never moved; the user reported "sword does not move". We now
-    // arc the sword's local-offset position+orientation around the
-    // player-local Y axis from +1.1 rad → -1.1 rad across the swing
-    // window. The same setParent re-issue runs once on the trailing
-    // edge so the resting pose snaps back. The sword's resting
-    // local offset matches the values seeded in DemoGame::onSetup
-    // (`{0.5, 0.8, -0.8}` position, `{0.18, 0.18, 1.4}` scale).
+    // ---- Sword swing animation (visible local-offset rotation
+    //      tied to swordSwingTimer).
     const auto sword = worldState_->sword;
     const float currSwing = updated.swordSwingTimer;
-    const bool  swingActive = currSwing > 0.0f;
+    const bool  swingActive    = currSwing > 0.0f;
     const bool  swingJustEnded =
         prevSwingTimer_ > 0.0f && currSwing <= 0.0f;
     prevSwingTimer_ = currSwing;
 
     threadmaxx::Parent swordParent = {};
     bool writeSwordParent = false;
-    if (sword.valid() && w.alive(sword)) {
+    if (sword.valid() && w.alive(sword) &&
+        !w.hasTag(sword, threadmaxx::Component::DisabledTag)) {
         swordParent.parent = player;
-        swordParent.localOffset.position = {0.5f, 0.8f, -0.8f};
-        swordParent.localOffset.scale    = {0.18f, 0.18f, 1.4f};
+        // 2026-05-22 audit refactor — pull the sword closer to the
+        // camera when in first-person view so it visibly hangs in
+        // the player's right hand. Third-person keeps the legacy
+        // hip-front pose.
+        if (updated.firstPerson != 0u) {
+            swordParent.localOffset.position = {0.3f, 0.1f, -0.6f};
+            swordParent.localOffset.scale    = {0.12f, 0.12f, 1.0f};
+        } else {
+            swordParent.localOffset.position = {0.5f, 0.8f, -0.8f};
+            swordParent.localOffset.scale    = {0.18f, 0.18f, 1.4f};
+        }
         if (swingActive) {
-            // 2026-05-20 — overhead-to-forward chop around the +X
-            // axis. Previous attempt rotated around +Y and ALSO
-            // orbited the pivot, which dragged the sword across to
-            // the LEFT side of the player even though it's held on
-            // the right; user reported "swings on the opposite side
-            // from where the player holds it". A pure X-rotation
-            // keeps the grip anchored at (+0.5, 0.8, -0.8) and only
-            // sweeps the blade in the player-local YZ plane: starts
-            // raised overhead (a=+1.0), passes forward (a=0) at
-            // mid-swing, ends at a slight downward thrust (a=-0.2).
             const float progress =
                 1.0f - currSwing / kSwordSwingSeconds;          // 0 → 1
             const float a = kSwingAngleStart +
                             progress * (kSwingAngleEnd - kSwingAngleStart);
-            // Quaternion for rotation around local +X by `a`.
-            const float half = a * 0.5f;
+            const float halfA = a * 0.5f;
             swordParent.localOffset.orientation = {
-                std::sin(half), 0.0f, 0.0f, std::cos(half),
+                std::sin(halfA), 0.0f, 0.0f, std::cos(halfA),
             };
             writeSwordParent = true;
         } else if (swingJustEnded) {
+            swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            writeSwordParent = true;
+        } else {
+            // Re-issue every tick so a first/third-person toggle
+            // takes effect immediately (the pre-fix only wrote
+            // when the swing state changed).
             swordParent.localOffset.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
             writeSwordParent = true;
         }

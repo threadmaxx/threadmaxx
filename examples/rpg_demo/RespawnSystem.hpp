@@ -54,6 +54,10 @@ private:
     UserComponentIds*   ids_        = nullptr;
     /// Per-tick drop plan; cleared at the start of preStep.
     std::vector<DropPlan> drops_;
+    /// 2026-05-22 audit fix — set in `preStep` when the player is
+    /// the target of an `EntityDied` event. `update` then disables
+    /// the worldState_->sword in the same tick's commit phase.
+    bool                  disableSwordOnDeath_ = false;
 };
 
 } // namespace rpg

@@ -12,8 +12,25 @@ namespace rpg {
 
 void RespawnSystem::preStep(threadmaxx::SystemContext&) {
     drops_.clear();
+    disableSwordOnDeath_ = false;
     auto evs = engine_->events<EntityDied>().drainTick();
+    const auto playerH =
+        worldState_ ? worldState_->player : threadmaxx::EntityHandle{};
     for (const auto& d : evs) {
+        // 2026-05-22 audit fix — when the PLAYER is the death
+        // event's target, additionally flag the sword for
+        // DisabledTag so it stops appearing in the world. Pre-fix
+        // the sword stayed Parent-attached to the corpse and the
+        // HierarchySystem kept propagating its transform —
+        // visible "ghost sword" at the dead player's location.
+        // The corpse pickup drop is suppressed for the player
+        // (a player-death gold pile would look like a respawn
+        // marker, not a game-over indicator).
+        if (playerH.valid() && d.entity == playerH) {
+            disableSwordOnDeath_ = true;
+            continue;
+        }
+
         DropPlan plan;
         plan.corpse = d.entity;
         plan.posX   = d.posX;
@@ -29,7 +46,16 @@ void RespawnSystem::preStep(threadmaxx::SystemContext&) {
 }
 
 void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
-    if (drops_.empty()) return;
+    // 2026-05-22 audit fix — also fire the sword-disable on
+    // player death even when no NPC drops are pending.
+    const auto sword =
+        worldState_ ? worldState_->sword : threadmaxx::EntityHandle{};
+    const bool disableSword = disableSwordOnDeath_ &&
+                              sword.valid() &&
+                              ctx.world().alive(sword) &&
+                              !ctx.world().hasTag(sword, threadmaxx::Component::DisabledTag);
+    if (drops_.empty() && !disableSword) return;
+
     const auto idsCube   = ids_->cubeRender;
     const auto idsPickup = ids_->pickup;
     // §3.11 batch 9b.2b — match the floor-pickup meshId so killed-NPC
@@ -39,8 +65,12 @@ void RespawnSystem::update(threadmaxx::SystemContext& ctx) {
         worldState_ ? worldState_->pickupMeshId : 0;
     auto plans = drops_;  // copy by value into the lambda
 
-    ctx.single([plans = std::move(plans), idsCube, idsPickup, pickupMeshId]
+    ctx.single([plans = std::move(plans), idsCube, idsPickup, pickupMeshId,
+                disableSword, sword]
                (threadmaxx::Range, threadmaxx::CommandBuffer& cb) {
+        if (disableSword) {
+            cb.addTag(sword, threadmaxx::Component::DisabledTag);
+        }
         for (const auto& p : plans) {
             // §3.11.1 batch D1 — corpse: flip DisabledTag so the
             // renderer skips it and the spatial hash query (next

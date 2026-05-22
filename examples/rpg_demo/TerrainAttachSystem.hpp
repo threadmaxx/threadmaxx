@@ -26,7 +26,12 @@ namespace rpg {
 /// before `engine.initialize()`.
 class TerrainAttachSystem : public threadmaxx::ISystem {
 public:
-    explicit TerrainAttachSystem(const WorldState* worldState) noexcept;
+    /// 2026-05-22 audit refactor — also takes UserComponentIds so the
+    /// jump-landing path can write PlayerState back via the user-
+    /// component pipe. Pre-refactor TerrainAttach unconditionally
+    /// snapped player Y to ground, making the Space jump invisible.
+    TerrainAttachSystem(const WorldState* worldState,
+                        UserComponentIds* ids = nullptr) noexcept;
 
     const char* name() const noexcept override { return "terrain-attach"; }
     threadmaxx::ComponentSet reads() const noexcept override {
@@ -35,12 +40,16 @@ public:
         };
     }
     threadmaxx::ComponentSet writes() const noexcept override {
-        return threadmaxx::ComponentSet{threadmaxx::Component::Transform};
+        // Writes Transform and (on landing) PlayerState; force
+        // serial against PlayerInputSystem so the jump-state
+        // handoff is deterministic.
+        return threadmaxx::ComponentSet::all();
     }
     void update(threadmaxx::SystemContext& ctx) override;
 
 private:
     const WorldState* worldState_ = nullptr;
+    UserComponentIds* ids_        = nullptr;
 };
 
 } // namespace rpg
