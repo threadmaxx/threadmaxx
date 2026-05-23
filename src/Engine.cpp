@@ -148,6 +148,10 @@ void Engine::clearScriptedSkips() noexcept { impl_->clearScriptedSkips(); }
 void Engine::setTraceSink(ITraceSink* sink) noexcept { impl_->setTraceSink(sink); }
 void Engine::setTuningPolicy(ITuningPolicy* p) noexcept { impl_->setTuningPolicy(p); }
 ITuningPolicy* Engine::tuningPolicy() const noexcept   { return impl_->tuningPolicy(); }
+void Engine::setTuningMode(TuningMode m) noexcept      { impl_->setTuningMode(m); }
+TuningMode Engine::tuningMode() const noexcept         { return impl_->tuningMode(); }
+void Engine::setTuningTrace(TuningTrace* t) noexcept   { impl_->setTuningTrace(t); }
+TuningTrace* Engine::tuningTrace() const noexcept      { return impl_->tuningTrace(); }
 void Engine::setStallTimeout(double seconds) noexcept { impl_->setStallTimeout(seconds); }
 double Engine::stallTimeout() const noexcept { return impl_->stallTimeout(); }
 void Engine::snapshotAsync(std::function<void(WorldSnapshot)> callback) {

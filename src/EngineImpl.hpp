@@ -40,7 +40,6 @@ class IRenderer;
 class IGame;
 class ITraceSink;
 class ITuningPolicy;
-struct TuningPatch;
 struct WorldSnapshot;
 }
 
@@ -164,10 +163,30 @@ public:
     // ADAPTIVE_TUNING.md T4 — adaptive tuning policy hook-up.
     void           setTuningPolicy(::threadmaxx::ITuningPolicy* p) noexcept {
         tuningPolicy_ = p;
+        // ADAPTIVE_TUNING.md T6 — backwards-compat: installing a
+        // non-null policy implicitly switches the runtime into
+        // Active; detaching (nullptr) reverts to Off. Explicit
+        // setTuningMode() calls after this re-override.
+        tuningMode_ = (p != nullptr) ? ::threadmaxx::TuningMode::Active
+                                     : ::threadmaxx::TuningMode::Off;
         pendingPatch_.reset();
     }
     ::threadmaxx::ITuningPolicy* tuningPolicy() const noexcept {
         return tuningPolicy_;
+    }
+
+    // ADAPTIVE_TUNING.md T6 — explicit mode select + trace plumb.
+    void setTuningMode(::threadmaxx::TuningMode m) noexcept {
+        tuningMode_ = m;
+    }
+    ::threadmaxx::TuningMode tuningMode() const noexcept {
+        return tuningMode_;
+    }
+    void setTuningTrace(::threadmaxx::TuningTrace* t) noexcept {
+        tuningTrace_ = t;
+    }
+    ::threadmaxx::TuningTrace* tuningTrace() const noexcept {
+        return tuningTrace_;
     }
     void   setStallTimeout(double seconds) noexcept;
     double stallTimeout() const noexcept {
@@ -354,6 +373,13 @@ private:
     // `applyPendingTuningPatch()`. Non-owning; user retains lifetime.
     ::threadmaxx::ITuningPolicy*               tuningPolicy_ = nullptr;
     std::optional<::threadmaxx::TuningPatch>   pendingPatch_;
+    // ADAPTIVE_TUNING.md T6 — runtime mode + replay/record trace.
+    // Off matches v1.3 behaviour exactly (single null check per tick).
+    // Active records into `tuningTrace_` if attached. Scripted ignores
+    // the policy and pulls patches from `tuningTrace_` instead.
+    ::threadmaxx::TuningMode                   tuningMode_   =
+        ::threadmaxx::TuningMode::Off;
+    ::threadmaxx::TuningTrace*                 tuningTrace_  = nullptr;
     // 0.0 = disabled. setStallTimeout() (un)spawns watchdog_ as needed.
     // Atomic so the watchdog thread can poll it concurrently with the
     // sim thread reconfiguring the timeout. Idempotent in effect (just

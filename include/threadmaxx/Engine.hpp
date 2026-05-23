@@ -28,6 +28,8 @@ class ResourceRegistry;
 class ILogger;
 class ITraceSink;
 class ITuningPolicy;
+class TuningTrace;
+enum class TuningMode;
 struct FrameSnapshot;
 struct WorldSnapshot;
 template <typename Ev> class EventChannel;
@@ -318,6 +320,41 @@ public:
     /// `nullptr` when none is installed. See @ref setTuningPolicy.
     /// @thread_safety Sim thread only.
     ITuningPolicy* tuningPolicy() const noexcept;
+
+    /// ADAPTIVE_TUNING.md T6 — select the adaptive-tuner runtime mode.
+    /// Defaults to @ref TuningMode::Off (matches v1.3 behaviour exactly).
+    /// @ref setTuningPolicy implicitly transitions to @ref TuningMode::Active
+    /// when a non-null policy is installed and to @ref TuningMode::Off
+    /// when @c nullptr is installed; explicit @ref setTuningMode calls
+    /// override that default — e.g. set @ref TuningMode::Scripted after
+    /// installing a policy (or none at all) to route patches from the
+    /// trace instead.
+    ///
+    /// Switching modes does not discard any pending patch staged by a
+    /// previous mode. Switching to @ref TuningMode::Off leaves the
+    /// installed policy and trace pointers untouched.
+    /// @thread_safety Sim thread only.
+    void setTuningMode(TuningMode mode) noexcept;
+
+    /// ADAPTIVE_TUNING.md T6 — current adaptive-tuner runtime mode.
+    /// @thread_safety Sim thread only.
+    TuningMode tuningMode() const noexcept;
+
+    /// ADAPTIVE_TUNING.md T6 — attach a @ref TuningTrace. In
+    /// @ref TuningMode::Active mode the engine appends every applied
+    /// @ref TuningPatch to the trace (keyed by the proposing tick). In
+    /// @ref TuningMode::Scripted mode the engine pulls patches from the
+    /// trace using @ref TuningTrace::tryGet keyed by the current tick.
+    ///
+    /// The engine never takes ownership; the trace must outlive every
+    /// subsequent @ref step call. Pass @c nullptr to detach.
+    /// @thread_safety Sim thread only.
+    void setTuningTrace(TuningTrace* trace) noexcept;
+
+    /// ADAPTIVE_TUNING.md T6 — current trace attached via
+    /// @ref setTuningTrace, or @c nullptr.
+    /// @thread_safety Sim thread only.
+    TuningTrace* tuningTrace() const noexcept;
 
     /// §3.7 batch 14 — install a stall watchdog with the given
     /// timeout, in seconds. When `seconds > 0` the engine spawns a

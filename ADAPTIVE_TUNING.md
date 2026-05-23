@@ -472,7 +472,7 @@ records the new public surface entries.
 
 ---
 
-### Batch T6 — Determinism mode + scripted replay
+### Batch T6 — Determinism mode + scripted replay — LANDED 2026-05-23
 
 **Scope.** Three modes:
 
@@ -505,19 +505,45 @@ The networked / replay flow:
 This mirrors §3.11.5's `SkipPolicy::Scripted` precedent: same shape,
 same testability.
 
-**Public surface change.** `TuningMode` enum + `TuningTrace` class.
+**Public surface change.** Added `TuningMode` enum + `TuningTrace`
+class in `include/threadmaxx/Tuning.hpp`. Engine plumbing:
+`Engine::setTuningMode` / `tuningMode()`, `Engine::setTuningTrace` /
+`tuningTrace()`. Backwards-compat: `setTuningPolicy(p)` implicitly
+selects `TuningMode::Active` when `p != nullptr` and `Off` otherwise,
+so every pre-T6 caller keeps working without touching mode at all.
 
-**Bench gate.** Same workload as T5 but in `Scripted` mode against
-a recorded trace — must produce identical timing within noise floor
-(no per-tick overhead from the scripted path).
+`TuningTrace` is a sorted vector of `(tick, TuningPatch)` entries
+with O(log n) `tryGet` and a wire format of
+`[magic 'TUNE' u32][version u32][entryCount u64]` followed by
+`[tick u64][overrideCount u64]{[nameLen u64][name][grain u32]}*`.
+The `record` / `tryGet` API matches the spec; `serialize` /
+`deserialize` mirrors `WorldSnapshot`'s host-endian POD style.
 
-**Test gate.** `test_adaptive_determinism.cpp`:
-- Run engine A in Active mode against workload W, record trace.
-- Run engine B in Scripted mode against W with the recorded trace.
-- Assert `commitHash[tick]` is bit-identical for every tick.
+**Bench gate.** `bench/adaptive_tuning_bench --mode=scripted` —
+records a TuningTrace from an Active AdaptiveGrainPolicy run on
+the tiny-fanout workload, then replays it in Scripted mode (no
+policy installed). Asserts:
+- `commitHash[tick]` is bit-identical for every measured tick.
+- Scripted mean step time is within +2% of Active.
 
-**Risk.** Low–medium. The trace format is small (a few patches per
-hour at the cooldown rate); serialization mirrors `WorldSnapshot`.
+Landed: 200 measured ticks, identical hash through end-of-run
+(last = `0x1b799c7e15f70a86`); scripted runs **−7.44%** vs Active
+(observe/propose overhead skipped, well inside the +2% gate).
+
+**Test gate.** `tests/adaptive_determinism_test.cpp`:
+- TuningTrace round-trip (record → serialize → deserialize → tryGet).
+- Garbage / truncated input rejected (deserialize returns empty).
+- Active mode records exactly the patches the policy emitted,
+  keyed by the proposing tick.
+- 10-tick Active run + 10-tick Scripted replay produces identical
+  `commitHash` streams.
+- Scripted mode with no trace attached is inert (engine still ticks).
+
+**Risk.** Low. The trace format is small (`AdaptiveGrainPolicy`
+emits at most one entry per `cooldownTicks` per system; tiny-fanout
+landed 5 entries over 200 measured ticks). Serialization is byte-
+identical across runs because the trace is built deterministically
+from the same input stream.
 
 ---
 
@@ -548,7 +574,7 @@ hour at the cooldown rate); serialization mirrors `WorldSnapshot`.
 | T3 | `perf_audit_rpg_demo 300` + `tests/sub_job_telemetry_test` | cube-render `subJob_us ∈ [50, 80]` (landed: 63.5); EWMA converges within ±30% of truth on a busy-spin |
 | T4 | `tests/tuning_patch_application_test` + `bench/adaptive_tuning_bench` (stable workload, no-op policy, 3 interleaved rounds × 200 ticks) | mechanism: observe/propose pumped per step + patch applied next-tick + scripted determinism holds; bench: median noop overhead ≤ +2% of baseline (landed: -2.22%, comfortably within noise) |
 | T5 | `bench/adaptive_tuning_bench --mode=tiny-fanout` + `tests/adaptive_grain_convergence_test` + `tests/adaptive_no_oscillation_test` | bench: adaptive mean step ≤ +10% of offline grain-sweep optimum (landed: +0.14%); tests: convergence into hold band + ≤ 1 fire per cooldown window + 0 fires under alternating direction signals |
-| T6 | `bench/adaptive_tuning_bench --workload=stable --mode=scripted` | identical commitHash to Active run |
+| T6 | `bench/adaptive_tuning_bench --mode=scripted` + `tests/adaptive_determinism_test` | bench: identical commitHash for all 200 measured ticks; scripted-path overhead ≤ +2% (landed: −7.44%); tests: TuningTrace round-trip + Active→Scripted replay hash equality |
 
 ## 7. Definition of done for Phase T
 

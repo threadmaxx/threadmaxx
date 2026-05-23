@@ -73,6 +73,7 @@ real regressions. They are still listed below for completeness.
 - ✓ `workerCount` — `renderer_resize_test.cpp` (also `alpha_test.cpp`)
 - ✓ `setTraceSink` — `telemetry_sink_test.cpp`, `async_snapshot_test.cpp`, `file_trace_sink_rotation_test.cpp`
 - ✓ `setTuningPolicy` / `tuningPolicy()` (ADAPTIVE_TUNING.md T4) — `tuning_patch_application_test.cpp`
+- ✓ `setTuningMode` / `tuningMode()` / `setTuningTrace` / `tuningTrace()` (ADAPTIVE_TUNING.md T6) — `adaptive_determinism_test.cpp`
 - ✓ `setStallTimeout` — `concurrency_soak_test.cpp`, `concurrency_soak_long.cpp`
 - ✗ `stallTimeout()` getter — **UNCOVERED. Trivial.** Sister to `setStallTimeout`.
 - ✓ `snapshotAsync` — `async_snapshot_test.cpp`
@@ -196,6 +197,15 @@ real regressions. They are still listed below for completeness.
 - ✓ Direction-change suppression (streak reset on dir flip → no fires) — `adaptive_no_oscillation_test.cpp`
 - ✓ `lastAppliedGrain` / `lastChangeTick` inspection helpers — both tests
 - ✓ Bench: within +10% of offline grain-sweep optimum on tiny-fanout — `bench/adaptive_tuning_bench --mode=tiny-fanout`
+
+## Tuning.hpp T6 — TuningMode + TuningTrace (ADAPTIVE_TUNING.md T6)
+- ✓ `TuningTrace::record` / `tryGet` / `size` / `empty` — `adaptive_determinism_test.cpp`
+- ✓ `TuningTrace::serialize` → `deserialize` round-trip — `adaptive_determinism_test.cpp`
+- ✓ Deserialize rejects truncated / bad-magic input — `adaptive_determinism_test.cpp`
+- ✓ `TuningMode::Active` records every applied patch (key = proposing tick) — `adaptive_determinism_test.cpp`
+- ✓ `TuningMode::Scripted` replay produces bit-identical `commitHash` stream vs Active record — `adaptive_determinism_test.cpp`
+- ✓ `TuningMode::Scripted` without trace is inert — `adaptive_determinism_test.cpp`
+- ✓ Bench: identical commitHash for all measured ticks + scripted-path overhead ≤ +2% — `bench/adaptive_tuning_bench --mode=scripted`
 
 ## UserComponent.hpp
 - ✓ `UserComponentId` (`valid`, `componentBit`) — `user_component_test.cpp`, `engine_user_component_lookup_test.cpp`

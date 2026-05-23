@@ -2039,14 +2039,28 @@ void EngineImpl::step() {
     // ADAPTIVE_TUNING.md T4 — adaptive tuner callback. observe() sees
     // the just-published stats; propose() may stage a patch for the
     // NEXT tick (applied at the top of the next step() before
-    // preStep, never mid-wave).
-    if (tuningPolicy_) {
+    // preStep, never mid-wave). ADAPTIVE_TUNING.md T6 layered on top:
+    //   - Off: skip.
+    //   - Active: run observe/propose; record applied patch to trace
+    //     if one is attached.
+    //   - Scripted: ignore policy.propose entirely; pull next patch
+    //     from the attached trace keyed by the current tick.
+    if (tuningMode_ == TuningMode::Active && tuningPolicy_) {
         const std::span<const SystemStats> sysSpan(
             systemStats_.data(), systemStats_.size());
         tuningPolicy_->observe(stats_, sysSpan, jobs_->stats());
         auto patch = tuningPolicy_->propose();
         if (patch.has_value() && !patch->grainOverrides.empty()) {
+            if (tuningTrace_) {
+                tuningTrace_->record(stats_.tick, *patch);
+            }
             pendingPatch_ = std::move(patch);
+        }
+    } else if (tuningMode_ == TuningMode::Scripted && tuningTrace_) {
+        TuningPatch scripted;
+        if (tuningTrace_->tryGet(stats_.tick, scripted) &&
+            !scripted.grainOverrides.empty()) {
+            pendingPatch_ = std::move(scripted);
         }
     }
 
