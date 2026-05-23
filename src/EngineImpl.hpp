@@ -49,9 +49,11 @@ public:
     SystemContextImpl(class EngineImpl& engine, const World& world,
                       const WorldView& view,
                       double dt, std::uint64_t tick,
-                      std::uint32_t preferredGrain = 0)
+                      std::uint32_t preferredGrain = 0,
+                      std::uint32_t preferredWorkerCap = 0)
         : engine_(engine), world_(world), view_(view), dt_(dt), tick_(tick),
-          preferredGrain_(preferredGrain) {}
+          preferredGrain_(preferredGrain),
+          preferredWorkerCap_(preferredWorkerCap) {}
 
     const World&     world() const noexcept override { return world_; }
     const WorldView& worldView() const noexcept override { return view_; }
@@ -103,6 +105,10 @@ private:
     double            waitSeconds_   = 0.0;
     std::uint32_t     peakQueueDepth_ = 0;
     std::uint32_t     preferredGrain_ = 0;
+    // ADAPTIVE_TUNING.md T2 — clamp on parallelFor's sub-job count.
+    // Zero = uncapped. Sourced from ISystem::preferredWorkerCap() at
+    // SystemContextImpl construction; pinned for the wave.
+    std::uint32_t     preferredWorkerCap_ = 0;
 };
 
 // The full engine state. Hidden behind PImpl from the public Engine class.
@@ -488,11 +494,17 @@ public:
     std::uint32_t systemPreferredGrain(std::size_t i) const noexcept {
         return i < systemPreferredGrain_.size() ? systemPreferredGrain_[i] : 0u;
     }
+    // ADAPTIVE_TUNING.md T2 — per-system parallelFor sub-job cap.
+    // Sourced from ISystem::preferredWorkerCap() at registerSystem time.
+    std::uint32_t systemPreferredWorkerCap(std::size_t i) const noexcept {
+        return i < systemPreferredWorkerCap_.size() ? systemPreferredWorkerCap_[i] : 0u;
+    }
 
 private:
     std::vector<std::size_t>              systemWave_;
     std::vector<std::vector<std::size_t>> systemDependsOn_;
     std::vector<std::uint32_t>            systemPreferredGrain_;
+    std::vector<std::uint32_t>            systemPreferredWorkerCap_;
 };
 
 } // namespace threadmaxx::internal

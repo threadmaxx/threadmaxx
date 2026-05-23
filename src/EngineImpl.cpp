@@ -515,7 +515,15 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     const std::uint32_t workers = engine_.jobs().workerCount();
     if (grain == 0) grain = pickGrain(count, workers, preferredGrain_);
 
-    const std::uint32_t chunkCount = (count + grain - 1) / grain;
+    std::uint32_t chunkCount = (count + grain - 1) / grain;
+    // ADAPTIVE_TUNING.md T2 — clamp sub-job count to the system's
+    // declared worker cap. Acts after the grain heuristic so it
+    // overrides both `pickGrain` and explicit caller-supplied grain
+    // (the cap is the system's authoritative scheduling hint).
+    if (preferredWorkerCap_ > 0 && chunkCount > preferredWorkerCap_) {
+        chunkCount = preferredWorkerCap_;
+        grain      = (count + chunkCount - 1) / chunkCount;
+    }
 
     // Reserve command buffers up front so emplace_back does not invalidate
     // pointers while jobs are running. arenas_ grows in lockstep; the
@@ -556,7 +564,12 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     const std::uint32_t workers = engine_.jobs().workerCount();
     if (grain == 0) grain = pickGrain(count, workers, preferredGrain_);
 
-    const std::uint32_t chunkCount = (count + grain - 1) / grain;
+    std::uint32_t chunkCount = (count + grain - 1) / grain;
+    // ADAPTIVE_TUNING.md T2 — sub-job cap; see the JobFn overload.
+    if (preferredWorkerCap_ > 0 && chunkCount > preferredWorkerCap_) {
+        chunkCount = preferredWorkerCap_;
+        grain      = (count + chunkCount - 1) / chunkCount;
+    }
 
     const std::size_t firstIdx = buffers_.size();
     buffers_.resize(firstIdx + chunkCount);
@@ -857,6 +870,7 @@ void EngineImpl::registerSystem(std::unique_ptr<ISystem> system) {
     systemStats_.push_back(ss);
     const char* sysName = system->name();
     systemPreferredGrain_.push_back(system->preferredGrain());
+    systemPreferredWorkerCap_.push_back(system->preferredWorkerCap());
     systems_.push_back(std::move(system));
     systemRenderBuilders_.emplace_back();
     rebuildWaves();
@@ -932,6 +946,9 @@ std::size_t EngineImpl::registerSystemAt(std::size_t position,
     systemPreferredGrain_.insert(systemPreferredGrain_.begin() +
                                  static_cast<std::ptrdiff_t>(position),
                                  system->preferredGrain());
+    systemPreferredWorkerCap_.insert(systemPreferredWorkerCap_.begin() +
+                                     static_cast<std::ptrdiff_t>(position),
+                                     system->preferredWorkerCap());
     systems_.insert(systems_.begin() +
                     static_cast<std::ptrdiff_t>(position),
                     std::move(system));
@@ -1632,7 +1649,8 @@ void EngineImpl::step() {
     worldView_.rebuild(world_);
     for (std::size_t i = 0; i < systems_.size(); ++i) {
         SystemContextImpl ctx(*this, world_, worldView_, dt, tick_,
-                              systemPreferredGrain(i));
+                              systemPreferredGrain(i),
+                              systemPreferredWorkerCap(i));
         systems_[i]->preStep(ctx);
         const auto commitStart = std::chrono::steady_clock::now();
         for (auto& cb : ctx.buffers()) commitBuffer(cb);
@@ -1679,7 +1697,8 @@ void EngineImpl::step() {
         for (std::size_t k = 0; k < wave.size(); ++k) {
             ctxs.push_back(std::make_unique<SystemContextImpl>(
                 *this, world_, worldView_, dt, tick_,
-                systemPreferredGrain(wave[k])));
+                systemPreferredGrain(wave[k]),
+                systemPreferredWorkerCap(wave[k])));
         }
 
         // Pre-compute skip decisions for this wave. The result drives
@@ -1809,7 +1828,8 @@ void EngineImpl::step() {
     worldView_.rebuild(world_);
     for (std::size_t i = 0; i < systems_.size(); ++i) {
         SystemContextImpl ctx(*this, world_, worldView_, dt, tick_,
-                              systemPreferredGrain(i));
+                              systemPreferredGrain(i),
+                              systemPreferredWorkerCap(i));
         systems_[i]->postStep(ctx);
         const auto commitStart = std::chrono::steady_clock::now();
         for (auto& cb : ctx.buffers()) commitBuffer(cb);

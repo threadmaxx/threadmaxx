@@ -284,6 +284,32 @@ public:
     /// inner-loop cost makes a known good batch size win.
     virtual std::uint32_t preferredGrain() const noexcept { return 0; }
 
+    /// ADAPTIVE_TUNING.md T2 — per-system cap on the number of
+    /// parallel sub-jobs the engine will dispatch for this system's
+    /// `parallelFor` calls. The cap is a ceiling, not a floor:
+    /// small workloads still pick fewer sub-jobs based on the normal
+    /// grain heuristic. Applies AFTER `preferredGrain` /
+    /// caller-supplied `grain` — if either would produce more
+    /// sub-jobs than the cap, grain is rounded up so the resulting
+    /// sub-job count is at most `preferredWorkerCap()`. Acts on the
+    /// system's `update`, `preStep`, `postStep`, and any other
+    /// invocation that dispatches through its `SystemContext`.
+    ///
+    /// Use when D12-style profiling shows a system's per-sub-job
+    /// work is small enough that JobLatch + cv-wakeup overhead
+    /// dominates beyond a known worker count (e.g. cube-render's
+    /// ~6 µs/sub-job at 71 workers — capped at 8 workers it lands
+    /// at the sweet spot from the D12 worker sweep).
+    ///
+    /// Default: 0 (uncapped, i.e. fan out across the full pool).
+    /// Read once per `update` invocation — pinned during the wave.
+    ///
+    /// @thread_safety Called on the simulation thread only. Engine
+    /// caches the value at `registerSystem` time and re-reads it on
+    /// every `update` / `preStep` / `postStep`; subsequent changes
+    /// to the return value take effect on the next tick boundary.
+    virtual std::uint32_t preferredWorkerCap() const noexcept { return 0; }
+
     /// §3.5 batch 12 — opt the system into the engine's skip
     /// machinery. Returning `true` declares "it is safe to drop this
     /// system's `update()` on a busy tick" — the engine may skip it

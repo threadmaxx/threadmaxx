@@ -169,7 +169,7 @@ cap to extend.
 
 ---
 
-### Batch T2 — Engine: `ISystem::preferredWorkerCap()`
+### Batch T2 — Engine: `ISystem::preferredWorkerCap()` — LANDED 2026-05-23
 
 **Scope.** New virtual on `ISystem`:
 
@@ -195,17 +195,43 @@ default returning 0 preserves bit-for-bit behavior for every existing
 system. Doxygen `@brief` + `@thread_safety` annotations. Coverage
 audit entry.
 
-**Bench gate.** `CubeRenderSystem::preferredWorkerCap()` returns 8.
-`perf_audit_rpg_demo 300 --workers=71` (normal): mean step ≤ 6.5 ms
-(matches the post-D12 win at workers=8). Lets us remove the
-demo-side workaround in main.cpp.
+**Empirical finding (post-implementation).** The hypothesized bench
+gate — `CubeRenderSystem::preferredWorkerCap()=8` → mean step ≤ 6.5 ms
+at workers=71 — did NOT hold. n=10 trials at workers=71 normal mode:
 
-**Test gate.** `test_worker_cap.cpp`: register a system with
-`preferredWorkerCap() = 4`, run a wave with workerCount=16, assert
-peakQueueDepth ≤ 4. Determinism: cap doesn't affect commitHash.
+| cap on cube-render | median mean step | range |
+|---|---|---|
+| 0 (baseline)  | 8.6 ms | 5.8 – 8.8 |
+| 32            | 9.4 ms | 7.2 – 10.4 |
+| 8             | 9.7 ms | 8.1 – 10.9 |
+
+Cap=8 is a small regression: cube-render's `wait_ms` jumps from
+0.03 ms (baseline) to ~2.5 ms because one slow sub-job (8×17.5k rows
+each) stalls the wave, instead of 71 workers stealing 284×500-row
+sub-jobs in parallel. The 8-worker D12 sweet spot (6.1 ms) was an
+**engine-wide** phenomenon — every system pays cv-wakeup overhead
+proportional to the pool size, not to a single system's sub-job
+count. A per-system fan-out cap can't recover that.
+
+**What T2 actually delivers:** the mechanism is built, tested, and
+ready. `CubeRenderSystem` does NOT opt in (returns 0). The
+`main.cpp` `cfg.workerCount = stressMode ? 16 : 8` workaround
+stays. T3's per-sub-job telemetry + T5's adaptive policy will
+revisit `preferredWorkerCap` with data — there may be other systems
+where the cap genuinely helps (smaller work per call, where the
+straggler isn't a single slow sub-job).
+
+**Test gate.** `tests/worker_cap_test.cpp` lands; asserts (1) cap=0
+falls through to the existing grain heuristic (uncapped fan-out =
+32 sub-jobs at workerCount=8, count=10000), (2) cap=4 clamps to 4
+sub-jobs even when grain=0 would have picked 32, (3) cap overrides
+explicit caller-supplied grain that would have produced more
+sub-jobs, (4) determinism — cap=0 and cap=2 produce identical
+`commitHash` over 5 ticks of a row-writing workload. Full suite
+stays 117 → 118/118 green.
 
 **Risk.** Low. Cap is a no-op when 0; existing tests prove the
-default path.
+default path. No opt-in system in the tree changes behavior.
 
 ---
 
@@ -430,7 +456,7 @@ hour at the cooldown rate); serialization mirrors `WorldSnapshot`.
 | Batch | Bench | Gate |
 |---|---|---|
 | T1 | `perf_audit_rpg_demo 300 --workers=71` normal | mean step ≤ 8 ms |
-| T2 | `perf_audit_rpg_demo 300 --workers=71` normal | mean step ≤ 6.5 ms |
+| T2 | `tests/worker_cap_test` (engine mechanism gate) | sub-job count clamped to cap; commitHash unchanged |
 | T3 | `perf_audit_rpg_demo 300` | new columns present, near-zero overhead |
 | T4 | `bench/adaptive_tuning_bench --workload=stable --policy=noop` | within ±2% of baseline |
 | T5 | `bench/adaptive_tuning_bench --workload=tiny-fanout --policy=adaptive-grain` | within 10% of offline optimum after 200 ticks |

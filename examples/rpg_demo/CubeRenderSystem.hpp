@@ -29,6 +29,18 @@ public:
     threadmaxx::ComponentSet writes() const noexcept override {
         return threadmaxx::ComponentSet::none();
     }
+    // ADAPTIVE_TUNING.md T2 — the engine virtual `preferredWorkerCap()`
+    // exists and is wired through. We intentionally do NOT opt in here
+    // (return 0 = uncapped). Reason: empirically at workers=71 normal-
+    // mode rpg_demo (commit 9b3bda0 baseline), cap=8 made mean step
+    // 8.6 → 9.7 ms (n=10), cap=32 was neutral, and cap=0 (this) keeps
+    // the post-T1 baseline. The D12 worker-sweep 8-worker sweet spot
+    // (6.1 ms) is an *engine-wide* phenomenon: every system pays cv-
+    // wakeup overhead proportional to the pool size, not to a single
+    // system's sub-job count. A per-system fan-out cap can't recover
+    // that — only `Config::workerCount` does. T3 (per-sub-job
+    // telemetry) + T5 (adaptive policy) will revisit this with data.
+    std::uint32_t preferredWorkerCap() const noexcept override { return 0u; }
 
     void update(threadmaxx::SystemContext& ctx) override;
     void buildRenderFrame(threadmaxx::RenderFrameBuilder& b) override;
