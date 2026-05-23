@@ -28,6 +28,8 @@ set(RPG_DEMO_TESTS
     test_block_palette
     # §3.11 batch D11 — voxel harvest break / place + drop age-out.
     test_block_harvest
+    # ADAPTIVE_TUNING.md T1 — per-call worker-cap heuristic clamp.
+    test_dispatch_min_rows_per_worker
 )
 
 foreach(test ${RPG_DEMO_TESTS})
