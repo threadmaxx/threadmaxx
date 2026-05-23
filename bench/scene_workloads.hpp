@@ -336,6 +336,70 @@ struct RpgMixWorkload : RpgStressWorkload {
     }
 };
 
+/// SHARDED_OPTIMISATION.md S5 — many-tiny-bins workload.
+///
+/// Spreads 6 400 entities across 32 archetypes (~200 entities per
+/// archetype). Each archetype is uniquely shaped by toggling a
+/// different combination of five optional component bits (Velocity,
+/// Health, Faction, StaticTag, RenderTag) on top of Transform +
+/// BoundingVolume. With one `setTransform` per entity per tick the
+/// Pass C bin distribution is ~200 cmds/bin × 32 bins — every bin is
+/// below the `kMinBinForJob = 256` threshold, so the S5 inline lane
+/// fires for every bin (zero job dispatches, zero `JobLatch::wait`).
+/// Total commands (6 400) clear `kShardedMinCommands = 256` so the
+/// sharded path is taken, not the early-out fallback.
+constexpr std::uint32_t kManyTinyBinsCount = 6'400;
+struct ManyTinyBinsWorkload : threadmaxx::IGame {
+    std::uint32_t count = kManyTinyBinsCount;
+    std::uint32_t archetypes = 32;
+
+    void onSetup(threadmaxx::Engine&,
+                 threadmaxx::World&,
+                 threadmaxx::CommandBuffer& cb) override {
+        std::mt19937 rng(0xE5E5u);
+        std::uniform_real_distribution<float> pos(-50.0f, 50.0f);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const threadmaxx::Vec3 p{pos(rng), 1.0f, pos(rng)};
+            threadmaxx::Bundle b{};
+            b.transform.position = p;
+            b.boundingVolume     = cubeAabb(p, 0.5f);
+            b.initialMask = threadmaxx::ComponentSet{
+                threadmaxx::Component::Transform,
+                threadmaxx::Component::BoundingVolume,
+            };
+            // 32 distinct archetypes via a 5-bit selector across
+            // {Velocity, Health, Faction, StaticTag, RenderTag}.
+            const std::uint32_t bucket = i % archetypes;
+            if (bucket & 0x01u) {
+                b.velocity = threadmaxx::Velocity{{0.1f, 0.0f, 0.0f},
+                                                  {0.0f, 0.0f, 0.0f}};
+                b.initialMask = b.initialMask |
+                    threadmaxx::ComponentSet{threadmaxx::Component::Velocity};
+            }
+            if (bucket & 0x02u) {
+                b.health = threadmaxx::Health{50.0f, 50.0f};
+                b.initialMask = b.initialMask |
+                    threadmaxx::ComponentSet{threadmaxx::Component::Health};
+            }
+            if (bucket & 0x04u) {
+                b.faction.id = bucket & 0x03u;
+                b.initialMask = b.initialMask |
+                    threadmaxx::ComponentSet{threadmaxx::Component::Faction};
+            }
+            if (bucket & 0x08u) {
+                b.initialMask = b.initialMask |
+                    threadmaxx::ComponentSet{threadmaxx::Component::StaticTag};
+            }
+            if (bucket & 0x10u) {
+                b.renderTag.meshId = static_cast<int>(bucket & 0x03u);
+                b.initialMask = b.initialMask |
+                    threadmaxx::ComponentSet{threadmaxx::Component::RenderTag};
+            }
+            cb.spawnBundle(b);
+        }
+    }
+};
+
 /// Helper: returns a `Config` configured for clean benchmark runs —
 /// no pacing sleep, deterministic mode on, large initial capacity.
 inline threadmaxx::Config benchConfig(std::uint32_t workers,

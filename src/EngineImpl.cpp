@@ -1445,22 +1445,67 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         return;
     }
 
+    // SHARDED_OPTIMISATION.md S5 — small-bin serial fast path.
+    //
+    // S0 measured `JobLatch::wait` as 99% of Pass C on every value-only
+    // workload; the dispatch + wake overhead dwarfs the actual apply
+    // work for bins below a few hundred commands. Split bins into two
+    // lanes: bins ≥ `kMinBinForJob` get a worker job (parallelism still
+    // earns its keep at this size); bins below it execute on the sim
+    // thread, often overlapping with workers already running the large
+    // ones. When no bin meets the threshold we skip the latch entirely
+    // — the mutex + CV cost vanishes for small-aggregate calls.
+    //
+    // Determinism: bins target disjoint archetype chunks (Pass B
+    // already routed by `storage.locate(e).archetype`), so the order
+    // small-vs-large bins finish in doesn't affect any chunk's content,
+    // only the per-chunk hash rollup time. `finalizeCommitHash` sorts
+    // chunks by `mask.bits()` before folding, so the rollup result is
+    // independent of bin execution order.
+    constexpr std::size_t kMinBinForJob = 256;
+    std::size_t largeBins = 0;
+    for (const auto& bin : shardChunkBins_) {
+        if (bin.size() >= kMinBinForJob) ++largeBins;
+    }
+    const std::size_t inlineBins = activeBins - largeBins;
+    commitBreakdown_.inlineBinCount += inlineBins;
+
     const auto bdCStart = bdClock::now();
-    JobLatch done(static_cast<std::ptrdiff_t>(activeBins));
-    for (auto& bin : shardChunkBins_) {
-        if (bin.empty()) continue;
-        jobs_->submit([&bin, &done, &storage] {
+    if (largeBins == 0) {
+        // No bin worth a job — run every non-empty bin inline. No
+        // `JobLatch`, no worker wake, no mutex/CV traffic at all.
+        for (auto& bin : shardChunkBins_) {
+            if (bin.empty()) continue;
             for (auto* cmd : bin) {
                 applyCommandImpl(*cmd, storage);
             }
-            done.count_down();
-        });
+        }
+    } else {
+        JobLatch done(static_cast<std::ptrdiff_t>(largeBins));
+        for (auto& bin : shardChunkBins_) {
+            if (bin.size() < kMinBinForJob) continue;
+            jobs_->submit([&bin, &done, &storage] {
+                for (auto* cmd : bin) {
+                    applyCommandImpl(*cmd, storage);
+                }
+                done.count_down();
+            });
+        }
+        // Run the small bins on the sim thread while workers are
+        // chewing through the large ones — overlap rather than serialise
+        // behind the wait.
+        for (auto& bin : shardChunkBins_) {
+            if (bin.empty() || bin.size() >= kMinBinForJob) continue;
+            for (auto* cmd : bin) {
+                applyCommandImpl(*cmd, storage);
+            }
+        }
+        const auto bdWaitStart = bdClock::now();
+        done.wait();
+        commitBreakdown_.nsLatchWait += bdElapsedNs(bdWaitStart, bdClock::now());
     }
-    const auto bdWaitStart = bdClock::now();
-    done.wait();
     const auto bdCEnd = bdClock::now();
-    commitBreakdown_.nsLatchWait += bdElapsedNs(bdWaitStart, bdCEnd);
-    commitBreakdown_.nsPassC     += bdElapsedNs(bdCStart, bdCEnd);
+    commitBreakdown_.nsPassC += bdElapsedNs(bdCStart, bdCEnd);
 
     for (auto& cb : buffers) cb.clear();
     // §3.9.6 batch 21 — bitmap fast clear: only zero the indices we

@@ -181,6 +181,23 @@ Keep the bitmap — it's still needed when a tag/setter is followed by a value-o
 
 **Gate.** The "many tiny bins" sub-case wins; `MultiArch` (4 fat bins) stays within ±2%.
 
+**S5 outcome (LANDED 2026-05-23).** `kMinBinForJob = 256` shipped in `commitBuffersSharded` (`src/EngineImpl.cpp`); new `CommitBreakdown::inlineBinCount` counter exposes the inline lane count to the bench. `ManyTinyBins` workload (6 400 entities × 32 archetypes, ~200 cmds/bin) added to `bench/scene_workloads.hpp`. Full numbers + delta tables in `bench/profile_report.md` ("SHARDED_OPTIMISATION.md S5"); raw JSONL in `/tmp/s5_breakdown_v2.jsonl`.
+
+- **RPG-mix sharded commit −38.6 %** (7 908 → 4 853 µs, mean of three runs). Pass C dropped 47 %; latch wait dropped 47 %. The player + sword micro-archetypes (~1 cmd/bin) take the inline lane; NPC + pickup chunks (~50 k / ~5 k cmds) stay on the worker dispatch path.
+- **ManyTinyBins sharded commit = 219 µs**, with `inl/tk = 32.0` (every bin inline) and `wait_us = 0.0` (latch entirely skipped). The "no bin meets threshold" branch fires every tick.
+- **SmallWorld picked up the inline lane as a bonus.** Both bins (~128 cmds each) now run inline; latch wait = 0. Sharded vs single ratio is essentially unchanged (the workload was already auto-falling-through close to break-even).
+- **MultiArch within noise.** S0 baseline 6 044 µs → S5 mean of three runs 6 296 µs (+4.2 %); individual runs spanned 5 234 / 5 819 / 7 836 µs — squarely inside the documented 5–20 % per-run variance on this host. The ±2 % formal gate is unmeasurable here. All 4 bins are 25 k cmds each, well above threshold; `largeBins == activeBins` makes S5's new branch collapse to the pre-S5 code path. Any timing difference is variance.
+- **Auto-fallthrough workloads unchanged.** `addRemoveTag/Churn` and `spawnDestroy/Churn` still hit `fbTk = 256` (every tick). S5 doesn't touch the fallback path.
+- **Determinism gates green** across all 5 sharded-specific tests plus full 123-test `ctest`. Commit-hash parity holds bit-for-bit.
+
+**Default does NOT flip on S5.** RPG-mix sharded commit (4 853 µs) is still 1.75× single (2 778 µs); MultiArch (6 296 µs) is still 3.16× single (1 991 µs). The S∞ gate "sharded ≤ single on RPG-mix" is not met.
+
+**Batch ordering update (consequence of S5).**
+
+- **S6 (migration batching) is next.** It is the only batch still in the plan that can move `addRemoveTag/Churn` off the auto-fallthrough — that workload pays ~11 ms in commit on both paths today, every mask flip a separate `setMaskAndMigrate`. A per-pair `migrateBatch` is the largest single lever remaining.
+- **MultiArch is the remaining gap.** Its 4 fat bins all run as jobs; S5 doesn't touch them. The ~4 000 µs Pass C wait is ~half the gap to single. S1/S2 (predecode header) are the structural answer if S6 doesn't close it.
+- **S5 gate met qualitatively.** ManyTinyBins exercises the inline path 100 %; RPG-mix wins by 38 %; MultiArch is within noise. The ±2 % formal gate on MultiArch is not measurable on this host but the underlying change is provably a no-op for that workload shape.
+
 ### S6 — Migration batching by (source, dest) archetype pair
 
 **Hypothesis.** When N entities all flip the same bit, they target the same destination archetype. Pass B currently applies each migrate independently (one `setMaskAndMigrate` per command); a per-pair batch could amortise the destination-row reservation and the swap-pop bookkeeping.

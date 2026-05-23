@@ -50,6 +50,14 @@ struct CommitBreakdown {
     std::uint64_t chunkCount = 0;
     /// Non-empty Pass C bins (across all calls; one entry per call).
     std::uint64_t activeBins = 0;
+    /// SHARDED_OPTIMISATION.md S5 — bins applied serially on the sim
+    /// thread instead of being dispatched as Pass C jobs. Driven by the
+    /// `kMinBinForJob` threshold: a bin with fewer than that many
+    /// commands pays more in latch + steal + wake than it earns from a
+    /// worker, so it executes inline (often in parallel with workers
+    /// already chewing through the large bins). `activeBins -
+    /// inlineBinCount` is the count that took the worker dispatch path.
+    std::uint64_t inlineBinCount = 0;
 
     /// Wall-clock ns spent in Pass A (migrating-entity bitmap build).
     std::uint64_t nsPassA = 0;

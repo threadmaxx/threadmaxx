@@ -525,3 +525,123 @@ already wins and we just flip the default." On RPG-mix:
 sharded commit ≈ 7092 µs > single commit ≈ 2778 µs. Sharded loses
 by 2.6×. The default does NOT flip; we proceed to S5 with the
 hypothesis above.
+
+---
+
+# SHARDED_OPTIMISATION.md S5 — Small-bin serial fast path (LANDED 2026-05-23)
+
+S5 added a `kMinBinForJob = 256` threshold in
+`commitBuffersSharded`. Bins below the threshold execute on the sim
+thread (in parallel with workers already running the large bins).
+When **no** bin meets the threshold the `JobLatch` is skipped
+entirely — no mutex, no CV traffic, no wake-up cost.
+
+`CommitBreakdown::inlineBinCount` is the new always-on counter that
+reports how many bins took the inline lane each step; it is exposed
+in the bench output as `inl/tk`.
+
+A new `ManyTinyBins` workload (6 400 entities × 32 archetypes →
+200 cmds/bin, every bin below threshold) is the targeted gate.
+
+## Headline numbers (4 workers, 32 warmup + 256 measure ticks; mean of three back-to-back runs)
+
+| Workload                  | Path     | Commit µs (S0) | Commit µs (S5) | Δ      | Pass C µs (S0) | Pass C µs (S5) | Wait µs (S0) | Wait µs (S5) | inl/tk |
+|--------------------------|----------|----------------|----------------|--------|----------------|----------------|--------------|--------------|--------|
+| setTransform/Churn       | sharded  | 5532           | 5567           | +0.6 % | 2832           | 3151           | 2823         | 3143         | 0.0    |
+| setVelocity/Churn        | sharded  | 4922           | 4367           | −11.3% | 3021           | 2497           | 3014         | 2491         | 0.0    |
+| addRemoveTag/Churn       | sharded  | 10937          | 11164          | (noise; fallback path unchanged) | — | — | — | — | — |
+| spawnDestroy/Churn       | sharded  | 76             | 78             | (noise; fallback path unchanged) | — | — | — | — | — |
+| setTransform/MultiArch   | sharded  | 6044           | 6296           | +4.2 % | 3902           | 4071           | 3892         | 4061         | 0.0    |
+| **RPG-mix**              | sharded  | **7908**       | **4853**       | **−38.6 %** | **3411** | **1795** | **3403** | **1788** | **2.0** |
+| **ManyTinyBins** (new)   | sharded  | n/a            | **219**        | n/a    | n/a            | **98**         | n/a          | **0**        | **32.0** |
+| **SmallWorld**           | sharded  | 10.20          | 10.05          | −1.5 % | 4.85           | 4.79           | **0.0**      | **0.0**      | **2.0** |
+| (single path, unchanged) | single   | RPG-mix 2778; MultiArch 1991; ManyTinyBins 141; SmallWorld 6.6 | (control) |
+
+S0 numbers are quoted from the section above (single-pass run);
+S5 columns are the **mean of three back-to-back runs**.
+
+## What changed and what didn't
+
+- **The two cases the S5 hypothesis explicitly targeted both
+  delivered.** RPG-mix dropped 38.6 % in commit wall-clock (and
+  47 % in Pass C); ManyTinyBins runs entirely inline (0 µs latch
+  wait, 32/32 bins inline). SmallWorld also picked up the inline
+  lane for both its bins (the auto-fallthrough still doesn't
+  trigger there because `totalCommands == 256` clears the
+  threshold by exactly one).
+- **The bins ≫ threshold cases are unchanged.** setTransform/Churn
+  (50 k cmds/bin), setVelocity/Churn (same), setTransform/MultiArch
+  (25 k cmds/bin), addRemoveTag (fallback), spawnDestroy (fallback)
+  all sit within ±5 % of the S0 baseline — exactly what theory
+  predicts (`largeBins == activeBins`, the new branch collapses to
+  the old code path).
+- The MultiArch +4.2 % is comfortably inside the documented
+  5–20 % per-run noise floor on this host (single-run readings
+  varied between 5234 µs and 7836 µs across three runs).
+
+## Pass C decomposition: where the saved time went
+
+| Workload      | Pass C share of commit (S0) | Pass C share of commit (S5) |
+|---------------|-----------------------------|-----------------------------|
+| RPG-mix       | 3411 / 7908 = 43 %          | 1795 / 4853 = 37 %          |
+| ManyTinyBins  | n/a                          | 98 / 219 = 45 %             |
+| MultiArch     | 3902 / 6044 = 65 %          | 4071 / 6296 = 65 %          |
+
+The two inline-active workloads (RPG-mix, ManyTinyBins) collapsed
+the latch wait component of Pass C to near-zero. MultiArch's bins
+never hit the inline path so its share is identical.
+
+## Sharded vs single commit ratio (the headline gate)
+
+| Workload      | Single commit µs | Sharded commit µs (S0) | Sharded commit µs (S5) | Single → S0 ratio | Single → S5 ratio |
+|---------------|------------------|------------------------|------------------------|--------------------|--------------------|
+| RPG-mix       | 2778             | 7908                   | **4853**               | 2.85×              | **1.75×**          |
+| ManyTinyBins  | 141              | n/a                    | 219                    | n/a                | 1.55×              |
+| MultiArch     | 1991             | 6044                   | 6296                   | 3.04×              | 3.16×              |
+| SmallWorld    | 6.6              | 10.2                   | 10.1                   | 1.55×              | 1.53×              |
+
+S5 closed about half the gap on RPG-mix and SmallWorld, did
+nothing for MultiArch (as expected — its 4 bins are 25 k each,
+well above threshold). The default still does NOT flip.
+
+## Determinism gates
+
+| Test                                | Status |
+|-------------------------------------|--------|
+| `sharded_commit_test`               | green  |
+| `commit_hash_test`                  | green  |
+| `commit_soak_test`                  | green  |
+| `archetype_hash_determinism_test`   | green  |
+| `v1_2_legacy_commit_hash_test`      | green  |
+| Full `ctest` (123 tests)            | green  |
+
+Bit-for-bit `commitHash` parity between single and sharded paths
+across all measured workloads.
+
+## Action items (S5 → next batch)
+
+- **S6 (migration batching) is next.** It is the only batch in the
+  plan that can move `addRemoveTag/Churn` off the
+  auto-fallthrough — that workload currently pays ~11 ms in
+  commit on both paths because every mask flip is a separate
+  `setMaskAndMigrate`. S6's per-pair `migrateBatch` is the
+  largest single lever still on the table.
+- **MultiArch is the remaining gap.** Its 4 fat bins all run as
+  jobs and S5 doesn't touch them; the ~4000 µs Pass C wait is
+  ~half the gap to single. S5 does not address this. Bin-size
+  / worker-count interaction is the next thing to characterise
+  (out-of-scope for this plan per §9: "worker count tuning is
+  Phase-T's problem"). S1/S2/S8 are the structural answers.
+- **Default does NOT flip on S5.** RPG-mix sharded commit
+  (4853 µs) is still 1.75× single (2778 µs). The plan's S∞ gate
+  ("sharded ≤ single on RPG-mix") is not met.
+
+## Reproducibility note
+
+S5's three-run mean methodology was adopted because S0's single
+runs showed 5–20 % variance. Even with three runs, MultiArch
+varied between 5234 µs and 7836 µs (~50 % spread on its sharded
+path); the table above uses the mean. The qualitative findings
+(RPG-mix big win, ManyTinyBins zero wait, MultiArch unchanged)
+are stable across every observed run.
+

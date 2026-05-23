@@ -329,6 +329,9 @@ struct Aggregate {
     double meanBinned   = 0.0;
     double meanGlobal   = 0.0;
     double meanActiveBins = 0.0;
+    /// SHARDED_OPTIMISATION.md S5 — bins that took the inline serial
+    /// lane (small-bin fast path).
+    double meanInlineBins = 0.0;
     std::uint64_t fallbackTicks = 0;
     std::uint64_t shardedTicks  = 0;
     std::uint64_t nTicks        = 0;
@@ -338,36 +341,38 @@ Aggregate aggregate(const PerWorkloadResult& r) {
     Aggregate a;
     if (r.samples.empty()) return a;
     long double sStep = 0, sCom = 0, sA = 0, sB = 0, sC = 0, sLatch = 0, sTot = 0;
-    long double sCmds = 0, sMig = 0, sBin = 0, sGlob = 0, sBins = 0;
+    long double sCmds = 0, sMig = 0, sBin = 0, sGlob = 0, sBins = 0, sInline = 0;
     for (const auto& s : r.samples) {
-        sStep  += s.stepNs;
-        sCom   += s.commitNs;
-        sA     += s.bd.nsPassA;
-        sB     += s.bd.nsPassB;
-        sC     += s.bd.nsPassC;
-        sLatch += s.bd.nsLatchWait;
-        sTot   += s.bd.nsTotal;
-        sCmds  += s.bd.totalCommands;
-        sMig   += s.bd.migratingCount;
-        sBin   += s.bd.binnedValueOnly;
-        sGlob  += s.bd.globalLaneApplied;
-        sBins  += s.bd.activeBins;
+        sStep   += s.stepNs;
+        sCom    += s.commitNs;
+        sA      += s.bd.nsPassA;
+        sB      += s.bd.nsPassB;
+        sC      += s.bd.nsPassC;
+        sLatch  += s.bd.nsLatchWait;
+        sTot    += s.bd.nsTotal;
+        sCmds   += s.bd.totalCommands;
+        sMig    += s.bd.migratingCount;
+        sBin    += s.bd.binnedValueOnly;
+        sGlob   += s.bd.globalLaneApplied;
+        sBins   += s.bd.activeBins;
+        sInline += s.bd.inlineBinCount;
         if (s.bd.fallbackCalls > 0) ++a.fallbackTicks;
         if (s.bd.shardedCalls  > 0) ++a.shardedTicks;
     }
     const auto n = static_cast<long double>(r.samples.size());
-    a.meanStepNs     = static_cast<double>(sStep  / n);
-    a.meanCommitNs   = static_cast<double>(sCom   / n);
-    a.meanNsPassA    = static_cast<double>(sA     / n);
-    a.meanNsPassB    = static_cast<double>(sB     / n);
-    a.meanNsPassC    = static_cast<double>(sC     / n);
-    a.meanNsLatch    = static_cast<double>(sLatch / n);
-    a.meanNsTotal    = static_cast<double>(sTot   / n);
-    a.meanCmds       = static_cast<double>(sCmds  / n);
-    a.meanMigrate    = static_cast<double>(sMig   / n);
-    a.meanBinned     = static_cast<double>(sBin   / n);
-    a.meanGlobal     = static_cast<double>(sGlob  / n);
-    a.meanActiveBins = static_cast<double>(sBins  / n);
+    a.meanStepNs     = static_cast<double>(sStep   / n);
+    a.meanCommitNs   = static_cast<double>(sCom    / n);
+    a.meanNsPassA    = static_cast<double>(sA      / n);
+    a.meanNsPassB    = static_cast<double>(sB      / n);
+    a.meanNsPassC    = static_cast<double>(sC      / n);
+    a.meanNsLatch    = static_cast<double>(sLatch  / n);
+    a.meanNsTotal    = static_cast<double>(sTot    / n);
+    a.meanCmds       = static_cast<double>(sCmds   / n);
+    a.meanMigrate    = static_cast<double>(sMig    / n);
+    a.meanBinned     = static_cast<double>(sBin    / n);
+    a.meanGlobal     = static_cast<double>(sGlob   / n);
+    a.meanActiveBins = static_cast<double>(sBins   / n);
+    a.meanInlineBins = static_cast<double>(sInline / n);
     a.nTicks         = r.samples.size();
     return a;
 }
@@ -392,6 +397,7 @@ void writeJsonl(std::ofstream& out, const PerWorkloadResult& r) {
             << "\"binned_value_only\":" << bd.binnedValueOnly  << ','
             << "\"chunk_count\":"       << bd.chunkCount       << ','
             << "\"active_bins\":"       << bd.activeBins       << ','
+            << "\"inline_bin_count\":" << bd.inlineBinCount << ','
             << "\"ns_pass_a\":"   << bd.nsPassA   << ','
             << "\"ns_pass_b\":"   << bd.nsPassB   << ','
             << "\"ns_pass_c\":"   << bd.nsPassC   << ','
@@ -404,18 +410,19 @@ void writeJsonl(std::ofstream& out, const PerWorkloadResult& r) {
 }
 
 void printSummaryHeader() {
-    std::printf("%-32s %-8s %10s %10s %10s %10s %10s %10s %8s %8s %6s %6s\n",
+    std::printf("%-32s %-8s %10s %10s %10s %10s %10s %10s %8s %7s %7s %6s %6s\n",
         "workload", "path",
         "step_us", "commit_us", "passA_us", "passB_us", "passC_us", "wait_us",
-        "cmd/tk", "bin/tk", "shTk", "fbTk");
-    std::printf("%.*s\n", 140,
+        "cmd/tk", "bin/tk", "inl/tk", "shTk", "fbTk");
+    std::printf("%.*s\n", 150,
         "-----------------------------------------------------------------"
-        "------------------------------------------------------------------------");
+        "------------------------------------------------------------------------"
+        "-----");
 }
 
 void printSummaryRow(const PerWorkloadResult& r) {
     const Aggregate a = aggregate(r);
-    std::printf("%-32s %-8s %10.2f %10.2f %10.2f %10.2f %10.2f %10.2f %8.0f %8.1f %6llu %6llu\n",
+    std::printf("%-32s %-8s %10.2f %10.2f %10.2f %10.2f %10.2f %10.2f %8.0f %7.1f %7.1f %6llu %6llu\n",
         r.workload.c_str(),
         r.sharded ? "sharded" : "single",
         a.meanStepNs / 1e3,
@@ -426,6 +433,7 @@ void printSummaryRow(const PerWorkloadResult& r) {
         a.meanNsLatch / 1e3,
         a.meanCmds,
         a.meanActiveBins,
+        a.meanInlineBins,
         static_cast<unsigned long long>(a.shardedTicks),
         static_cast<unsigned long long>(a.fallbackTicks));
 }
@@ -518,6 +526,19 @@ int main(int argc, char** argv) {
         all.push_back(measureWorkload(
             "SmallWorld", "setTransform", sharded, kWorkers,
             kWarmup, kIters, kSmallWorldCount, SmallWorldWorkload{},
+            [](std::vector<EntityHandle> e) {
+                return std::make_unique<SetTransformChurn>(std::move(e));
+            }));
+        printSummaryRow(all.back());
+        writeJsonl(jsonl, all.back());
+
+        // SHARDED_OPTIMISATION.md S5 — ManyTinyBins: 10 240 entities
+        // spread across 32 archetypes (~320/bin). Every Pass C bin is
+        // below the S5 `kMinBinForJob = 256` threshold, so the inline
+        // serial lane fires every tick. The S5 gate reads this row.
+        all.push_back(measureWorkload(
+            "ManyTinyBins", "setTransform", sharded, kWorkers,
+            kWarmup, kIters, kManyTinyBinsCount, ManyTinyBinsWorkload{},
             [](std::vector<EntityHandle> e) {
                 return std::make_unique<SetTransformChurn>(std::move(e));
             }));
