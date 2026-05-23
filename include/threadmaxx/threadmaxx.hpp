@@ -7,6 +7,7 @@
 /// @endcode
 /// or include the individual headers it actually uses.
 
+#include "AdaptiveGrainPolicy.hpp"
 #include "CommandBuffer.hpp"
 #include "Components.hpp"
 #include "Config.hpp"

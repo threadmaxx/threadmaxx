@@ -378,7 +378,7 @@ scheduling knob; it does not touch storage or commit order).
 
 ---
 
-### Batch T5 — Built-in policy: `AdaptiveGrainPolicy`
+### Batch T5 — Built-in policy: `AdaptiveGrainPolicy` — LANDED 2026-05-23
 
 **Scope.** Header-only built-in policy in
 `include/threadmaxx/AdaptiveGrainPolicy.hpp`:
@@ -416,18 +416,59 @@ public:
 - With probability `explorationEpsilon`, propose a random grain in
   the bounded range (ε-greedy exploration).
 
-**Bench gate.** `bench/adaptive_tuning_bench` runs the "tiny-fanout"
-workload with `AdaptiveGrainPolicy`. After 200 ticks, mean step time
-must be within 10% of the offline-optimum (the value picked manually
-via worker-sweep).
+**Bench gate.** `bench/adaptive_tuning_bench --mode=tiny-fanout`
+sweeps the grain ladder `{64,128,256,512,1024,2048,4096}` to
+establish the offline optimum, then runs 200 ticks with
+`AdaptiveGrainPolicy` installed. Gate: adaptive mean step ≤ +10% of
+offline-optimum mean step. The harness forces `warmup ≥ 100` so the
+policy fully converges (first fire tick 3, second tick 63, third
+tick 123 …) before the measurement window opens.
 
-**Test gates.** `test_adaptive_grain_convergence.cpp` (described in
-§3) and `test_adaptive_no_oscillation.cpp` (no-oscillation gate).
+**Bench gate result.** `bench/adaptive_tuning_bench --mode=tiny-fanout`
+(default 50k entities, ticks=200, warmup=100): offline optimum
+`grain=256 mean=12.16 ms`, adaptive `finalGrain=486 mean=12.18 ms`
+→ **+0.14%** above optimum. The policy converges to `grain=486` —
+not the empirical winner `256`, but well inside the hold band —
+yet the mean step difference is below the measurement noise floor
+(p95 is essentially identical). The 10% gate has comfortable
+headroom for noisier workloads.
+
+**Test gates.** `tests/adaptive_grain_convergence_test.cpp` drives
+the policy through a *synthetic* feedback loop (the harness models
+`avgSubJobMicros` as `grain × workPerEntityNs / 1000`, no engine in
+the loop) so the convergence math is hardware-independent. Asserts:
+(1) the policy fires at least once when sub-jobs start below the
+hold band's floor; (2) the final simulated sub-job duration lands
+inside `[target/2, target*4]`; (3) the policy is quiet for at least
+`2 × cooldownTicks` at the end (proves it settled, not oscillating).
+Empirical: 7 fires, `finalGrain=1094`, `finalMic=109.40 µs`, silent
+tail of 237 ticks.
+
+`tests/adaptive_no_oscillation_test.cpp` exercises two invariants
+against the same synthetic harness: (i) pinning sub-job duration at
+10 µs every tick produces fires at least `cooldownTicks` apart AND
+every cooldown-sized sliding window contains at most one fire
+(empirical: 7 fires across 400 ticks, gaps ∈ {60, 60, 60, 60, 60, 60});
+(ii) alternating between deep-coarsen and deep-split signals
+produces zero fires — the streak counter resets on direction flips
+so the streak gate never opens.
 
 **Risk.** Medium. The heuristic is the core IP. Watch for: (1)
-oscillation on noisy workloads — hysteresis covers this; (2)
-divergence when the workload itself is changing — bounded step size
-+ cooldown caps the damage.
+oscillation on noisy workloads — hysteresis + the cooldown gate
+covers this; (2) divergence when the workload itself is changing —
+bounded step size + cooldown caps the damage. The wide hold band
+(`[target/2, target*4]`) is a deliberate precision-for-stability
+trade: the policy converges into a band, not onto a single point.
+The +0.14% bench result shows the band is tight enough in practice.
+
+**What landed.** `include/threadmaxx/AdaptiveGrainPolicy.hpp`
+ships the header-only policy + Config + inspection helpers
+(`lastAppliedGrain` / `lastChangeTick`). `bench/adaptive_tuning_bench`
+gains `--mode=tiny-fanout` (sweep + adaptive comparison) alongside
+the existing `--mode=stable` (T4 no-op overhead gate). Two new
+tests register with CTest. CLAUDE.md grows an `AdaptiveGrainPolicy`
+paragraph in the Adaptive-tuning section; `COVERAGE_AUDIT.md`
+records the new public surface entries.
 
 ---
 
@@ -506,7 +547,7 @@ hour at the cooldown rate); serialization mirrors `WorldSnapshot`.
 | T2 | `tests/worker_cap_test` (engine mechanism gate) | sub-job count clamped to cap; commitHash unchanged |
 | T3 | `perf_audit_rpg_demo 300` + `tests/sub_job_telemetry_test` | cube-render `subJob_us ∈ [50, 80]` (landed: 63.5); EWMA converges within ±30% of truth on a busy-spin |
 | T4 | `tests/tuning_patch_application_test` + `bench/adaptive_tuning_bench` (stable workload, no-op policy, 3 interleaved rounds × 200 ticks) | mechanism: observe/propose pumped per step + patch applied next-tick + scripted determinism holds; bench: median noop overhead ≤ +2% of baseline (landed: -2.22%, comfortably within noise) |
-| T5 | `bench/adaptive_tuning_bench --workload=tiny-fanout --policy=adaptive-grain` | within 10% of offline optimum after 200 ticks |
+| T5 | `bench/adaptive_tuning_bench --mode=tiny-fanout` + `tests/adaptive_grain_convergence_test` + `tests/adaptive_no_oscillation_test` | bench: adaptive mean step ≤ +10% of offline grain-sweep optimum (landed: +0.14%); tests: convergence into hold band + ≤ 1 fire per cooldown window + 0 fires under alternating direction signals |
 | T6 | `bench/adaptive_tuning_bench --workload=stable --mode=scripted` | identical commitHash to Active run |
 
 ## 7. Definition of done for Phase T

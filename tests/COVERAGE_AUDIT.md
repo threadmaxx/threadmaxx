@@ -190,6 +190,13 @@ real regressions. They are still listed below for completeness.
 - ✓ Unknown system name => `ILogger@Warn` + ignore — `tuning_patch_application_test.cpp`
 - ✓ Determinism: same scripted patch stream => identical `commitHash` stream — `tuning_patch_application_test.cpp`
 
+## AdaptiveGrainPolicy.hpp (ADAPTIVE_TUNING.md T5)
+- ✓ Heuristic convergence into hold band `[target/2, target*4]` from below-floor start — `adaptive_grain_convergence_test.cpp`
+- ✓ Cooldown gate (≤ 1 fire per `cooldownTicks` window under sustained pressure) — `adaptive_no_oscillation_test.cpp`
+- ✓ Direction-change suppression (streak reset on dir flip → no fires) — `adaptive_no_oscillation_test.cpp`
+- ✓ `lastAppliedGrain` / `lastChangeTick` inspection helpers — both tests
+- ✓ Bench: within +10% of offline grain-sweep optimum on tiny-fanout — `bench/adaptive_tuning_bench --mode=tiny-fanout`
+
 ## UserComponent.hpp
 - ✓ `UserComponentId` (`valid`, `componentBit`) — `user_component_test.cpp`, `engine_user_component_lookup_test.cpp`
 - ✓ `addUserComponent<T>` / `removeUserComponent` — `user_component_test.cpp`
