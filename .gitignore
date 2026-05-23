@@ -5,3 +5,4 @@ doc/generated
 build-tsan
 build-asan
 build-long-soak
+build-bench
