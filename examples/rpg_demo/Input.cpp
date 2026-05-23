@@ -76,6 +76,9 @@ void keyCallback(GLFWwindow* /*window*/, int key, int /*scancode*/,
         case GLFW_KEY_RIGHT_SHIFT:
             bit = kEdgeSprint;
             break;
+        // §3.11 batch D11 — voxel harvest.
+        case GLFW_KEY_G: bit = kEdgeBreakBlock; break;
+        case GLFW_KEY_H: bit = kEdgePlaceBlock; break;
         // Movement keys: stamp the press counter for non-stack
         // tie-break. No edge bit emitted — these are polled axes.
         case GLFW_KEY_W:

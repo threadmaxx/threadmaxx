@@ -56,6 +56,8 @@ add_library(rpg_demo_core STATIC
     # §3.11.9 batch D9 — burst-spawn particle entities.
     ParticleSystem.cpp
     ParticleEmitterSystem.cpp
+    # §3.11 batch D11 — voxel break / place.
+    BlockEditSystem.cpp
 )
 
 target_include_directories(rpg_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

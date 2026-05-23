@@ -1,6 +1,7 @@
 #include "DemoGame.hpp"
 
 #include "AnimationSystem.hpp"
+#include "BlockEditSystem.hpp"
 #include "CameraSystem.hpp"
 #include "CombatSystem.hpp"
 #include "CubeRenderSystem.hpp"
@@ -73,6 +74,8 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     ids_.particle     = engine.registerUserComponent<Particle>();
     ids_.particleEmitter = engine.registerUserComponent<ParticleEmitter>();
     ids_.blockData    = engine.registerUserComponent<BlockData>();
+    ids_.inventory    = engine.registerUserComponent<Inventory>();
+    ids_.droppedItem  = engine.registerUserComponent<DroppedItem>();
 
     // §3.11.8 batch D8 — generate the heightmap once at boot. The
     // resolution is fixed; only the tile count (i.e. how densely the
@@ -122,6 +125,8 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     (void)engine.events<threadmaxx::SystemSkipped>();
     (void)engine.events<threadmaxx::BudgetExceeded>();
     (void)engine.events<QuestProgressed>();
+    (void)engine.events<BlockBroken>();
+    (void)engine.events<BlockPlaced>();
 
     // §3.11 batch 9b.2b — register the per-entity-class meshes via the
     // renderer-bound callback main.cpp installed. The pyramid asset
@@ -221,6 +226,15 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
         threadmaxx::addUserComponent(seed, ids_.cubeRender, playerH,
             CubeRender{{0.30f, 0.50f, 1.0f, 1.0f}, 1.0f});
         threadmaxx::addUserComponent(seed, ids_.playerState, playerH, PlayerState{});
+        // §3.11 batch D11 — seed the inventory with a handful of
+        // starter Stone picks so the place path is exercisable from
+        // the first tick (no harvest required to test placement).
+        {
+            Inventory inv{};
+            inv.slots[0].kind  = BlockKind::Stone;
+            inv.slots[0].count = kPlayerInventoryStartingPicks;
+            threadmaxx::addUserComponent(seed, ids_.inventory, playerH, inv);
+        }
         // §3.11.6 batch D6 — player walk-bob. §3.11.8 batch D8 —
         // `baseY` is now derived from the terrain underneath the
         // player's spawn so the bob oscillates around the ground.
@@ -474,7 +488,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     brain_ = brain.get();
     engine.registerSystem(std::move(brain));
 
-    engine.registerSystem(std::make_unique<PlayerInputSystem>(&worldState_, &ids_));
+    engine.registerSystem(std::make_unique<PlayerInputSystem>(&engine, &worldState_, &ids_));
     engine.registerSystem(std::make_unique<CameraSystem>(&worldState_, &ids_));
     engine.registerSystem(std::make_unique<MovementSystem>());
     // §3.11.8 batch D8 — snap movers to terrain Y between MovementSystem
@@ -498,6 +512,12 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::make_unique<RespawnSystem>(
         &engine, &worldState_, &ids_));
     engine.registerSystem(std::make_unique<PickupSystem>(&engine, &worldState_, &ids_, brain_));
+    // §3.11 batch D11 — voxel break / place. Registered after
+    // PickupSystem so PickupCollected events emitted this tick are
+    // visible to BlockEditSystem's next-tick drain. BlockEdit owns the
+    // per-column entity index built lazily on first preStep.
+    engine.registerSystem(std::make_unique<BlockEditSystem>(
+        &engine, &worldState_, &ids_));
     // §3.11.9 batch D9 — particle aging + burst emission. ParticleSystem
     // (destroys expired entries) runs first; ParticleEmitterSystem (drains
     // last-tick DamageDealt / EntityDied / PickupCollected and spawns new

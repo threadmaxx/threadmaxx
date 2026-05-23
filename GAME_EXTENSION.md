@@ -328,7 +328,7 @@ deterministic-data test.
 
 **Engine extension trigger.** None expected.
 
-### Batch D11 — Harvestable blocks
+### Batch D11 — Harvestable blocks  ✅ landed 2026-05-23
 
 **Gameplay deliverable.** Player can break (left-click) and place
 (right-click) blocks. Breaking a block: the entity becomes a

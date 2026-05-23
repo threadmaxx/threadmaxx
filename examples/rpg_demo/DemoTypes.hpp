@@ -22,6 +22,21 @@ enum : std::uint32_t {
     kFactionNeutral  = 3,
 };
 
+/// §3.11 batch D10 — voxel block kind (full doc below at `BlockData`).
+/// Hoisted to the top of the namespace because event payloads such as
+/// `PickupCollected` (defined further down for legacy reasons) carry
+/// a `BlockKind` field — keeping the enum lower would invert the
+/// declaration order.
+enum class BlockKind : std::uint32_t {
+    Sand  = 0,
+    Grass = 1,
+    Dirt  = 2,
+    Stone = 3,
+    Snow  = 4,
+    Water = 5,
+    Wood  = 6,
+};
+
 /// Per-entity render parameters. Drives `CubeRenderSystem` →
 /// `DrawItem::materialOverride.params` + per-instance scale. The Vulkan
 /// renderer just multiplies the override into its Lambert shader.
@@ -176,11 +191,20 @@ struct SwordTag {
 };
 
 /// One pickup event drained by the HUD subscriber on the next tick.
+///
+/// 2026-05-23 batch D11 — extended with `dropKind` + `isDrop` so
+/// `BlockEditSystem` can route collected DroppedItem entities into
+/// the right `Inventory` slot. For non-drop pickups (gold cubes,
+/// pyramids) `isDrop = 0` and `dropKind` is unused. PickupSystem
+/// reads the DroppedItem UC **before** disabling the entity so the
+/// kind survives onto the event.
 struct PickupCollected {
     threadmaxx::EntityHandle pickup;
     threadmaxx::EntityHandle player;
     std::uint32_t            value;
     std::uint32_t            totalPickups;  // post-increment
+    BlockKind                dropKind = BlockKind::Stone;
+    std::uint32_t            isDrop   = 0u;
 };
 
 /// §3.11.1 batch D1: emitted by CombatSystem whenever the sword tip
@@ -267,28 +291,20 @@ struct TerrainPatch {
     std::uint32_t cellZ = 0;
 };
 
-/// §3.11 batch D10 — voxel block kind. Surfaces the "this is sand /
-/// grass / stone / snow" decision the terrain spawn loop makes from
-/// the heightmap. Reserved range: low surface heights → Sand, mid
-/// → Grass / Dirt (top surface vs. interior), high → Stone, very
-/// high → Snow. Water is reserved for a future "sub-sea-level" pass
-/// once D10's terrain mapping has a use for it.
+/// §3.11 batch D10 — per-block voxel attributes.
 ///
-/// Stored as `std::uint32_t` in `BlockData` (UserComponent blobs
-/// are memcpy'd into chunk byte buffers and FNV-hashed verbatim —
-/// any enum size mismatch or padding byte would silently break
-/// determinism; see the `PlayerState` layout note above).
-enum class BlockKind : std::uint32_t {
-    Sand  = 0,
-    Grass = 1,
-    Dirt  = 2,
-    Stone = 3,
-    Snow  = 4,
-    Water = 5,
-    Wood  = 6,
-};
-
-/// §3.11 batch D10 — per-block voxel attributes. Attached to every
+/// Surfaces the "this is sand / grass / stone / snow" decision the
+/// terrain spawn loop makes from the heightmap. Reserved range: low
+/// surface heights → Sand, mid → Grass / Dirt (top surface vs.
+/// interior), high → Stone, very high → Snow. Water is reserved for
+/// a future "sub-sea-level" pass once D10's terrain mapping has a
+/// use for it.
+///
+/// `BlockKind` is stored as `std::uint32_t` in `BlockData`
+/// (UserComponent blobs are memcpy'd into chunk byte buffers and
+/// FNV-hashed verbatim — any enum size mismatch or padding byte
+/// would silently break determinism; see the `PlayerState` layout
+/// note above). Attached to every
 /// terrain cube spawned by `DemoGame::onSetup` after D10. Drives
 /// the cube's render color (read once at spawn time by the spawn
 /// loop) and is the future entry point for D11's harvest logic
@@ -367,6 +383,74 @@ inline float blockKindHardness(BlockKind k) noexcept {
     return 1.0f;
 }
 
+/// §3.11 batch D11 — single inventory slot. Sized to a 4+4 = 8 byte
+/// padding-free POD so the parent `Inventory` UC hashes determin-
+/// istically (UC blobs are FNV'd verbatim).
+struct InventorySlot {
+    BlockKind     kind  = BlockKind::Stone;
+    std::uint32_t count = 0u;
+};
+static_assert(sizeof(InventorySlot) == 8u,
+              "InventorySlot must be padding-free for hash determinism");
+
+/// §3.11 batch D11 — player inventory of harvested blocks. Small
+/// fixed-size array — enough for the demo's 7 block kinds; D11's
+/// place path consumes from whichever slot matches the placed kind.
+///
+/// Mutation discipline: PickupSystem ingests Pickup-style collects
+/// (DroppedItem entities); BlockEditSystem consumes on placement.
+/// Both go through the same chunk-migration `removeUserComponent` +
+/// `addUserComponent` write that PlayerState already uses, so the
+/// player entity migrates ONCE per write — not twice.
+struct Inventory {
+    static constexpr std::size_t kSlots = 8;
+    InventorySlot slots[kSlots] = {};
+};
+static_assert(sizeof(Inventory) == 64u,
+              "Inventory must be padding-free for hash determinism");
+
+/// §3.11 batch D11 — entity tag for the post-break "dropped" cube
+/// the player picks up. Carries the block kind so PickupSystem can
+/// route the collect into the right inventory slot, and a sim-time
+/// spawn timestamp so BlockEditSystem can age out unclaimed drops
+/// after `kDroppedItemLifetimeSeconds`.
+struct DroppedItem {
+    BlockKind kind             = BlockKind::Stone;
+    float     spawnTimeSeconds = 0.0f;
+    float     pad[2]           = {0.0f, 0.0f};   // pad to 16 bytes
+};
+static_assert(sizeof(DroppedItem) == 16u,
+              "DroppedItem must be padding-free for hash determinism");
+
+/// §3.11 batch D11 — emitted by `PlayerInputSystem` (or directly
+/// in tests) when the player issues a break action against a
+/// targeted cell. `BlockEditSystem` consumes this in its
+/// `preStep` and applies the destroy + DroppedItem spawn.
+///
+/// `blockEntity` is the entity expected to be destroyed; if it's
+/// no longer alive at the time `BlockEditSystem` processes the
+/// event (e.g. a race with terrain regen) the edit is skipped.
+struct BlockBroken {
+    threadmaxx::EntityHandle breaker;
+    threadmaxx::EntityHandle blockEntity;
+    BlockKind                kind   = BlockKind::Stone;
+    std::uint32_t            cellX  = 0u;
+    std::uint32_t            cellZ  = 0u;
+    float                    posX = 0.0f, posY = 0.0f, posZ = 0.0f;
+};
+
+/// §3.11 batch D11 — emitted by `PlayerInputSystem` when the
+/// player issues a place action against a targeted cell with an
+/// inventory slot to spend. `BlockEditSystem` consumes this in
+/// its `preStep` and applies the spawn + inventory decrement.
+struct BlockPlaced {
+    threadmaxx::EntityHandle placer;
+    BlockKind                kind   = BlockKind::Stone;
+    std::uint32_t            cellX  = 0u;
+    std::uint32_t            cellZ  = 0u;
+    float                    posX = 0.0f, posY = 0.0f, posZ = 0.0f;
+};
+
 /// §3.11.9 batch D9 — short-lived visual particle. Spawned in bursts by
 /// `ParticleEmitterSystem` in response to combat / death / pickup
 /// events; aged out by `ParticleSystem`. Each particle is a regular
@@ -437,6 +521,10 @@ struct UserComponentIds {
     threadmaxx::UserComponentId particleEmitter;
     /// §3.11 batch D10 — per-block voxel attributes.
     threadmaxx::UserComponentId blockData;
+    /// §3.11 batch D11 — player inventory.
+    threadmaxx::UserComponentId inventory;
+    /// §3.11 batch D11 — post-break "dropped block" cosmetic entity.
+    threadmaxx::UserComponentId droppedItem;
 };
 
 /// §3.11.6 batch D6 — procedural animation parameters.
@@ -758,6 +846,33 @@ constexpr float         kParticleDustSpeed          = 2.5f;
 constexpr float         kParticlePuffSpeed          = 1.5f;
 constexpr float         kParticleLandingSpeed       = 1.8f;
 constexpr float         kParticleScale              = 0.08f;
+
+/// §3.11 batch D11 — voxel block harvest tuning.
+///
+/// `kHarvestRangeMeters` — distance forward of the player at which
+/// the break/place action targets a cell. Picked so the targeted
+/// block sits ~1 m past the player's arm; close enough that the
+/// camera frames both player + target. Anchored to `Heightmap::
+/// blockUnit()` (= 1 m) so changing the block scale shifts the
+/// targeting consistently.
+constexpr float          kHarvestRangeMeters         = 1.8f;
+
+/// `kDroppedItemLifetimeSeconds` — how long an unclaimed
+/// DroppedItem entity hangs around before BlockEditSystem ages
+/// it out. ~30 s matches the GAME_EXTENSION.md D11 spec.
+constexpr float          kDroppedItemLifetimeSeconds = 30.0f;
+
+/// `kDroppedItemPickRadius` — center-to-center distance below
+/// which the player collects a DroppedItem. Slightly tighter than
+/// `kPickRadius` in `PickupSystem` so the two don't double-fire
+/// on the same entity.
+constexpr float          kDroppedItemPickRadius      = 1.1f;
+
+/// `kPlayerInventoryStartingPicks` — count of one "starter" kind
+/// the player begins with so the place path is exercisable from
+/// tick 0 without first harvesting. Picked as `Stone` because the
+/// default seed produces mostly-stone surfaces.
+constexpr std::uint32_t  kPlayerInventoryStartingPicks = 4u;
 
 /// §3.11.2 batch D2 — multi-camera layout (normalized viewport coords).
 constexpr threadmaxx::Viewport kViewportMain    = {0.0f, 0.0f, 1.0f, 1.0f};

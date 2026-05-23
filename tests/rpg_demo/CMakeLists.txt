@@ -26,6 +26,8 @@ set(RPG_DEMO_TESTS
     test_particle_lifetime
     # §3.11 batch D10 — voxel block kind distribution + palette.
     test_block_palette
+    # §3.11 batch D11 — voxel harvest break / place + drop age-out.
+    test_block_harvest
 )
 
 foreach(test ${RPG_DEMO_TESTS})

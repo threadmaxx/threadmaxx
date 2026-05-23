@@ -3,6 +3,8 @@
 #include "Input.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
+#include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
 
@@ -48,6 +50,8 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
     const bool jumpEdge      = (edges & kEdgeJump) != 0;
     const bool cameraToggle  = (edges & kEdgeCameraToggle) != 0;
     const bool sprintEdge    = (edges & kEdgeSprint) != 0;
+    const bool breakBlockEdge = (edges & kEdgeBreakBlock) != 0;
+    const bool placeBlockEdge = (edges & kEdgePlaceBlock) != 0;
     if (edges & kEdgeAimToggle) {
         // 2026-05-20 — V toggles the over-the-shoulder PIP. We flip
         // it here because PlayerInputSystem is the one that owns
@@ -200,6 +204,88 @@ void PlayerInputSystem::update(threadmaxx::SystemContext& ctx) {
         // For now the press is observable via the log so a future
         // InteractSystem can subscribe.
         std::printf("[rpg_demo] interact (no nearby target)\n");
+    }
+
+    // §3.11 batch D11 — voxel harvest. Emit BlockBroken / BlockPlaced
+    // events against the cell `kHarvestRangeMeters` forward of the
+    // player. Target Y is the current ground level at that XZ (read
+    // from the heightmap). BlockEditSystem resolves the cell → entity
+    // and applies the destroy / spawn during its preStep.
+    //
+    // Inventory consumption happens entirely in BlockEditSystem so
+    // we don't fight the player's PlayerState chunk write on the
+    // same tick. PlayerInputSystem just announces intent.
+    if ((breakBlockEdge || placeBlockEdge) && engine_ && worldState_->heightmap) {
+        const Heightmap& hmap = *worldState_->heightmap;
+        const float fwdX = -std::sin(updated.yawRadians);
+        const float fwdZ = -std::cos(updated.yawRadians);
+        const auto& pT = w.get<threadmaxx::Transform>(player);
+        const float targetX = pT.position.x + fwdX * kHarvestRangeMeters;
+        const float targetZ = pT.position.z + fwdZ * kHarvestRangeMeters;
+        const float half    = kTerrainExtent * 0.5f;
+        const float tileSz  = kTerrainExtent /
+            static_cast<float>(worldState_->terrainCellsPerSide);
+        // Cells are centered on their world coords; floor((x + half)
+        // / tileSz) clamped to [0, cells-1] gives the cell index.
+        const float fxIdx = std::floor((targetX + half) / tileSz);
+        const float fzIdx = std::floor((targetZ + half) / tileSz);
+        const float maxIdx =
+            static_cast<float>(worldState_->terrainCellsPerSide) - 1.0f;
+        if (fxIdx >= 0.0f && fxIdx <= maxIdx &&
+            fzIdx >= 0.0f && fzIdx <= maxIdx) {
+            const auto cellX = static_cast<std::uint32_t>(fxIdx);
+            const auto cellZ = static_cast<std::uint32_t>(fzIdx);
+            const float topY   = hmap.heightAt(targetX, targetZ);
+            const float blockUnit = hmap.blockUnit();
+            const float cellWorldX =
+                -half + (static_cast<float>(cellX) + 0.5f) * tileSz;
+            const float cellWorldZ =
+                -half + (static_cast<float>(cellZ) + 0.5f) * tileSz;
+            if (breakBlockEdge && topY > 0.5f * blockUnit) {
+                BlockBroken ev{};
+                ev.breaker = player;
+                ev.cellX = cellX;
+                ev.cellZ = cellZ;
+                ev.posX = cellWorldX;
+                ev.posY = topY - 0.5f * blockUnit;
+                ev.posZ = cellWorldZ;
+                // `kind` filled by BlockEditSystem from the resolved
+                // block's BlockData UC — we don't have a fast lookup
+                // from PlayerInputSystem.
+                engine_->events<BlockBroken>().emit(ev);
+            }
+            if (placeBlockEdge) {
+                // Take the first non-empty inventory slot. Pre-batch
+                // a "selected slot" UI would let the player pick the
+                // kind; v1 just consumes the first available kind so
+                // the path is testable.
+                const Inventory* inv = threadmaxx::user::tryGet<Inventory>(
+                    w, ids_->inventory, player);
+                BlockKind placeKind = BlockKind::Stone;
+                bool haveSlot = false;
+                if (inv) {
+                    for (std::size_t i = 0; i < Inventory::kSlots; ++i) {
+                        if (inv->slots[i].count > 0u) {
+                            placeKind = inv->slots[i].kind;
+                            haveSlot = true;
+                            break;
+                        }
+                    }
+                }
+                if (haveSlot) {
+                    BlockPlaced ev{};
+                    ev.placer = player;
+                    ev.kind = placeKind;
+                    ev.cellX = cellX;
+                    ev.cellZ = cellZ;
+                    ev.posX = cellWorldX;
+                    // Stack on top of existing column.
+                    ev.posY = topY + 0.5f * blockUnit;
+                    ev.posZ = cellWorldZ;
+                    engine_->events<BlockPlaced>().emit(ev);
+                }
+            }
+        }
     }
 
     // ---- Jump + vertical velocity integration.

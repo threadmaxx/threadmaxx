@@ -29,6 +29,13 @@ enum : std::uint32_t {
     kEdgeJump          = 1u << 9,   // Space   — jump when grounded
     kEdgeCameraToggle  = 1u << 10,  // R       — toggle first/third-person
     kEdgeSprint        = 1u << 11,  // LShift  — sprint trigger (requires W/Up held)
+    /// §3.11 batch D11 — voxel harvest. The GAME_EXTENSION.md spec
+    /// originally maps these to Mouse L / R, but those slots are taken
+    /// by attack + parry (kEdgeAttack, kEdgeBlock). Using dedicated
+    /// keys keeps combat undisturbed; a later batch can layer a "build
+    /// mode" toggle that re-routes the mouse buttons.
+    kEdgeBreakBlock    = 1u << 12,  // G — break the targeted block
+    kEdgePlaceBlock    = 1u << 13,  // H — place a block from inventory
 };
 
 /// Polled-per-tick analog inputs + edge bits. Filled in by the main

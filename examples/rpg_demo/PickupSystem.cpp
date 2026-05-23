@@ -105,7 +105,17 @@ void PickupSystem::update(threadmaxx::SystemContext& ctx) {
         const Pickup* pk = threadmaxx::user::tryGet<Pickup>(w, ids_->pickup, h);
         const std::uint32_t value = pk ? pk->value : 1u;
         updated.pickups += value;
-        events.push_back(PickupCollected{h, player, value, updated.pickups});
+        // §3.11 batch D11 — if this is a harvested-block drop the
+        // BlockEditSystem subscriber needs to know the kind so it
+        // can credit the player's inventory. Reading the
+        // DroppedItem UC BEFORE the tag-disable is the only window
+        // the data is reachable.
+        const DroppedItem* di = threadmaxx::user::tryGet<DroppedItem>(
+            w, ids_->droppedItem, h);
+        PickupCollected ev{h, player, value, updated.pickups,
+                            di ? di->kind : BlockKind::Stone,
+                            di ? 1u : 0u};
+        events.push_back(ev);
     }
 
     auto* ids = ids_;

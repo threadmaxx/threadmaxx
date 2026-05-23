@@ -4,6 +4,8 @@
 
 #include "DemoTypes.hpp"
 
+namespace threadmaxx { class Engine; }
+
 namespace rpg {
 
 /// Reads the per-tick `InputState` (filled by GLFW) + the camera yaw
@@ -13,8 +15,9 @@ namespace rpg {
 /// land in different waves (CameraSystem writes nothing).
 class PlayerInputSystem : public threadmaxx::ISystem {
 public:
-    PlayerInputSystem(WorldState* worldState, UserComponentIds* ids)
-        : worldState_(worldState), ids_(ids) {}
+    PlayerInputSystem(threadmaxx::Engine* engine,
+                      WorldState* worldState, UserComponentIds* ids)
+        : engine_(engine), worldState_(worldState), ids_(ids) {}
 
     const char* name() const noexcept override { return "player-input"; }
     threadmaxx::ComponentSet reads()  const noexcept override {
@@ -31,8 +34,9 @@ public:
     void update(threadmaxx::SystemContext& ctx) override;
 
 private:
-    WorldState*       worldState_ = nullptr;
-    UserComponentIds* ids_        = nullptr;
+    threadmaxx::Engine* engine_      = nullptr;
+    WorldState*         worldState_  = nullptr;
+    UserComponentIds*   ids_         = nullptr;
     /// 2026-05-20 — last-tick swing timer; used to detect the
     /// trailing edge so we re-issue the resting Parent localOffset
     /// once when the swing ends.
