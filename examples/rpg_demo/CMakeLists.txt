@@ -113,3 +113,15 @@ set_target_properties(threadmaxx_rpg_demo PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
+
+# ---- perf_audit_rpg_demo (headless profiler) ------------------------------
+# §3.11 batch D12 audit — boots DemoGame without GLFW / Vulkan and dumps
+# per-system timing. Used to pick optimization targets after the D12
+# size bump (~92k voxel blocks).
+add_executable(perf_audit_rpg_demo perf_audit.cpp)
+target_link_libraries(perf_audit_rpg_demo PRIVATE rpg_demo_core)
+set_target_properties(perf_audit_rpg_demo PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)

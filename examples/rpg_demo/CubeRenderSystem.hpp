@@ -45,6 +45,10 @@ private:
     // state so steady-state ticks reuse the allocation.
     std::vector<threadmaxx::Vec3>           centers_;
     std::vector<float>                      radii_;
+    // §3.11 batch D12 audit — sphere-visibility scratch. Reused
+    // across ticks so the BRF cull doesn't allocate per call (was
+    // a fresh `std::vector<uint8_t>(n * cams)` every tick).
+    std::vector<std::uint8_t>               sphereVisible_;
 };
 
 } // namespace rpg

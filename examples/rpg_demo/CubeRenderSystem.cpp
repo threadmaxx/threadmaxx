@@ -158,6 +158,26 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
          &outCursor, useDistanceCull, drawRadiusSq, stressBob,
          pX, pZ, simTime, playerH, hidePlayerBody]
         (threadmaxx::Range r, threadmaxx::CommandBuffer&) {
+            // §3.11 batch D12 audit — per-sub-job batched output
+            // claim. The pre-D12 hot path called
+            // `outCursor.fetch_add(1)` per kept entity; at the post-D12
+            // entity count (~140k walked, ~40k kept) and a 71-worker
+            // pool, every kept entity caused a cache-line bounce on
+            // the shared atomic. Now each sub-job stages survivors in
+            // local scratch and claims one contiguous output range at
+            // the end of the sub-job — one atomic per sub-job instead
+            // of one per survivor. Drops update() from ~10 ms to a
+            // fraction of that at the D12 size.
+
+            struct StagedItem {
+                threadmaxx::DrawItem        di;
+                threadmaxx::BoundingVolume  bv;
+                threadmaxx::Vec3            center;
+                float                       radius;
+            };
+            std::vector<StagedItem> staged;
+            staged.reserve(r.end - r.begin);
+
             // Find starting slice for r.begin. Linear scan — slice
             // count is tiny (≤ ~8 typically); cheaper than binary
             // search for that size. We carry the cursor across the
@@ -194,7 +214,8 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                     }
                 }
 
-                threadmaxx::DrawItem di = {};
+                StagedItem out;
+                threadmaxx::DrawItem& di = out.di;
                 di.entity    = slice.chunk->entities[row];
                 di.transform = tr;
                 di.transform.scale = {
@@ -203,22 +224,10 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                     tr.scale.z * cr.scale,
                 };
                 // 2026-05-22 audit fix — draw-time bob is now an
-                // ADDITIVE adjustment on top of the live transform,
-                // and it only runs in stress mode (where
-                // AnimationSystem is a no-op). The pre-fix code
-                // OVERWROTE `di.transform.position.y` with the
-                // spawn-time `a.baseY`, which froze every animated
-                // cube at its spawn Y — including the player. As the
-                // terrain-attached `tr.position.y` walked across the
-                // bumpy heightmap, the rendered cube stayed pinned
-                // at spawn Y, producing the "player floats up while
-                // the ground drops away" appearance the user
-                // reported. In non-stress mode AnimationSystem has
-                // already written `tr.position.y = heightAt + bob`,
-                // so the rendered cube faithfully tracks the ground.
-                // D12 decoupled `useDistanceCull` from stressMode (cull
-                // is on in both modes now), so the stress-mode bob path
-                // reads the captured `stressBob` flag explicitly.
+                // ADDITIVE adjustment on top of the live transform.
+                // D12 decoupled `useDistanceCull` from stressMode
+                // (cull is on in both modes now); the stress-mode
+                // bob path reads the captured `stressBob` flag.
                 if (slice.hasAnim && stressBob) {
                     const auto& a = slice.animSpan[row];
                     float speed = 0.0f;
@@ -242,23 +251,30 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                 };
                 di.cameraMask = ~0u;
 
-                const std::uint32_t slot =
-                    outCursor.fetch_add(1, std::memory_order_relaxed);
-                itemsOut[slot] = di;
-
                 const float hx = 0.5f * std::abs(di.transform.scale.x);
                 const float hy = 0.5f * std::abs(di.transform.scale.y);
                 const float hz = 0.5f * std::abs(di.transform.scale.z);
-                threadmaxx::BoundingVolume bv;
-                bv.min = {di.transform.position.x - hx,
-                          di.transform.position.y - hy,
-                          di.transform.position.z - hz};
-                bv.max = {di.transform.position.x + hx,
-                          di.transform.position.y + hy,
-                          di.transform.position.z + hz};
-                boundsOut[slot] = bv;
-                centersOut[slot] = di.transform.position;
-                radiiOut[slot]   = std::sqrt(hx * hx + hy * hy + hz * hz);
+                out.bv.min = {di.transform.position.x - hx,
+                              di.transform.position.y - hy,
+                              di.transform.position.z - hz};
+                out.bv.max = {di.transform.position.x + hx,
+                              di.transform.position.y + hy,
+                              di.transform.position.z + hz};
+                out.center = di.transform.position;
+                out.radius = std::sqrt(hx * hx + hy * hy + hz * hz);
+                staged.push_back(out);
+            }
+
+            if (staged.empty()) return;
+            const std::uint32_t base =
+                outCursor.fetch_add(static_cast<std::uint32_t>(staged.size()),
+                                    std::memory_order_relaxed);
+            for (std::size_t i = 0; i < staged.size(); ++i) {
+                const auto& s = staged[i];
+                itemsOut  [base + i] = s.di;
+                boundsOut [base + i] = s.bv;
+                centersOut[base + i] = s.center;
+                radiiOut  [base + i] = s.radius;
             }
         });
 
@@ -283,13 +299,29 @@ void CubeRenderSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     // from ~2 ms (engine's per-DrawItem AABB sweep) to ~0.2 ms —
     // the single biggest BRF win at scale.
     //
-    // The sphere bounds the AABB conservatively, so a sphere-miss
-    // implies an AABB-miss. For sphere-hits we KEEP the AABB refine
-    // via `cullByFrustum` so the final mask is identical to the
-    // legacy path bit-for-bit.
+    // §3.11 batch D12 audit — the conservative sphere envelope
+    // (sphere bounds AABB, so sphere-miss ⇒ AABB-miss) is the only
+    // cull we run now. We previously also ran the serial
+    // `cullByFrustum` to refine sphere-hits via per-item AABB-plane
+    // tests, but at the post-D12 entity counts (~40k survivors of
+    // the distance cull) that refine pass ran at ~3 ms / tick and
+    // dwarfed every other BRF cost. Sphere-only means we may emit
+    // a small fraction of cubes whose sphere intersects the frustum
+    // while the cube doesn't — at most a corner case for the demo's
+    // axis-aligned 1 m cubes (sphere radius ≈ 0.87 × half-extent).
+    // The renderer eats those without artefacts; the saved time
+    // pays for itself many times over.
+    //
+    // Also: `sphereVisible_` is now a member so the BRF cull
+    // doesn't allocate per call.
     if (!cams.empty()) {
         const std::size_t n = items_.size();
-        std::vector<std::uint8_t> sphereVisible(n * cams.size(), 0);
+        if (sphereVisible_.size() < n * cams.size()) {
+            sphereVisible_.assign(n * cams.size(), 0);
+        } else {
+            std::fill_n(sphereVisible_.begin(), n * cams.size(),
+                        static_cast<std::uint8_t>(0));
+        }
         for (std::size_t ci = 0; ci < cams.size(); ++ci) {
             threadmaxx::Frustum f = threadmaxx::extractFrustum(cams[ci]);
             threadmaxx::simd::frustum_cull(
@@ -297,30 +329,14 @@ void CubeRenderSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                 std::span<const float>(radii_),
                 f,
                 std::span<std::uint8_t>(
-                    sphereVisible.data() + ci * n, n));
+                    sphereVisible_.data() + ci * n, n));
         }
         for (std::size_t i = 0; i < n; ++i) {
             std::uint32_t mask = 0;
             for (std::size_t ci = 0; ci < cams.size(); ++ci) {
-                if (sphereVisible[ci * n + i]) mask |= (1u << ci);
+                if (sphereVisible_[ci * n + i]) mask |= (1u << ci);
             }
             items_[i].cameraMask = mask;
-        }
-        std::size_t alive = 0;
-        for (std::size_t i = 0; i < n; ++i) {
-            if (items_[i].cameraMask != 0) {
-                if (alive != i) {
-                    std::swap(items_[i],  items_[alive]);
-                    std::swap(bounds_[i], bounds_[alive]);
-                }
-                ++alive;
-            }
-        }
-        if (alive > 0) {
-            threadmaxx::cullByFrustum(
-                std::span<threadmaxx::DrawItem>(items_.data(), alive),
-                std::span<const threadmaxx::BoundingVolume>(bounds_.data(), alive),
-                cams);
         }
     }
 #else

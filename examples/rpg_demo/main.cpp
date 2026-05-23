@@ -110,11 +110,22 @@ int main(int argc, char** argv) {
     }
 
     threadmaxx::Config cfg;
-    // workerCount = 0 → JobSystem picks max(1, hardware_concurrency - 1).
-    // The brain + cube-render + culling systems all scale with worker
-    // count under `--stress`; pinning to 8 left a 72-core box at 7%
-    // CPU. Auto-sizing fills out the pool.
-    cfg.workerCount = 0;
+    // 2026-05-23 (D12 audit) — `perf_audit_rpg_demo` swept worker
+    // counts on both normal and stress workloads on a 72-core box.
+    // The post-D12 mean step time is U-shaped vs `workerCount` and
+    // the sweet spot scales with per-tick work:
+    //   normal mode (~140k entities):  8 workers best (~6 ms / step)
+    //   stress mode (~245k + ~50k cmd/tick): 16 workers best (~19 ms)
+    // Above the sweet spot, JobLatch / cv overhead and cache-line
+    // bouncing dominate the small per-worker work; below it the
+    // pool starves. The auto default `hardware_concurrency - 1`
+    // was wildly oversubscribed (71 workers → 32 ms in stress, +66%).
+    // Mode-aware default; override via `THREADMAXX_WORKERS`.
+    cfg.workerCount = stressMode ? 16u : 8u;
+    if (const char* env = std::getenv("THREADMAXX_WORKERS")) {
+        const unsigned long w = std::strtoul(env, nullptr, 10);
+        if (w > 0) cfg.workerCount = static_cast<std::uint32_t>(w);
+    }
     threadmaxx::Engine engine(cfg);
 
     rpg::DemoGame game;
