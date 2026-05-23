@@ -973,6 +973,34 @@ std::size_t EngineImpl::registerSystemAt(std::size_t position,
     return position;
 }
 
+void EngineImpl::applyPendingTuningPatch() {
+    if (!pendingPatch_.has_value()) return;
+    const TuningPatch patch = std::move(*pendingPatch_);
+    pendingPatch_.reset();
+    for (const auto& ov : patch.grainOverrides) {
+        // Locate by name. Linear scan is fine — patch sizes are O(1-ish)
+        // per tick under any sensible policy.
+        std::size_t matchIdx = systems_.size();
+        for (std::size_t i = 0; i < systems_.size(); ++i) {
+            const char* nm = systems_[i] ? systems_[i]->name() : nullptr;
+            if (nm && ov.systemName == nm) { matchIdx = i; break; }
+        }
+        if (matchIdx == systems_.size()) {
+            std::ostringstream os;
+            os << "[tuning] grain override for unknown system '"
+               << ov.systemName << "' ignored";
+            logger().log(LogLevel::Warn, os.str());
+            continue;
+        }
+        const std::uint32_t prev = systemPreferredGrain_[matchIdx];
+        systemPreferredGrain_[matchIdx] = ov.preferredGrain;
+        std::ostringstream os;
+        os << "[tuning] '" << ov.systemName
+           << "' preferredGrain " << prev << " -> " << ov.preferredGrain;
+        logger().log(LogLevel::Info, os.str());
+    }
+}
+
 void EngineImpl::rebuildWaves() {
     // §3.4 batch 11: DAG-aware first-fit packer.
     //
@@ -1620,6 +1648,11 @@ void EngineImpl::step() {
         return;
     }
 
+    // ADAPTIVE_TUNING.md T4 — apply any policy-staged patch BEFORE
+    // preStep so this tick's wave systems see the new grain. Patch
+    // application is sim-thread serial; never mid-wave.
+    applyPendingTuningPatch();
+
     const double dt = cfg_.fixedStepSeconds * timeScale_;
     const auto stepStart = std::chrono::steady_clock::now();
 
@@ -2001,6 +2034,20 @@ void EngineImpl::step() {
             jobs_->stats(),
         };
         traceSink_->onFrame(snap);
+    }
+
+    // ADAPTIVE_TUNING.md T4 — adaptive tuner callback. observe() sees
+    // the just-published stats; propose() may stage a patch for the
+    // NEXT tick (applied at the top of the next step() before
+    // preStep, never mid-wave).
+    if (tuningPolicy_) {
+        const std::span<const SystemStats> sysSpan(
+            systemStats_.data(), systemStats_.size());
+        tuningPolicy_->observe(stats_, sysSpan, jobs_->stats());
+        auto patch = tuningPolicy_->propose();
+        if (patch.has_value() && !patch->grainOverrides.empty()) {
+            pendingPatch_ = std::move(patch);
+        }
     }
 
     // §3.7 batch 14 — clear the "stall already emitted" latch so the

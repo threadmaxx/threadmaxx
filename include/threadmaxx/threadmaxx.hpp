@@ -27,6 +27,7 @@
 #include "System.hpp"
 #include "TaskTag.hpp"
 #include "Trace.hpp"
+#include "Tuning.hpp"
 #include "UserComponent.hpp"
 #include "World.hpp"
 

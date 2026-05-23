@@ -72,6 +72,7 @@ real regressions. They are still listed below for completeness.
 - ✓ `preloadUntil` — `preload_until_test.cpp`
 - ✓ `workerCount` — `renderer_resize_test.cpp` (also `alpha_test.cpp`)
 - ✓ `setTraceSink` — `telemetry_sink_test.cpp`, `async_snapshot_test.cpp`, `file_trace_sink_rotation_test.cpp`
+- ✓ `setTuningPolicy` / `tuningPolicy()` (ADAPTIVE_TUNING.md T4) — `tuning_patch_application_test.cpp`
 - ✓ `setStallTimeout` — `concurrency_soak_test.cpp`, `concurrency_soak_long.cpp`
 - ✗ `stallTimeout()` getter — **UNCOVERED. Trivial.** Sister to `setStallTimeout`.
 - ✓ `snapshotAsync` — `async_snapshot_test.cpp`
@@ -182,6 +183,12 @@ real regressions. They are still listed below for completeness.
 - ✓ `FrameSnapshot` — `telemetry_sink_test.cpp`, `frame_snapshot_test.cpp`
 - ✓ `writeJsonLines` — `frame_snapshot_test.cpp`
 - ✓ `ChromeTraceWriter` — `chrome_trace_test.cpp`, `async_snapshot_test.cpp`
+
+## Tuning.hpp (ADAPTIVE_TUNING.md T4)
+- ✓ `ITuningPolicy::observe` / `propose` pump cadence — `tuning_patch_application_test.cpp`
+- ✓ `TuningPatch` + `SystemGrainOverride` end-to-end (applied next-tick, before preStep) — `tuning_patch_application_test.cpp`
+- ✓ Unknown system name => `ILogger@Warn` + ignore — `tuning_patch_application_test.cpp`
+- ✓ Determinism: same scripted patch stream => identical `commitHash` stream — `tuning_patch_application_test.cpp`
 
 ## UserComponent.hpp
 - ✓ `UserComponentId` (`valid`, `componentBit`) — `user_component_test.cpp`, `engine_user_component_lookup_test.cpp`

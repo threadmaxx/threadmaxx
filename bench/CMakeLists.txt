@@ -26,6 +26,8 @@ set(THREADMAXX_BENCHMARKS
     terrain_query_bench
     # §3.11.9 batch D9 — particle burst-spawn / destroy stress
     particle_storm_bench
+    # ADAPTIVE_TUNING.md T4 — observe-only overhead gate
+    adaptive_tuning_bench
 )
 
 foreach(bench ${THREADMAXX_BENCHMARKS})

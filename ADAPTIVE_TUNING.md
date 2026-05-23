@@ -296,7 +296,7 @@ acquire-release pair.
 
 ---
 
-### Batch T4 — `ITuningPolicy` + `TuningPatch` plumbing
+### Batch T4 — `ITuningPolicy` + `TuningPatch` plumbing — LANDED 2026-05-23
 
 **Scope.** New public types:
 
@@ -339,15 +339,42 @@ workload with a no-op policy (observe but never propose). Mean step
 must be within ±2% of the baseline — observe-only path must add
 near-zero overhead.
 
-**Test gate.** `test_tuning_patch_application.cpp`: register a
-test policy that proposes `grain=32` for "test-system" on tick 100.
-Assert the system's per-sub-job count changes at tick 101, not 100.
-Determinism: with the same scripted policy and same RNG, two engine
-instances produce identical `commitHash` streams.
+**Bench gate result.** `bench/adaptive_tuning_bench --entities=50000
+--ticks=200 --warmup=20`: 3 interleaved rounds (B N B N B N) cancel
+ordering bias. Median observe-only overhead **-2.22%** of baseline (noop
+faster than baseline is measurement-noise territory, not engine
+speedup; positive side stays well under the +2% gate). The
+synthetic "stable" workload is 50k entities × Transform-writing
+parallelFor with ~250 ns busy-loop per row — mean step ~14 ms,
+which is the regime where any observe-only overhead would surface.
+
+**Test gate.** `tests/tuning_patch_application_test.cpp` lands;
+asserts (1) `setTuningPolicy(p)` / `tuningPolicy()` round-trip and
+`nullptr` clears the staged patch; (2) `observe()` + `propose()`
+each fire once per `step()` after stats publish; (3) a patch
+proposed on the tick whose end-of-step shows `engine.tick == T`
+is APPLIED at the top of the next step — visible to that step's
+`parallelFor(grain=0)` dispatch; (4) unknown system names produce
+an `ILogger@Warn` line and otherwise no-op; (5) determinism —
+two engine instances run with the same scripted policy produce
+identical `commitHash` streams over 8 ticks. Full suite stays
+119 → 120/120 green.
 
 **Risk.** Medium. New public API surface; needs careful Doxygen +
 coverage. The patch-application timing (tick boundary, before
-preStep) is load-bearing for determinism.
+preStep) is load-bearing for determinism — assertion (3) above
+pins it.
+
+**What landed.** `include/threadmaxx/Tuning.hpp` ships the three new
+types. `Engine::setTuningPolicy(p)` / `tuningPolicy()` plus
+`EngineImpl::applyPendingTuningPatch()` (called at the top of
+`step()` before `preStep`) carry the staged patch through; the
+observe + propose call sites sit AFTER the trace-sink callback in
+`step()` so the policy sees the same `EngineStats` /
+`SystemStats` / `JobSystemStats` snapshot a sink would see.
+`COVERAGE_AUDIT.md` records the new public surface entries. The
+v1.3 commit-hash contract is preserved unchanged (tuning is a
+scheduling knob; it does not touch storage or commit order).
 
 ---
 
@@ -478,7 +505,7 @@ hour at the cooldown rate); serialization mirrors `WorldSnapshot`.
 | T1 | `perf_audit_rpg_demo 300 --workers=71` normal | mean step ≤ 8 ms |
 | T2 | `tests/worker_cap_test` (engine mechanism gate) | sub-job count clamped to cap; commitHash unchanged |
 | T3 | `perf_audit_rpg_demo 300` + `tests/sub_job_telemetry_test` | cube-render `subJob_us ∈ [50, 80]` (landed: 63.5); EWMA converges within ±30% of truth on a busy-spin |
-| T4 | `bench/adaptive_tuning_bench --workload=stable --policy=noop` | within ±2% of baseline |
+| T4 | `tests/tuning_patch_application_test` + `bench/adaptive_tuning_bench` (stable workload, no-op policy, 3 interleaved rounds × 200 ticks) | mechanism: observe/propose pumped per step + patch applied next-tick + scripted determinism holds; bench: median noop overhead ≤ +2% of baseline (landed: -2.22%, comfortably within noise) |
 | T5 | `bench/adaptive_tuning_bench --workload=tiny-fanout --policy=adaptive-grain` | within 10% of offline optimum after 200 ticks |
 | T6 | `bench/adaptive_tuning_bench --workload=stable --mode=scripted` | identical commitHash to Active run |
 

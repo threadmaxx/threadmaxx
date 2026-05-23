@@ -146,6 +146,8 @@ void Engine::pushScriptedSkip(std::uint64_t tick, std::string_view name) {
 void Engine::clearScriptedSkips() noexcept { impl_->clearScriptedSkips(); }
 
 void Engine::setTraceSink(ITraceSink* sink) noexcept { impl_->setTraceSink(sink); }
+void Engine::setTuningPolicy(ITuningPolicy* p) noexcept { impl_->setTuningPolicy(p); }
+ITuningPolicy* Engine::tuningPolicy() const noexcept   { return impl_->tuningPolicy(); }
 void Engine::setStallTimeout(double seconds) noexcept { impl_->setStallTimeout(seconds); }
 double Engine::stallTimeout() const noexcept { return impl_->stallTimeout(); }
 void Engine::snapshotAsync(std::function<void(WorldSnapshot)> callback) {

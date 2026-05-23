@@ -13,6 +13,7 @@
 #include "threadmaxx/SkipPolicy.hpp"
 #include "threadmaxx/Stats.hpp"
 #include "threadmaxx/System.hpp"
+#include "threadmaxx/Tuning.hpp"
 #include "threadmaxx/World.hpp"
 
 #include <array>
@@ -24,6 +25,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -37,6 +39,8 @@ class Engine;
 class IRenderer;
 class IGame;
 class ITraceSink;
+class ITuningPolicy;
+struct TuningPatch;
 struct WorldSnapshot;
 }
 
@@ -157,6 +161,14 @@ public:
 
     // §3.7 batch 14 — telemetry / stall watchdog.
     void   setTraceSink(::threadmaxx::ITraceSink* sink) noexcept { traceSink_ = sink; }
+    // ADAPTIVE_TUNING.md T4 — adaptive tuning policy hook-up.
+    void           setTuningPolicy(::threadmaxx::ITuningPolicy* p) noexcept {
+        tuningPolicy_ = p;
+        pendingPatch_.reset();
+    }
+    ::threadmaxx::ITuningPolicy* tuningPolicy() const noexcept {
+        return tuningPolicy_;
+    }
     void   setStallTimeout(double seconds) noexcept;
     double stallTimeout() const noexcept {
         return stallTimeoutSeconds_.load(std::memory_order_relaxed);
@@ -300,6 +312,14 @@ private:
     // registration order and ordering between waves is a topological sort.
     void rebuildWaves();
 
+    // ADAPTIVE_TUNING.md T4 — drain `pendingPatch_` (if any) and apply
+    // each grain override to `systemPreferredGrain_`. Called at the
+    // top of `step()` BEFORE preStep so the new grain takes effect on
+    // this tick's wave systems. Unknown system names are logged at
+    // Warn via `ILogger` and otherwise ignored — silent acceptance
+    // would let a typoed policy silently no-op.
+    void applyPendingTuningPatch();
+
     Config cfg_;
     std::unique_ptr<JobSystem> jobs_;
 
@@ -327,6 +347,13 @@ private:
 
     // §3.7 batch 14 — telemetry sink + stall watchdog.
     ::threadmaxx::ITraceSink* traceSink_ = nullptr;
+
+    // ADAPTIVE_TUNING.md T4 — adaptive tuning policy and the staged
+    // patch returned by its last `propose()` call. The patch is
+    // applied at the next tick boundary (before `preStep`); see
+    // `applyPendingTuningPatch()`. Non-owning; user retains lifetime.
+    ::threadmaxx::ITuningPolicy*               tuningPolicy_ = nullptr;
+    std::optional<::threadmaxx::TuningPatch>   pendingPatch_;
     // 0.0 = disabled. setStallTimeout() (un)spawns watchdog_ as needed.
     // Atomic so the watchdog thread can poll it concurrently with the
     // sim thread reconfiguring the timeout. Idempotent in effect (just

@@ -93,6 +93,7 @@ set(THREADMAXX_TESTS
     version_test_v1_2
     worker_cap_test
     sub_job_telemetry_test
+    tuning_patch_application_test
     # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
     # (batch D-audit) which exercises the actual SaveLoadSystem rather
     # than re-implementing the wire format.

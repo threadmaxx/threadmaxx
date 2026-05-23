@@ -27,6 +27,7 @@ class IResourceLoader;
 class ResourceRegistry;
 class ILogger;
 class ITraceSink;
+class ITuningPolicy;
 struct FrameSnapshot;
 struct WorldSnapshot;
 template <typename Ev> class EventChannel;
@@ -296,6 +297,27 @@ public:
     /// stay under a few microseconds per call.
     /// @thread_safety Sim thread only.
     void setTraceSink(ITraceSink* sink) noexcept;
+
+    /// ADAPTIVE_TUNING.md T4 — install an adaptive tuning policy. The
+    /// engine calls @ref ITuningPolicy::observe once per @ref step
+    /// AFTER the commit phase and BEFORE the next tick begins, then
+    /// @ref ITuningPolicy::propose once per step. A returned
+    /// @ref TuningPatch is staged and applied at the next tick
+    /// boundary, before any @ref ISystem::preStep hook runs — never
+    /// mid-wave. Pass `nullptr` to detach (the default state); any
+    /// pending unapplied patch is discarded.
+    ///
+    /// The engine never takes ownership; the policy must outlive every
+    /// subsequent @ref step call. Overhead with no policy installed is
+    /// a single null-pointer check per tick.
+    ///
+    /// @thread_safety Sim thread only.
+    void setTuningPolicy(ITuningPolicy* policy) noexcept;
+
+    /// ADAPTIVE_TUNING.md T4 — current adaptive tuning policy, or
+    /// `nullptr` when none is installed. See @ref setTuningPolicy.
+    /// @thread_safety Sim thread only.
+    ITuningPolicy* tuningPolicy() const noexcept;
 
     /// §3.7 batch 14 — install a stall watchdog with the given
     /// timeout, in seconds. When `seconds > 0` the engine spawns a

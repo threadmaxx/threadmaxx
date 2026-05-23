@@ -227,6 +227,14 @@ Bit-for-bit unchanged when no tags are declared. With tags, consumers may land l
 
 `Engine::taskGraphSnapshot() -> std::vector<TaskGraphNode>` exposes the graph for HUD diagnostics / Graphviz / test assertions.
 
+## Adaptive tuning (ADAPTIVE_TUNING.md)
+
+`include/threadmaxx/Tuning.hpp` is the public surface for the Phase-T tuner. Three types: `SystemGrainOverride { string systemName; uint32_t preferredGrain; }`, `TuningPatch { vector<SystemGrainOverride> grainOverrides; }`, and `ITuningPolicy { void observe(EngineStats, span<SystemStats>, JobSystemStats); optional<TuningPatch> propose(); }`. `Engine::setTuningPolicy(p)` / `tuningPolicy()` install / inspect; `setTuningPolicy(nullptr)` detaches and discards any staged patch.
+
+**Call sites in `step()`** — `observe()` and `propose()` fire once per step AFTER the trace-sink callback (same `EngineStats` / `SystemStats` / `JobSystemStats` view a sink would see). Any returned non-empty patch is stored in `EngineImpl::pendingPatch_`. `applyPendingTuningPatch()` runs at the top of the NEXT `step()` BEFORE preStep — never mid-wave. Patch application overwrites `EngineImpl::systemPreferredGrain_[i]` for each matched name (linear name scan); unknown names log `[tuning] grain override for unknown system 'X' ignored` at Warn. Applied changes log `[tuning] 'X' preferredGrain old -> new` at Info.
+
+**Determinism contract** — same input + same scripted patch stream = bit-identical `commitHash` stream (tuning is a scheduling knob; never touches storage or commit order). T5 will add the `AdaptiveGrainPolicy` built-in; T6 will add `TuningTrace` + `TuningMode::Scripted` for networked / replay. The mechanism cost when no policy is installed is one null-pointer check per step.
+
 ## Cancellation, budgets, priorities
 
 **Tick budget + skip policy.** `Engine::setTickBudget(seconds)` caps the wall-clock per-tick spend. The engine samples after every wave; if elapsed > budget AND `setSkipPolicy(SkipPolicy::Budget)` (the default), `overBudget_` flips and subsequent waves' `ISystem::skippable()` systems are skipped. `preStep` / `postStep` / `buildRenderFrame` are NEVER skipped.
