@@ -120,6 +120,10 @@ FrameSnapshot Engine::frameSnapshot() const noexcept {
     };
 }
 
+CommitBreakdown Engine::lastCommitBreakdown() const noexcept {
+    return impl_->lastCommitBreakdown();
+}
+
 EntityHandle Engine::reserveEntityHandle() {
     return impl_->world().impl_().storage.reserveHandle();
 }

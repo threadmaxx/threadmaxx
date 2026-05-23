@@ -1267,6 +1267,15 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     if (buffers.empty()) return;
     auto& storage = world_.impl_().storage;
 
+    // SHARDED_OPTIMISATION.md S0 — pass-breakdown timer. Always-on,
+    // ~5 `steady_clock::now()` calls per call (~30–60 ns total).
+    using bdClock = std::chrono::steady_clock;
+    const auto bdT0 = bdClock::now();
+    auto bdElapsedNs = [](bdClock::time_point a, bdClock::time_point b) {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count());
+    };
+
     // Count totals using each buffer's `valueOnlyCount` tally so we
     // can take an early decision without scanning the variant stream.
     std::size_t totalCommands = 0;
@@ -1277,6 +1286,8 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     }
     if (totalCommands == 0) return;
     commandsThisStep_ += totalCommands;
+    commitBreakdown_.totalCommands  += totalCommands;
+    commitBreakdown_.totalValueOnly += totalValueOnly;
 
     // §3.9.6 batch 21 — three pre-conditions for the sharded path to
     // be worth its classifier overhead. Any one failing falls through
@@ -1299,6 +1310,12 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         totalValueOnly == 0 ||
         chunkCount < 2) {
         for (auto& cb : buffers) commitBuffer(cb);
+        // SHARDED_OPTIMISATION.md S0 — fallback path bookkeeping. Pass
+        // A/B/C ns stay zero; `nsTotal` captures the serial-commit cost.
+        const auto bdT1 = bdClock::now();
+        commitBreakdown_.chunkCount     = chunkCount;
+        commitBreakdown_.nsTotal       += bdElapsedNs(bdT0, bdT1);
+        commitBreakdown_.fallbackCalls += 1;
         return;
     }
 
@@ -1326,6 +1343,7 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         }
     };
 
+    const auto bdAStart = bdClock::now();
     // Skip the migrating-set scan entirely when every command is
     // value-only (totalValueOnly == totalCommands). The bitmap stays
     // empty and Pass B's `migrating[idx]` check always reads 0.
@@ -1336,6 +1354,9 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
             }
         }
     }
+    const auto bdAEnd = bdClock::now();
+    commitBreakdown_.nsPassA        += bdElapsedNs(bdAStart, bdAEnd);
+    commitBreakdown_.migratingCount += shardMigratingIndices_.size();
 
     // ----- Pass B: classify in submission order, applying global cmds --
     //
@@ -1347,6 +1368,9 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     }
     for (auto& bin : shardChunkBins_) bin.clear();
 
+    const auto bdBStart = bdClock::now();
+    std::uint64_t bdGlobalLane = 0;
+    std::uint64_t bdBinned     = 0;
     const auto& chunks = storage.archetypes().chunks();
     for (auto& cb : buffers) {
         for (auto& cmd : cb.commands()) {
@@ -1379,6 +1403,7 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
                                 cmd, kInvalidEntity);
                         }
                         routedChunkLocal = true;
+                        ++bdBinned;
                     }
                 }
             }
@@ -1388,9 +1413,15 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
                 if (cfg_.legacyCommitHash) {
                     commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmd, spawnResult);
                 }
+                ++bdGlobalLane;
             }
         }
     }
+    const auto bdBEnd = bdClock::now();
+    commitBreakdown_.nsPassB           += bdElapsedNs(bdBStart, bdBEnd);
+    commitBreakdown_.globalLaneApplied += bdGlobalLane;
+    commitBreakdown_.binnedValueOnly   += bdBinned;
+    commitBreakdown_.chunkCount         = chunkCount;
 
     // ----- Pass C: apply chunk bins in parallel ------------------------
     //
@@ -1403,13 +1434,18 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     for (const auto& bin : shardChunkBins_) {
         if (!bin.empty()) ++activeBins;
     }
+    commitBreakdown_.activeBins   += activeBins;
+    commitBreakdown_.shardedCalls += 1;
     if (activeBins == 0) {
         for (auto& cb : buffers) cb.clear();
         // Clear the migrating bitmap entries we set this call.
         for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
+        const auto bdT1 = bdClock::now();
+        commitBreakdown_.nsTotal += bdElapsedNs(bdT0, bdT1);
         return;
     }
 
+    const auto bdCStart = bdClock::now();
     JobLatch done(static_cast<std::ptrdiff_t>(activeBins));
     for (auto& bin : shardChunkBins_) {
         if (bin.empty()) continue;
@@ -1420,12 +1456,19 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
             done.count_down();
         });
     }
+    const auto bdWaitStart = bdClock::now();
     done.wait();
+    const auto bdCEnd = bdClock::now();
+    commitBreakdown_.nsLatchWait += bdElapsedNs(bdWaitStart, bdCEnd);
+    commitBreakdown_.nsPassC     += bdElapsedNs(bdCStart, bdCEnd);
 
     for (auto& cb : buffers) cb.clear();
     // §3.9.6 batch 21 — bitmap fast clear: only zero the indices we
     // actually touched this call, leaving the rest at 0.
     for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
+
+    const auto bdT1 = bdClock::now();
+    commitBreakdown_.nsTotal += bdElapsedNs(bdT0, bdT1);
 }
 
 // §3.6 batch 30 — end-of-step per-archetype hash rollup. Refreshes
@@ -1670,6 +1713,9 @@ void EngineImpl::step() {
     commandsThisStep_ = 0;
     commitSecondsThisStep_ = 0.0;
     std::uint64_t jobsThisStep = 0;
+    // SHARDED_OPTIMISATION.md S0 — reset Pass A/B/C breakdown for this
+    // step. Accumulated across every `commitBuffersSharded` call below.
+    commitBreakdown_ = CommitBreakdown{};
 
     // §3.6 batch 13a: reset commit-hash to FNV-1a-64 offset basis at
     // step start. Every applied command mixes into this in

@@ -14,6 +14,8 @@ set(THREADMAXX_BENCHMARKS
     # §3.9.1 batch 16 — workload-realistic harness (the gate)
     chunk_iter_bench
     commit_path_bench
+    # SHARDED_OPTIMISATION.md S0 — Pass A/B/C breakdown
+    commit_pass_breakdown
     migration_bench
     grain_sweep
     # §3.10.4 batch 26 — Phase 8 gate: full-tick RPG-shaped stress

@@ -5,6 +5,7 @@
 #include "WorldImpl.hpp"
 
 #include "threadmaxx/CommandBuffer.hpp"
+#include "threadmaxx/CommitBreakdown.hpp"
 #include "threadmaxx/Config.hpp"
 #include "threadmaxx/Logger.hpp"
 #include "threadmaxx/RenderFrame.hpp"
@@ -225,6 +226,8 @@ public:
         return std::span<const SystemStats>(systemStats_.data(),
                                             systemStats_.size());
     }
+    // SHARDED_OPTIMISATION.md S0 — per-step Pass A/B/C breakdown.
+    CommitBreakdown lastCommitBreakdown() const noexcept { return commitBreakdown_; }
 
     ResourceRegistry&       resources()       noexcept { return resources_; }
     const ResourceRegistry& resources() const noexcept { return resources_; }
@@ -420,6 +423,11 @@ private:
     std::vector<std::uint8_t>                  shardMigratingBitmap_;
     std::vector<std::uint32_t>                 shardMigratingIndices_;
     std::vector<std::vector<detail::Command*>> shardChunkBins_;
+
+    // SHARDED_OPTIMISATION.md S0 — per-step Pass A/B/C breakdown.
+    // Reset to defaults at the top of `step()`; accumulated across all
+    // `commitBuffersSharded` calls in the step.
+    CommitBreakdown commitBreakdown_;
 
     std::uint64_t tick_ = 0;
     double simulationTime_ = 0.0;

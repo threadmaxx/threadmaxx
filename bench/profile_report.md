@@ -362,3 +362,166 @@ Output is plain text on stdout. Pass C ns/cmd should land within
 ~5 % of 98 ns on a modern x86_64 desktop; significant deviation
 suggests host clock scaling or thermal throttling — re-pin the
 governor and re-run.
+
+---
+
+# SHARDED_OPTIMISATION.md S0 — Sharded commit Pass A/B/C baseline
+
+**Date:** 2026-05-23
+**Bench:** `bench/commit_pass_breakdown` (32 warmup, 256 measure ticks,
+`workerCount = 4`).
+**Reference JSONL:** `bench/commit_pass_breakdown_baseline.jsonl`
+(3584 rows = 14 workload × path × 256 ticks).
+
+The S0 instrumentation (`Engine::lastCommitBreakdown()` →
+`include/threadmaxx/CommitBreakdown.hpp`) records Pass A / Pass B /
+Pass C wall-clock plus per-step counters every time
+`commitBuffersSharded` runs. Always-on, ~30–60 ns/call overhead.
+
+## Headline numbers
+
+The canonical run committed alongside this section (full data in
+the JSONL above):
+
+```
+workload                         path       step_us  commit_us   passA_us   passB_us   passC_us    wait_us   cmd/tk   bin/tk   shTk   fbTk
+setTransform/Churn               single     12842       1897          0          0          0          0           0      0.0     0     0
+setVelocity/Churn                single     14724       2622          0          0          0          0           0      0.0     0     0
+addRemoveTag/Churn               single     21612      11011          0          0          0          0           0      0.0     0     0
+spawnDestroy/Churn               single      1468         77          0          0          0          0           0      0.0     0     0
+setTransform/MultiArch           single      7943       2006          0          0          0          0           0      0.0     0     0
+RPG-mix                          single     26090       2778          0          0          0          0           0      0.0     0     0
+SmallWorld                       single        59          6          0          0          0          0           0      0.0     0     0
+setTransform/Churn               sharded    15517       4615       0.05       1418       2832       2826      100000      2.0   256     0
+setVelocity/Churn                sharded    15382       4392       0.05       1496       2517       2511      100000      2.0   256     0
+addRemoveTag/Churn               sharded    21798      11186          0          0          0          0      100000      0.0     0   256
+spawnDestroy/Churn               sharded      1425         76          0          0          0          0        1024      0.0     0   256
+setTransform/MultiArch           sharded    14652       8198       0.05       1764       5125       5113      100000      4.0   256     0
+RPG-mix                          sharded    31364       7092        872       2275       2858       2848      109308      4.0   256     0
+SmallWorld                       sharded        72         21       0.03         4         16         12         256      2.0   256     0
+```
+
+Column legend: `step_us` is mean per-step wall-clock around
+`engine.step()`. `commit_us` is `EngineStats::commitDurationSeconds`
+(engine-side commit-only wall-clock, single AND sharded — apples-to-
+apples). `passA/B/C_us` is the per-step Pass-wallclock from
+`Engine::lastCommitBreakdown()`, zero in single-mode by design.
+`wait_us` is the `JobLatch::wait` subset of Pass C. `cmd/tk` and
+`bin/tk` are mean commands and active-bins per tick. `shTk` / `fbTk`
+are tick counts where the sharded path ran in full vs early-outed to
+per-buffer serial commit.
+
+## Reproducibility
+
+The bench gate (S0) of ±3% across runs is **not met on this host**.
+Repeated full runs see ~5–20 % mean variance on the value-only
+sharded workloads (CPU governor + background noise on a non-isolated
+desktop). The **relative breakdown** (Pass C share of commit ns) is
+much more stable — within ~5 % across runs — which is what the rest
+of the plan reads to pick batches. Per-run noise is documented; the
+qualitative finding below is robust across all observed runs.
+
+## What the data says
+
+The three S0 hypotheses (from §7 of `SHARDED_OPTIMISATION.md`):
+
+1. **Pass B dominates (classifier overhead)** → PARTIAL. Pass B is
+   24–47 % of sharded commit time and ~75 % of single-mode commit
+   time *on the same workload*. Material, but Pass C is the bigger
+   share.
+2. **Pass C dominates (apply or sync)** → **CONFIRMED**. Pass C is
+   50–76 % of sharded commit time on every value-only workload;
+   `JobLatch::wait` is **99 % of Pass C** in every measured case
+   except SmallWorld (where wait is 77 %). The bottleneck is
+   workers being slow to claim and complete the bin jobs, not the
+   apply work itself.
+3. **Pass A dominates (migrating set build)** → REJECTED for the
+   value-only workloads (passA_us ≈ 0). The exception is `RPG-mix`
+   where Pass A is ~872 µs ≈ 3 % of step / 12 % of sharded commit
+   (from the ~5 % mask-flip subset) — non-trivial but secondary.
+
+Concretely, on the canonical run:
+
+| Workload | Pass B % of commit | Pass C % of commit | wait % of Pass C |
+|----------|-------------------:|-------------------:|------------------:|
+| setTransform/Churn      | 31 % | 61 % | 99.8 % |
+| setVelocity/Churn       | 34 % | 57 % | 99.8 % |
+| setTransform/MultiArch  | 22 % | 63 % | 99.8 % |
+| RPG-mix                 | 32 % | 40 % | 99.7 % |
+| SmallWorld              | 20 % | 74 % | 77.4 % |
+
+`addRemoveTag/Churn` and `spawnDestroy/Churn` fell through to the
+per-buffer serial commit on **every** tick (`fbTk = 256`, `shTk = 0`).
+That's the auto-fallthrough doing its job — `totalValueOnly == 0`
+for `addRemoveTag` (every command migrates), and
+`totalCommands < 256` for `spawnDestroy` (only 1024 / step but
+distributed across 2 buffers, each falling under threshold).
+
+## How big is the sharded penalty
+
+`EngineStats::commitDurationSeconds` is populated in both modes and
+gives us the apples-to-apples commit cost:
+
+| Workload | commit single (µs) | commit sharded (µs) | sharded / single |
+|----------|-------------------:|--------------------:|-----------------:|
+| setTransform/Churn      | 1897  | 4615  | **2.4×** |
+| setVelocity/Churn       | 2622  | 4392  | 1.7×     |
+| addRemoveTag/Churn      | 11011 | 11186 | 1.0× (fallback) |
+| spawnDestroy/Churn      | 77    | 76    | 1.0× (fallback) |
+| setTransform/MultiArch  | 2006  | 8198  | **4.1×** |
+| RPG-mix                 | 2778  | 7092  | **2.6×** |
+| SmallWorld              | 6.6   | 21.9  | 3.3× (fallback overhead) |
+
+**Sharded commit is uniformly worse than single commit on every
+workload where it actually runs.** The "4-way Pass-C apply pays for
+the classifier" model from CLAUDE.md does not hold on any of these
+shapes — Pass B alone roughly equals the entire single-mode commit
+cost (1418 µs vs 1897 µs on `setTransform/Churn`), and Pass C adds
+another 2832 µs on top, the vast majority of which is latch wait.
+
+The per-command apply cost in single mode is ~19 ns (1897 µs /
+100 k commands for `setTransform/Churn`), nowhere near the 130 ns
+reference figure in CLAUDE.md. That figure must have been measured
+on a migration-heavy workload (where each cmd triggers
+`setMaskAndMigrate`); for value-only workloads in v1.2, the per-cmd
+apply cost is an order of magnitude lower, and the sharded path
+has no parallel-apply headroom to recover.
+
+The interesting case is `addRemoveTag/Churn`: commit is 11011 µs in
+single mode (≈ 110 ns/cmd, dominated by per-cmd
+`setMaskAndMigrate`), and a hypothetical sharded path that could
+parallelize migrations would have real wall-clock to claw back.
+Today it falls back; that's the gap S6 is supposed to close.
+
+## Action items (S0 → next batch)
+
+The plan's §7 batch ordering assumed Pass B was the live cost. The
+data sharpens that, but more importantly reveals a different lever:
+
+- **S5 (small-bin serial fast path)** moves to the front of the
+  queue. Pass C wait is 99 % of Pass C; the actual parallel-apply
+  work finishes long before the latch unblocks. Even at ~50 k
+  commands per bin, the latch / wake-up overhead dwarfs the apply
+  benefit. Hypothesis: switching to a serial fast path entirely
+  (no `jobs_->submit`, no `JobLatch`) on bins below some threshold
+  collapses 2832 µs Pass C → < 500 µs.
+- **S6 (migration batching)** moves up because the only workload
+  with real parallel-apply headroom is the one that falls back
+  today (`addRemoveTag`, 11 ms commit). A migration-batched
+  variant could enable that to run on the sharded path and
+  actually save wall-clock.
+- **S1 / S2 (predecode header)** stays in the plan but at lower
+  priority. Pass B is 24–47 % of sharded commit; even cutting it
+  30 % shaves at best ~500 µs off the gap to single, while S5
+  could shave 2000+ µs in one batch.
+- **S3 (parallelize Pass A)** is gated on RPG-mix only (~3 % of
+  step), low priority.
+
+## Stop-condition check
+
+The S0 stop condition was: "if Pass A + B + C wall-clock totals
+less than serial commit time on the RPG-mix workload, sharded
+already wins and we just flip the default." On RPG-mix:
+sharded commit ≈ 7092 µs > single commit ≈ 2778 µs. Sharded loses
+by 2.6×. The default does NOT flip; we proceed to S5 with the
+hypothesis above.

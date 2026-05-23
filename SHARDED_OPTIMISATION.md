@@ -95,6 +95,22 @@ Bench discipline:
 
 **Stop condition.** If Pass A + Pass B + Pass C wall-clock already totals less than the serial commit time on the RPG-mix workload, sharded already wins and we just flip the default (jump straight to S7 → S∞).
 
+**S0 outcome (LANDED 2026-05-23).** Baseline numbers committed (full table + analysis in `bench/profile_report.md` under "SHARDED_OPTIMISATION.md S0"; raw JSONL in `bench/commit_pass_breakdown_baseline.jsonl`). Findings:
+
+- Hypothesis **2 (Pass C dominates) confirmed**. `JobLatch::wait` is 99 % of Pass C on every measured value-only workload — the latch / wake-up overhead is the bottleneck, NOT the parallel apply work. SmallWorld is the only outlier (77 %), where the fixed wait floor is proportionally smaller.
+- Hypothesis 1 (Pass B) is partial — Pass B is 24 – 47 % of sharded commit; meaningful but not the top lever.
+- Hypothesis 3 (Pass A) refuted except on RPG-mix (12 % of sharded commit, secondary).
+- **Bigger finding.** `EngineStats::commitDurationSeconds` shows sharded commit is **2.4–4.1× slower** than single commit on every value-only workload, not "moves overhead around" — the sharded path was always losing on these shapes, not just sometimes. The CLAUDE.md "130 ns/cmd classifier vs 50 ns/cmd recovery" reference applied to a migration-heavy workload that we don't measure; on the value-only workloads the per-cmd serial apply is ~19 ns, so there's no parallel-apply headroom to claw back.
+- **Reproducibility gate (±3 %) is NOT met on this host** — ~5 – 20 % per-run mean variance on a non-isolated desktop. The *qualitative* breakdown (Pass C share, sharded ≫ single in commit) is stable across all observed runs.
+
+**Batch ordering update (consequence of S0).**
+
+- **S5 promoted to immediate-next.** Pass C wait dominates; switching small/medium bins to serial fast path is the highest-leverage single change.
+- **S6 promoted to second.** The one workload with real parallel-apply headroom (`addRemoveTag/Churn`, 11 ms commit) is the one that falls back today. Migration batching is the gate to making sharded actually win there.
+- **S1 / S2 keep their place** in the queue but are explicitly secondary — even a 30 % Pass B reduction shaves at most ~500 µs off a ~3000 µs gap to single. Worth doing once S5/S6 land.
+- **S3, S4** stay low-priority (gated on RPG-mix or legacy hash only).
+- **The default does NOT flip on S0** — stop-condition check failed (sharded commit 7 092 µs > single commit 2 778 µs on RPG-mix).
+
 ### S1 — Predecode command kind once per command
 
 **Hypothesis (depends on S0).** `std::visit` / `std::holds_alternative` walks in Pass B are a top-3 cost — the same command goes through `commandIsMigrating`, `commandTargetEntity`, and `applyCommandImpl`, each re-discriminating the variant.

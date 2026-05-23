@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CommitBreakdown.hpp"
 #include "Config.hpp"
 #include "Handles.hpp"
 #include "Resource.hpp"
@@ -210,6 +211,16 @@ public:
     /// @warning The `systems` span shares the lifetime caveat of
     ///          @ref systemStats.
     FrameSnapshot frameSnapshot() const noexcept;
+
+    /// SHARDED_OPTIMISATION.md S0 — per-step Pass A / B / C breakdown of
+    /// the sharded commit path. Reset at the top of every `step()`;
+    /// accumulated across all `commitBuffersSharded` calls in the step
+    /// (one call per system with a non-empty buffer set). When the
+    /// sharded path early-outs to serial, `fallbackCalls` is incremented
+    /// and `nsTotal` records the serial-commit cost; otherwise every
+    /// field is populated. Always-on; ~30–60 ns/call overhead.
+    /// @thread_safety Sim thread; read after `step()` returns.
+    CommitBreakdown lastCommitBreakdown() const noexcept;
 
     /// Engine-owned, thread-safe typed resource registry. Lifetime
     /// matches the engine and the registry never reseats.

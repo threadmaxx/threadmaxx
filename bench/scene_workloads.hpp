@@ -286,6 +286,56 @@ struct RpgStressWorkload : threadmaxx::IGame {
     }
 };
 
+/// SHARDED_OPTIMISATION.md S0 — small-world floor case.
+///
+/// 256 entities split across two archetypes: half Transform-only,
+/// half Transform+Velocity. Drives the `commitBuffersSharded`
+/// auto-fallthrough path (`totalCommands < kShardedMinCommands`) so
+/// the sharded path early-outs to serial. The workload exists to
+/// guarantee that no optimization in S1–S8 regresses the small-world
+/// case — sharded must never become more expensive than serial on
+/// inputs where it auto-falls-through.
+constexpr std::uint32_t kSmallWorldCount = 256;
+struct SmallWorldWorkload : threadmaxx::IGame {
+    std::uint32_t count = kSmallWorldCount;
+
+    void onSetup(threadmaxx::Engine&,
+                 threadmaxx::World&,
+                 threadmaxx::CommandBuffer& cb) override {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            threadmaxx::Bundle b{};
+            b.transform.position.x = static_cast<float>(i);
+            b.initialMask = threadmaxx::ComponentSet{
+                threadmaxx::Component::Transform,
+            };
+            if ((i & 1u) != 0u) {
+                b.velocity.linear.x = 0.1f;
+                b.initialMask = b.initialMask | threadmaxx::ComponentSet{
+                    threadmaxx::Component::Velocity,
+                };
+            }
+            cb.spawnBundle(b);
+        }
+    }
+};
+
+/// SHARDED_OPTIMISATION.md S0 — RPG-mix workload.
+///
+/// 5-archetype RPG-demo profile at near-stress sizing (~100k NPCs +
+/// 5k pickups + player + sword + terrain ≈ 105k entities). Identical
+/// shape to `RpgStressWorkload` but with the public scaling fields
+/// pinned to the §4 spec so every bench in the plan measures the
+/// same workload by name. The per-tick command mix (~60% value-only
+/// across the 5 archetypes, ~30% spawn/destroy, ~10% mask flip) is
+/// driven by the bench-side systems registered on top, not by the
+/// workload itself.
+struct RpgMixWorkload : RpgStressWorkload {
+    RpgMixWorkload() {
+        npcCount    = 100'000;
+        pickupCount = 5'000;
+    }
+};
+
 /// Helper: returns a `Config` configured for clean benchmark runs —
 /// no pacing sleep, deterministic mode on, large initial capacity.
 inline threadmaxx::Config benchConfig(std::uint32_t workers,
