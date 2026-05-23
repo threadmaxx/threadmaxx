@@ -50,12 +50,18 @@ public:
         // [0, kHeightScale] block units.
         //
         // 2026-05-22 (round 9, voxel pivot) — `kHeightScale` is now
-        // in BLOCK UNITS (= meters at default blockUnit). 12 blocks
-        // gives the player visible peaks at ~6× player-height (12 ÷
-        // 2-block-player) and produces enough adjacent-cell
-        // differentials to exercise the 1-block step-up cap on a
-        // typical traversal path.
-        constexpr float kHeightScale = 12.0f;
+        // in BLOCK UNITS (= meters at default blockUnit).
+        //
+        // 2026-05-23 (D12) — widened from 12 → 20. The pre-D12 world
+        // had peaks at ~6× player-height; the larger 96 m world
+        // (see `kTerrainExtent`) needs taller silhouettes to feel
+        // proportional. At 20 the highest mountains rise ~10×
+        // player-height, the player still encounters frequent
+        // 1-block step-ups (gameplay-critical for `MovementSystem`'s
+        // step-up cap), and the visible vertical range exercises the
+        // BlockKind palette deeper (more Stone / Snow at top, more
+        // Dirt in the middle band).
+        constexpr float kHeightScale = 20.0f;
         constexpr float kNoiseFreq   = 6.0f;
         float lo = +1.0e30f;
         float hi = -1.0e30f;

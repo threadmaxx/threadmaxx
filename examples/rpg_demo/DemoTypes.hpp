@@ -291,6 +291,25 @@ struct TerrainPatch {
     std::uint32_t cellZ = 0;
 };
 
+/// §3.11 batch D12 — per-block chunk membership.
+///
+/// Maps a terrain block to the XZ chunk it belongs to. Chunks are
+/// `kTerrainChunkSize × kTerrainChunkSize` cell groups (16×16 by
+/// default) used for renderer-side culling and per-chunk rebake
+/// (foundation for future greedy meshing). `chunkX` / `chunkZ` are
+/// equivalent to `cellX / kTerrainChunkSize` / `cellZ /
+/// kTerrainChunkSize`; the field is denormalized into the UC so
+/// chunk-level grouping doesn't have to divide on every iteration.
+///
+/// 8-byte padding-free layout — see `BlockData` for why this
+/// matters for FNV-hashed UC blob determinism.
+struct TerrainChunk {
+    std::uint32_t chunkX = 0;
+    std::uint32_t chunkZ = 0;
+};
+static_assert(sizeof(TerrainChunk) == 8u,
+              "TerrainChunk layout must be padding-free for hash determinism");
+
 /// §3.11 batch D10 — per-block voxel attributes.
 ///
 /// Surfaces the "this is sand / grass / stone / snow" decision the
@@ -341,9 +360,15 @@ static_assert(sizeof(BlockData) == 12u,
 inline BlockKind kindAt(float columnTopY, float blockY) noexcept {
     const float depthFromTop = columnTopY - blockY - 0.5f;
     if (depthFromTop < 0.5f) {  // top cube
-        if (columnTopY < 2.0f) return BlockKind::Sand;
-        if (columnTopY < 6.0f) return BlockKind::Grass;
-        if (columnTopY < 9.0f) return BlockKind::Stone;
+        // 2026-05-23 (D12) — thresholds rescaled for the new
+        // `kHeightScale = 20`. Old breakpoints (2 / 6 / 9) divided
+        // the 0–12 range into ~1:3:5; the new (3 / 10 / 16) ratios
+        // those onto 0–20 to keep the palette distribution roughly
+        // proportional: ~15% Sand near the shore, ~35% Grass at
+        // mid-elevation, ~30% Stone, ~20% Snow on the peaks.
+        if (columnTopY < 3.0f)  return BlockKind::Sand;
+        if (columnTopY < 10.0f) return BlockKind::Grass;
+        if (columnTopY < 16.0f) return BlockKind::Stone;
         return BlockKind::Snow;
     }
     return (depthFromTop < 2.5f) ? BlockKind::Dirt : BlockKind::Stone;
@@ -525,6 +550,8 @@ struct UserComponentIds {
     threadmaxx::UserComponentId inventory;
     /// §3.11 batch D11 — post-break "dropped block" cosmetic entity.
     threadmaxx::UserComponentId droppedItem;
+    /// §3.11 batch D12 — per-block chunk membership (XZ chunk index).
+    threadmaxx::UserComponentId terrainChunk;
 };
 
 /// §3.11.6 batch D6 — procedural animation parameters.
@@ -772,14 +799,28 @@ constexpr double        kTickBudgetSeconds    = 1.0 / 60.0;
 /// boundaries ("in the middle of the block") — the round-9 alignment
 /// fixes that.
 ///
-/// To keep entity count manageable, `kTerrainExtent` shrank to 48 m
-/// (was 256 m). Normal and stress modes now share the same terrain
-/// shape; stress mode differentiates only via NPC / pickup counts.
-constexpr float          kTerrainExtent              = 48.0f;
-constexpr std::uint32_t  kHeightmapResolution        = 48u;     // = kTerrainExtent / 1m
-constexpr std::uint32_t  kStressTerrainCellsPerSide  = 48u;     //  2304 columns
-constexpr std::uint32_t  kNormalTerrainCellsPerSide  = 48u;
+/// 2026-05-23 batch D12 — the demo world grew from 48 m to 96 m on
+/// every axis. With `Heightmap::blockUnit() = 1 m` and the widened
+/// `kHeightScale = 20` (see `Heightmap.hpp`), the demo now spawns
+/// roughly `96 × 96 × ~10` ≈ 92 000 voxel blocks — about 6.5× the
+/// pre-D12 count. The world feels meaningfully larger: peaks rise
+/// ~10× player height, and the playable XZ area quadruples.
+/// Headless rpg_demo tests pre-seed `terrainCellsPerSide` to a
+/// smaller value (see `DemoTestHarness`) so boot time stays low.
+constexpr float          kTerrainExtent              = 96.0f;
+constexpr std::uint32_t  kHeightmapResolution        = 96u;     // = kTerrainExtent / 1m
+constexpr std::uint32_t  kStressTerrainCellsPerSide  = 96u;     //  9216 columns
+constexpr std::uint32_t  kNormalTerrainCellsPerSide  = 96u;
 constexpr std::uint32_t  kHeightmapSeed              = 0xD8000001u;
+
+/// §3.11 batch D12 — voxel terrain is grouped into XZ "chunks" of
+/// `kTerrainChunkSize × kTerrainChunkSize` cells. Each surface block
+/// carries a `TerrainChunk` UC pinning it to a (chunkX, chunkZ) so
+/// future per-chunk rebake / culling can iterate by chunk rather
+/// than by individual block. 16 cells per side at `tileSize = 1 m`
+/// gives 16 m × 16 m chunks — a single chunk roughly matches the
+/// player's full-screen view at the demo camera height.
+constexpr std::uint32_t  kTerrainChunkSize           = 16u;
 
 /// §3.11.8 batch D8 — NPCBrainSystem rejects a candidate Wander
 /// target with slopeAt > this threshold. The bilinearly-interpolated

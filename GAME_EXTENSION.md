@@ -376,23 +376,55 @@ exceeds ~3 ms, the engine probably needs faster spawn paths
 likely candidate: a bulk-spawn API that pre-allocates N slots
 in one chunk before any commits.
 
-### Batch D12 — Voxel chunking (renderer-side)
+### Batch D12 — Voxel chunking (renderer-side)  ✅ landed 2026-05-23
 
-**Trigger (currently NOT firing).** At normal-mode 32×32 = 1024
-terrain blocks the per-tile cube renders at ~steady framerate.
-At stress-mode 256×256 = 65 536 blocks the CPU-side draw item
-build is the next likely hot spot if D11 push edit rates up.
+**Shipped scope.** Phase 1 of the voxel-chunking pivot: the world
+grew 4× in area and ~67% taller, the renderer learned a
+normal-mode distance cull, and each terrain block now carries a
+`TerrainChunk` UC pinning it to a 16×16-cell chunk group. The
+chunk membership is the foundation for future per-chunk rebake
+(greedy meshing into a single DrawItem); for now it's a cheap
+denormalized index that lets diagnostics + tests group blocks by
+chunk without re-deriving from `(cellX, cellZ) /
+kTerrainChunkSize` on every iteration.
 
-**Possible scope (not committed).** Group adjacent same-kind
-blocks into a single "chunk" DrawItem with a baked sub-mesh.
-Render the chunk instead of N individual cubes. Edit operations
-invalidate the affected chunk(s); a background rebuilder
-regenerates the mesh off-thread (great use case for B20's
-`snapshotAsync` worker pattern).
+**What changed.**
+- `kTerrainExtent` 48 → 96 m, `kHeightmapResolution` 48 → 96,
+  `kNormal/StressTerrainCellsPerSide` 48 → 96. The world covers
+  4× the XZ area; the demo now spawns ~92 000 voxel blocks (up
+  from ~14 000).
+- `Heightmap` `kHeightScale` 12 → 20 m. Peaks now rise to ~10×
+  player height (was ~6×) and produce taller stacked silhouettes.
+- `kindAt` palette thresholds rescaled (2/6/9 → 3/10/16) so the
+  Sand/Grass/Stone/Snow distribution stays roughly proportional
+  to the new 0–20 m range.
+- `kTerrainChunkSize = 16` — terrain blocks are grouped into
+  16 × 16 cell chunks. `TerrainChunk{chunkX, chunkZ}` UC
+  attaches at spawn AND on every D11 place.
+- `CubeRenderSystem` distance-culls in BOTH normal and stress
+  modes (was stress-only). Normal mode radius = 36 m; stress
+  stays at 12 m. Without this the bigger world's 92k blocks
+  would jam the per-tick instance buffer build.
+- `DemoTestHarness::makeHeadless(cellsPerSide=16)` overrides
+  the demo's terrain cell count so rpg_demo tests don't pay 6×
+  boot time. Tests that exercise terrain math
+  (`test_block_palette`, `test_block_harvest`) pass an explicit
+  larger value.
+- `test_animation` Y-range upper bound loosened from 0.30 →
+  2.0 to accommodate the deeper heightmap (the NPC walks across
+  more 1-block step-ups in 90 ticks now).
+- `test_block_palette` palette breakpoints rebased for the new
+  thresholds.
 
-This is the kind of work that may justify a sibling library
-(`threadmaxx_voxel`?) if the chunking logic gets complex. But
-it's gated on D11's bench data showing a real bottleneck.
+**Deferred to a later batch (still on the table).** Per-chunk
+mesh rebake into a single DrawItem; greedy meshing; background
+rebuilder using `snapshotAsync`. The current phase 1 doesn't
+need them — distance culling keeps the instance buffer build
+within the per-tick budget for the 96 m world. Profile data
+will tell us if Phase 2 is worth doing.
+
+**Test coverage.** Full engine + rpg_demo suite green at 116/116
+on both `build/` (Release) and `build-werror/` (strict) trees.
 
 ### Batch D10 (deferred) — Weather
 

@@ -339,6 +339,9 @@ void BlockEditSystem::update(threadmaxx::SystemContext& ctx) {
             threadmaxx::addUserComponent(cb, ids->cubeRender, placeHandles[i], cr);
             threadmaxx::addUserComponent(cb, ids->terrainPatch, placeHandles[i],
                 TerrainPatch{p.cellX, p.cellZ});
+            threadmaxx::addUserComponent(cb, ids->terrainChunk, placeHandles[i],
+                TerrainChunk{p.cellX / kTerrainChunkSize,
+                             p.cellZ / kTerrainChunkSize});
             threadmaxx::addUserComponent(cb, ids->blockData, placeHandles[i],
                 BlockData{p.kind, blockKindHardness(p.kind),
                           p.kind == BlockKind::Water ? 0u : 1u});

@@ -76,6 +76,7 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     ids_.blockData    = engine.registerUserComponent<BlockData>();
     ids_.inventory    = engine.registerUserComponent<Inventory>();
     ids_.droppedItem  = engine.registerUserComponent<DroppedItem>();
+    ids_.terrainChunk = engine.registerUserComponent<TerrainChunk>();
 
     // §3.11.8 batch D8 — generate the heightmap once at boot. The
     // resolution is fixed; only the tile count (i.e. how densely the
@@ -292,10 +293,18 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     // AOI queries skip the static-terrain archetype on the mask
     // test, so leaving the bit off keeps those queries lean.
     //
-    // Tile count is `cellsPerSide² × avgColumnHeight`. With cells=48
-    // and heights in [0, 12] block units (average ~6), the demo
-    // spawns ~14 000 terrain cubes. Headless tests can pre-set
-    // `terrainCellsPerSide` to keep boot fast.
+    // Tile count is `cellsPerSide² × avgColumnHeight`. With cells=96
+    // and heights in [0, 20] block units (average ~10), the demo
+    // spawns ~92 000 terrain cubes after the D12 size bump.
+    // Headless tests pre-set `terrainCellsPerSide = 16` via the
+    // test harness to keep boot fast.
+    //
+    // §3.11 batch D12 — every block also carries a `TerrainChunk`
+    // UC whose `(chunkX, chunkZ)` denormalizes `(cellX,cellZ) /
+    // kTerrainChunkSize`. The chunk membership is the foundation
+    // for future per-chunk rebake / culling; for now it just lets
+    // tests + diagnostics group blocks by chunk without re-deriving
+    // the index on each iteration.
     const float        blockUnit  = hmap.blockUnit();
     const std::uint32_t cells     = worldState_.terrainCellsPerSide;
     const float terrainExtent     = kTerrainExtent;
@@ -338,6 +347,9 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
                 threadmaxx::addUserComponent(seed, ids_.cubeRender, blockH, cr);
                 threadmaxx::addUserComponent(seed, ids_.terrainPatch, blockH,
                     TerrainPatch{cx, cz});
+                threadmaxx::addUserComponent(seed, ids_.terrainChunk, blockH,
+                    TerrainChunk{cx / kTerrainChunkSize,
+                                 cz / kTerrainChunkSize});
                 threadmaxx::addUserComponent(seed, ids_.blockData, blockH,
                     BlockData{kind, blockKindHardness(kind),
                               kind == BlockKind::Water ? 0u : 1u});

@@ -60,8 +60,15 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
     const auto animId   = ids_->animState;
     const auto chunkCount = w.archetypeChunkCount();
 
-    const bool useDistanceCull =
-        worldState_ != nullptr && worldState_->stressMode;
+    // §3.11 batch D12 — the post-D12 96 m world spawns ~92 000
+    // terrain blocks. Without a render-side cull the per-tick
+    // instance buffer build walks every one of them, which jams
+    // the renderer well before any actual gameplay system breaks
+    // a sweat. We now distance-cull in BOTH normal and stress
+    // modes; only the radius differs (normal mode keeps a roomy
+    // 36 m radius for that "expansive vista" feel; stress keeps
+    // its tighter 12 m for the 100k-NPC workload).
+    const bool useDistanceCull = worldState_ != nullptr;
     // 2026-05-22 audit refactor — in first-person mode the player's
     // own body shouldn't render (you'd see the inside of a cube
     // filling the screen). Read PlayerState from the world once
@@ -87,7 +94,11 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
     // distance 12m still covers a screen-worth of game space, so
     // the visual effect is identical.
     constexpr float kStressDrawRadius   = 12.0f;
-    constexpr float kStressDrawRadiusSq = kStressDrawRadius * kStressDrawRadius;
+    constexpr float kNormalDrawRadius   = 36.0f;
+    const bool  stressBob  = worldState_ && worldState_->stressMode;
+    const float drawRadius = stressBob ? kStressDrawRadius
+                                       : kNormalDrawRadius;
+    const float drawRadiusSq = drawRadius * drawRadius;
     float pX = 0.0f, pZ = 0.0f;
     if (useDistanceCull) {
         const auto p = worldState_->player;
@@ -144,8 +155,8 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
     dispatchOrInline(ctx, total,
         [slicesPtr, sliceCount,
          itemsOut, boundsOut, centersOut, radiiOut,
-         &outCursor, useDistanceCull, pX, pZ, simTime,
-         playerH, hidePlayerBody]
+         &outCursor, useDistanceCull, drawRadiusSq, stressBob,
+         pX, pZ, simTime, playerH, hidePlayerBody]
         (threadmaxx::Range r, threadmaxx::CommandBuffer&) {
             // Find starting slice for r.begin. Linear scan — slice
             // count is tiny (≤ ~8 typically); cheaper than binary
@@ -178,7 +189,7 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                         std::max({std::abs(tr.scale.x),
                                   std::abs(tr.scale.z)});
                     if (maxScale < 8.0f &&
-                        dx * dx + dz * dz > kStressDrawRadiusSq) {
+                        dx * dx + dz * dz > drawRadiusSq) {
                         continue;
                     }
                 }
@@ -205,9 +216,10 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
                 // reported. In non-stress mode AnimationSystem has
                 // already written `tr.position.y = heightAt + bob`,
                 // so the rendered cube faithfully tracks the ground.
-                // `useDistanceCull` is already gated on stress mode
-                // (see line ~64) so we reuse it as the stress flag.
-                if (slice.hasAnim && useDistanceCull) {
+                // D12 decoupled `useDistanceCull` from stressMode (cull
+                // is on in both modes now), so the stress-mode bob path
+                // reads the captured `stressBob` flag explicitly.
+                if (slice.hasAnim && stressBob) {
                     const auto& a = slice.animSpan[row];
                     float speed = 0.0f;
                     if (slice.hasVel) {

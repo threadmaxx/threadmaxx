@@ -31,12 +31,20 @@ struct HeadlessFixture {
 };
 
 /// Boot a fresh Engine with the shipped DemoGame.
-inline HeadlessFixture makeHeadless() {
+///
+/// `cellsPerSide` overrides the demo's terrain cell count for the
+/// boot. Defaults to 16 (= 256 columns ≈ 1500 blocks at 6 avg
+/// stack height) — a fraction of the shipped 96×96 world but plenty
+/// for headless system tests that just need terrain underneath the
+/// player. Tests that explicitly verify terrain palette / harvest
+/// math can pass a larger value.
+inline HeadlessFixture makeHeadless(std::uint32_t cellsPerSide = 16u) {
     threadmaxx::Config cfg;
     cfg.sleepToPace = false;
     cfg.workerCount = 2;
     HeadlessFixture fx;
     fx.game   = std::make_unique<rpg::DemoGame>();
+    fx.game->worldState().terrainCellsPerSide = cellsPerSide;
     fx.engine = std::make_unique<threadmaxx::Engine>(cfg);
     CHECK(fx.engine->initialize(*fx.game));
     return fx;

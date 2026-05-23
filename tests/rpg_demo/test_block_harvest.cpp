@@ -80,17 +80,18 @@ std::size_t countDroppedItems(const World& w, const UserComponentIds& ids,
 
 int main() {
     resetEdges();
-    auto fx = makeHeadless();
+    // 2026-05-23 (D12) — request a 32-cell terrain (instead of the
+    // harness default 16) so this test has room to pick a break
+    // cell well outside the PickupSystem's 1.2 m auto-collect
+    // radius of the player at world origin. 32 cells × 96 m
+    // extent gives 3 m per cell; cell 20 sits at world coord
+    // ~13.5 m — far outside the pick radius but well within the
+    // world bounds.
+    auto fx = makeHeadless(32u);
     const auto& ids = fx.game->ids();
 
     // ---- 1. Find a non-empty terrain cell and break its top block.
-    //
-    // Important: stay well outside PickupSystem's `kPickRadius =
-    // 1.2 m` of the player (which spawns at world origin). Otherwise
-    // the spawned DroppedItem would be auto-collected before we can
-    // observe it. Cell index 35 sits at world coord ~11.5 m — way
-    // outside the pick radius.
-    const std::uint32_t cellX = 35u, cellZ = 35u;
+    const std::uint32_t cellX = 20u, cellZ = 20u;
     EntityHandle topBlock = topBlockAt(fx.engine->world(), ids, cellX, cellZ);
     CHECK(topBlock.valid());
     CHECK(fx.engine->world().alive(topBlock));

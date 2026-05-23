@@ -5,10 +5,12 @@
 // blockY) pair, and:
 //
 //   1. Top-cube kind per band matches the `kindAt` table:
-//        columnTopY <  2 m  → Sand
-//        columnTopY <  6 m  → Grass
-//        columnTopY <  9 m  → Stone
-//        columnTopY ≥  9 m  → Snow
+//        columnTopY <   3 m  → Sand
+//        columnTopY <  10 m  → Grass
+//        columnTopY <  16 m  → Stone
+//        columnTopY ≥  16 m  → Snow
+//      (D12-rescaled — old thresholds were 2/6/9 for kHeightScale=12;
+//       new ones are 3/10/16 for kHeightScale=20.)
 //   2. Sub-surface kinds layer correctly:
 //        depthFromTop ∈ (0.5, 2.5) → Dirt
 //        depthFromTop ≥ 2.5        → Stone
@@ -62,10 +64,10 @@ int main() {
                 const bool isTop = (k + 1u == blockCount);
                 if (isTop) {
                     ++topCubesChecked;
-                    if (topY < 2.0f)      CHECK(kind == BlockKind::Sand);
-                    else if (topY < 6.0f) CHECK(kind == BlockKind::Grass);
-                    else if (topY < 9.0f) CHECK(kind == BlockKind::Stone);
-                    else                  CHECK(kind == BlockKind::Snow);
+                    if (topY < 3.0f)       CHECK(kind == BlockKind::Sand);
+                    else if (topY < 10.0f) CHECK(kind == BlockKind::Grass);
+                    else if (topY < 16.0f) CHECK(kind == BlockKind::Stone);
+                    else                   CHECK(kind == BlockKind::Snow);
                 } else {
                     ++subSurfaceChecked;
                     const float depthFromTop = topY - blockY - 0.5f;
@@ -85,7 +87,7 @@ int main() {
                 kindCounts[static_cast<std::size_t>(BlockKind::Snow)],
                 topCubesChecked, subSurfaceChecked);
 
-    // Sanity: with the default seed + 48×48 grid + height range [0, 12],
+    // Sanity: with the default seed + 96×96 grid + height range [0, 20],
     // we expect a healthy mix. The exact counts depend on the noise
     // field — these are floor bounds, not equality.
     CHECK(topCubesChecked == cells * cells ||

@@ -106,9 +106,18 @@ int main() {
     //
     // speed_ratio = min(2.0 / 4.0, 1.0) = 0.5; with amp = 0.20 the
     // bob peak is base + 0.10.
+    //
+    // 2026-05-23 (D12, larger world) — the heightmap amplitude
+    // grew from 12 to 20 m, so the NPC traversing east at 2 m/s
+    // over 90 ticks crosses ~3 m of horizontal terrain that may
+    // include several 1-block step-ups (each ~+1 m to Y). The
+    // upper-bound tolerance was loosened from 0.30 to 2.0 to
+    // accommodate; the test still verifies the bob fires (lower
+    // bound) and that Y stays in a sane window vs. the test's
+    // 13–15 m operating range.
     CHECK(maxY > minY + 0.03f);   // meaningful oscillation
-    CHECK(maxY - minY < 0.30f);   // bounded by amp * ratio plus a
-                                   // 1-block step margin
+    CHECK(maxY - minY < 2.0f);    // bounded by amp*ratio + a few
+                                   // 1-block step margins
 
     EXIT_WITH_RESULT();
 }
