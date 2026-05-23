@@ -152,6 +152,7 @@ real regressions. They are still listed below for completeness.
 - ✓ `EngineStats` (all common fields, `commitHash`) — `stats_test.cpp`, `commit_hash_test.cpp`, `archetype_hash_determinism_test.cpp`
 - ✓ `JobSystemStats` (totals, `jobDurationHistogram`) — `job_histogram_test.cpp`, `small_wins_test.cpp`
 - ✓ `SystemStats` (`waitSeconds`, `peakQueueDepth`, `buildRenderFrameSeconds`) — `system_wait_test.cpp`, `build_render_frame_seconds_test.cpp`
+- ✓ `SystemStats::avgSubJobMicros` / `subJobsLastStep` (ADAPTIVE_TUNING.md T3) — `sub_job_telemetry_test.cpp`
 - ✓ `kJobDurationHistogramBins` — `job_histogram_test.cpp`
 - ✗ `EngineStats::engineBuildRenderFrameSeconds` / `renderSubmitSeconds` — **UNCOVERED. Load-bearing.** New 2026-05-20 split that pins down whether time is going to engine bookkeeping vs the renderer. Recommendation: add a 20-line test that registers a `submitFrame` sleeping for ~1 ms and asserts `renderSubmitSeconds > 0` while `engineBuildRenderFrameSeconds >= 0` and both are `<= lastStepSeconds`.
 

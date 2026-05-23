@@ -281,7 +281,7 @@ Snapshot consistency: reflects state at the moment `snapshotAsync` was called. C
 
 `Engine::frameSnapshot()` returns `FrameSnapshot{EngineStats, span<const SystemStats>, JobSystemStats}` — consistent across the three. `writeJsonLines(os, snap)` serializes one snapshot as a single `\n`-terminated JSON object with `"commit_hash":"0x…"` (16-char hex). `ChromeTraceWriter` is the streaming companion: ctor writes `[`, `emit(snap)` appends one `step` record + one per system per call (`args.commit_hash` carries the hash), dtor writes `]`. Systems span is invalidated by `registerSystem` / `registerSystemAt` / `shutdown`.
 
-`SystemStats` extras: `waitSeconds` (latch wait time across `parallelFor`), `peakQueueDepth` (max `JobSystem::outstanding()` right after submit), `buildRenderFrameSeconds`.
+`SystemStats` extras: `waitSeconds` (latch wait time across `parallelFor`), `peakQueueDepth` (max `JobSystem::outstanding()` right after submit), `buildRenderFrameSeconds`, plus the ADAPTIVE_TUNING.md T3 pair `avgSubJobMicros` (1/16-EWMA of per-sub-job lambda µs; persists across steps, 0 if the system never called `parallelFor`) and `subJobsLastStep` (parallelFor sub-jobs dispatched this step). Both fields are emitted in `writeJsonLines` (`avg_sub_job_us`, `sub_jobs`) and in `ChromeTraceWriter` per-system args, and surfaced in `perf_audit_rpg_demo`'s top-systems table.
 
 `include/threadmaxx/Telemetry.hpp` opt-in extras:
 - `ITraceSink::onFrame(FrameSnapshot)` — installed via `Engine::setTraceSink(ITraceSink*)`. Engine never takes ownership; sink must outlive the engine.

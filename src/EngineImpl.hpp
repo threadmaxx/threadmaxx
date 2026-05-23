@@ -93,6 +93,17 @@ public:
     double        waitSeconds()    const noexcept { return waitSeconds_; }
     std::uint32_t peakQueueDepth() const noexcept { return peakQueueDepth_; }
 
+    // ADAPTIVE_TUNING.md T3 — summed wall-clock duration of every
+    // sub-job's user lambda dispatched through this context, in
+    // nanoseconds. Workers `fetch_add(relaxed)` after each sub-job
+    // returns; the sim thread reads it after `done.wait()` so the
+    // memory ordering is supplied by the JobLatch acquire-release
+    // (the relaxed adds happen-before count_down's release, which
+    // happens-before wait's acquire on the reader side).
+    std::uint64_t subJobNanosTotal() const noexcept {
+        return subJobNanos_.load(std::memory_order_relaxed);
+    }
+
 private:
     class EngineImpl& engine_;
     const World&      world_;
@@ -109,6 +120,10 @@ private:
     // Zero = uncapped. Sourced from ISystem::preferredWorkerCap() at
     // SystemContextImpl construction; pinned for the wave.
     std::uint32_t     preferredWorkerCap_ = 0;
+    // ADAPTIVE_TUNING.md T3 — workers fetch_add(relaxed) here after
+    // each sub-job; the sim thread reads it post-wait. Visible
+    // ordering is provided by JobLatch's count_down/wait pair.
+    std::atomic<std::uint64_t> subJobNanos_{0};
 };
 
 // The full engine state. Hidden behind PImpl from the public Engine class.

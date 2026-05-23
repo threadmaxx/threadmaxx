@@ -36,6 +36,11 @@ struct Acc {
     double maxUpdate = 0.0;
     std::uint64_t totalJobs = 0;
     std::uint64_t totalCmds = 0;
+    // ADAPTIVE_TUNING.md T3 — last-sample avgSubJobMicros (EWMA from
+    // the engine, taken at the end of the audit window) and total
+    // sub-jobs dispatched across the run.
+    double lastAvgSubJobUs = 0.0;
+    std::uint64_t totalSubJobs = 0;
 };
 
 } // namespace
@@ -96,6 +101,8 @@ int main(int argc, char** argv) {
             acc[i].maxUpdate  = std::max(acc[i].maxUpdate, s.lastUpdateSeconds);
             acc[i].totalJobs += s.jobsSubmittedLastStep;
             acc[i].totalCmds += s.commandsCommittedLastStep;
+            acc[i].totalSubJobs    += s.subJobsLastStep;
+            acc[i].lastAvgSubJobUs  = s.avgSubJobMicros; // EWMA: keep latest
         }
     }
 
@@ -123,20 +130,25 @@ int main(int argc, char** argv) {
               });
 
     std::printf("\n[perf_audit] top systems (per-tick mean, ms):\n");
-    std::printf("  %-32s %10s %10s %10s %10s %10s\n",
-                "system", "upd_ms", "brf_ms", "wait_ms", "max_ms", "cmds/tick");
+    // ADAPTIVE_TUNING.md T3 — `subJob_us` is the latest EWMA value of
+    // per-sub-job lambda duration; `subJobs` is sub-jobs per tick.
+    std::printf("  %-32s %10s %10s %10s %10s %10s %10s %10s\n",
+                "system", "upd_ms", "brf_ms", "wait_ms", "max_ms",
+                "cmds/tick", "subJob_us", "subJobs");
     const double ticksD = static_cast<double>(ticks);
     for (std::size_t i = 0; i < acc.size() && i < 16; ++i) {
         const auto& a = acc[i];
         if (!a.name) continue;
         if (a.sumUpdate + a.sumBrf < 1e-6) continue;
-        std::printf("  %-32s %10.3f %10.3f %10.3f %10.3f %10.1f\n",
+        std::printf("  %-32s %10.3f %10.3f %10.3f %10.3f %10.1f %10.1f %10.1f\n",
                     a.name,
                     (a.sumUpdate / ticksD) * 1e3,
                     (a.sumBrf    / ticksD) * 1e3,
                     (a.sumWait   / ticksD) * 1e3,
                     a.maxUpdate * 1e3,
-                    static_cast<double>(a.totalCmds) / ticksD);
+                    static_cast<double>(a.totalCmds) / ticksD,
+                    a.lastAvgSubJobUs,
+                    static_cast<double>(a.totalSubJobs) / ticksD);
     }
 
     engine.shutdown();

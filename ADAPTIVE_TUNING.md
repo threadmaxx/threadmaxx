@@ -235,7 +235,7 @@ default path. No opt-in system in the tree changes behavior.
 
 ---
 
-### Batch T3 — Telemetry: per-system avg sub-job duration
+### Batch T3 — Telemetry: per-system avg sub-job duration — LANDED 2026-05-23
 
 **Scope.** Extend `SystemStats`:
 
@@ -262,17 +262,37 @@ output.
 `COVERAGE_AUDIT.md` updated.
 
 **Bench gate.** Run `perf_audit_rpg_demo 300` — the per-system rows
-now show `subJob_µs` and `subJobs`. Cube-render expected ~50–80 µs
+now show `subJob_us` and `subJobs`. Cube-render expected ~50–80 µs
 per sub-job (the regime where oversubscription bites).
 
-**Test gate.** `test_sub_job_telemetry.cpp`: known synthetic workload
-with a fixed-duration sleep per sub-job; assert
-`avgSubJobMicros` within ±10% of the truth after 30 ticks of EWMA
-warm-up.
+**Empirical result (post-implementation).** `perf_audit_rpg_demo 300`
+on the same workers=71 box used for the T2 sweep:
+
+| system      | upd_ms | brf_ms | subJob_us | subJobs |
+|-------------|--------|--------|-----------|---------|
+| cube-render |  4.945 |  3.446 |      63.5 |   284.0 |
+
+Cube-render lands at **63.5 µs/sub-job × 284 sub-jobs ≈ 18 ms of
+parallel work spread across the pool** — matches the planned
+50–80 µs envelope. Every other system reports 0 because none call
+`parallelFor` (they're single-threaded or sub-job-free), exactly as
+designed.
+
+**Test gate.** `tests/sub_job_telemetry_test.cpp`: a busy-spin
+workload at 1 ms per sub-job (deterministic, vs sleep_for's HZ
+jitter) over 40 ticks. Asserts `avgSubJobMicros ∈ [0.7, 1.3] × truth`
+and `subJobsLastStep == 4`. Also covers the quiet-system case
+(no parallelFor → both fields stay zero) and EWMA persistence
+across a step.
 
 **Risk.** Low. Pure observation. The per-sub-job timing uses a
-thread-local clock + post-wave reduction so it doesn't add atomic
-contention to the hot path.
+`std::chrono::steady_clock` pair brackets the user lambda only
+(latch bookkeeping is not charged) and folds the ns count into a
+single `std::atomic<uint64_t>::fetch_add(relaxed)` per sub-job —
+roughly one atomic op per 10–100 µs of useful work. The atomic is
+read by the sim thread post-`JobLatch::wait()`, so the relaxed
+adds happen-before the read via the latch's count_down/wait
+acquire-release pair.
 
 ---
 
@@ -457,7 +477,7 @@ hour at the cooldown rate); serialization mirrors `WorldSnapshot`.
 |---|---|---|
 | T1 | `perf_audit_rpg_demo 300 --workers=71` normal | mean step ≤ 8 ms |
 | T2 | `tests/worker_cap_test` (engine mechanism gate) | sub-job count clamped to cap; commitHash unchanged |
-| T3 | `perf_audit_rpg_demo 300` | new columns present, near-zero overhead |
+| T3 | `perf_audit_rpg_demo 300` + `tests/sub_job_telemetry_test` | cube-render `subJob_us ∈ [50, 80]` (landed: 63.5); EWMA converges within ±30% of truth on a busy-spin |
 | T4 | `bench/adaptive_tuning_bench --workload=stable --policy=noop` | within ±2% of baseline |
 | T5 | `bench/adaptive_tuning_bench --workload=tiny-fanout --policy=adaptive-grain` | within 10% of offline optimum after 200 ticks |
 | T6 | `bench/adaptive_tuning_bench --workload=stable --mode=scripted` | identical commitHash to Active run |

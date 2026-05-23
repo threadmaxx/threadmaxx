@@ -169,6 +169,31 @@ struct SystemStats {
     /// (the hook always runs on the sim thread in registration
     /// order).
     double buildRenderFrameSeconds = 0.0;
+
+    /// ADAPTIVE_TUNING.md T3 — exponentially-weighted moving average
+    /// of per-sub-job wall-clock duration in microseconds, sampled
+    /// inside `SystemContext::parallelFor` after each sub-job's user
+    /// lambda returns. Same `1/16` decay as @ref avgUpdateSeconds.
+    /// Zero before the first sub-job runs and across steps where the
+    /// system never called `parallelFor`. The EWMA lets a tuner
+    /// reason about a system's typical per-job cost without being
+    /// distracted by an occasional long-tail sub-job.
+    ///
+    /// Sampling cost: one `std::chrono::steady_clock::now()` pair
+    /// per sub-job and one relaxed atomic add into the context's
+    /// per-call accumulator — never measured inside the user
+    /// lambda's hot loop.
+    double avgSubJobMicros = 0.0;
+
+    /// ADAPTIVE_TUNING.md T3 — number of `parallelFor` sub-jobs the
+    /// system dispatched during the most recent step. Lets a tuner
+    /// answer "did we hit the sub-job cap?" and "is there enough
+    /// work to split further?" without re-deriving the count from
+    /// `count / grain`. Semantically equal to
+    /// @ref jobsSubmittedLastStep today, but kept as a separate
+    /// field so future non-parallelFor job submissions don't muddy
+    /// the tuning signal.
+    std::uint32_t subJobsLastStep = 0;
 };
 
 } // namespace threadmaxx

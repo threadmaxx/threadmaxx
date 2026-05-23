@@ -539,8 +539,17 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
         const std::uint32_t end   = std::min(begin + grain, count);
         CommandBuffer* cb = &buffers_[firstIdx + c];
         auto userFn = fn;
-        engine_.jobs().submit([userFn, begin, end, cb, &done] {
+        // ADAPTIVE_TUNING.md T3 — time the user lambda and fold the
+        // nanosecond count into the context's accumulator. The clock
+        // pair brackets only the user code; latch bookkeeping is not
+        // charged to the sub-job's reported duration.
+        engine_.jobs().submit([userFn, begin, end, cb, &done, this] {
+            const auto t0 = std::chrono::steady_clock::now();
             userFn(Range{begin, end}, *cb);
+            const auto ns = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t0).count());
+            subJobNanos_.fetch_add(ns, std::memory_order_relaxed);
             done.count_down();
         }, priority);
     }
@@ -582,8 +591,14 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
         CommandBuffer*  cb    = &buffers_[firstIdx + c];
         ScratchArena*   arena = &arenas_[firstIdx + c];
         auto userFn = fn;
-        engine_.jobs().submit([userFn, begin, end, cb, arena, &done] {
+        // ADAPTIVE_TUNING.md T3 — see the JobFn overload.
+        engine_.jobs().submit([userFn, begin, end, cb, arena, &done, this] {
+            const auto t0 = std::chrono::steady_clock::now();
             userFn(Range{begin, end}, *cb, *arena);
+            const auto ns = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t0).count());
+            subJobNanos_.fetch_add(ns, std::memory_order_relaxed);
             done.count_down();
         }, priority);
     }
@@ -1630,6 +1645,9 @@ void EngineImpl::step() {
     commitHashAcc_ = 0xcbf29ce484222325ull;
 
     // Reset per-system "last step" counters; lifetime totals are preserved.
+    // ADAPTIVE_TUNING.md T3 — avgSubJobMicros is intentionally NOT
+    // reset (it's an EWMA that should persist across steps), but
+    // subJobsLastStep mirrors the other *LastStep counters.
     for (auto& ss : systemStats_) {
         ss.lastUpdateSeconds = 0.0;
         ss.jobsSubmittedLastStep = 0;
@@ -1637,6 +1655,7 @@ void EngineImpl::step() {
         ss.waitSeconds = 0.0;
         ss.peakQueueDepth = 0;
         ss.buildRenderFrameSeconds = 0.0;
+        ss.subJobsLastStep = 0;
     }
 
     // §3.1 preStep: serial, registration order, on the sim thread. Hooks
@@ -1798,12 +1817,32 @@ void EngineImpl::step() {
             ss.peakQueueDepth = ctxs[k]->peakQueueDepth();
             // EWMA with alpha = 1/16, matching EngineStats::avgStepSeconds.
             // First sample initializes the average.
+            constexpr double kEwmaAlpha = 1.0 / 16.0;
             if (stats_.totalTicks == 0) {
                 ss.avgUpdateSeconds = ss.lastUpdateSeconds;
             } else {
-                constexpr double kEwmaAlpha = 1.0 / 16.0;
                 ss.avgUpdateSeconds = ss.avgUpdateSeconds * (1.0 - kEwmaAlpha)
                                     + ss.lastUpdateSeconds * kEwmaAlpha;
+            }
+            // ADAPTIVE_TUNING.md T3 — fold per-sub-job duration EWMA.
+            // `jobs` is the number of parallelFor sub-jobs dispatched
+            // from this ctx; `subJobNanos` is their summed lambda
+            // duration in ns. Divide for the mean, convert to µs,
+            // then EWMA-update. We update only when this step had
+            // sub-jobs — a step with `jobs == 0` is not a fresh
+            // sample and must not pull the average towards zero.
+            ss.subJobsLastStep = static_cast<std::uint32_t>(jobs);
+            if (jobs > 0) {
+                const double meanUs =
+                    static_cast<double>(ctxs[k]->subJobNanosTotal())
+                    / static_cast<double>(jobs) / 1000.0;
+                if (ss.avgSubJobMicros == 0.0) {
+                    ss.avgSubJobMicros = meanUs;
+                } else {
+                    ss.avgSubJobMicros =
+                        ss.avgSubJobMicros * (1.0 - kEwmaAlpha)
+                        + meanUs * kEwmaAlpha;
+                }
             }
         }
 

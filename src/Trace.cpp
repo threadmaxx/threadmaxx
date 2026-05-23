@@ -90,6 +90,8 @@ void writeJsonLines(std::ostream& os, const FrameSnapshot& snap) {
            << ",\"commands\":" << s.commandsCommittedLastStep
            << ",\"wait_s\":" << s.waitSeconds
            << ",\"peak_queue_depth\":" << s.peakQueueDepth
+           << ",\"avg_sub_job_us\":" << s.avgSubJobMicros
+           << ",\"sub_jobs\":" << s.subJobsLastStep
            << "}";
     }
 
@@ -148,17 +150,23 @@ void ChromeTraceWriter::emit(const FrameSnapshot& snap) {
     const double stepStart = cursorMicros_;
     const double stepDur   = e.lastStepSeconds * 1'000'000.0;
 
-    auto writeEvent = [this](const char* name, double tsMicros,
-                             double durMicros, std::uint32_t tid,
-                             std::uint64_t tick) {
+    // ADAPTIVE_TUNING.md T3 — extended per-system arg payload now
+    // carries avg_sub_job_us and sub_jobs so a chrome://tracing
+    // viewer can show the same tuning signals as JSON-lines.
+    auto writeSystemEvent = [this](const SystemStats& s, double tsMicros,
+                                   double durMicros, std::uint32_t tid,
+                                   std::uint64_t tick) {
         if (!firstRecord_) (*os_) << ",\n";
         firstRecord_ = false;
         (*os_) << "{\"ph\":\"X\",\"name\":";
-        writeJsonString(*os_, name);
+        writeJsonString(*os_, s.name ? s.name : "(unnamed)");
         (*os_) << ",\"ts\":" << tsMicros
                << ",\"dur\":" << durMicros
                << ",\"pid\":1,\"tid\":" << tid
-               << ",\"args\":{\"tick\":" << tick << "}}";
+               << ",\"args\":{\"tick\":" << tick
+               << ",\"avg_sub_job_us\":" << s.avgSubJobMicros
+               << ",\"sub_jobs\":" << s.subJobsLastStep
+               << "}}";
     };
 
     // Step record (tid=0) carries the commit_hash in its args so a
@@ -186,8 +194,7 @@ void ChromeTraceWriter::emit(const FrameSnapshot& snap) {
     double cur = stepStart;
     for (const auto& s : snap.systems) {
         const double dur = s.lastUpdateSeconds * 1'000'000.0;
-        writeEvent(s.name ? s.name : "(unnamed)", cur, dur,
-                   systemTid(s.name), e.tick);
+        writeSystemEvent(s, cur, dur, systemTid(s.name), e.tick);
         cur += dur;
     }
 
