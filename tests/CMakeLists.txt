@@ -64,6 +64,7 @@ set(THREADMAXX_TESTS
     commit_hash_test
     sharded_commit_test
     migration_batch_test
+    command_buffer_routing_test
     archetype_hash_determinism_test
     v1_2_legacy_commit_hash_test
     event_channel_lockfree_test

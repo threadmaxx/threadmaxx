@@ -128,6 +128,13 @@ private:
     // each sub-job; the sim thread reads it post-wait. Visible
     // ordering is provided by JobLatch's count_down/wait pair.
     std::atomic<std::uint64_t> subJobNanos_{0};
+
+    // SHARDED_OPTIMISATION.md S8 — installs the chunk locator on each
+    // freshly-created CommandBuffer in `buffers_[firstIdx..firstIdx+count)`
+    // when the engine is configured for sharded commit. The locator
+    // closes over `engine_.world().impl_().storage`, which outlives
+    // the SystemContext.
+    void installLocators(std::size_t firstIdx, std::size_t count) noexcept;
 };
 
 // The full engine state. Hidden behind PImpl from the public Engine class.
@@ -432,6 +439,14 @@ private:
     // swaps / perm scratch lives one layer down (`EntityStorage` and
     // `ArchetypeTable` own those).
     std::vector<EntityHandle> batchHandlesScratch_;
+
+    // SHARDED_OPTIMISATION.md S8 — per-buffer demoted-index scratch.
+    // A value-only command whose target entity has migrated (either
+    // earlier in this step or by a prior buffer's commit this wave)
+    // can no longer be safely binned by its record-time chunk hint.
+    // We collect those indices here, sort by submission order, and
+    // merge-apply them into the global lane.
+    std::vector<std::uint32_t> demotedScratch_;
 
     // SHARDED_OPTIMISATION.md S0 — per-step Pass A/B/C breakdown.
     // Reset to defaults at the top of `step()`; accumulated across all

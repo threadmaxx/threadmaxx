@@ -278,6 +278,50 @@ N=1 and N=8 are below the threshold; both rows take the per-cmd path under eithe
 
 **Defer / kill.** If S0–S5 already flip the default on `MultiArch` and `RPG-mix`, **do not ship S8**. The code complexity isn't worth it.
 
+**S8 outcome (LANDED 2026-05-24).** Recording-side per-chunk routing landed despite the S6 outcome having parked it — explicit user direction to chase the deeper win.
+
+**APIs added (all internal to CommandBuffer + a Config knob):**
+
+- `CommandBuffer::setLocator(LocatorFn, void*)` — engine installs a chunk-locator hook on each freshly-created buffer at wave start. Hook signature: `uint32_t(const void* ctx, EntityHandle h) noexcept` returning the entity's current archetype index or `kInvalidArchetype`. The locator wraps `EntityStorage::locate()`; lifetime tied to the wave-context SystemContext.
+- `CommandBuffer::globalIndices()` / `chunkBuckets()` — submission-order index lists into `commands()`. Populated at record time when the locator is set. Migrating cmds (every non-`SetTransform/Velocity/Acceleration/UserData` variant) go to `globalIndices()`; value-only cmds route to `chunkBuckets()[arch]`; stale handles fall through to global.
+- `CommandBuffer::noteGlobalCommand(idx)` — public router for free-function recorders (`addUserComponent`, `removeUserComponent`) that push directly into `commands()` without going through a member method.
+- `Config::recordTimeRouting` (default `true`) — A/B switch. Set `false` (or `THREADMAXX_NO_ROUTING=1` env var) to skip installing the locator hook so sharded commit falls back to the pre-S8 Pass A scan.
+
+**Sharded commit flow with S8 on:**
+
+1. **Pass A** — walks each buffer's `globalIndices()` (the migrating-or-stale subset, typically a small fraction of total cmds). Each entry's target entity index is OR'd into a wave-cumulative migrating bitmap. Routing-inactive buffers (preStep / postStep / single-threaded commit) fall back to the legacy full scan.
+2. **Pass B** — for routing-active buffers: walks each bucket; entries whose target is in the migrating bitmap demote to `demotedScratch_`, others transfer to engine-owned `shardChunkBins_[k]`. Demoted indices are sorted then merge-applied with `globalIndices()` in submission order, with the S6 migration-batch run detector intact (truncating runs against demoted indices to preserve order).
+3. **Pass C** — unchanged from S5/S6: parallel apply of `shardChunkBins_` with the small-bin serial fast path.
+
+**The wave-cumulative bitmap** (cleared only at wave start in `step()`, not per-commitBuffersSharded call) is what makes cross-system migrations within a wave safe: if system A's commit migrates entity e, system B's bucket entry for e (recorded against wave-start storage) demotes via the same bitmap on system B's commit pass.
+
+**Headline numbers (`commit_pass_breakdown`, mean of 3 runs of 256-iter sharded paths):**
+
+| Workload | S8 off | S8 on | Δ (commit_us) |
+|---|---|---|---|
+| `setTransform/Churn`     | 4 780 µs  | 3 666 µs  | **−23%**  |
+| `setVelocity/Churn`      | 4 487 µs  | 3 561 µs  | **−21%**  |
+| `addRemoveTag/Churn`     | 12 015 µs | 11 013 µs | **−8%**   |
+| `setTransform/MultiArch` | 5 639 µs  | 5 981 µs  | ~0% (noise) |
+| `RPG-mix`                | 5 911 µs  | 3 821 µs  | **−35%**  |
+| `SmallWorld`             | 14 µs     | 9 µs      | −36%      |
+| `ManyTinyBins`           | 229 µs    | 180 µs    | −21%      |
+
+Pass B drops 50–60% across every routing-active workload — the S8 mechanism is real. The translation to commit_us depends on Pass C's share: when Pass C is small (Churn, RPG-mix) the Pass B savings flow through; when Pass C dominates (MultiArch, where JobLatch wait is ~95% of Pass C) the commit_us barely moves.
+
+**Gates vs spec:**
+
+- ≥25% improvement on `RPG-mix` — **PASSED (−35%).**
+- ≥25% improvement on `MultiArch` — **MISSED (~0%, noise-band).** Pass C latch wait dominates this workload; Pass B optimization can't reach it. Confirms S0's "JobLatch::wait is 99% of Pass C" finding from the other end.
+- Determinism harness 10× soak — **PASSED.** `concurrency_soak_long` (~5 min, 10× standard), `concurrency_soak_test`, `sharded_commit_test`, `migration_batch_test`, new `command_buffer_routing_test` (8 cases — 5 unit + 3 end-to-end determinism scripts), full `ctest` 125/125.
+
+**Decision.** Ship S8 — the dual-25% gate is split, but the wins are real where Pass B mattered. Default `singleThreadedCommit = true` stays pinned: MultiArch can't flip without addressing Pass C latch wait, which is the S∞ blocker. RPG-mix is now closer (post-S8 sharded ~1.4× single, was ~1.8× post-S6); a future Pass C overhaul could land the flip.
+
+**Action items.**
+
+- **Skip S∞ for now.** MultiArch latch wait is still the blocker on the default flip. Re-evaluate after a Pass C overhaul (smaller-bin amortization or work-stealing into the latch wait window).
+- **Watch for record-time locator overhead in spawn-heavy ticks** — the locator query adds ~10ns per cmd, paid even when the locator returns stale (spawn flow). Bench-tested clean on the current matrix.
+
 ### S∞ — Flip the default
 
 Land in a separate commit, after the batches above have been measured over a full soak cycle.

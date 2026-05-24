@@ -406,7 +406,7 @@ public:
     void removeComponent(EntityHandle entity);
 
     void reserve(std::size_t n)        { commands_.reserve(n); }
-    void clear() noexcept              { commands_.clear(); valueOnlyCount_ = 0; }
+    void clear() noexcept;
     std::size_t size() const noexcept  { return commands_.size(); }
     bool empty() const noexcept        { return commands_.empty(); }
 
@@ -423,12 +423,78 @@ public:
     /// @internal Used internally by the commit phase.
     std::vector<detail::Command>& commands() noexcept { return commands_; }
 
+    /// SHARDED_OPTIMISATION.md S8 — chunk locator function pointer.
+    /// Returns the destination archetype index for `h`, or
+    /// `kInvalidArchetype` for stale / not-yet-spawned handles.
+    /// Engine installs this on each buffer before dispatching it to a
+    /// worker (sharded commit only); `nullptr` disables record-time
+    /// binning so the single-threaded path pays no extra cost.
+    using LocatorFn = std::uint32_t(*)(const void* ctx,
+                                       EntityHandle h) noexcept;
+
+    /// Sentinel archetype index returned by `LocatorFn` for stale
+    /// handles. Routes the command to the global lane.
+    static constexpr std::uint32_t kInvalidArchetype =
+        static_cast<std::uint32_t>(-1);
+
+    /// @internal Install the chunk locator. The engine calls this once
+    /// per buffer per wave, just after the buffer is created and
+    /// before it is handed to a worker. Passing `nullptr` clears the
+    /// hook.
+    void setLocator(LocatorFn fn, const void* ctx) noexcept {
+        locatorFn_  = fn;
+        locatorCtx_ = ctx;
+    }
+
+    /// @internal True when a locator is installed and the commit path
+    /// can read the per-chunk routing data from this buffer.
+    bool routingActive() const noexcept { return locatorFn_ != nullptr; }
+
+    /// @internal Submission-order indices into @ref commands() that
+    /// must apply on the sim thread (migrating, oversize, or stale-
+    /// handle value-only commands). Populated at record time when
+    /// @ref routingActive().
+    const std::vector<std::uint32_t>& globalIndices() const noexcept {
+        return globalIdx_;
+    }
+
+    /// @internal Per-archetype buckets of submission-order indices into
+    /// @ref commands(). `chunkBuckets()[k]` collects value-only
+    /// commands whose target entity was located in archetype @c k at
+    /// record time. Populated when @ref routingActive().
+    const std::vector<std::vector<std::uint32_t>>& chunkBuckets() const noexcept {
+        return chunkBuckets_;
+    }
+
+    /// @internal S8 router hook for free-function recorders such as
+    /// `addUserComponent` / `removeUserComponent` which push directly
+    /// into @ref commands() without going through a member recording
+    /// method. Caller passes the freshly recorded command's index;
+    /// the index is routed to the global lane (these are all
+    /// migrating commands). No-op when the locator is null.
+    void noteGlobalCommand(std::uint32_t cmdIdx) noexcept {
+        if (locatorFn_) globalIdx_.push_back(cmdIdx);
+    }
+
 private:
     std::vector<detail::Command> commands_;
     /// §3.9.6 batch 21 — bumped by the four value-only recording
     /// methods so the sharded commit can take a fast path without
     /// scanning the variant tag stream.
     std::size_t                  valueOnlyCount_ = 0;
+
+    // S8 — record-time per-chunk routing. `commands_` remains the
+    // authoritative submission-order stream; these vectors index
+    // into it so the sharded commit can dispatch without re-walking
+    // the variant tag stream.
+    std::vector<std::vector<std::uint32_t>> chunkBuckets_;
+    std::vector<std::uint32_t>              globalIdx_;
+    LocatorFn   locatorFn_  = nullptr;
+    const void* locatorCtx_ = nullptr;
+
+    // Recording helpers — inlined into CommandBuffer.cpp.
+    void routeValueOnly(EntityHandle e, std::uint32_t cmdIdx) noexcept;
+    void routeGlobal(std::uint32_t cmdIdx) noexcept;
 };
 
 template <typename T>

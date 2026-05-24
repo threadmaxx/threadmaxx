@@ -716,16 +716,45 @@ move the needle, but the cost (CommandBuffer refactor to per-
 destination mini-lists at record time) is large. Resume only if
 a different workload pattern surfaces.
 
+## S8 — Per-chunk record-time routing (LANDED 2026-05-24, despite S6 outcome's park)
+
+Explicit user direction to chase the deeper win revisited the S8 park. Landed with a `Config::recordTimeRouting` toggle (default `true`) so the sharded path is opt-out via env var (`THREADMAXX_NO_ROUTING=1`) for A/B benching.
+
+**Mechanism.** Each `CommandBuffer` receives a chunk-locator hook before being handed to a worker. Recording methods call the locator on the target entity; value-only cmds route into per-archetype index buckets, migrating cmds + stale handles route into a global-lane index list. The sharded commit's Pass A walks just the global-lane lists (a small fraction of cmds for typical workloads); Pass B walks bucket entries with a wave-cumulative migrating-bitmap filter for demotion. Determinism preserved by merge-sorting `globalIndices()` + demoted entries in submission order with the S6 batch-migrate run detector intact (truncating runs against the next demoted index).
+
+**Headline (commit_pass_breakdown, mean of 3 runs of 256-iter sharded paths):**
+
+| Workload | S8 off (NO_ROUTING=1) | S8 on (default) | Δ commit_us |
+|---|---|---|---|
+| `setTransform/Churn`     | 4 780 µs  | 3 666 µs  | **−23%**  |
+| `setVelocity/Churn`      | 4 487 µs  | 3 561 µs  | **−21%**  |
+| `addRemoveTag/Churn`     | 12 015 µs | 11 013 µs | **−8%**   |
+| `setTransform/MultiArch` | 5 639 µs  | 5 981 µs  | ~0% (noise) |
+| `RPG-mix`                | 5 911 µs  | 3 821 µs  | **−35%**  |
+| `SmallWorld`             | 14 µs     | 9 µs      | −36%      |
+| `ManyTinyBins`           | 229 µs    | 180 µs    | −21%      |
+
+Pass B drops 50–60% on every routing-active workload (the S8 mechanism is real). MultiArch's commit_us doesn't move because Pass C JobLatch wait dominates (~95% of Pass C); confirms S0's finding from the other end.
+
+**Gates vs spec:**
+
+- ≥25% on `RPG-mix`     — **PASSED (−35%).**
+- ≥25% on `MultiArch`   — **MISSED (~0%).**
+- 10× soak determinism  — **PASSED** (`concurrency_soak_long`, plus full ctest 125/125 including new `command_buffer_routing_test`).
+
+**Decision.** Ship S8 — the gate is split but the gains are real where Pass B mattered. Default `singleThreadedCommit = true` stays pinned: MultiArch needs a Pass C overhaul to unblock the default flip. RPG-mix sharded is now ~1.4× single (was ~1.8× post-S6); the gap is closing but a Pass C win is still required for S∞.
+
 ## Reproducibility
 
 ```
 cmake --build build -j
-./build/bench/migration_bench                                  # S6 A/B at end of output
-./build/bench/commit_pass_breakdown                            # default (batch on)
-THREADMAXX_NO_BATCH=1 ./build/bench/commit_pass_breakdown      # batch off
-cd build && ctest --output-on-failure                          # full gate
+./build/bench/migration_bench                                       # S6 A/B at end of output
+./build/bench/commit_pass_breakdown                                 # default (S6 batch on, S8 routing on)
+THREADMAXX_NO_BATCH=1 ./build/bench/commit_pass_breakdown           # S6 batch off
+THREADMAXX_NO_ROUTING=1 ./build/bench/commit_pass_breakdown         # S8 routing off
+cd build && ctest --output-on-failure                               # full gate (125 tests)
 cmake -S . -B build-long-soak -DCMAKE_BUILD_TYPE=Release \
     -DTHREADMAXX_BUILD_LONG_SOAK=ON
 cmake --build build-long-soak --target concurrency_soak_long
-./build-long-soak/tests/concurrency_soak_long                  # ~5 min
+./build-long-soak/tests/concurrency_soak_long                       # ~5 min
 ```

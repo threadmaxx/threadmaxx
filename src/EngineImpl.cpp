@@ -468,6 +468,23 @@ bool commandIsMigrating(const detail::Command& cmd) noexcept {
     }, cmd);
 }
 
+// SHARDED_OPTIMISATION.md S8 — chunk-locator hook installed on each
+// CommandBuffer at wave start. Resolves an entity handle to its
+// current archetype index (or `kInvalidArchetype` for stale / not-
+// yet-spawned handles, which routes the command to the global lane).
+//
+// Thread-safe under the wave-recording invariant: workers only read
+// `slots_`; the sole mutator during a wave is `EntityStorage::
+// reserveHandle()` which appends new slots under `reservationMtx_`.
+// As long as `slots_` has been pre-reserved enough to avoid
+// reallocation, concurrent reads of existing slots are safe.
+std::uint32_t commandBufferLocator(const void* ctx,
+                                   EntityHandle h) noexcept {
+    const auto* storage = static_cast<const EntityStorage*>(ctx);
+    const auto loc = storage->locate(h);
+    return loc.archetype;
+}
+
 // Returns the target entity of a non-spawn command. For `CmdSpawn`
 // (which creates a new entity), returns the reserved handle if
 // present or `kInvalidEntity` otherwise. The migrating-set tracking
@@ -493,6 +510,20 @@ EntityHandle commandTargetEntity(const detail::Command& cmd) noexcept {
 } // namespace
 
 // ---- SystemContextImpl --------------------------------------------------
+
+// SHARDED_OPTIMISATION.md S8 — installed on each fresh CommandBuffer
+// when the engine runs the sharded commit. Skipping it when
+// `singleThreadedCommit == true` saves the per-record locator call
+// and bucket push on the serial path.
+void SystemContextImpl::installLocators(std::size_t firstIdx,
+                                        std::size_t count) noexcept {
+    const auto& cfg = engine_.config();
+    if (cfg.singleThreadedCommit || !cfg.recordTimeRouting) return;
+    const auto* storage = &engine_.world().impl_().storage;
+    for (std::size_t i = 0; i < count; ++i) {
+        buffers_[firstIdx + i].setLocator(&commandBufferLocator, storage);
+    }
+}
 
 void SystemContextImpl::parallelFor(std::uint32_t count,
                                     std::uint32_t grain,
@@ -532,6 +563,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     const std::size_t firstIdx = buffers_.size();
     buffers_.resize(firstIdx + chunkCount);
     arenas_.resize(firstIdx + chunkCount);
+    installLocators(firstIdx, chunkCount);
 
     JobLatch done(chunkCount);
     for (std::uint32_t c = 0; c < chunkCount; ++c) {
@@ -583,6 +615,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     const std::size_t firstIdx = buffers_.size();
     buffers_.resize(firstIdx + chunkCount);
     arenas_.resize(firstIdx + chunkCount);
+    installLocators(firstIdx, chunkCount);
 
     JobLatch done(chunkCount);
     for (std::uint32_t c = 0; c < chunkCount; ++c) {
@@ -613,15 +646,19 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
 
 void SystemContextImpl::single(JobFn fn) {
     if (!fn) return;
+    const std::size_t firstIdx = buffers_.size();
     buffers_.emplace_back();
     arenas_.emplace_back();
+    installLocators(firstIdx, 1);
     fn(Range{0, 0}, buffers_.back());
 }
 
 void SystemContextImpl::single(JobFnArena fn) {
     if (!fn) return;
+    const std::size_t firstIdx = buffers_.size();
     buffers_.emplace_back();
     arenas_.emplace_back();
+    installLocators(firstIdx, 1);
     fn(Range{0, 0}, buffers_.back(), arenas_.back());
 }
 
@@ -1402,20 +1439,25 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         return;
     }
 
-    // ----- Pass A: build the migrating-entity set ----------------------
+    // ----- Pass A: extend the migrating-entity set ---------------------
     //
     // §3.9.6 batch 21 — replaced `std::unordered_set<EntityHandle>`
     // with an engine-owned `std::vector<uint8_t>` bitmap keyed by
     // `EntityHandle::index`. Set + lookup are now single-byte indexed
     // reads; the buffer is preserved across calls so the steady-state
-    // pays zero allocations after the first tick. Indices we touched
-    // this call are recorded in `shardMigratingIndices_` so we can
-    // clear them at the end without zeroing the whole bitmap.
+    // pays zero allocations after the first tick.
+    //
+    // SHARDED_OPTIMISATION.md S8 — the bitmap is now cumulative across
+    // the wave (cleared in `step()` at wave start). Pass A only
+    // adds to it; cross-system migrations within a wave thus stay
+    // visible to a later system's bucket-demotion pass. Routing-
+    // active buffers walk just `globalIndices()` (a small fraction
+    // of their commands); legacy buffers fall back to the full scan.
     const std::size_t slotCap = storage.slotCount();
     if (shardMigratingBitmap_.size() < slotCap) {
         shardMigratingBitmap_.resize(slotCap, 0);
     }
-    shardMigratingIndices_.clear();
+    const std::size_t passAIndicesBefore = shardMigratingIndices_.size();
 
     auto markMigrating = [&](const detail::Command& cmd) {
         const EntityHandle e = commandTargetEntity(cmd);
@@ -1432,14 +1474,25 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     // empty and Pass B's `migrating[idx]` check always reads 0.
     if (totalValueOnly < totalCommands) {
         for (const auto& cb : buffers) {
-            for (const auto& cmd : cb.commands()) {
-                if (commandIsMigrating(cmd)) markMigrating(cmd);
+            if (cb.routingActive()) {
+                // S8 — globalIdx_ is exactly the migrating-or-stale
+                // index list, populated at record time. Skip the
+                // variant-tag scan over the value-only majority.
+                const auto& cmds = cb.commands();
+                for (auto gi : cb.globalIndices()) {
+                    markMigrating(cmds[gi]);
+                }
+            } else {
+                for (const auto& cmd : cb.commands()) {
+                    if (commandIsMigrating(cmd)) markMigrating(cmd);
+                }
             }
         }
     }
     const auto bdAEnd = bdClock::now();
     commitBreakdown_.nsPassA        += bdElapsedNs(bdAStart, bdAEnd);
-    commitBreakdown_.migratingCount += shardMigratingIndices_.size();
+    commitBreakdown_.migratingCount +=
+        shardMigratingIndices_.size() - passAIndicesBefore;
 
     // ----- Pass B: classify in submission order, applying global cmds --
     //
@@ -1502,8 +1555,239 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         return true;
     };
 
+    // SHARDED_OPTIMISATION.md S8 — same batch-migrate logic as
+    // `tryBatchMigrate`, but the run is a span of command indices
+    // INTO cmdsVec rather than a contiguous (startIdx, runLen) slice.
+    // Used by the routing-active fast path where `globalIdx_` lists
+    // non-contiguous indices in submission order.
+    auto tryBatchMigrateIndexed = [&](auto& cmdsVec,
+                                      std::span<const std::uint32_t> cmdIndices,
+                                      auto predictDst,
+                                      auto applyValue) -> bool {
+        const std::size_t runLen = cmdIndices.size();
+        if (runLen < kBatchMigrateThreshold) return false;
+        const auto firstE = commandTargetEntity(cmdsVec[cmdIndices[0]]);
+        if (!firstE.valid()) return false;
+        const auto firstLoc = storage.locate(firstE);
+        if (firstLoc.archetype >= chunks.size()) return false;
+        const ComponentSet srcMask = chunks[firstLoc.archetype].mask;
+        const ComponentSet dstMask = predictDst(srcMask);
+        if (dstMask == srcMask) return false;
+
+        batchHandlesScratch_.clear();
+        batchHandlesScratch_.reserve(runLen);
+        for (auto ci : cmdIndices) {
+            const auto e = commandTargetEntity(cmdsVec[ci]);
+            if (!e.valid()) return false;
+            const auto loc = storage.locate(e);
+            if (loc.archetype != firstLoc.archetype) return false;
+            batchHandlesScratch_.push_back(e);
+        }
+        if (!storage.setMaskAndMigrateBatch(batchHandlesScratch_, dstMask)) {
+            return false;
+        }
+        const bool legacyHash = cfg_.legacyCommitHash;
+        for (std::size_t j = 0; j < runLen; ++j) {
+            applyValue(cmdsVec[cmdIndices[j]], batchHandlesScratch_[j]);
+            if (legacyHash) {
+                commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                    cmdsVec[cmdIndices[j]], kInvalidEntity);
+            }
+        }
+        bdBatchedMigrations += runLen;
+        return true;
+    };
+
     for (auto& cb : buffers) {
         auto& cmdsVec = cb.commands();
+
+        // SHARDED_OPTIMISATION.md S8 — record-time per-chunk routing
+        // fast path. `cmdsVec` is the authoritative submission-order
+        // command stream; the buffer's `chunkBuckets()` and
+        // `globalIndices()` lists are index-into-cmdsVec partitions
+        // populated at record time. We pay the per-cmd locate() once
+        // (at record time, cache-hot against the slot table) rather
+        // than once per cmd in Pass B. Cross-system stale hints are
+        // demoted via the cumulative migrating bitmap built in Pass A.
+        if (cb.routingActive()) {
+            const auto& gIdx    = cb.globalIndices();
+            const auto& buckets = cb.chunkBuckets();
+
+            // Walk buckets: each entry either transfers to engine
+            // shardChunkBins_ (its hint is still valid) or gets
+            // demoted (its target entity migrated this wave).
+            demotedScratch_.clear();
+            for (std::size_t k = 0; k < buckets.size(); ++k) {
+                const auto& bucket = buckets[k];
+                if (bucket.empty()) continue;
+                if (k >= shardChunkBins_.size()) {
+                    shardChunkBins_.resize(k + 1);
+                }
+                auto& dst = shardChunkBins_[k];
+                dst.reserve(dst.size() + bucket.size());
+                for (auto idx : bucket) {
+                    const EntityHandle e = commandTargetEntity(cmdsVec[idx]);
+                    const bool isMig =
+                        e.valid() && e.index < shardMigratingBitmap_.size() &&
+                        shardMigratingBitmap_[e.index] != 0;
+                    if (isMig) {
+                        demotedScratch_.push_back(idx);
+                        continue;
+                    }
+                    dst.push_back(&cmdsVec[idx]);
+                    if (cfg_.legacyCommitHash) {
+                        commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                            cmdsVec[idx], kInvalidEntity);
+                    }
+                    ++bdBinned;
+                }
+            }
+            // Buckets are walked in chunk order; the resulting
+            // demoted indices may be out of submission order. Sort
+            // so the merge below preserves it.
+            std::sort(demotedScratch_.begin(), demotedScratch_.end());
+
+            // Merge-apply globalIdx_ + demotedScratch_ in submission
+            // order. Runs of same-kind migrating commands inside
+            // gIdx[] are batched via `tryBatchMigrateIndexed`, but a
+            // run is truncated if a demoted index falls inside it
+            // (keeps the merged stream in strict submission order).
+            std::size_t gi = 0, di = 0;
+            while (gi < gIdx.size() || di < demotedScratch_.size()) {
+                const bool pickG =
+                    gi < gIdx.size() &&
+                    (di >= demotedScratch_.size() ||
+                     gIdx[gi] < demotedScratch_[di]);
+                if (!pickG) {
+                    const std::uint32_t demIdx = demotedScratch_[di];
+                    ++di;
+                    const EntityHandle spawnResult =
+                        applyCommandImpl(cmdsVec[demIdx], storage);
+                    if (cfg_.legacyCommitHash) {
+                        commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                            cmdsVec[demIdx], spawnResult);
+                    }
+                    ++bdGlobalLane;
+                    continue;
+                }
+                auto& cmd = cmdsVec[gIdx[gi]];
+
+                // Run-detect: extend within gIdx, then truncate so
+                // every batched index is < the next demoted index
+                // (preserves submission order in the merged stream).
+                std::size_t runEndInG = gi + 1;
+                bool batched = false;
+                auto truncateAgainstDemoted = [&](std::size_t r) -> std::size_t {
+                    if (di >= demotedScratch_.size()) return r;
+                    const std::uint32_t nextDem = demotedScratch_[di];
+                    while (r > gi + 1 && gIdx[r - 1] >= nextDem) --r;
+                    return r;
+                };
+
+                if (auto* addP = std::get_if<detail::CmdAddTag>(&cmd)) {
+                    const Component tag = addP->tag;
+                    while (runEndInG < gIdx.size()) {
+                        auto* q = std::get_if<detail::CmdAddTag>(
+                            &cmdsVec[gIdx[runEndInG]]);
+                        if (!q || q->tag != tag) break;
+                        ++runEndInG;
+                    }
+                    runEndInG = truncateAgainstDemoted(runEndInG);
+                    auto runSpan = std::span<const std::uint32_t>(
+                        gIdx.data() + gi, runEndInG - gi);
+                    batched = tryBatchMigrateIndexed(cmdsVec, runSpan,
+                        [tag](ComponentSet src) {
+                            ComponentSet d = src; d.add(tag); return d;
+                        },
+                        [](detail::Command&, EntityHandle) {});
+                } else if (auto* remP = std::get_if<detail::CmdRemoveTag>(&cmd)) {
+                    const Component tag = remP->tag;
+                    while (runEndInG < gIdx.size()) {
+                        auto* q = std::get_if<detail::CmdRemoveTag>(
+                            &cmdsVec[gIdx[runEndInG]]);
+                        if (!q || q->tag != tag) break;
+                        ++runEndInG;
+                    }
+                    runEndInG = truncateAgainstDemoted(runEndInG);
+                    auto runSpan = std::span<const std::uint32_t>(
+                        gIdx.data() + gi, runEndInG - gi);
+                    batched = tryBatchMigrateIndexed(cmdsVec, runSpan,
+                        [tag](ComponentSet src) {
+                            ComponentSet d = src; d.remove(tag); return d;
+                        },
+                        [](detail::Command&, EntityHandle) {});
+                } else if (std::holds_alternative<detail::CmdSetHealth>(cmd)) {
+                    while (runEndInG < gIdx.size() &&
+                           std::holds_alternative<detail::CmdSetHealth>(
+                               cmdsVec[gIdx[runEndInG]])) {
+                        ++runEndInG;
+                    }
+                    runEndInG = truncateAgainstDemoted(runEndInG);
+                    auto runSpan = std::span<const std::uint32_t>(
+                        gIdx.data() + gi, runEndInG - gi);
+                    batched = tryBatchMigrateIndexed(cmdsVec, runSpan,
+                        [](ComponentSet src) {
+                            ComponentSet d = src; d.add(Component::Health); return d;
+                        },
+                        [&storage](detail::Command& c, EntityHandle e) {
+                            if (auto* p = storage.mutHealth(e)) {
+                                *p = std::get<detail::CmdSetHealth>(c).value;
+                            }
+                        });
+                } else if (std::holds_alternative<detail::CmdSetFaction>(cmd)) {
+                    while (runEndInG < gIdx.size() &&
+                           std::holds_alternative<detail::CmdSetFaction>(
+                               cmdsVec[gIdx[runEndInG]])) {
+                        ++runEndInG;
+                    }
+                    runEndInG = truncateAgainstDemoted(runEndInG);
+                    auto runSpan = std::span<const std::uint32_t>(
+                        gIdx.data() + gi, runEndInG - gi);
+                    batched = tryBatchMigrateIndexed(cmdsVec, runSpan,
+                        [](ComponentSet src) {
+                            ComponentSet d = src; d.add(Component::Faction); return d;
+                        },
+                        [&storage](detail::Command& c, EntityHandle e) {
+                            if (auto* p = storage.mutFaction(e)) {
+                                *p = std::get<detail::CmdSetFaction>(c).value;
+                            }
+                        });
+                } else if (std::holds_alternative<detail::CmdSetBoundingVolume>(cmd)) {
+                    while (runEndInG < gIdx.size() &&
+                           std::holds_alternative<detail::CmdSetBoundingVolume>(
+                               cmdsVec[gIdx[runEndInG]])) {
+                        ++runEndInG;
+                    }
+                    runEndInG = truncateAgainstDemoted(runEndInG);
+                    auto runSpan = std::span<const std::uint32_t>(
+                        gIdx.data() + gi, runEndInG - gi);
+                    batched = tryBatchMigrateIndexed(cmdsVec, runSpan,
+                        [](ComponentSet src) {
+                            ComponentSet d = src; d.add(Component::BoundingVolume); return d;
+                        },
+                        [&storage](detail::Command& c, EntityHandle e) {
+                            if (auto* p = storage.mutBoundingVolume(e)) {
+                                *p = std::get<detail::CmdSetBoundingVolume>(c).value;
+                            }
+                        });
+                }
+
+                if (batched) {
+                    gi = runEndInG;
+                } else {
+                    const EntityHandle spawnResult =
+                        applyCommandImpl(cmd, storage);
+                    if (cfg_.legacyCommitHash) {
+                        commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                            cmd, spawnResult);
+                    }
+                    ++bdGlobalLane;
+                    ++gi;
+                }
+            }
+            continue; // next buffer; skip the legacy Pass B body below
+        }
+
         std::size_t i = 0;
         while (i < cmdsVec.size()) {
             auto& cmd = cmdsVec[i];
@@ -1648,8 +1932,8 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     commitBreakdown_.shardedCalls += 1;
     if (activeBins == 0) {
         for (auto& cb : buffers) cb.clear();
-        // Clear the migrating bitmap entries we set this call.
-        for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
+        // S8 — bitmap is wave-cumulative; cleared at wave start in
+        // `step()` rather than here.
         const auto bdT1 = bdClock::now();
         commitBreakdown_.nsTotal += bdElapsedNs(bdT0, bdT1);
         return;
@@ -1718,9 +2002,10 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     commitBreakdown_.nsPassC += bdElapsedNs(bdCStart, bdCEnd);
 
     for (auto& cb : buffers) cb.clear();
-    // §3.9.6 batch 21 — bitmap fast clear: only zero the indices we
-    // actually touched this call, leaving the rest at 0.
-    for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
+    // S8 — bitmap is wave-cumulative; cleared at wave start in
+    // `step()` (not here). Indices set in Pass A persist so a later
+    // commit this wave can still demote a value-only cmd targeting
+    // an entity that an earlier commit migrated.
 
     const auto bdT1 = bdClock::now();
     commitBreakdown_.nsTotal += bdElapsedNs(bdT0, bdT1);
@@ -2045,6 +2330,17 @@ void EngineImpl::step() {
         // chunk inventory. All systems in this wave share the same
         // view (they see pre-wave world state).
         worldView_.rebuild(world_);
+
+        // SHARDED_OPTIMISATION.md S8 — clear the cumulative migrating
+        // bitmap at the top of each wave. Buffers in this wave were
+        // recorded against post-previous-wave storage; migrations from
+        // pre-step or earlier waves are now baked in, so the bitmap
+        // starts fresh. commitBuffersSharded accumulates across all
+        // systems in this wave so a later system's bucket entries can
+        // be demoted if an earlier system migrated their entity.
+        for (auto idx : shardMigratingIndices_) shardMigratingBitmap_[idx] = 0;
+        shardMigratingIndices_.clear();
+
         std::vector<std::unique_ptr<SystemContextImpl>> ctxs;
         ctxs.reserve(wave.size());
         for (std::size_t k = 0; k < wave.size(); ++k) {

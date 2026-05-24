@@ -106,6 +106,22 @@ struct Config {
     /// for the same command stream. Verified by
     /// `tests/migration_batch_test.cpp` (test 6).
     std::uint32_t batchMigrateThreshold = 16;
+
+    /// SHARDED_OPTIMISATION.md S8 — opts the sharded commit path into
+    /// record-time per-chunk routing. When `true` (default), the
+    /// engine installs a chunk-locator hook on every fresh
+    /// `CommandBuffer` it hands to a worker; the buffer populates
+    /// per-chunk index buckets at record time, and the commit's
+    /// Pass A walks only the migrating-index list (not the full
+    /// command stream). When `false`, sharded commit falls back to
+    /// the pre-S8 Pass A scan over every command.
+    ///
+    /// Ignored when `singleThreadedCommit == true` (the serial path
+    /// pays no record-time overhead either way).
+    ///
+    /// Hash determinism: identical commitHash stream with the flag on
+    /// or off, verified by `tests/command_buffer_routing_test.cpp`.
+    bool recordTimeRouting = true;
 };
 
 } // namespace threadmaxx

@@ -35,6 +35,39 @@ ComponentSet defaultSpawnMask(const RenderTag& r, const Parent& p) noexcept {
 
 } // namespace
 
+// SHARDED_OPTIMISATION.md S8 — recording-side router for value-only
+// commands. When a locator is installed, query the destination
+// archetype and push the command index into the matching bucket;
+// stale handles fall through to the global lane so commit can apply
+// them via the no-op-on-stale `mut*()` setters.
+void CommandBuffer::routeValueOnly(EntityHandle e,
+                                   std::uint32_t cmdIdx) noexcept {
+    if (!locatorFn_) return;
+    const std::uint32_t arch = locatorFn_(locatorCtx_, e);
+    if (arch == kInvalidArchetype) {
+        globalIdx_.push_back(cmdIdx);
+        return;
+    }
+    if (arch >= chunkBuckets_.size()) {
+        chunkBuckets_.resize(static_cast<std::size_t>(arch) + 1);
+    }
+    chunkBuckets_[arch].push_back(cmdIdx);
+}
+
+void CommandBuffer::routeGlobal(std::uint32_t cmdIdx) noexcept {
+    if (!locatorFn_) return;
+    globalIdx_.push_back(cmdIdx);
+}
+
+void CommandBuffer::clear() noexcept {
+    commands_.clear();
+    valueOnlyCount_ = 0;
+    globalIdx_.clear();
+    for (auto& b : chunkBuckets_) b.clear();
+    // `locatorFn_` / `locatorCtx_` persist across clear() — the engine
+    // re-installs them per wave.
+}
+
 // §3.9.3 batch 18 — heap-allocate `CmdSpawn`. Saves ~200 B / command
 // in the `std::vector<Command>` storage; spawn itself is rare so the
 // extra allocation per call is a clean trade.
@@ -49,6 +82,7 @@ void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                          BoundingVolume{},
                          defaultSpawnMask(r, p),
                          kInvalidEntity}));
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                           const RenderTag& r, const UserData& u,
@@ -62,6 +96,7 @@ void CommandBuffer::spawn(const Transform& t, const Velocity& v,
                          BoundingVolume{},
                          initialMask,
                          kInvalidEntity}));
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::spawn(EntityHandle reserved,
                           const Transform& t, const Velocity& v,
@@ -75,6 +110,7 @@ void CommandBuffer::spawn(EntityHandle reserved,
                          BoundingVolume{},
                          defaultSpawnMask(r, p),
                          reserved}));
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::spawn(EntityHandle reserved,
                           const Transform& t, const Velocity& v,
@@ -89,6 +125,7 @@ void CommandBuffer::spawn(EntityHandle reserved,
                          BoundingVolume{},
                          initialMask,
                          reserved}));
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::spawnBundle(const Bundle& b) {
     commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
@@ -98,6 +135,7 @@ void CommandBuffer::spawnBundle(const Bundle& b) {
             b.health, b.faction, b.animationState,
             b.physicsBody, b.navAgent, b.boundingVolume,
             b.initialMask, kInvalidEntity}));
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::spawnBundle(EntityHandle reserved, const Bundle& b) {
     commands_.emplace_back(std::make_unique<detail::CmdSpawn>(
@@ -107,6 +145,7 @@ void CommandBuffer::spawnBundle(EntityHandle reserved, const Bundle& b) {
             b.health, b.faction, b.animationState,
             b.physicsBody, b.navAgent, b.boundingVolume,
             b.initialMask, reserved}));
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 // §3.10.3 batch 23 (F12) — bulk spawn. Pre-reserve the storage so
 // the loop's per-spawn `emplace_back` doesn't trigger geometric
@@ -119,61 +158,78 @@ void CommandBuffer::spawnBundleN(std::span<const EntityHandle> reserved,
     const std::size_t n = std::min(reserved.size(), bundles.size());
     if (n == 0) return;
     commands_.reserve(commands_.size() + n);
+    if (locatorFn_) globalIdx_.reserve(globalIdx_.size() + n);
     for (std::size_t i = 0; i < n; ++i) {
         spawnBundle(reserved[i], bundles[i]);
     }
 }
 void CommandBuffer::destroy(EntityHandle e) {
     commands_.emplace_back(detail::CmdDestroy{e});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setTransform(EntityHandle e, const Transform& t) {
     commands_.emplace_back(detail::CmdSetTransform{e, t});
     ++valueOnlyCount_;
+    routeValueOnly(e, static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setVelocity(EntityHandle e, const Velocity& v) {
     commands_.emplace_back(detail::CmdSetVelocity{e, v});
     ++valueOnlyCount_;
+    routeValueOnly(e, static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setRenderTag(EntityHandle e, const RenderTag& r) {
     commands_.emplace_back(detail::CmdSetRenderTag{e, r});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setUserData(EntityHandle e, const UserData& u) {
     commands_.emplace_back(detail::CmdSetUserData{e, u});
     ++valueOnlyCount_;
+    routeValueOnly(e, static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setAcceleration(EntityHandle e, const Acceleration& a) {
     commands_.emplace_back(detail::CmdSetAcceleration{e, a});
     ++valueOnlyCount_;
+    routeValueOnly(e, static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setParent(EntityHandle e, const Parent& p) {
     commands_.emplace_back(detail::CmdSetParent{e, p});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setHealth(EntityHandle e, const Health& h) {
     commands_.emplace_back(detail::CmdSetHealth{e, h});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setFaction(EntityHandle e, const Faction& f) {
     commands_.emplace_back(detail::CmdSetFaction{e, f});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setAnimationStateRef(EntityHandle e, const AnimationStateRef& a) {
     commands_.emplace_back(detail::CmdSetAnimationState{e, a});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setPhysicsBodyRef(EntityHandle e, const PhysicsBodyRef& p) {
     commands_.emplace_back(detail::CmdSetPhysicsBody{e, p});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setNavAgentRef(EntityHandle e, const NavAgentRef& n) {
     commands_.emplace_back(detail::CmdSetNavAgent{e, n});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setBoundingVolume(EntityHandle e, const BoundingVolume& b) {
     commands_.emplace_back(detail::CmdSetBoundingVolume{e, b});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::setComponentMask(EntityHandle e, ComponentSet m) {
     commands_.emplace_back(detail::CmdSetComponentMask{e, m});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::addTag(EntityHandle e, Component tag) {
     commands_.emplace_back(detail::CmdAddTag{e, tag});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 void CommandBuffer::removeTag(EntityHandle e, Component tag) {
     commands_.emplace_back(detail::CmdRemoveTag{e, tag});
+    routeGlobal(static_cast<std::uint32_t>(commands_.size() - 1));
 }
 
 } // namespace threadmaxx

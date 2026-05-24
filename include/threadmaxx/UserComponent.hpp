@@ -75,6 +75,7 @@ inline void addUserComponent(CommandBuffer& cb, UserComponentId id,
         c->size = 0;
     }
     cb.commands().emplace_back(std::move(c));
+    cb.noteGlobalCommand(static_cast<std::uint32_t>(cb.commands().size() - 1));
 }
 
 /// Record a "detach this user component" mutation. The presence bit is
@@ -89,6 +90,7 @@ inline void removeUserComponent(CommandBuffer& cb, UserComponentId id,
     c.entity = entity;
     c.bit    = id.bit;
     cb.commands().emplace_back(c);
+    cb.noteGlobalCommand(static_cast<std::uint32_t>(cb.commands().size() - 1));
 }
 
 namespace user {

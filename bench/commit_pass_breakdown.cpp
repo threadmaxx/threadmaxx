@@ -285,6 +285,12 @@ PerWorkloadResult measureWorkload(const char* workloadName,
     if (const char* nob = std::getenv("THREADMAXX_NO_BATCH"); nob && nob[0] == '1') {
         cfg.batchMigrateThreshold = std::numeric_limits<std::uint32_t>::max();
     }
+    // SHARDED_OPTIMISATION.md S8 — Env-var override for the record-time
+    // per-chunk routing path. Set THREADMAXX_NO_ROUTING=1 to fall back
+    // to the pre-S8 Pass A scan (legacy path inside sharded commit).
+    if (const char* nor = std::getenv("THREADMAXX_NO_ROUTING"); nor && nor[0] == '1') {
+        cfg.recordTimeRouting = false;
+    }
     Engine engine(cfg);
     if (!engine.initialize(game)) {
         std::fprintf(stderr, "  init failed for %s\n", workloadName);
