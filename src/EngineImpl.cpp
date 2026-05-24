@@ -1189,10 +1189,54 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
         storage.archetypes().reserveChunkRows(dstMask, runLen);
     };
 
+    // SHARDED_OPTIMISATION.md S6 — Batch-migrate path. When a detected
+    // run is long enough AND every entity in the run shares the same
+    // source archetype, dispatch the migrations through one
+    // `setMaskAndMigrateBatch` call instead of N `setMaskAndMigrate`s.
+    // The post-migrate value-write (for the Set* variants) still loops
+    // per-command. Returns true iff the batch path took over the run.
+    const std::size_t kBatchMigrateThreshold = cfg_.batchMigrateThreshold;
+    auto tryBatchMigrate = [&](std::size_t startIdx, std::size_t runLen,
+                               auto predictDst, auto applyValue) -> bool {
+        if (runLen < kBatchMigrateThreshold) return false;
+        const auto& chunks = storage.archetypes().chunks();
+        const auto firstE = commandTargetEntity(cmds[startIdx]);
+        if (!firstE.valid()) return false;
+        const auto firstLoc = storage.locate(firstE);
+        if (firstLoc.archetype >= chunks.size()) return false;
+        const ComponentSet srcMask = chunks[firstLoc.archetype].mask;
+        const ComponentSet dstMask = predictDst(srcMask);
+        if (dstMask == srcMask) return false;  // bit already in desired state
+
+        batchHandlesScratch_.clear();
+        batchHandlesScratch_.reserve(runLen);
+        for (std::size_t j = startIdx; j < startIdx + runLen; ++j) {
+            const auto e = commandTargetEntity(cmds[j]);
+            if (!e.valid()) return false;
+            const auto loc = storage.locate(e);
+            if (loc.archetype != firstLoc.archetype) return false;
+            batchHandlesScratch_.push_back(e);
+        }
+        if (!storage.setMaskAndMigrateBatch(batchHandlesScratch_, dstMask)) {
+            return false;
+        }
+        const bool legacyHash = cfg_.legacyCommitHash;
+        for (std::size_t j = 0; j < runLen; ++j) {
+            applyValue(cmds[startIdx + j], batchHandlesScratch_[j]);
+            if (legacyHash) {
+                commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                    cmds[startIdx + j], kInvalidEntity);
+            }
+        }
+        commitBreakdown_.batchedMigrations += runLen;
+        return true;
+    };
+
     std::size_t i = 0;
     while (i < cmds.size()) {
         std::size_t runEnd = i + 1;
         const auto& head = cmds[i];
+        bool batched = false;
 
         if (auto* addP = std::get_if<detail::CmdAddTag>(&head)) {
             const Component tag = addP->tag;
@@ -1204,6 +1248,11 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             tryReservePeek(i, runEnd - i, [tag](ComponentSet src) {
                 ComponentSet d = src; d.add(tag); return d;
             });
+            batched = tryBatchMigrate(i, runEnd - i,
+                [tag](ComponentSet src) {
+                    ComponentSet d = src; d.add(tag); return d;
+                },
+                [](detail::Command&, EntityHandle) {});
         } else if (auto* remP = std::get_if<detail::CmdRemoveTag>(&head)) {
             const Component tag = remP->tag;
             while (runEnd < cmds.size()) {
@@ -1214,6 +1263,11 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             tryReservePeek(i, runEnd - i, [tag](ComponentSet src) {
                 ComponentSet d = src; d.remove(tag); return d;
             });
+            batched = tryBatchMigrate(i, runEnd - i,
+                [tag](ComponentSet src) {
+                    ComponentSet d = src; d.remove(tag); return d;
+                },
+                [](detail::Command&, EntityHandle) {});
         } else if (std::holds_alternative<detail::CmdSetHealth>(head)) {
             while (runEnd < cmds.size() &&
                    std::holds_alternative<detail::CmdSetHealth>(cmds[runEnd])) {
@@ -1222,6 +1276,15 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             tryReservePeek(i, runEnd - i, [](ComponentSet src) {
                 ComponentSet d = src; d.add(Component::Health); return d;
             });
+            batched = tryBatchMigrate(i, runEnd - i,
+                [](ComponentSet src) {
+                    ComponentSet d = src; d.add(Component::Health); return d;
+                },
+                [&storage](detail::Command& c, EntityHandle e) {
+                    if (auto* p = storage.mutHealth(e)) {
+                        *p = std::get<detail::CmdSetHealth>(c).value;
+                    }
+                });
         } else if (std::holds_alternative<detail::CmdSetFaction>(head)) {
             while (runEnd < cmds.size() &&
                    std::holds_alternative<detail::CmdSetFaction>(cmds[runEnd])) {
@@ -1230,6 +1293,15 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             tryReservePeek(i, runEnd - i, [](ComponentSet src) {
                 ComponentSet d = src; d.add(Component::Faction); return d;
             });
+            batched = tryBatchMigrate(i, runEnd - i,
+                [](ComponentSet src) {
+                    ComponentSet d = src; d.add(Component::Faction); return d;
+                },
+                [&storage](detail::Command& c, EntityHandle e) {
+                    if (auto* p = storage.mutFaction(e)) {
+                        *p = std::get<detail::CmdSetFaction>(c).value;
+                    }
+                });
         } else if (std::holds_alternative<detail::CmdSetBoundingVolume>(head)) {
             while (runEnd < cmds.size() &&
                    std::holds_alternative<detail::CmdSetBoundingVolume>(cmds[runEnd])) {
@@ -1238,20 +1310,31 @@ void EngineImpl::commitBuffer(CommandBuffer& cb) {
             tryReservePeek(i, runEnd - i, [](ComponentSet src) {
                 ComponentSet d = src; d.add(Component::BoundingVolume); return d;
             });
+            batched = tryBatchMigrate(i, runEnd - i,
+                [](ComponentSet src) {
+                    ComponentSet d = src; d.add(Component::BoundingVolume); return d;
+                },
+                [&storage](detail::Command& c, EntityHandle e) {
+                    if (auto* p = storage.mutBoundingVolume(e)) {
+                        *p = std::get<detail::CmdSetBoundingVolume>(c).value;
+                    }
+                });
         }
         // else: single-cmd path — fall through with runEnd == i + 1.
 
-        // Apply each command in submission order. Under the v1.x legacy
-        // hash path (`Config::legacyCommitHash = true`) the per-tick
-        // hash matches the pre-batch-19 reference byte-for-byte. Under
-        // the new batch-30 path the per-command mix is skipped — the
-        // hash is reconstructed at end of step from per-chunk state
-        // (see `finalizeCommitHash`).
-        const bool legacyHash = cfg_.legacyCommitHash;
-        for (std::size_t j = i; j < runEnd; ++j) {
-            const EntityHandle spawnResult = applyCommandImpl(cmds[j], storage);
-            if (legacyHash) {
-                commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmds[j], spawnResult);
+        if (!batched) {
+            // Apply each command in submission order. Under the v1.x
+            // legacy hash path (`Config::legacyCommitHash = true`) the
+            // per-tick hash matches the pre-batch-19 reference byte-
+            // for-byte. Under the new batch-30 path the per-command mix
+            // is skipped — the hash is reconstructed at end of step
+            // from per-chunk state (see `finalizeCommitHash`).
+            const bool legacyHash = cfg_.legacyCommitHash;
+            for (std::size_t j = i; j < runEnd; ++j) {
+                const EntityHandle spawnResult = applyCommandImpl(cmds[j], storage);
+                if (legacyHash) {
+                    commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmds[j], spawnResult);
+                }
             }
         }
         i = runEnd;
@@ -1371,11 +1454,60 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     const auto bdBStart = bdClock::now();
     std::uint64_t bdGlobalLane = 0;
     std::uint64_t bdBinned     = 0;
+    std::uint64_t bdBatchedMigrations = 0;
     const auto& chunks = storage.archetypes().chunks();
+
+    // SHARDED_OPTIMISATION.md S6 — Same-kind migration run detector for
+    // Pass B's global lane. Mirrors `commitBuffer`'s logic: when a
+    // contiguous run of migrating commands in a single buffer all
+    // target the same (srcArch, dstMask) pair, route them through
+    // `setMaskAndMigrateBatch`. Run length below `kBatchMigrateThreshold`
+    // falls through to one-by-one apply (the batch path's
+    // setup-walk-handles cost exceeds the savings on tiny runs).
+    const std::size_t kBatchMigrateThreshold = cfg_.batchMigrateThreshold;
+
+    auto tryBatchMigrate = [&](auto& cmdsVec, std::size_t startIdx,
+                               std::size_t runLen, auto predictDst,
+                               auto applyValue) -> bool {
+        if (runLen < kBatchMigrateThreshold) return false;
+        const auto firstE = commandTargetEntity(cmdsVec[startIdx]);
+        if (!firstE.valid()) return false;
+        const auto firstLoc = storage.locate(firstE);
+        if (firstLoc.archetype >= chunks.size()) return false;
+        const ComponentSet srcMask = chunks[firstLoc.archetype].mask;
+        const ComponentSet dstMask = predictDst(srcMask);
+        if (dstMask == srcMask) return false;
+
+        batchHandlesScratch_.clear();
+        batchHandlesScratch_.reserve(runLen);
+        for (std::size_t j = startIdx; j < startIdx + runLen; ++j) {
+            const auto e = commandTargetEntity(cmdsVec[j]);
+            if (!e.valid()) return false;
+            const auto loc = storage.locate(e);
+            if (loc.archetype != firstLoc.archetype) return false;
+            batchHandlesScratch_.push_back(e);
+        }
+        if (!storage.setMaskAndMigrateBatch(batchHandlesScratch_, dstMask)) {
+            return false;
+        }
+        const bool legacyHash = cfg_.legacyCommitHash;
+        for (std::size_t j = 0; j < runLen; ++j) {
+            applyValue(cmdsVec[startIdx + j], batchHandlesScratch_[j]);
+            if (legacyHash) {
+                commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                    cmdsVec[startIdx + j], kInvalidEntity);
+            }
+        }
+        bdBatchedMigrations += runLen;
+        return true;
+    };
+
     for (auto& cb : buffers) {
-        for (auto& cmd : cb.commands()) {
+        auto& cmdsVec = cb.commands();
+        std::size_t i = 0;
+        while (i < cmdsVec.size()) {
+            auto& cmd = cmdsVec[i];
             // Value-only chunk-local fast path: bin and hash, no apply yet.
-            bool routedChunkLocal = false;
             if (!commandIsMigrating(cmd)) {
                 const EntityHandle e = commandTargetEntity(cmd);
                 const bool isMigrating =
@@ -1402,26 +1534,104 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
                             commitHashAcc_ = hashCommandImpl(commitHashAcc_,
                                 cmd, kInvalidEntity);
                         }
-                        routedChunkLocal = true;
                         ++bdBinned;
+                        ++i;
+                        continue;
                     }
                 }
             }
-            if (!routedChunkLocal) {
-                // Global lane: apply on sim thread, then hash.
-                const EntityHandle spawnResult = applyCommandImpl(cmd, storage);
-                if (cfg_.legacyCommitHash) {
-                    commitHashAcc_ = hashCommandImpl(commitHashAcc_, cmd, spawnResult);
+
+            // Global lane. Try to extend the run for batch migrate.
+            std::size_t runEnd = i + 1;
+            bool batched = false;
+            if (auto* addP = std::get_if<detail::CmdAddTag>(&cmd)) {
+                const Component tag = addP->tag;
+                while (runEnd < cmdsVec.size()) {
+                    auto* q = std::get_if<detail::CmdAddTag>(&cmdsVec[runEnd]);
+                    if (!q || q->tag != tag) break;
+                    ++runEnd;
                 }
-                ++bdGlobalLane;
+                batched = tryBatchMigrate(cmdsVec, i, runEnd - i,
+                    [tag](ComponentSet src) {
+                        ComponentSet d = src; d.add(tag); return d;
+                    },
+                    [](detail::Command&, EntityHandle) {});
+            } else if (auto* remP = std::get_if<detail::CmdRemoveTag>(&cmd)) {
+                const Component tag = remP->tag;
+                while (runEnd < cmdsVec.size()) {
+                    auto* q = std::get_if<detail::CmdRemoveTag>(&cmdsVec[runEnd]);
+                    if (!q || q->tag != tag) break;
+                    ++runEnd;
+                }
+                batched = tryBatchMigrate(cmdsVec, i, runEnd - i,
+                    [tag](ComponentSet src) {
+                        ComponentSet d = src; d.remove(tag); return d;
+                    },
+                    [](detail::Command&, EntityHandle) {});
+            } else if (std::holds_alternative<detail::CmdSetHealth>(cmd)) {
+                while (runEnd < cmdsVec.size() &&
+                       std::holds_alternative<detail::CmdSetHealth>(cmdsVec[runEnd])) {
+                    ++runEnd;
+                }
+                batched = tryBatchMigrate(cmdsVec, i, runEnd - i,
+                    [](ComponentSet src) {
+                        ComponentSet d = src; d.add(Component::Health); return d;
+                    },
+                    [&storage](detail::Command& c, EntityHandle e) {
+                        if (auto* p = storage.mutHealth(e)) {
+                            *p = std::get<detail::CmdSetHealth>(c).value;
+                        }
+                    });
+            } else if (std::holds_alternative<detail::CmdSetFaction>(cmd)) {
+                while (runEnd < cmdsVec.size() &&
+                       std::holds_alternative<detail::CmdSetFaction>(cmdsVec[runEnd])) {
+                    ++runEnd;
+                }
+                batched = tryBatchMigrate(cmdsVec, i, runEnd - i,
+                    [](ComponentSet src) {
+                        ComponentSet d = src; d.add(Component::Faction); return d;
+                    },
+                    [&storage](detail::Command& c, EntityHandle e) {
+                        if (auto* p = storage.mutFaction(e)) {
+                            *p = std::get<detail::CmdSetFaction>(c).value;
+                        }
+                    });
+            } else if (std::holds_alternative<detail::CmdSetBoundingVolume>(cmd)) {
+                while (runEnd < cmdsVec.size() &&
+                       std::holds_alternative<detail::CmdSetBoundingVolume>(cmdsVec[runEnd])) {
+                    ++runEnd;
+                }
+                batched = tryBatchMigrate(cmdsVec, i, runEnd - i,
+                    [](ComponentSet src) {
+                        ComponentSet d = src; d.add(Component::BoundingVolume); return d;
+                    },
+                    [&storage](detail::Command& c, EntityHandle e) {
+                        if (auto* p = storage.mutBoundingVolume(e)) {
+                            *p = std::get<detail::CmdSetBoundingVolume>(c).value;
+                        }
+                    });
             }
+
+            if (!batched) {
+                for (std::size_t j = i; j < runEnd; ++j) {
+                    const EntityHandle spawnResult =
+                        applyCommandImpl(cmdsVec[j], storage);
+                    if (cfg_.legacyCommitHash) {
+                        commitHashAcc_ = hashCommandImpl(commitHashAcc_,
+                            cmdsVec[j], spawnResult);
+                    }
+                }
+                bdGlobalLane += (runEnd - i);
+            }
+            i = runEnd;
         }
     }
     const auto bdBEnd = bdClock::now();
-    commitBreakdown_.nsPassB           += bdElapsedNs(bdBStart, bdBEnd);
-    commitBreakdown_.globalLaneApplied += bdGlobalLane;
-    commitBreakdown_.binnedValueOnly   += bdBinned;
-    commitBreakdown_.chunkCount         = chunkCount;
+    commitBreakdown_.nsPassB            += bdElapsedNs(bdBStart, bdBEnd);
+    commitBreakdown_.globalLaneApplied  += bdGlobalLane + bdBatchedMigrations;
+    commitBreakdown_.batchedMigrations  += bdBatchedMigrations;
+    commitBreakdown_.binnedValueOnly    += bdBinned;
+    commitBreakdown_.chunkCount          = chunkCount;
 
     // ----- Pass C: apply chunk bins in parallel ------------------------
     //

@@ -148,6 +148,23 @@ public:
     /// corresponding @c mut* setter where they hold a fresh value).
     bool setMaskAndMigrate(EntityHandle h, ComponentSet newMask) noexcept;
 
+    /// SHARDED_OPTIMISATION.md S6 — Batch-migrate every handle in
+    /// @p handles to the archetype matching @p newMask. Every entity
+    /// must currently share the same source archetype; the function
+    /// returns @c false (without mutating state) if that precondition
+    /// is violated or if any handle is stale. Equivalent to N calls
+    /// of @ref setMaskAndMigrate in submission order — the final per-
+    /// chunk content is bit-for-bit identical — but amortizes the
+    /// archetype lookup, capacity grow, and user-column carry buffer
+    /// across the batch.
+    ///
+    /// @pre  every handle in @p handles is alive AND shares the same
+    ///       source archetype.
+    /// @returns true on success; false if a precondition is violated.
+    ///          On failure no slot is touched.
+    bool setMaskAndMigrateBatch(std::span<const EntityHandle> handles,
+                                ComponentSet newMask) noexcept;
+
     /// Lookup helper used by hot paths (chunk iteration, debug tools):
     /// returns (archetype index, row) for a handle, or `(UINT32_MAX,
     /// UINT32_MAX)` if not alive. The archetype/row encoding is the
@@ -175,6 +192,14 @@ private:
 
     std::vector<Slot>          slots_;
     std::vector<std::uint32_t> freeSlots_;
+
+    // SHARDED_OPTIMISATION.md S6 — Scratch reused across calls of
+    // `setMaskAndMigrateBatch`. Sim-thread serial; the commit phase
+    // is the sole touch point. Held here so the steady state pays
+    // zero allocations after the first batch dispatch.
+    std::vector<std::uint32_t>                 batchSrcRowsScratch_;
+    std::vector<std::uint32_t>                 batchDstRowsScratch_;
+    std::vector<ArchetypeTable::BatchSwapEvent> batchSwapsScratch_;
 
     std::mutex                reservationMtx_;
     std::vector<EntityHandle> reservedHandles_;

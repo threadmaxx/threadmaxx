@@ -58,6 +58,14 @@ struct CommitBreakdown {
     /// already chewing through the large bins). `activeBins -
     /// inlineBinCount` is the count that took the worker dispatch path.
     std::uint64_t inlineBinCount = 0;
+    /// SHARDED_OPTIMISATION.md S6 — Pass B global-lane commands that
+    /// were dispatched through `EntityStorage::setMaskAndMigrateBatch`
+    /// instead of N independent `setMaskAndMigrate` calls. Counts
+    /// commands (not batches): a single batch of 256 contributes 256.
+    /// `globalLaneApplied - batchedMigrations` is the per-cmd path
+    /// count. Mirrors the same field on the serial commit path
+    /// (`commitBuffer`), which also routes long runs through the batch.
+    std::uint64_t batchedMigrations = 0;
 
     /// Wall-clock ns spent in Pass A (migrating-entity bitmap build).
     std::uint64_t nsPassA = 0;

@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -278,6 +279,12 @@ PerWorkloadResult measureWorkload(const char* workloadName,
                                   GameT&& game,
                                   Factory&& factory) {
     Config cfg = benchConfig(workers, entityCapHint, sharded);
+    // SHARDED_OPTIMISATION.md S6 — Env-var override for A/B benching
+    // the migration-batch path. Set THREADMAXX_NO_BATCH=1 to force
+    // every same-(srcArch, dstMask) run through the per-cmd path.
+    if (const char* nob = std::getenv("THREADMAXX_NO_BATCH"); nob && nob[0] == '1') {
+        cfg.batchMigrateThreshold = std::numeric_limits<std::uint32_t>::max();
+    }
     Engine engine(cfg);
     if (!engine.initialize(game)) {
         std::fprintf(stderr, "  init failed for %s\n", workloadName);

@@ -225,6 +225,70 @@ bool EntityStorage::setMaskAndMigrate(EntityHandle h, ComponentSet newMask) noex
     return true;
 }
 
+// SHARDED_OPTIMISATION.md S6 — Batch-migrate path. Captures srcRows
+// from slot records (all under the same src archetype), dispatches to
+// ArchetypeTable::migrateBatch, then patches slot records: swapped
+// slots (non-batch entities pulled into vacated src rows) and batch
+// entities (re-pointed at their new dst rows). Order between the two
+// patch passes is irrelevant — the SHARDED_OPTIMISATION.md §7 S6
+// proof guarantees disjoint slot sets between swap-targets and batch
+// entities.
+bool EntityStorage::setMaskAndMigrateBatch(
+        std::span<const EntityHandle> handles,
+        ComponentSet newMask) noexcept {
+    if (handles.empty()) return true;
+    const auto& chunks = table_.chunks();
+
+    // Capture (srcArch, srcRow) for the first live handle to establish
+    // the shared-archetype assumption. Bail out immediately if it's
+    // stale — the caller has the option to fall back to the per-cmd
+    // path which safely no-ops on stale handles.
+    if (!alive(handles[0])) return false;
+    const Slot& firstSlot = slots_[handles[0].index];
+    if (firstSlot.archetypeIndex >= chunks.size()) return false;
+    const std::uint32_t srcArch = firstSlot.archetypeIndex;
+    if (chunks[srcArch].mask == newMask) return true;  // src == dst is a no-op
+
+    // Walk the batch once: verify shared archetype + capture srcRows.
+    // Scratch buffers are engine-owned (sim-thread serial) so the
+    // steady state pays zero allocations after the first batch.
+    batchSrcRowsScratch_.clear();
+    batchSrcRowsScratch_.reserve(handles.size());
+    for (const auto h : handles) {
+        if (!alive(h)) return false;
+        const Slot& s = slots_[h.index];
+        if (s.archetypeIndex != srcArch) return false;
+        batchSrcRowsScratch_.push_back(s.row);
+    }
+
+    batchDstRowsScratch_.assign(handles.size(),
+        std::numeric_limits<std::uint32_t>::max());
+    batchSwapsScratch_.assign(handles.size(), ArchetypeTable::BatchSwapEvent{});
+
+    const std::uint32_t dstArch = table_.migrateBatch(
+        srcArch, newMask, batchSrcRowsScratch_,
+        batchDstRowsScratch_, batchSwapsScratch_);
+    if (dstArch == kInvalidIndex) return false;
+
+    // Apply swap-target slot updates first. Multiple events for the
+    // same slot are applied in pop order, so the LAST event wins —
+    // matches the per-cmd path's final state.
+    for (const auto& sw : batchSwapsScratch_) {
+        if (sw.swappedSlot != kInvalidIndex) {
+            slots_[sw.swappedSlot].row = sw.newRow;
+        }
+    }
+    // Apply batch-entity slot updates. The §7 S6 proof guarantees no
+    // overlap with the swap-target slot set.
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+        Slot& s = slots_[handles[i].index];
+        s.archetypeIndex = dstArch;
+        s.row            = batchDstRowsScratch_[i];
+    }
+    markDirty();
+    return true;
+}
+
 // ---- per-handle mutators -------------------------------------------------
 
 Transform* EntityStorage::mutTransform(EntityHandle h) noexcept {

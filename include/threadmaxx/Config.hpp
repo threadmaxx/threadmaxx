@@ -88,6 +88,24 @@ struct Config {
     /// Both are deterministic across runs and machines for the same
     /// command stream.
     bool legacyCommitHash = false;
+
+    /// SHARDED_OPTIMISATION.md S6 — Per-buffer run-length threshold at
+    /// which the commit phase switches a same-(srcArch, dstMask) run
+    /// of `CmdAddTag` / `CmdRemoveTag` / `CmdSetHealth` /
+    /// `CmdSetFaction` / `CmdSetBoundingVolume` from the per-cmd
+    /// `setMaskAndMigrate` path to the batched
+    /// `setMaskAndMigrateBatch` path. Default `16` was chosen so the
+    /// batch's collect-handles + sort-srcRows overhead is amortised by
+    /// the migrate-loop savings. Set to `std::numeric_limits<uint32_t>::
+    /// max()` to fully disable batching (used by the A/B bench at
+    /// `bench/migration_bench.cpp` to baseline the per-cmd path).
+    /// Lowering below `4` is not useful — the per-cmd path's branch
+    /// predictor catches up.
+    ///
+    /// Hash determinism: bit-for-bit identical to the per-cmd path
+    /// for the same command stream. Verified by
+    /// `tests/migration_batch_test.cpp` (test 6).
+    std::uint32_t batchMigrateThreshold = 16;
 };
 
 } // namespace threadmaxx

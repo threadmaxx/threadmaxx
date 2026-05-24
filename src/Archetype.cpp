@@ -16,8 +16,10 @@
 #include "threadmaxx/internal/Archetype.hpp"
 #include "UserComponentRegistry.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
+#include <numeric>
 
 namespace threadmaxx::internal {
 
@@ -297,6 +299,145 @@ ArchetypeTable::MigrationResult ArchetypeTable::migrate(
         res.swappedSlot = kInvalidIndex;
     }
     return res;
+}
+
+std::uint32_t ArchetypeTable::migrateBatch(
+        std::uint32_t srcArch,
+        ComponentSet  dstMask,
+        std::span<const std::uint32_t> srcRows,
+        std::span<std::uint32_t>       outDstRows,
+        std::span<BatchSwapEvent>      outSwaps) {
+    if (srcArch >= chunks_.size()) return kInvalidIndex;
+    const std::size_t N = srcRows.size();
+    if (N == 0 || outDstRows.size() != N || outSwaps.size() != N) {
+        return kInvalidIndex;
+    }
+
+    // Resolve dst archetype + pre-reserve enough rows for all inserts.
+    // `getOrCreateArchetype` may grow chunks_ (invalidating references);
+    // do it BEFORE caching src/dst references.
+    const std::uint32_t dstArch = getOrCreateArchetype(dstMask);
+    reserveChunkRows(dstMask, N);
+
+    // src == dst is degenerate: every "migration" is a no-op (caller
+    // should have filtered, but we handle it defensively). Per-cmd
+    // path's EntityStorage::setMaskAndMigrate early-outs in this case.
+    if (srcArch == dstArch) {
+        // Report stable rows. Slot records won't change.
+        for (std::size_t i = 0; i < N; ++i) {
+            outDstRows[i]      = srcRows[i];
+            outSwaps[i]        = BatchSwapEvent{};
+        }
+        return dstArch;
+    }
+
+    // --- Phase 1: snapshot + insert into dst in submission order ----
+    //
+    // Each iteration reads from src at srcRows[i] WITHOUT modifying
+    // src — so all srcRows stay valid throughout Phase 1. The user-
+    // column carry buffer is hoisted out of the loop (one allocation
+    // for the whole batch, vs N for the per-cmd path).
+    struct UserCarry {
+        std::uint32_t          bit;
+        std::vector<std::byte> blob;
+    };
+    std::vector<UserCarry> carries;
+    {
+        // Pre-size: at most one carry per src user column that maps
+        // into dstMask. The per-cmd path allocates this inside `migrate`
+        // every call — hoisting halves the dominant per-cmd cost on
+        // user-component-heavy workloads.
+        const auto& srcChunkPeek = chunks_[srcArch];
+        std::size_t carryUpper = 0;
+        for (const auto& col : srcChunkPeek.userColumns) {
+            if ((dstMask.bits() & (1ull << col.bit)) != 0) ++carryUpper;
+        }
+        carries.reserve(carryUpper);
+    }
+
+    for (std::size_t i = 0; i < N; ++i) {
+        const std::uint32_t srcRow = srcRows[i];
+        // Re-fetch each iteration: dst's vector grows on insert (which
+        // is the same `chunks_` vector — but it's already at full
+        // capacity courtesy of reserveChunkRows above, so the
+        // references could be cached. We re-fetch defensively because
+        // the cost is a single base-pointer load.)
+        ArchetypeChunk& src = chunks_[srcArch];
+        if (srcRow >= src.entities.size()) {
+            // Should not happen given the precondition; bail out
+            // safely to avoid a wild write.
+            outDstRows[i] = kInvalidIndex;
+            continue;
+        }
+        const EntityHandle handle = src.entities[srcRow];
+        const std::uint32_t slotIdx = src.denseToSlot[srcRow];
+
+        const Transform         t   = src.mask.has(Component::Transform)         ? src.transforms     [srcRow] : Transform{};
+        const Velocity          v   = src.mask.has(Component::Velocity)          ? src.velocities     [srcRow] : Velocity{};
+        const RenderTag         r   = src.mask.has(Component::RenderTag)         ? src.renderTags     [srcRow] : RenderTag{};
+        const UserData          u   = src.mask.has(Component::UserData)          ? src.userData       [srcRow] : UserData{};
+        const Acceleration      a   = src.mask.has(Component::Acceleration)      ? src.accelerations  [srcRow] : Acceleration{};
+        const Parent            p   = src.mask.has(Component::Parent)            ? src.parents        [srcRow] : Parent{};
+        const Health            hp  = src.mask.has(Component::Health)            ? src.healths        [srcRow] : Health{};
+        const Faction           fac = src.mask.has(Component::Faction)           ? src.factions       [srcRow] : Faction{};
+        const AnimationStateRef anim= src.mask.has(Component::AnimationStateRef) ? src.animationStates[srcRow] : AnimationStateRef{};
+        const PhysicsBodyRef    phy = src.mask.has(Component::PhysicsBodyRef)    ? src.physicsBodies  [srcRow] : PhysicsBodyRef{};
+        const NavAgentRef       nv  = src.mask.has(Component::NavAgentRef)       ? src.navAgents      [srcRow] : NavAgentRef{};
+        const BoundingVolume    bv  = src.mask.has(Component::BoundingVolume)    ? src.boundingVolumes[srcRow] : BoundingVolume{};
+
+        // Refresh the carry buffer. We reuse the storage across
+        // iterations but truncate to the actual size each time.
+        carries.clear();
+        for (const auto& col : src.userColumns) {
+            const auto bitMask = 1ull << col.bit;
+            if ((dstMask.bits() & bitMask) == 0) continue;
+            UserCarry uc;
+            uc.bit = col.bit;
+            uc.blob.assign(col.rowPtr(srcRow), col.rowPtr(srcRow) + col.stride);
+            carries.push_back(std::move(uc));
+        }
+
+        const std::uint32_t dstRow = insert(dstArch, handle, slotIdx,
+            t, v, r, u, a, p, hp, fac, anim, phy, nv, bv);
+        auto& dst = chunks_[dstArch];
+        for (const auto& uc : carries) {
+            if (auto* col = dst.findUserColumn(uc.bit)) {
+                std::memcpy(col->rowPtr(dstRow), uc.blob.data(), col->stride);
+            }
+        }
+        outDstRows[i] = dstRow;
+    }
+
+    // --- Phase 2: pop src rows in descending srcRow order ------------
+    //
+    // Descending order keeps each pop's swap-and-pop semantics
+    // identical to N independent `migrate` calls. The invariant is
+    // proven in SHARDED_OPTIMISATION.md §7 S6 outcome: at any pop
+    // step k processing the k-th-largest srcRow, the source's "last"
+    // row is never a batch entity still pending (all batch entries
+    // at higher rows have already been popped, and batch entries at
+    // lower rows still sit at their original srcRow which is < "last").
+    batchPermScratch_.resize(N);
+    auto& perm = batchPermScratch_;
+    std::iota(perm.begin(), perm.end(), 0u);
+    std::sort(perm.begin(), perm.end(),
+        [&](std::uint32_t a, std::uint32_t b) {
+            return srcRows[a] > srcRows[b];
+        });
+
+    for (std::size_t k = 0; k < N; ++k) {
+        const std::uint32_t i = perm[k];
+        const std::uint32_t srcRow = srcRows[i];
+        const std::uint32_t swappedSlot = removeSwapPop(srcArch, srcRow);
+        if (swappedSlot == kInvalidIndex) {
+            outSwaps[k] = BatchSwapEvent{};  // both fields == UINT32_MAX
+        } else {
+            outSwaps[k].swappedSlot = swappedSlot;
+            outSwaps[k].newRow      = srcRow;
+        }
+    }
+
+    return dstArch;
 }
 
 std::size_t ArchetypeTable::totalEntities() const noexcept {

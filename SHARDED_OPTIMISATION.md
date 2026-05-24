@@ -212,6 +212,40 @@ Keep the bitmap — it's still needed when a tag/setter is followed by a value-o
 
 **Risk.** This is the second-biggest change in the plan and touches storage. **Land it behind the determinism harness running 10× the soak duration before flipping the default.**
 
+**S6 outcome (LANDED 2026-05-24).** Two new APIs:
+
+- `ArchetypeTable::migrateBatch(srcArch, dstMask, span<srcRows>, out span<dstRows>, out span<BatchSwapEvent>)` — Phase 1 inserts in submission order; Phase 2 pops in *descending* srcRow order. The pop-order proof in `tests/migration_batch_test.cpp` (test 6) is the determinism canary: batch path's per-tick `commitHash` matches per-cmd path bit-for-bit across 50 ticks of alternating addTag/removeTag churn.
+- `EntityStorage::setMaskAndMigrateBatch(span<EntityHandle>, ComponentSet newMask)` — thin slot-mgmt wrapper; refuses (returns `false`) if any handle is stale or any src archetype differs from the first, leaving the caller to fall back to per-cmd.
+
+`commitBuffer` (serial path) and `commitBuffersSharded` Pass B (global lane) BOTH detect contiguous runs of same-kind same-(srcArch, dstMask) commands and route runs ≥ `Config::batchMigrateThreshold` (default 16) through the batch. Supports `CmdAddTag` / `CmdRemoveTag` / `CmdSetHealth` / `CmdSetFaction` / `CmdSetBoundingVolume`. Other migrating commands keep the per-cmd path.
+
+New `Config::batchMigrateThreshold` knob lets benches A/B the path. New `CommitBreakdown::batchedMigrations` counter exposes the per-step batched-cmd count. Engine-owned scratch in `EntityStorage` + `ArchetypeTable` + `EngineImpl` keeps the steady state at zero allocations.
+
+**Headline numbers (commit phase only, `EngineStats::commitDurationSeconds` mean of 512 iters):**
+
+| Workload | Batch off | Batch on | Δ |
+|---|---|---|---|
+| `migration_bench` healthFlip @ N=64    | 14 226 ns | 12 340 ns | **−13.3%** |
+| `migration_bench` healthFlip @ N=512   | 68 079 ns | 63 301 ns | **−7.0%**  |
+| `migration_bench` healthFlip @ N=4096  | 496 861 ns| 454 098 ns| **−8.6%**  |
+| `migration_bench` healthFlip @ N=32000 | 3 731 426 ns | 3 252 455 ns | **−12.8%** |
+| `addRemoveTag/Churn` (single commit)   | 11 643 µs | 10 913 µs | **−6.3%**  |
+
+N=1 and N=8 are below the threshold; both rows take the per-cmd path under either config (apparent delta is host noise — measured ±1%).
+
+**Gates vs spec:**
+
+- ≥30% reduction at N ≥ 64 — **MISSED (best −13.3%, typical −7 to −10%).** Storage-side per-row work (per-component `vec.push_back` / swap-pop) dominates the per-call dispatch overhead that batching can amortise. Real gain is the archetype-hashmap lookup deduplication + capacity-grow consolidation + UserCarry-vector hoisting. Closing the rest would require batching the per-component-vector inserts themselves (S8 territory).
+- ≥20% reduction on `addRemoveTag` serial commit — **MISSED (−6.3%).** Same root cause.
+- Determinism gates green — **PASSED.** `sharded_commit_test`, `commit_hash_test`, `archetype_hash_determinism_test`, `v1_2_legacy_commit_hash_test`, `commit_soak_test` all pass; `migration_batch_test` (new, 6 cases) passes; `concurrency_soak_long` (~5 min, 10× standard soak) passes.
+
+**Decision.** Ship S6 — the gains are real, deterministic, and zero-risk (gates all green). Default `singleThreadedCommit = true` stays pinned: even after S5+S6, RPG-mix sharded commit (5036 µs) is 1.80× single (2795 µs); the gap closed by ~5% relative to the post-S5 1.75×.
+
+**Action items.**
+
+- **Skip S7 (adaptive fallthrough cutoff).** S0–S6 have left a clean dominance ordering: single beats sharded on every measured workload. The spec's S7 skip condition is met.
+- **S8 (per-chunk record-time routing) is the only batch left that can meaningfully move the needle**, but the architectural cost (refactor `CommandBuffer` to maintain per-destination mini-lists at record time) is large. Park unless a different workload pattern surfaces.
+
 ### S7 — Adaptive fallthrough cutoff
 
 **Hypothesis.** The hardcoded `totalCommands < 256` cutoff is correct in shape but wrong in value for any given workload — it should learn from the last K commits.

@@ -265,6 +265,8 @@ Adding a new command variant requires arms in both `applyCommandImpl` and `hashC
 
 `Config::logCommitHashEvery = N > 0` logs `commitHash tick=<T> hash=0x<16hex>` via `ILogger@Info` every N ticks — pinpoints a divergent tick for local repro. Default `0` is silent / zero-cost.
 
+**Migration batching (SHARDED_OPTIMISATION.md S6).** When a contiguous run of `CmdAddTag` / `CmdRemoveTag` / `CmdSetHealth` / `CmdSetFaction` / `CmdSetBoundingVolume` commands all target the same (srcArch, dstMask) pair AND the run is ≥ `Config::batchMigrateThreshold` (default 16), the run is dispatched through `EntityStorage::setMaskAndMigrateBatch` instead of N individual `setMaskAndMigrate` calls. Underneath, `ArchetypeTable::migrateBatch` inserts in submission order then pops in descending srcRow order — the descending-pop order is the determinism-preserving invariant proven in `tests/migration_batch_test.cpp`. Fires from both `commitBuffer` (serial) and `commitBuffersSharded` Pass B's global lane. `CommitBreakdown::batchedMigrations` exposes the per-step count for benches/tests. Set `batchMigrateThreshold = std::numeric_limits<std::uint32_t>::max()` to disable (used by bench A/B); below ~4 the per-cmd path wins.
+
 ## Stitched-cache safety
 
 `EntityStorage::ensureStitched()` is mutex-protected (double-checked locking on `stitchedDirty_`). Fast path (cache clean) only pays the atomic acquire on `stitchedDirty_`; slow path (rebuild) is serialized. Required to make `world.transforms()` etc. safe from many concurrent worker reads in the same wave.

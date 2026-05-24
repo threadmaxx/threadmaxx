@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -203,6 +204,57 @@ public:
     MigrationResult migrate(std::uint32_t srcArch, std::uint32_t srcRow,
                             ComponentSet newMask);
 
+    /// SHARDED_OPTIMISATION.md S6 — One swap-pop event recorded by
+    /// `migrateBatch`. The k-th event corresponds to the k-th pop in
+    /// descending-srcRow order. `swappedSlot == UINT32_MAX` means the
+    /// pop touched the last row directly (no swap happened); in that
+    /// case `newRow` is also UINT32_MAX.
+    struct BatchSwapEvent {
+        std::uint32_t swappedSlot = std::numeric_limits<std::uint32_t>::max();
+        std::uint32_t newRow      = std::numeric_limits<std::uint32_t>::max();
+    };
+
+    /// SHARDED_OPTIMISATION.md S6 — Batch-migrate @c srcRows.size()
+    /// entities from @p srcArch to the archetype matching @p dstMask.
+    /// Equivalent to N independent `migrate(srcArch, srcRows[i], dstMask)`
+    /// calls in submission order, but amortizes:
+    ///   - one `getOrCreateArchetype(dstMask)` lookup,
+    ///   - one `reserveChunkRows(dstMask, N)` capacity hint,
+    ///   - one src/dst chunk reference (cached over the whole batch),
+    ///   - one user-column carry buffer (reused across iterations).
+    ///
+    /// Insertion into the destination archetype happens in submission
+    /// order — `outDstRows[i]` is the destination row for `srcRows[i]`,
+    /// monotonically increasing from `oldDstSize` to `oldDstSize + N - 1`.
+    /// Pops from the source archetype happen in *descending* srcRow
+    /// order to keep the swap-and-pop semantics consistent with
+    /// independent `migrate` calls — see the per-step-by-step trace in
+    /// SHARDED_OPTIMISATION.md §7 S6 outcome.
+    ///
+    /// `outSwaps[k]` records the k-th pop's swap target (k indexes into
+    /// the descending-srcRow permutation). The caller updates each
+    /// `outSwaps[k].swappedSlot`'s row to `outSwaps[k].newRow`, in any
+    /// order — when one slot is swapped multiple times during the batch
+    /// the events naturally appear in pop order so the LAST event has
+    /// the final row.
+    ///
+    /// @pre  srcArch < chunks().size()
+    /// @pre  every srcRows[i] < chunks()[srcArch].size()
+    /// @pre  outDstRows.size() == srcRows.size()
+    /// @pre  outSwaps.size()   == srcRows.size()
+    /// @returns the destination archetype index.
+    ///
+    /// @thread_safety Sim-thread only — same constraint as the
+    /// per-cmd `migrate`. Determinism: bit-for-bit identical final
+    /// chunk contents to N independent `migrate` calls in submission
+    /// order (verified by `tests/migration_batch_test.cpp` against
+    /// `archetype_hash_determinism_test`'s reference hashes).
+    std::uint32_t migrateBatch(std::uint32_t srcArch,
+                               ComponentSet  dstMask,
+                               std::span<const std::uint32_t> srcRows,
+                               std::span<std::uint32_t>       outDstRows,
+                               std::span<BatchSwapEvent>      outSwaps);
+
     /// Read-only access to the chunk list. Iteration order is creation
     /// order — stable across spawns and destroys; only insertion of a
     /// brand-new mask appends a new chunk.
@@ -248,6 +300,12 @@ private:
     // UserComponentColumn entries. May be nullptr (then user bits are
     // dropped silently).
     const UserComponentRegistry* registry_ = nullptr;
+
+    // SHARDED_OPTIMISATION.md S6 — `migrateBatch` reuses this between
+    // calls so the steady-state pays zero allocations after the first
+    // tick. Sim-thread serial; the commit phase is the sole touch
+    // point.
+    std::vector<std::uint32_t> batchPermScratch_;
 };
 
 } // namespace threadmaxx::internal

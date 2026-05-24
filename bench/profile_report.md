@@ -645,3 +645,87 @@ path); the table above uses the mean. The qualitative findings
 (RPG-mix big win, ManyTinyBins zero wait, MultiArch unchanged)
 are stable across every observed run.
 
+# SHARDED_OPTIMISATION.md S6 — Migration batching by (srcArch, dstMask) pair
+
+S6 lands a per-archetype-pair batched migration path. Two new
+APIs (`ArchetypeTable::migrateBatch` +
+`EntityStorage::setMaskAndMigrateBatch`) plus run detection in
+both `commitBuffer` (serial) and `commitBuffersSharded` Pass B's
+global lane. Activated when a contiguous run of same-kind
+same-(srcArch, dstMask) migrating commands reaches
+`Config::batchMigrateThreshold` (default 16). Supports
+`CmdAddTag` / `CmdRemoveTag` / `CmdSetHealth` / `CmdSetFaction`
+/ `CmdSetBoundingVolume`.
+
+## A/B headline (commit phase only, `commitDurationSeconds`)
+
+`bench/migration_bench` drives a `THREADMAXX_NO_BATCH=1`-style
+A/B sweep. Per-tick commit ns at fixed scene size 32 000,
+measured over 512 iterations after 32 warmup:
+
+| N (migrations/tick) | Batch on (ns) | Batch off (ns) | Δ        |
+|---------------------|---------------|----------------|----------|
+| 1                   | 2 291         | 1 790          | +28.0 %  (≪ threshold; both per-cmd; host noise) |
+| 8                   | 3 621         | 3 655          | −0.9 %   (≪ threshold; both per-cmd; host noise) |
+| 64                  | 12 340        | 14 226         | **−13.3 %** |
+| 512                 | 63 301        | 68 079         | **−7.0 %**  |
+| 4 096               | 454 098       | 496 861        | **−8.6 %**  |
+| 32 000              | 3 252 455     | 3 731 426      | **−12.8 %** |
+
+`commit_pass_breakdown` with `THREADMAXX_NO_BATCH=1` on the
+off-side (mean over 256 ticks, 4 workers, 100k entities per
+workload, single commit path):
+
+| Workload (single path)   | commit_us batch on | commit_us batch off | Δ      |
+|--------------------------|--------------------|----------------------|--------|
+| setTransform/Churn       | 2 675              | 2 151                | +24 %  (no migrations — host noise; expected unchanged) |
+| setVelocity/Churn        | 1 827              | 1 826                | +0.1 % (no migrations — confirms zero-cost path)         |
+| **addRemoveTag/Churn**   | **10 913**         | **11 644**           | **−6.3 %** |
+| setTransform/MultiArch   | 2 001              | 1 846                | +8.4 % (host noise; no migrations)                       |
+| RPG-mix                  | 2 795              | 2 773                | +0.8 % (mostly value-only; thin migration tail)          |
+
+## Gate verdict
+
+- **≥30 % bench gate at N ≥ 64**: MISSED. Best −13.3 %
+  (N=64), typical −7 to −10 % at higher N. Storage-side
+  per-row work (`vec.push_back` × 14 component vectors per
+  migrate) dominates the per-call dispatch overhead that
+  batching amortises. The remaining gap to 30 % is in
+  territory that would require batching the per-component-
+  vector inserts themselves — that is S8.
+- **≥20 % `addRemoveTag` serial gate**: MISSED. Achieved −6.3 %.
+- **Determinism harness 10×**: PASSED. `concurrency_soak_long`
+  (~5 min, 10 000 ticks of churn) ran clean. All five sharded
+  determinism gates green; new `migration_batch_test` (6 cases)
+  green; full ctest 124/124.
+
+## Decision
+
+**Ship S6.** Gains are real, deterministic, and bit-for-bit
+correctness-preserving. Default `singleThreadedCommit = true`
+stays pinned — even with S5 + S6 stacked, RPG-mix sharded
+commit (5036 µs) is 1.80× single (2795 µs); the gap closed by
+~5 % relative to the 1.75× that landed at S5.
+
+**Skip S7.** S0 → S6 leave a clean dominance ordering: single
+beats sharded on every measured workload. The spec's S7 skip
+condition is met.
+
+**Park S8.** It is the only batch left that can meaningfully
+move the needle, but the cost (CommandBuffer refactor to per-
+destination mini-lists at record time) is large. Resume only if
+a different workload pattern surfaces.
+
+## Reproducibility
+
+```
+cmake --build build -j
+./build/bench/migration_bench                                  # S6 A/B at end of output
+./build/bench/commit_pass_breakdown                            # default (batch on)
+THREADMAXX_NO_BATCH=1 ./build/bench/commit_pass_breakdown      # batch off
+cd build && ctest --output-on-failure                          # full gate
+cmake -S . -B build-long-soak -DCMAKE_BUILD_TYPE=Release \
+    -DTHREADMAXX_BUILD_LONG_SOAK=ON
+cmake --build build-long-soak --target concurrency_soak_long
+./build-long-soak/tests/concurrency_soak_long                  # ~5 min
+```

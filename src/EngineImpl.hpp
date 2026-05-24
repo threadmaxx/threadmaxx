@@ -424,6 +424,15 @@ private:
     std::vector<std::uint32_t>                 shardMigratingIndices_;
     std::vector<std::vector<detail::Command*>> shardChunkBins_;
 
+    // SHARDED_OPTIMISATION.md S6 — Engine-owned scratch buffer for the
+    // batch-migrate path's per-batch handle collection. `commitBuffer`
+    // and `commitBuffersSharded`'s global lane reuse it between batch
+    // dispatches so the steady-state pays zero allocations after the
+    // first tick. Sim-thread serial. The matching srcRows / dstRows /
+    // swaps / perm scratch lives one layer down (`EntityStorage` and
+    // `ArchetypeTable` own those).
+    std::vector<EntityHandle> batchHandlesScratch_;
+
     // SHARDED_OPTIMISATION.md S0 — per-step Pass A/B/C breakdown.
     // Reset to defaults at the top of `step()`; accumulated across all
     // `commitBuffersSharded` calls in the step.
