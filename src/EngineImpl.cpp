@@ -1958,11 +1958,48 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     // independent of bin execution order.
     constexpr std::size_t kMinBinForJob = 256;
     std::size_t largeBins = 0;
-    for (const auto& bin : shardChunkBins_) {
-        if (bin.size() >= kMinBinForJob) ++largeBins;
+    std::size_t largestBinIdx = shardChunkBins_.size(); // sentinel
+    std::size_t largestBinSize = 0;
+    for (std::size_t k = 0; k < shardChunkBins_.size(); ++k) {
+        const auto sz = shardChunkBins_[k].size();
+        if (sz >= kMinBinForJob) {
+            ++largeBins;
+            if (sz > largestBinSize) {
+                largestBinSize = sz;
+                largestBinIdx  = k;
+            }
+        }
     }
     const std::size_t inlineBins = activeBins - largeBins;
     commitBreakdown_.inlineBinCount += inlineBins;
+
+    // SHARDED_OPTIMISATION.md S9 — sim-thread-inline largest bin.
+    //
+    // Pre-S9 Pass C: every large bin → worker job; sim thread runs
+    // small bins inline then waits on the latch. S0 found that
+    // `JobLatch::wait` was ~99% of Pass C on workloads where Pass C
+    // mattered — workers chewed the large bins while the sim thread
+    // sat idle, so Pass C's wall-clock equalled
+    // `max(workers' bin completion times)`.
+    //
+    // S9 picks the largest large bin to run inline on the sim thread
+    // alongside the small-bin lane and dispatches the rest (largeBins
+    // − 1) to workers. For evenly-balanced workloads (MultiArch is the
+    // canary: 4 bins × ~25k cmds × 4 workers → sim was idle waiting),
+    // the latch wait drops to roughly zero because the sim is now a
+    // peer of the workers, not their wait barrier.
+    //
+    // Determinism: bins target disjoint chunks; `finalizeCommitHash`
+    // sorts by mask.bits before folding. Execution order doesn't
+    // affect the hash regardless of which lane runs which bin.
+    //
+    // Opt-out: `Config::inlineLargestBin = false` (or
+    // `THREADMAXX_NO_INLINE_LARGEST=1` env in benches) reverts to the
+    // pre-S9 "every large bin → worker" lane.
+    const bool inlineLargest =
+        cfg_.inlineLargestBin && largestBinIdx < shardChunkBins_.size();
+    const std::size_t latchedJobs =
+        inlineLargest ? (largeBins - 1) : largeBins;
 
     const auto bdCStart = bdClock::now();
     if (largeBins == 0) {
@@ -1974,10 +2011,28 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
                 applyCommandImpl(*cmd, storage);
             }
         }
-    } else {
-        JobLatch done(static_cast<std::ptrdiff_t>(largeBins));
+    } else if (latchedJobs == 0) {
+        // S9 — single large bin (or only the sim-thread's inline target
+        // qualifies): no worker dispatch needed. Sim thread runs the
+        // largest bin AND the small bins inline. No latch traffic.
+        if (inlineLargest) {
+            for (auto* cmd : shardChunkBins_[largestBinIdx]) {
+                applyCommandImpl(*cmd, storage);
+            }
+            ++commitBreakdown_.inlineLargestApplied;
+        }
         for (auto& bin : shardChunkBins_) {
+            if (bin.empty() || bin.size() >= kMinBinForJob) continue;
+            for (auto* cmd : bin) {
+                applyCommandImpl(*cmd, storage);
+            }
+        }
+    } else {
+        JobLatch done(static_cast<std::ptrdiff_t>(latchedJobs));
+        for (std::size_t k = 0; k < shardChunkBins_.size(); ++k) {
+            auto& bin = shardChunkBins_[k];
             if (bin.size() < kMinBinForJob) continue;
+            if (inlineLargest && k == largestBinIdx) continue;
             jobs_->submit([&bin, &done, &storage] {
                 for (auto* cmd : bin) {
                     applyCommandImpl(*cmd, storage);
@@ -1985,9 +2040,15 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
                 done.count_down();
             });
         }
-        // Run the small bins on the sim thread while workers are
-        // chewing through the large ones — overlap rather than serialise
-        // behind the wait.
+        // Sim-thread inline lane: run the largest large bin first
+        // (S9), THEN the small bins. Doing the largest first means
+        // its work overlaps maximally with the workers' large bins.
+        if (inlineLargest) {
+            for (auto* cmd : shardChunkBins_[largestBinIdx]) {
+                applyCommandImpl(*cmd, storage);
+            }
+            ++commitBreakdown_.inlineLargestApplied;
+        }
         for (auto& bin : shardChunkBins_) {
             if (bin.empty() || bin.size() >= kMinBinForJob) continue;
             for (auto* cmd : bin) {

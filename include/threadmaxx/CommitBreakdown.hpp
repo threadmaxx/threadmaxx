@@ -66,6 +66,12 @@ struct CommitBreakdown {
     /// count. Mirrors the same field on the serial commit path
     /// (`commitBuffer`), which also routes long runs through the batch.
     std::uint64_t batchedMigrations = 0;
+    /// SHARDED_OPTIMISATION.md S9 — number of sharded calls this step
+    /// where Pass C ran the single largest large-bin inline on the
+    /// sim thread (the latch counted `largeBins − 1` workers). Bumped
+    /// once per qualifying call. Zero when `Config::inlineLargestBin
+    /// == false` or when `largeBins == 0`.
+    std::uint64_t inlineLargestApplied = 0;
 
     /// Wall-clock ns spent in Pass A (migrating-entity bitmap build).
     std::uint64_t nsPassA = 0;

@@ -122,6 +122,25 @@ struct Config {
     /// Hash determinism: identical commitHash stream with the flag on
     /// or off, verified by `tests/command_buffer_routing_test.cpp`.
     bool recordTimeRouting = true;
+
+    /// SHARDED_OPTIMISATION.md S9 — sim-thread-inline largest bin.
+    /// When `true` (default), the sharded commit's Pass C identifies
+    /// the single largest large-bin and runs it inline on the sim
+    /// thread, submitting only `largeBins − 1` worker jobs. For
+    /// balanced workloads (where `largeBins == workerCount`), this
+    /// turns "sim waits for workers" into "sim is a peer of workers"
+    /// and drops the latch wait to near zero. Set `false` (or
+    /// `THREADMAXX_NO_INLINE_LARGEST=1` env in benches) to revert to
+    /// the pre-S9 lane (every large bin → worker; sim only handles
+    /// small bins then waits).
+    ///
+    /// Ignored when `singleThreadedCommit == true`; ignored when no
+    /// bin qualifies for the job lane (`largeBins == 0`).
+    ///
+    /// Hash determinism: identical commitHash regardless of the flag.
+    /// Bins target disjoint chunks; `finalizeCommitHash` sorts by
+    /// `mask.bits()` before folding so execution order is irrelevant.
+    bool inlineLargestBin = true;
 };
 
 } // namespace threadmaxx

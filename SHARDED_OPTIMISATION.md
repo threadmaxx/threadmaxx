@@ -322,6 +322,139 @@ Pass B drops 50–60% across every routing-active workload — the S8 mechanism 
 - **Skip S∞ for now.** MultiArch latch wait is still the blocker on the default flip. Re-evaluate after a Pass C overhaul (smaller-bin amortization or work-stealing into the latch wait window).
 - **Watch for record-time locator overhead in spawn-heavy ticks** — the locator query adds ~10ns per cmd, paid even when the locator returns stale (spawn flow). Bench-tested clean on the current matrix.
 
+### S9 — Sim-thread-inline largest bin (Pass C, low-risk first pass)
+
+**Hypothesis.** Post-S8, MultiArch's commit_us did not move because Pass C is ~99% `JobLatch::wait`: every large bin goes to a worker, the sim thread waits idle, and Pass C's wall-clock equals `max(workers' bin completion times)`. S5 already runs *small* bins inline on the sim thread for the same reason (avoiding the latch entirely when no bin meets `kMinBinForJob`). Extending the inline lane to claim the SINGLE LARGEST among the large bins gives the sim thread real work and reduces the latch count by one.
+
+For MultiArch's 4 evenly-balanced 25k-cmd bins, this turns "4 jobs / 4 workers / sim waits" into "3 jobs / 3 workers + sim runs the 4th". With perfect balance the wait drops to ~zero; with imperfect balance it drops to `max(workers' time) − sim_inline_time`.
+
+**Change.** In `commitBuffersSharded` Pass C, when `largeBins >= 1`:
+1. Find the index of the largest large bin.
+2. Submit `largeBins − 1` worker jobs (skipping the largest).
+3. Run the largest bin inline on the sim thread.
+4. Sim then runs the small bins (existing S5 lane) AND `done.wait()` on the remaining jobs.
+
+Determinism preserved: bins target disjoint chunks; execution order across bins doesn't affect any chunk's final content; `finalizeCommitHash` sorts by `mask.bits()` before folding.
+
+**Bench.** `commit_pass_breakdown` all seven workloads. Target: **≥25% commit_us improvement on `setTransform/MultiArch`** (the S8-missed gate). No regression elsewhere — small-bin-only workloads still hit the S5 no-latch path; large-bin-only workloads with `largeBins == 1` get the inline-only path (also no latch).
+
+**Tests.** Full determinism harness: `sharded_commit_test`, `migration_batch_test`, `command_buffer_routing_test`, `concurrency_soak_test`, `concurrency_soak_long` (10× soak).
+
+**Gate.** ≥25% on MultiArch; no workload regresses by more than 5%.
+
+**Risk.** Low. The change is internal to Pass C, the inline lane already exists (S5), and determinism is unaffected. The one failure mode is "sim thread takes longer than max(workers)" when the chosen bin is much bigger than the others — pick the LARGEST and the inverse can't happen.
+
+**S9 outcome (LANDED 2026-05-24).** Sim-thread-inline largest bin lands as designed.
+
+**APIs added (all internal except one Config knob):**
+
+- `Config::inlineLargestBin` (default `true`; A/B via `THREADMAXX_NO_INLINE_LARGEST=1` env var in benches).
+- `CommitBreakdown::inlineLargestApplied` counter (per-step calls that ran the largest bin inline).
+
+**Mechanism in Pass C.** Scan `shardChunkBins_` once to count `largeBins` AND identify the index of the single largest large-bin (`largestBinIdx`, `largestBinSize`). Submit `largeBins − 1` worker jobs (skipping `largestBinIdx`). Sim thread then runs the largest large-bin inline, then the small bins (S5 lane), then `done.wait()`. Three lanes: (a) `largeBins == 0` → all inline as before; (b) `latchedJobs == 0` (only the inline target qualifies) → no latch at all; (c) the common case → `largeBins − 1` workers + sim peer.
+
+**Headline (commit_pass_breakdown, mean of 3 runs):**
+
+| Workload | S9 off (NO_INLINE_LARGEST=1) | S9 on (default) | Δ commit_us | wait_us off → on |
+|---|---|---|---|---|
+| `setTransform/Churn`     | 3 721 µs | 2 884 µs | **−22%** | 2 766 → 3      |
+| `setVelocity/Churn`      | 3 845 µs | 2 495 µs | **−35%** | 2 672 → 0.3    |
+| `addRemoveTag/Churn`     | 10 951 µs | 11 101 µs | +1% (fallback) | n/a |
+| `setTransform/MultiArch` | 5 333 µs | 5 360 µs | ~0% (noise) | 3 971 → 67    |
+| `RPG-mix`                | 3 822 µs | 3 667 µs | **−4%**  | 1 791 → 0.3   |
+| `SmallWorld`             | 9 µs    | 9 µs    | no diff | 0 → 0          |
+| `ManyTinyBins`           | 183 µs  | 189 µs  | ~0    | 0 → 0          |
+
+`wait_us` collapses to near-zero on every routing-active workload — the sim thread is now a peer lane. The `commit_us` movement depends on whether the worker lanes are the bottleneck:
+
+- **Single-large-bin workloads (Churn variants):** sim runs the one bin inline, no worker dispatched, no latch. Commit drops ~25% from removing the latch + worker-cache-cold path.
+- **Multi-large-bin balanced workloads (MultiArch with 4 ≈25k bins on 4 workers):** workers still take the same time T to finish their 3 bins; sim's 4th-lane work also takes ~T; wall-clock = max(workers_T, sim_T) ≈ T. Pass C wall clock unchanged.
+
+**Gates vs spec:**
+
+- ≥25% on `setTransform/MultiArch` — **MISSED (~0%).** Balanced bins on saturated workers means sim's extra lane doesn't shorten the critical path.
+- No workload regresses by more than 5% — **PASSED** (+1% on the fallback-only addRemoveTag is within noise).
+- 10× soak determinism — **PASSED** (`concurrency_soak_long`, `sharded_commit_test`, `migration_batch_test`, `command_buffer_routing_test`, `concurrency_soak_test`, full ctest 125/125).
+
+**Decision.** Ship S9. Real wins on single-large-bin workloads (Churn variants 22–35%) at zero correctness cost. MultiArch stays on the critical path for S∞, blocked by "balanced large bins saturate workers, sim becomes a redundant peer." That blocker shifts to S10 (split the largest worker bin into row-range sub-jobs so sim adds parallelism instead of redundancy) and S11 (cut latch wakeup cost).
+
+**Action items.**
+
+- Run S10 next — same MultiArch gate target.
+- Latch wait is now a tiny fraction on every workload; S11's headroom is the small balanced-bin Pass C wait variance, less urgent than expected.
+
+### S10 — Adaptive bin merging / row-splitting (Pass C lane balance)
+
+**Hypothesis.** S9 fixes the "sim thread idle" half. The other half is bin imbalance: when `largeBins != workerCount`, some workers idle. Two cases:
+- `largeBins < workerCount` → split the largest bin into N row-range sub-jobs (analogous to `forEachChunk`'s sub-job dispatch).
+- `largeBins > workerCount` → merge small adjacent bins to cut per-job dispatch overhead.
+
+**Change.** In Pass C: after determining the inline target (S9), evaluate `(largeBins − 1) vs (workerCount − 1)`. If short on jobs, split the largest worker-bound bin into row ranges so the total job count matches available workers. If many small-large bins exist, merge into job batches.
+
+Row-splitting safety: within a bin, cmds must execute in submission order. Splitting by index range is fine if each range still processes its cmds in order. Across ranges, different cmds touch the SAME archetype chunk → must serialize per-entity. The safe split is by ENTITY: each sub-job owns a row range of the chunk and only applies cmds whose target row falls in that range. Cost: a per-cmd row lookup before assignment to a sub-job.
+
+**Bench.** Especially worth measuring when `largeBins < workerCount` (the case for narrow archetype workloads).
+
+**Tests.** New `tests/pass_c_split_test.cpp` confirming that a single-bin workload sharded across N sub-jobs lands the same commitHash as the unsplit baseline.
+
+**Gate.** ≥15% improvement on any workload where `largeBins < workerCount`. No regression on workloads where `largeBins >= workerCount`.
+
+**Risk.** Medium. Row-by-row sub-bin assignment requires the row lookup, which costs ~10ns per cmd (same as the S8 locator). If the workload doesn't benefit (e.g., bin already saturating workers), the lookup is dead weight.
+
+**Skip condition.** If S9 alone closes the MultiArch gap (post-S9 sharded ≤ 1.1× single), skip S10 — the remaining gap is below the point where further code complexity is justified.
+
+### S11 — JobLatch spin-before-block
+
+**Hypothesis.** `JobLatch::wait()` enters mutex+CV blocking immediately. For sub-millisecond apply lanes, the CV wakeup cost (~10µs path on Linux) dominates the actual wait. A short spin (e.g., 50µs hot-loop checking the atomic counter) before falling back to CV catches the common case where workers finish "soon."
+
+**Change.** `JobLatch::wait()` adds a configurable spin budget (default ~50µs measured by `rdtsc` deltas) before acquiring the lock. The mutex+CV path remains the fallback. The TSAN-clean property survives because the spin only reads the atomic, doesn't touch shared state in a way that creates new race surface.
+
+**Bench.** Especially MultiArch + ManyTinyBins + SmallWorld where worker apply time is short.
+
+**Tests.** Existing JobSystem stress + the full determinism harness. The spin is read-only on the latch counter, so no behavioral change.
+
+**Gate.** ≥5% improvement on any workload where current Pass C wait > 90% of Pass C wall-clock. No regression where Pass C wait is already < 10%.
+
+**Risk.** Medium. Spin time is dead CPU on cores that could be doing other work — bad citizenship if the simulator runs alongside other processes. Configurable budget gates the damage; default should be conservative.
+
+### S12 — Pass B / Pass C streaming overlap
+
+**Hypothesis.** Pass B and Pass C are strictly serial today. Workers idle during Pass B's classification; sim thread idles during Pass C's wait. Streaming Pass C job submissions WHILE Pass B is still classifying overlaps the two windows.
+
+**Change.** In Pass B's per-buffer loop, when a bin's pending size exceeds `kMinBinForJob`, snapshot the bin pointer span and submit a worker job immediately. Subsequent late additions to that bin during Pass B's continued walk go to a fresh sub-bin (sharing the same archetype index) which then also gets submitted on threshold crossing. Final cleanup at end of Pass B submits any remaining sub-bin tails.
+
+Determinism: each sub-bin still applies its cmds in submission order. Across sub-bins of the same archetype, the order is "earlier sub-bin's cmds before later sub-bin's cmds" because we cut sub-bins on threshold crossing in submission-order classification. Preserve via sequential submission (one sub-bin completes before the next starts) — but that defeats the parallelism. Alternative: enforce by job-priority + same-worker pinning (later sub-bin pinned to same worker as earlier).
+
+**Bench.** Especially RPG-mix and MultiArch (Pass B is significant for them).
+
+**Tests.** Full determinism harness. The hash contract is the highest-risk surface here — same-archetype sub-bin ordering must round-trip identically to the unsplit baseline.
+
+**Gate.** ≥10% commit_us improvement on RPG-mix. No determinism divergence at 10× soak.
+
+**Risk.** High. Requires careful ordering across sub-bins of the same archetype. The simplest correctness shim (sequential same-archetype) defeats the optimization; the careful shim (same-worker pinning + priority) is a JobSystem refactor.
+
+**Skip condition.** If S9 + S10 + S11 close the gap, skip S12. The complexity is not worth a marginal gain.
+
+### S13 — Cross-tick commit pipelining (S∞ blocker territory)
+
+**Hypothesis.** Most aggressive: allow tick N's Pass C to run while tick N+1 begins recording. The sim thread starts the next tick's update() while the previous tick's apply is still in flight.
+
+**Change.** Engine maintains a "commit in flight" flag. update() of tick N+1 proceeds only if the commit it depends on (e.g., reads from system A's writes via worldView) has finished. Systems that read fresh state declare a dependency edge to the prior tick's writers; the engine inserts an explicit barrier before their update().
+
+This breaks the current `registration-order serial commit` contract: previously, by the time update() runs, ALL prior commits have finished. Under S13, only some have. WorldView semantics must be revisited.
+
+**Change scope:** big. Touches Engine::step, SystemContext, WorldView, the read-set / write-set scheduler.
+
+**Bench.** Whole-tick wall clock on RPG-mix + MultiArch. Target the END of tick N+1 (or really N+K) showing meaningful overlap with N's Pass C.
+
+**Tests.** Full determinism harness. Plus new `tests/cross_tick_pipelining_test.cpp` confirming bit-exact replay across cross-tick scheduling.
+
+**Gate.** Whole-tick wall clock ≥15% improvement OR the default flip becomes viable.
+
+**Risk.** Highest. Breaks the current commit contract; large architectural change.
+
+**Skip condition.** If S9+S10+S11 flip the default, S13 is unnecessary.
+
 ### S∞ — Flip the default
 
 Land in a separate commit, after the batches above have been measured over a full soak cycle.
@@ -338,7 +471,7 @@ This plan is provisional. Pull the brake when:
 - **S0 contradicts the premise.** If the breakdown shows sharded and serial are within 5% on every workload, there's no leverage and we keep the serial default. Document and close.
 - **Two consecutive batches fail their bench gate.** Either the model of the bottleneck is wrong or the remaining gains are below measurement noise. Re-do S0 before continuing.
 - **Determinism harness ever diverges.** Revert the offending batch, re-run S0 with the divergence as input, and only continue once the divergence root cause is mapped.
-- **Plan grows beyond S8.** If we're inventing batches past S8, the plan was wrong. Stop and either flip the default with the wins we have, or back out and live with the serial default.
+- **Plan grows beyond S13.** S9–S13 specifically target the Pass C latch-wait bottleneck S8 couldn't reach. If S9–S13 don't unblock S∞ either, the assumption that "MultiArch can be made to net-win" was wrong; flip back to ship-what-we-have or accept the serial default permanently.
 
 ## 9. Out-of-scope for this plan
 

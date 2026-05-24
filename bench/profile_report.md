@@ -744,14 +744,39 @@ Pass B drops 50–60% on every routing-active workload (the S8 mechanism is real
 
 **Decision.** Ship S8 — the gate is split but the gains are real where Pass B mattered. Default `singleThreadedCommit = true` stays pinned: MultiArch needs a Pass C overhaul to unblock the default flip. RPG-mix sharded is now ~1.4× single (was ~1.8× post-S6); the gap is closing but a Pass C win is still required for S∞.
 
+## S9 — Sim-thread-inline largest bin (LANDED 2026-05-24)
+
+**Mechanism.** Pass C identifies the single largest large-bin and runs it inline on the sim thread, dispatching `largeBins − 1` worker jobs. Sim becomes a peer lane instead of a wait barrier.
+
+**Headline (commit_pass_breakdown, mean of 3 runs):**
+
+| Workload | S9 off | S9 on | Δ commit_us | wait_us off → on |
+|---|---|---|---|---|
+| `setTransform/Churn`     | 3 721 µs | 2 884 µs | **−22%** | 2 766 → 3      |
+| `setVelocity/Churn`      | 3 845 µs | 2 495 µs | **−35%** | 2 672 → 0.3    |
+| `addRemoveTag/Churn`     | 10 951 µs | 11 101 µs | +1% (fallback) | n/a |
+| `setTransform/MultiArch` | 5 333 µs | 5 360 µs | ~0% (noise) | 3 971 → 67    |
+| `RPG-mix`                | 3 822 µs | 3 667 µs | **−4%**  | 1 791 → 0.3   |
+
+`wait_us` collapses to near-zero on every routing-active workload. Commit_us movement is gated by whether worker lanes are the bottleneck — single-large-bin workloads (Churn variants) win 22–35%; balanced multi-large-bin (MultiArch) is unchanged because sim adding a 4th lane to 4 already-busy workers is redundant.
+
+**Gates vs spec:**
+
+- ≥25% on `MultiArch` — **MISSED (~0%, noise band).**
+- No workload regresses by more than 5% — **PASSED.**
+- 10× soak determinism — **PASSED.**
+
+**Decision.** Ship — real wins on single-large-bin workloads at zero correctness cost. MultiArch needs S10 (row-splitting the largest worker bin).
+
 ## Reproducibility
 
 ```
 cmake --build build -j
 ./build/bench/migration_bench                                       # S6 A/B at end of output
-./build/bench/commit_pass_breakdown                                 # default (S6 batch on, S8 routing on)
+./build/bench/commit_pass_breakdown                                 # default (all S6/S8/S9 on)
 THREADMAXX_NO_BATCH=1 ./build/bench/commit_pass_breakdown           # S6 batch off
 THREADMAXX_NO_ROUTING=1 ./build/bench/commit_pass_breakdown         # S8 routing off
+THREADMAXX_NO_INLINE_LARGEST=1 ./build/bench/commit_pass_breakdown  # S9 inline-largest off
 cd build && ctest --output-on-failure                               # full gate (125 tests)
 cmake -S . -B build-long-soak -DCMAKE_BUILD_TYPE=Release \
     -DTHREADMAXX_BUILD_LONG_SOAK=ON

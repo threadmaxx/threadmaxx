@@ -291,6 +291,14 @@ PerWorkloadResult measureWorkload(const char* workloadName,
     if (const char* nor = std::getenv("THREADMAXX_NO_ROUTING"); nor && nor[0] == '1') {
         cfg.recordTimeRouting = false;
     }
+    // SHARDED_OPTIMISATION.md S9 — Env-var override for the inline-
+    // largest-bin Pass C lane. Set THREADMAXX_NO_INLINE_LARGEST=1 to
+    // revert to the pre-S9 lane where every large bin goes to a
+    // worker and the sim thread only handles small bins + waits.
+    if (const char* noi = std::getenv("THREADMAXX_NO_INLINE_LARGEST");
+        noi && noi[0] == '1') {
+        cfg.inlineLargestBin = false;
+    }
     Engine engine(cfg);
     if (!engine.initialize(game)) {
         std::fprintf(stderr, "  init failed for %s\n", workloadName);
