@@ -431,6 +431,12 @@ private:
     std::vector<std::uint32_t>                 shardMigratingIndices_;
     std::vector<std::vector<detail::Command*>> shardChunkBins_;
 
+    // SHARDED_OPTIMISATION.md S10 — engine-owned sub-bins for the
+    // row-split path. Only populated when Pass C decides to split the
+    // largest large-bin; preserved across commits so the steady state
+    // pays zero allocations after the first split.
+    std::vector<std::vector<detail::Command*>> shardSubBins_;
+
     // SHARDED_OPTIMISATION.md S6 — Engine-owned scratch buffer for the
     // batch-migrate path's per-batch handle collection. `commitBuffer`
     // and `commitBuffersSharded`'s global lane reuse it between batch

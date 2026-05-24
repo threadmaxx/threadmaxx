@@ -141,6 +141,49 @@ struct Config {
     /// Bins target disjoint chunks; `finalizeCommitHash` sorts by
     /// `mask.bits()` before folding so execution order is irrelevant.
     bool inlineLargestBin = true;
+
+    /// SHARDED_OPTIMISATION.md S10 — row-split the largest bin.
+    /// **Default is `false` and the knob is opt-in.** When `true`,
+    /// Pass C row-partitions the single largest large-bin into
+    /// `min(workerCount + 1, largestBinSize / kMinBinForJob)` sub-
+    /// bins; sub-bin 0 runs inline on the sim thread and the rest go
+    /// to workers. Eligibility additionally requires `largeBins == 1`
+    /// (the only case where the split adds parallelism — with
+    /// multiple large bins, the others remain the critical path).
+    ///
+    /// **Why off by default**: empirically (3-run averages, S10 bench
+    /// with new `setTransform/SingleArch` workload), enabling the
+    /// split regresses the canonical case by +207%:
+    ///   sharded split-off: 2 217 µs commit (S9 sim-inline path)
+    ///   sharded split-on:  6 794 µs commit (Pass C +233%)
+    /// Root cause: each cmd carries a `std::visit` + `locate()` cost
+    /// at classification time (~25–30 ns/cmd). The actual apply cost
+    /// (write Transform via `mut*()`) is only ~13.6 ns/cmd, so the
+    /// pre-classification pass doubles the per-cmd memory traffic on
+    /// the slot table and command variant — strictly slower than the
+    /// S9 sim-inline path that just applies in place. A viable S10
+    /// would require record-time row-bucketing (analogous to S8's
+    /// chunkBuckets but with row info), which is out of scope for
+    /// this batch.
+    ///
+    /// The implementation, the test (`tests/pass_c_split_test.cpp`),
+    /// and this knob are preserved so a future revisit with a
+    /// cheaper classifier can re-evaluate without re-implementing
+    /// the partitioner. `THREADMAXX_NO_SPLIT_LARGEST=1` env in
+    /// benches force-disables (no-op when default is already off).
+    ///
+    /// Ignored when `singleThreadedCommit == true`; ignored when
+    /// `inlineLargestBin == false`; ignored when the largest bin is
+    /// below `2 * kMinBinForJob`; ignored when `largeBins != 1`.
+    ///
+    /// Determinism: each cmd is routed to the sub-bin whose row range
+    /// covers its target entity's current row (`loc.row /
+    /// rowsPerBin`). Sub-bins target disjoint rows of the same
+    /// archetype chunk, so their writes never overlap. Within a sub-
+    /// bin, cmds remain in submission order. `finalizeCommitHash`
+    /// sorts chunks by `mask.bits()` before folding so the rollup is
+    /// independent of sub-bin execution order.
+    bool splitLargestBin = false;
 };
 
 } // namespace threadmaxx

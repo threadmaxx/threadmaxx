@@ -403,6 +403,49 @@ Row-splitting safety: within a bin, cmds must execute in submission order. Split
 
 **Skip condition.** If S9 alone closes the MultiArch gap (post-S9 sharded ≤ 1.1× single), skip S10 — the remaining gap is below the point where further code complexity is justified.
 
+**S10 outcome (LANDED OPT-IN, DEFAULT OFF 2026-05-24).** Implementation, knob, and determinism test all land — but the bench shows the row-split lane is **structurally not net-positive** on the canonical case. `Config::splitLargestBin` defaults to `false`; the code is preserved as a fixed point for a future revisit with a cheaper classifier.
+
+**APIs added (all opt-in):**
+
+- `Config::splitLargestBin` (default `false`; opt in to `true` to enable; `THREADMAXX_NO_SPLIT_LARGEST=1` env in benches is a no-op when default is off, kept for symmetry).
+- `CommitBreakdown::splitLargestApplied` counter (per-step calls that fired the partitioner; zero when off).
+- `bench/commit_pass_breakdown` workload `setTransform/SingleArch` — 100k entities in one archetype, the only shape that exercises `largeBins == 1`.
+- `tests/pass_c_split_test.cpp` (4 tests) — pins commitHash determinism: serial vs sharded-no-split vs sharded-split must agree across pure value-only, multi-setter, mixed migration+split, and below-threshold (split skipped) workloads.
+
+**Mechanism (when opted in).** After the S9 inline-largest scan, if `inlineLargest && largeBins == 1 && largestBinSize >= 2 * kMinBinForJob`, the engine computes `splitFactor = min(workerCount + 1, largestBinSize / kMinBinForJob)`, partitions the bin by row range (`subIdx = min(row / rowsPerBin, M-1)`), and dispatches sub-bins `[1..M)` as worker jobs while sim runs sub-bin 0 inline. Same submission-order invariants as S5/S6/S9.
+
+**Bench (3-run avg, sharded `commit_us`, split-off vs split-on with the eligibility-tightened impl):**
+
+| Workload                  | bin/tk | largeBins | split-off (default) | split-on  | Δ      | Notes |
+|---|---|---|---|---|---|---|
+| `setTransform/Churn`      | 2      | 2         | 3 912 µs | 3 839 µs | −2%   | Eligibility skip (largeBins ≠ 1) |
+| `setVelocity/Churn`       | 2      | 2         | 3 591 µs | 3 881 µs | +8%   | Eligibility skip; +8% is variance |
+| `addRemoveTag/Churn`      | 0      | 0         | 11 712 µs | 11 459 µs | −2% | Fallback (no large bins) |
+| `setTransform/MultiArch`  | 4      | 4         | 4 365 µs | 5 644 µs | +29% (variance) | Eligibility skip; one outlier run |
+| **`setTransform/SingleArch`** | **1** | **1** | **2 217 µs** | **6 794 µs** | **+207%** | **S10 fires here** |
+| `RPG-mix`                 | 4      | 2         | 3 678 µs | 3 667 µs | ~0%   | Eligibility skip (largeBins=2) |
+| `SmallWorld`              | 2      | 0         | 11 µs    | 9 µs     | noise | Fallback |
+| `ManyTinyBins`            | 32     | 0         | 185 µs   | 181 µs   | noise | Fallback |
+
+**Diagnosis.** The bench was designed so `SingleArch` exercises the only shape where S10 is in scope (`largeBins == 1`). Pre-S10 Pass C runs the single bin on sim with `latchedJobs == 0` (no worker dispatch, no latch, no wait) — measured at 1 362 µs Pass C, 0 µs wait, on 100 000 cmds → ~13.6 ns/cmd apply cost.
+
+S10 adds a classification pass before dispatch: for every cmd, `commandTargetEntity` (a `std::visit` over the 26-alt variant) + `EntityStorage::locate(handle)` (`alive` check + slot deref) + `subIdx` compute + `push_back`. Empirically that adds ~25–30 ns/cmd of classification overhead — roughly double the apply cost itself. The cmd stream's memory traffic on `slots_` is touched twice (once at classify, once at apply), and the worker apply on cold cache lines doesn't recoup the savings.
+
+Pass C went from 1 362 µs to 4 523 µs (+233%); the parallel apply theoretical win was at most ~1 100 µs (replacing 100k×13.6 ns sim work with 20k×13.6 ns per lane), nowhere near enough to offset the ~3 000 µs classification penalty.
+
+**Gates vs spec:**
+
+- ≥15% on a workload where `largeBins < workerCount` — **MISSED.** `SingleArch` (the only such workload in scope) regresses by +207%; `Churn`/`MultiArch` (largeBins ≥ 2) are correctly skipped.
+- No regression on workloads where `largeBins >= workerCount` — **PASSED** (eligibility check skips them; observed −2%/+8% movement is within bench noise).
+- 10× soak determinism — **PASSED** (`pass_c_split_test` covers serial vs sharded-no-split vs sharded-split; full ctest 126/126 green).
+
+**Decision.** Land the implementation but flip `splitLargestBin` default to `false`. The S10 mechanism is correct (determinism verified) but structurally inferior to S9 on every workload measured. A viable S10 would need **record-time row-bucketing** — the cmd's target row recorded into a per-row-range bucket at `CommandBuffer::setTransform()` etc. time, analogous to how S8 records the per-chunk bucket. That's a record-API change with cross-cutting impact on CommandBuffer's storage and is out of scope for this batch.
+
+**Action items.**
+
+- Move to S11 (JobLatch spin-before-block). Latch wait is small post-S9 but still measurable on some workloads; S11's surface area is contained.
+- Defer the "row-bucket at record time" investigation to a future batch outside the S9–S13 envelope — it's a 2× larger change than any of S0–S10 and the bench doesn't currently demonstrate a workload where post-S9 sharded loses badly enough to justify it.
+
 ### S11 — JobLatch spin-before-block
 
 **Hypothesis.** `JobLatch::wait()` enters mutex+CV blocking immediately. For sub-millisecond apply lanes, the CV wakeup cost (~10µs path on Linux) dominates the actual wait. A short spin (e.g., 50µs hot-loop checking the atomic counter) before falling back to CV catches the common case where workers finish "soon."

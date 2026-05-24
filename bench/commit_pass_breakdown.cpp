@@ -155,6 +155,25 @@ private:
     std::uint32_t spawnPerTick_;
 };
 
+/// SHARDED_OPTIMISATION.md S10 — single-archetype shape. Every entity
+/// shares the same component mask (Transform only) so all cmds route
+/// to one chunk → `largeBins == 1`. The canonical case where S10
+/// row-splits the single large bin across `workerCount + 1` lanes;
+/// sim and every worker cooperate on the one bin instead of sim
+/// soloing it (S9) or sim doing small bins while workers race
+/// (pre-S9).
+struct SingleArchWorkload : IGame {
+    std::uint32_t count = kChurnCount;
+    void onSetup(Engine&, World&, CommandBuffer& cb) override {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            Bundle b{};
+            b.transform.position.x = static_cast<float>(i);
+            b.initialMask = ComponentSet{Component::Transform};
+            cb.spawnBundle(b);
+        }
+    }
+};
+
 /// Multi-archetype shape from `commit_path_bench`. 4 archetype kinds ×
 /// 25k entities each (Transform / +Velocity / +Velocity+Health /
 /// +Velocity+Health+BoundingVolume).
@@ -298,6 +317,14 @@ PerWorkloadResult measureWorkload(const char* workloadName,
     if (const char* noi = std::getenv("THREADMAXX_NO_INLINE_LARGEST");
         noi && noi[0] == '1') {
         cfg.inlineLargestBin = false;
+    }
+    // SHARDED_OPTIMISATION.md S10 — Env-var override for the row-split
+    // largest-bin Pass C lane. Set THREADMAXX_NO_SPLIT_LARGEST=1 to
+    // revert to the pre-S10 lane where the largest bin runs as a
+    // single inline lane on the sim thread (S9 behaviour).
+    if (const char* nos = std::getenv("THREADMAXX_NO_SPLIT_LARGEST");
+        nos && nos[0] == '1') {
+        cfg.splitLargestBin = false;
     }
     Engine engine(cfg);
     if (!engine.initialize(game)) {
@@ -527,6 +554,18 @@ int main(int argc, char** argv) {
         all.push_back(measureWorkload(
             "setTransform/MultiArch", "setTransform", sharded, kWorkers,
             kWarmup, kIters, kChurnCount, MultiArchWorkload{},
+            [](std::vector<EntityHandle> e) {
+                return std::make_unique<SetTransformChurn>(std::move(e));
+            }));
+        printSummaryRow(all.back());
+        writeJsonl(jsonl, all.back());
+
+        // SHARDED_OPTIMISATION.md S10 — setTransform/SingleArch.
+        // All 100k entities share the same component mask → one bin
+        // (`largeBins == 1`). The canonical S10 win case.
+        all.push_back(measureWorkload(
+            "setTransform/SingleArch", "setTransform", sharded, kWorkers,
+            kWarmup, kIters, kChurnCount, SingleArchWorkload{},
             [](std::vector<EntityHandle> e) {
                 return std::make_unique<SetTransformChurn>(std::move(e));
             }));

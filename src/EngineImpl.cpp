@@ -1998,8 +1998,91 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     // pre-S9 "every large bin → worker" lane.
     const bool inlineLargest =
         cfg_.inlineLargestBin && largestBinIdx < shardChunkBins_.size();
-    const std::size_t latchedJobs =
-        inlineLargest ? (largeBins - 1) : largeBins;
+
+    // SHARDED_OPTIMISATION.md S10 — row-split the largest bin
+    // (OPT-IN, off by default; see `Config::splitLargestBin` doc).
+    //
+    // Row-partitions the single largest large-bin into M sub-bins so
+    // the total lane count (sim + workers) is saturated. Sub-bin 0
+    // runs inline on sim, sub-bins [1..M) on workers.
+    //
+    // **The default is `false` because the bench shows S10 regresses
+    // its canonical case by +207%.** The `std::visit` + `locate()`
+    // pre-classification cost (~25–30 ns/cmd) is roughly double the
+    // apply cost itself (~13.6 ns/cmd), so the partition pass
+    // doubles per-cmd memory traffic on the slot table — strictly
+    // slower than the S9 sim-inline lane. A viable revisit would
+    // need record-time row-bucketing (analogous to S8's
+    // chunkBuckets) to avoid the per-cmd classify cost. The code,
+    // the knob, and `tests/pass_c_split_test.cpp` are preserved as
+    // the fixed point for that future investigation.
+    //
+    // Determinism (still bit-exact when enabled): each cmd's target
+    // entity's current row is looked up via `storage.locate(e)`;
+    // the sub-bin index is `min(row / rowsPerBin, M-1)`. Sub-bins
+    // target disjoint rows of the same archetype chunk — writes
+    // never overlap. Two cmds on the SAME entity (and therefore the
+    // same row) land in the same sub-bin, where submission order is
+    // preserved.
+    //
+    // Eligibility: `inlineLargestBin` already fired AND
+    // `largeBins == 1` AND `largestBinSize >= 2 * kMinBinForJob`.
+    std::size_t splitFactor = 1;
+    std::uint32_t splitRowsPerBin = 0;
+    std::size_t latchedSubBins = 0;
+    if (cfg_.splitLargestBin && inlineLargest
+            && largeBins == 1
+            && largestBinSize >= 2 * kMinBinForJob) {
+        const std::size_t lanes =
+            static_cast<std::size_t>(jobs_->workerCount()) + 1u;
+        // `largeBins - 1` lanes already taken by OTHER large bins;
+        // the rest go to split sub-bins of the largest.
+        const std::size_t want =
+            lanes > (largeBins - 1) ? (lanes - (largeBins - 1)) : 2u;
+        const std::size_t maxSplits = largestBinSize / kMinBinForJob;
+        splitFactor = want;
+        if (splitFactor > maxSplits) splitFactor = maxSplits;
+        if (splitFactor < 2) splitFactor = 1;
+        if (splitFactor >= 2) {
+            const auto& largestChunk =
+                storage.archetypes().chunks()[largestBinIdx];
+            const std::uint32_t rowCount = largestChunk.size();
+            if (rowCount == 0) {
+                splitFactor = 1;
+            } else {
+                splitRowsPerBin =
+                    (rowCount + static_cast<std::uint32_t>(splitFactor) - 1u)
+                    / static_cast<std::uint32_t>(splitFactor);
+                if (shardSubBins_.size() < splitFactor) {
+                    shardSubBins_.resize(splitFactor);
+                }
+                for (std::size_t i = 0; i < splitFactor; ++i) {
+                    shardSubBins_[i].clear();
+                }
+                for (auto* cmd : shardChunkBins_[largestBinIdx]) {
+                    const auto e = commandTargetEntity(*cmd);
+                    const auto loc = storage.locate(e);
+                    std::size_t subIdx = static_cast<std::size_t>(
+                        loc.row / splitRowsPerBin);
+                    if (subIdx >= splitFactor) subIdx = splitFactor - 1;
+                    shardSubBins_[subIdx].push_back(cmd);
+                }
+                for (std::size_t i = 1; i < splitFactor; ++i) {
+                    if (!shardSubBins_[i].empty()) ++latchedSubBins;
+                }
+                ++commitBreakdown_.splitLargestApplied;
+            }
+        }
+    }
+    const bool doSplit = splitFactor >= 2;
+
+    // When doSplit, sim takes sub-bin 0; workers take sub-bins
+    // [1..M) (non-empty count = `latchedSubBins`) plus the other
+    // `largeBins - 1` large bins. Without S10 we keep the pre-S10
+    // count (`inlineLargest ? largeBins - 1 : largeBins`).
+    const std::size_t latchedJobs = doSplit
+        ? (largeBins - 1) + latchedSubBins
+        : (inlineLargest ? (largeBins - 1) : largeBins);
 
     const auto bdCStart = bdClock::now();
     if (largeBins == 0) {
@@ -2016,8 +2099,17 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         // qualifies): no worker dispatch needed. Sim thread runs the
         // largest bin AND the small bins inline. No latch traffic.
         if (inlineLargest) {
-            for (auto* cmd : shardChunkBins_[largestBinIdx]) {
-                applyCommandImpl(*cmd, storage);
+            if (doSplit) {
+                // No worker eligible → sim does every sub-bin.
+                for (std::size_t i = 0; i < splitFactor; ++i) {
+                    for (auto* cmd : shardSubBins_[i]) {
+                        applyCommandImpl(*cmd, storage);
+                    }
+                }
+            } else {
+                for (auto* cmd : shardChunkBins_[largestBinIdx]) {
+                    applyCommandImpl(*cmd, storage);
+                }
             }
             ++commitBreakdown_.inlineLargestApplied;
         }
@@ -2040,12 +2132,33 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
                 done.count_down();
             });
         }
+        // S10 — dispatch sub-bins [1..M) of the row-split largest bin.
+        if (doSplit) {
+            for (std::size_t i = 1; i < splitFactor; ++i) {
+                if (shardSubBins_[i].empty()) continue;
+                auto& subbin = shardSubBins_[i];
+                jobs_->submit([&subbin, &done, &storage] {
+                    for (auto* cmd : subbin) {
+                        applyCommandImpl(*cmd, storage);
+                    }
+                    done.count_down();
+                });
+            }
+        }
         // Sim-thread inline lane: run the largest large bin first
         // (S9), THEN the small bins. Doing the largest first means
         // its work overlaps maximally with the workers' large bins.
+        // Under S10, sim runs sub-bin 0 only (the rest are on
+        // workers).
         if (inlineLargest) {
-            for (auto* cmd : shardChunkBins_[largestBinIdx]) {
-                applyCommandImpl(*cmd, storage);
+            if (doSplit) {
+                for (auto* cmd : shardSubBins_[0]) {
+                    applyCommandImpl(*cmd, storage);
+                }
+            } else {
+                for (auto* cmd : shardChunkBins_[largestBinIdx]) {
+                    applyCommandImpl(*cmd, storage);
+                }
             }
             ++commitBreakdown_.inlineLargestApplied;
         }

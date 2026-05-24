@@ -768,16 +768,48 @@ Pass B drops 50–60% on every routing-active workload (the S8 mechanism is real
 
 **Decision.** Ship — real wins on single-large-bin workloads at zero correctness cost. MultiArch needs S10 (row-splitting the largest worker bin).
 
+## S10 — Row-split largest bin (LANDED OPT-IN, DEFAULT OFF 2026-05-24)
+
+S10 partitions the single largest large-bin into row-range sub-bins so sim + all workers cooperate on the bin instead of sim soloing it (S9) or workers racing while sim idles (pre-S9). Bench added `setTransform/SingleArch` (100k entities in one archetype → `bin/tk = 1.0, largeBins = 1`) to exercise the only shape where S10 is in scope.
+
+**Headline (3-run avg, sharded `commit_us`, split-off vs split-on with the eligibility-tightened `largeBins == 1` impl):**
+
+| Workload                  | bin/tk | largeBins | split-off | split-on  | Δ      | Notes |
+|---|---|---|---|---|---|---|
+| `setTransform/Churn`      | 2      | 2         | 3 912 µs | 3 839 µs | −2%   | Eligibility skip |
+| `setVelocity/Churn`       | 2      | 2         | 3 591 µs | 3 881 µs | +8%   | Eligibility skip (noise) |
+| `addRemoveTag/Churn`      | 0      | 0         | 11 712 µs | 11 459 µs | −2% | Fallback |
+| `setTransform/MultiArch`  | 4      | 4         | 4 365 µs | 5 644 µs | +29% (noise) | Eligibility skip |
+| **`setTransform/SingleArch`** | **1** | **1** | **2 217 µs** | **6 794 µs** | **+207%** | **S10 fires** |
+| `RPG-mix`                 | 4      | 2         | 3 678 µs | 3 667 µs | ~0%   | Eligibility skip |
+| `SmallWorld`              | 2      | 0         | 11 µs    | 9 µs     | noise | Fallback |
+| `ManyTinyBins`            | 32     | 0         | 185 µs   | 181 µs   | noise | Fallback |
+
+**Why S10 regresses.** Pre-S10 (S9 path) on SingleArch: 1 large bin, no worker dispatched, no latch — sim runs the 100k cmds inline at Pass C = 1 362 µs, wait = 0. S10 adds a classification pass: `commandTargetEntity` (`std::visit` over 26-alt variant) + `EntityStorage::locate(handle)` (alive + slot deref) + `subIdx` compute + `push_back` per cmd. Empirically ~25–30 ns/cmd of classification overhead vs ~13.6 ns/cmd apply cost — the cmd stream's slot memory traffic is touched twice. Pass C goes 1 362 → 4 523 µs (+233%); the parallel apply theoretical win (~1 100 µs) is dwarfed by the ~3 000 µs classification penalty.
+
+**Gates:**
+- ≥15% improvement on a workload where `largeBins < workerCount` — **MISSED** (SingleArch regresses +207%).
+- No regression on workloads where `largeBins >= workerCount` — **PASSED** (eligibility check skips them; observed −2%/+8% movement is bench noise).
+- 10× soak determinism — **PASSED** (`pass_c_split_test` covers serial vs sharded-no-split vs sharded-split; ctest 126/126 green).
+
+**Decision.** Land the implementation but flip `Config::splitLargestBin` default to `false`. Mechanism is correct (determinism verified by `pass_c_split_test.cpp`) but structurally inferior to S9 on every workload measured. A viable S10 would need **record-time row-bucketing** (analogous to S8's chunkBuckets, but with row info) so the partitioner pays ~0 ns/cmd at Pass C time. That's a record-API change with cross-cutting impact on `CommandBuffer`'s storage — out of scope for this batch.
+
+The knob, the test, and the bench workload are preserved as the fixed point for a future revisit with a cheaper classifier.
+
 ## Reproducibility
 
 ```
 cmake --build build -j
 ./build/bench/migration_bench                                       # S6 A/B at end of output
-./build/bench/commit_pass_breakdown                                 # default (all S6/S8/S9 on)
+./build/bench/commit_pass_breakdown                                 # default (all S6/S8/S9 on, S10 off)
 THREADMAXX_NO_BATCH=1 ./build/bench/commit_pass_breakdown           # S6 batch off
 THREADMAXX_NO_ROUTING=1 ./build/bench/commit_pass_breakdown         # S8 routing off
 THREADMAXX_NO_INLINE_LARGEST=1 ./build/bench/commit_pass_breakdown  # S9 inline-largest off
-cd build && ctest --output-on-failure                               # full gate (125 tests)
+# S10 is opt-in (default off); bench under split-on requires a
+# build-side flip of `Config::splitLargestBin = true` or an
+# in-source override in the bench harness. THREADMAXX_NO_SPLIT_LARGEST=1
+# is a no-op when the default is already off.
+cd build && ctest --output-on-failure                               # full gate (126 tests)
 cmake -S . -B build-long-soak -DCMAKE_BUILD_TYPE=Release \
     -DTHREADMAXX_BUILD_LONG_SOAK=ON
 cmake --build build-long-soak --target concurrency_soak_long

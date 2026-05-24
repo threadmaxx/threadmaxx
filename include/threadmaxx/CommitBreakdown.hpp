@@ -72,6 +72,13 @@ struct CommitBreakdown {
     /// once per qualifying call. Zero when `Config::inlineLargestBin
     /// == false` or when `largeBins == 0`.
     std::uint64_t inlineLargestApplied = 0;
+    /// SHARDED_OPTIMISATION.md S10 — number of sharded calls this step
+    /// where Pass C row-split the largest large-bin into sub-bins to
+    /// saturate the (workers + sim) lane count. Bumped once per
+    /// qualifying call. Zero when `Config::splitLargestBin == false`,
+    /// when `inlineLargestApplied` didn't fire, or when the largest
+    /// bin was below `2 * kMinBinForJob`.
+    std::uint64_t splitLargestApplied = 0;
 
     /// Wall-clock ns spent in Pass A (migrating-entity bitmap build).
     std::uint64_t nsPassA = 0;
