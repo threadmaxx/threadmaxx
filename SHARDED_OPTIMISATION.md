@@ -503,6 +503,29 @@ Determinism: each sub-bin still applies its cmds in submission order. Across sub
 
 **Skip condition.** If S9 + S10 + S11 close the gap, skip S12. The complexity is not worth a marginal gain.
 
+### S12 outcome — investigated and parked (2026-05-25)
+
+**Variant attempted** (departing from the spec's "stream Pass C jobs during Pass B" approach, which has a determinism cliff): parallelize Pass B's classification across buffers. Per-buffer routing-active classification is read-only on world state — it walks `chunkBuckets`, checks the migrating bitmap, and pushes cmd pointers into per-buffer scratch. No two workers write to the same scratch slot. A serial merge phase then `vector::insert`s each buffer's scratch bins into the shared `shardChunkBins_` in buffer registration order, preserving submission order. Global-lane apply remains serial. This avoids the JobSystem refactor that the spec's same-worker pinning approach would have required.
+
+Implementation landed (config knob `Config::parallelPassBClassify`, ShardBufferScratch struct, dispatch with `JobLatch`+S11 spin, env override `THREADMAXX_NO_PASSB_PARALLEL=1`), passed full ctest 126/126 green at both ON and OFF (determinism preserved).
+
+**Bench result** (3-run averages, RPG-mix sharded commit_us, post-S11 + hashDirty atomic upgrade):
+
+| Workload | S12 ON | S12 OFF | Δ commit | Pass B ON | Pass B OFF |
+|---|---|---|---|---|---|
+| RPG-mix | 3 678 µs | 3 661 µs* | +0.5% (noise) | 1 579 µs | 1 568 µs* |
+
+\* OFF mean excludes one outlier run at 5 350 µs commit / 2 841 µs Pass B (cleaner runs: 3 602, 3 720).
+
+**Verdict: parked.** S12 fails the ≥10% gate on RPG-mix. The parallel classify pays a serial merge that doubles the per-cmd memory traffic (write to scratch, then read scratch + write to `shardChunkBins_`); Pass B turns out to be memory-bound on this workload shape, not compute-bound, so workers stall on shared cache lines and the parallelism doesn't recoup the extra pass. The spec's `vector::insert`-based merge is the structural bottleneck — a future revisit would need either (a) lock-free direct writes from workers into `shardChunkBins_` (requires per-chunk slot pre-allocation, which requires a pre-pass equivalent to classify itself), or (b) record-time per-buffer-per-chunk capacity hints so the merge becomes free pointer arithmetic.
+
+Per the spec's skip condition ("If S9 + S10 + S11 close the gap, skip S12"), the S∞ readiness assessment now stands: the remaining sharded-vs-single gap on RPG-mix is ~30% (3 678 µs vs ~2 800 µs single). No remaining batch in the plan is structurally cheap enough to close it. **S∞ stays blocked on RPG-mix.**
+
+**Action items.**
+
+- Defer S∞ pending a fresh ideas — neither S12 nor S13 (cross-tick pipelining, even higher risk) is on the near-term roadmap.
+- Consider documenting the post-S11 + atomic state as the long-term shipping configuration: serial commit remains the default; sharded commit available as an opt-in for workloads that profile as Pass-C-dominated (single-largest-bin or balanced-multi-bin shapes where S9/S11 deliver clean wins).
+
 ### S13 — Cross-tick commit pipelining (S∞ blocker territory)
 
 **Hypothesis.** Most aggressive: allow tick N's Pass C to run while tick N+1 begins recording. The sim thread starts the next tick's update() while the previous tick's apply is still in flight.

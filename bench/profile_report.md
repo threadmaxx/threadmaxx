@@ -830,6 +830,23 @@ The S11 gate ("≥5% improvement on any workload where Pass C wait > 90% of Pass
 
 **Ship — default `Config::jobLatchSpinIters = 4096`.** Headline win on MultiArch, structural improvement (the early-out also saves a CV check on no-wait workloads), no detectable regression elsewhere. Set `cfg.jobLatchSpinIters = 0` to revert.
 
+## S12 — Pass B parallel classify (INVESTIGATED + PARKED 2026-05-25)
+
+S12 explored parallelizing Pass B's per-buffer routing-active classification across workers (with per-buffer scratch + serial merge), as a determinism-safe alternative to the spec's "stream Pass C during Pass B" approach. The mechanism preserves bit-for-bit commitHash: each worker writes to its own scratch slot; merge appends scratch into `shardChunkBins_` in buffer registration order.
+
+**Bench (3-run averages, RPG-mix):**
+
+| Config | commit_us | Pass B µs | Pass C µs |
+|---|---|---|---|
+| S12 ON | 3 678 | 1 579 | 1 730 |
+| S12 OFF (excl. one outlier) | 3 661 | 1 568 | 1 720 |
+
+The parallel dispatch overhead + the serial merge phase cost roughly cancel the parallelization gain. Pass B is memory-bound (pointer writes into per-chunk vectors, cache-coherent in serial form); splitting it across workers doubles the per-cmd data traversal (write to scratch + read scratch + write to shardChunkBins_).
+
+**Verdict: parked.** Failed the ≥10% gate. Full ctest 126/126 green at both ON and OFF (determinism preserved) but no measurable performance benefit. Code reverted; SHARDED_OPTIMISATION.md § "S12 outcome" carries the diagnosis. A future revisit would need lock-free direct writes from workers into `shardChunkBins_` (eliminating the merge phase), which requires either per-chunk slot pre-allocation or a different shard layout.
+
+**S∞ readiness:** with S9 + S11 + hashDirty-atomic landed, RPG-mix is ~30% above single-threaded baseline (3 678 sharded vs ~2 800 single). MultiArch is ~2.5× single. No remaining batch in the plan is structurally cheap enough to close those gaps. **S∞ remains blocked**; the long-term shipping config is serial commit by default with sharded as opt-in for Pass-C-dominated workloads.
+
 ## Reproducibility
 
 ```
