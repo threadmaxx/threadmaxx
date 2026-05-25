@@ -2253,7 +2253,8 @@ std::uint64_t EngineImpl::finalizeCommitHash() {
     std::vector<std::uint32_t> dirty;
     dirty.reserve(chunks.size());
     for (std::uint32_t i = 0; i < chunks.size(); ++i) {
-        if (chunks[i].hashDirty) dirty.push_back(i);
+        if (chunks[i].hashDirty.load(std::memory_order_relaxed))
+            dirty.push_back(i);
     }
 
     // Recompute dirty chunks. ≥ 2 dirty chunks → parallel via jobs_;
@@ -2266,7 +2267,7 @@ std::uint64_t EngineImpl::finalizeCommitHash() {
             ArchetypeChunk* c = &chunks[idx];
             jobs_->submit([c, &done] {
                 c->cachedHash = hashChunkContent(*c);
-                c->hashDirty  = false;
+                c->hashDirty.store(false, std::memory_order_relaxed);
                 done.count_down();
             });
         }
@@ -2275,7 +2276,7 @@ std::uint64_t EngineImpl::finalizeCommitHash() {
         for (std::uint32_t idx : dirty) {
             auto& c = chunks[idx];
             c.cachedHash = hashChunkContent(c);
-            c.hashDirty  = false;
+            c.hashDirty.store(false, std::memory_order_relaxed);
         }
     }
 

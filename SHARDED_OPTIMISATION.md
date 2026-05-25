@@ -477,11 +477,12 @@ Bench (3-run averages, sharded-path commit_us, S11 ON vs `THREADMAXX_NO_LATCH_SP
 
 Gate (≥5% on the wait-dominated workload): **met on MultiArch** (the only workload post-S9 where Pass C wait was still measurable as a fraction of commit). `setVelocity/Churn` shows a +9% regression but the per-run variance is huge (3737/2558/3427 µs ON, 3654/2779/2483 µs OFF) — both configs span the same range, so the delta is noise. No detectable regression on the no-wait workloads.
 
-Determinism: identical commitHash with the knob at any value (verified by full ctest 126/126 green at default `4096` AND at `0`). TSAN: clean on every test except `pass_c_split_test` (which races S10's `hashDirty bool` from concurrent same-chunk worker writes; pre-existing S10 latent issue, out of S11 scope).
+Determinism: identical commitHash with the knob at any value (verified by full ctest 126/126 green at default `4096` AND at `0`). TSAN: clean on every test once `hashDirty` is upgraded to `std::atomic<bool>` (see follow-up below).
+
+**Follow-up landed (2026-05-25).** `ArchetypeChunk::hashDirty` upgraded from plain `bool` to `std::atomic<bool>` with relaxed ordering. The S10 row-split path puts multiple workers on disjoint rows of the same chunk; all write `true` to `hashDirty`, which is a data race on a plain `bool` (UB on paper, idempotent in practice). Relaxed ordering is sufficient because (a) writes are idempotent and (b) the read in `finalizeCommitHash` is sequenced after the JobLatch mutex acquire that ends Pass C. `ArchetypeChunk` now defines explicit copy/move ctors that load+store the atomic, preserving its `std::vector<ArchetypeChunk>` usage. Full ctest including `pass_c_split_test` clean under TSAN.
 
 **Action items.**
 
-- Followup: upgrade `ArchetypeChunk::hashDirty` to `std::atomic<bool>` with relaxed ordering so the S10 row-split path is TSAN-clean (the field is read non-atomically in `finalizeCommitHash` after a JobLatch barrier, so relaxed visibility is sufficient). Scope is mechanical (13 write sites + 1 read site) but distinct from S11.
 - Move to S12 (Pass B / Pass C streaming overlap) if the gap to flipping the default still warrants more aggressive scheduling. With MultiArch commit −22% and the post-S9+S11 picture, the S∞ blocker (balanced multi-large-bin saturating workers) is mostly closed.
 
 ### S12 — Pass B / Pass C streaming overlap

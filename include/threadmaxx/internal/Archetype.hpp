@@ -3,6 +3,7 @@
 #include "threadmaxx/Components.hpp"
 #include "threadmaxx/Handles.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -101,13 +102,110 @@ struct ArchetypeChunk {
     /// for in-place writes. Cleared by `finalizeCommitHash` after a
     /// fresh `cachedHash` is computed.
     ///
-    /// Plain `bool` is safe because (a) within a single-threaded
-    /// commit pass only the sim thread writes, and (b) the sharded
-    /// commit's Pass C dispatches one job per chunk bin so each chunk's
-    /// flag is set by at most one worker, with the `std::latch` after
-    /// Pass C providing the acquire-release synchronization for the
-    /// end-of-step reader.
-    mutable bool hashDirty = true;
+    /// `std::atomic<bool>` with relaxed ordering. The set-true paths
+    /// in the sharded commit's Pass C may race on the same chunk
+    /// (S10's row-split puts multiple workers on disjoint rows of one
+    /// chunk; all write `true`). The write is idempotent so relaxed
+    /// ordering is sufficient; the read in `finalizeCommitHash` is
+    /// already synchronized via the `JobLatch` mutex acquire that ends
+    /// Pass C.
+    mutable std::atomic<bool> hashDirty{true};
+
+    ArchetypeChunk() = default;
+    /// Custom copy / move because `std::atomic<bool>` is non-copyable
+    /// and non-movable by default; the chunk lives in a
+    /// `std::vector<ArchetypeChunk>` whose growth uses moves.
+    /// Both transfers load+store the atomic with relaxed ordering —
+    /// safe because vector growth happens single-threaded on the sim
+    /// thread, outside any commit window.
+    ArchetypeChunk(const ArchetypeChunk& o)
+        : mask(o.mask),
+          denseToSlot(o.denseToSlot),
+          entities(o.entities),
+          transforms(o.transforms),
+          velocities(o.velocities),
+          renderTags(o.renderTags),
+          userData(o.userData),
+          accelerations(o.accelerations),
+          parents(o.parents),
+          healths(o.healths),
+          factions(o.factions),
+          animationStates(o.animationStates),
+          physicsBodies(o.physicsBodies),
+          navAgents(o.navAgents),
+          boundingVolumes(o.boundingVolumes),
+          masks(o.masks),
+          userColumns(o.userColumns),
+          cachedHash(o.cachedHash),
+          hashDirty(o.hashDirty.load(std::memory_order_relaxed)) {}
+    ArchetypeChunk(ArchetypeChunk&& o) noexcept
+        : mask(o.mask),
+          denseToSlot(std::move(o.denseToSlot)),
+          entities(std::move(o.entities)),
+          transforms(std::move(o.transforms)),
+          velocities(std::move(o.velocities)),
+          renderTags(std::move(o.renderTags)),
+          userData(std::move(o.userData)),
+          accelerations(std::move(o.accelerations)),
+          parents(std::move(o.parents)),
+          healths(std::move(o.healths)),
+          factions(std::move(o.factions)),
+          animationStates(std::move(o.animationStates)),
+          physicsBodies(std::move(o.physicsBodies)),
+          navAgents(std::move(o.navAgents)),
+          boundingVolumes(std::move(o.boundingVolumes)),
+          masks(std::move(o.masks)),
+          userColumns(std::move(o.userColumns)),
+          cachedHash(o.cachedHash),
+          hashDirty(o.hashDirty.load(std::memory_order_relaxed)) {}
+    ArchetypeChunk& operator=(const ArchetypeChunk& o) {
+        if (this == &o) return *this;
+        mask = o.mask;
+        denseToSlot = o.denseToSlot;
+        entities = o.entities;
+        transforms = o.transforms;
+        velocities = o.velocities;
+        renderTags = o.renderTags;
+        userData = o.userData;
+        accelerations = o.accelerations;
+        parents = o.parents;
+        healths = o.healths;
+        factions = o.factions;
+        animationStates = o.animationStates;
+        physicsBodies = o.physicsBodies;
+        navAgents = o.navAgents;
+        boundingVolumes = o.boundingVolumes;
+        masks = o.masks;
+        userColumns = o.userColumns;
+        cachedHash = o.cachedHash;
+        hashDirty.store(o.hashDirty.load(std::memory_order_relaxed),
+                        std::memory_order_relaxed);
+        return *this;
+    }
+    ArchetypeChunk& operator=(ArchetypeChunk&& o) noexcept {
+        if (this == &o) return *this;
+        mask = o.mask;
+        denseToSlot = std::move(o.denseToSlot);
+        entities = std::move(o.entities);
+        transforms = std::move(o.transforms);
+        velocities = std::move(o.velocities);
+        renderTags = std::move(o.renderTags);
+        userData = std::move(o.userData);
+        accelerations = std::move(o.accelerations);
+        parents = std::move(o.parents);
+        healths = std::move(o.healths);
+        factions = std::move(o.factions);
+        animationStates = std::move(o.animationStates);
+        physicsBodies = std::move(o.physicsBodies);
+        navAgents = std::move(o.navAgents);
+        boundingVolumes = std::move(o.boundingVolumes);
+        masks = std::move(o.masks);
+        userColumns = std::move(o.userColumns);
+        cachedHash = o.cachedHash;
+        hashDirty.store(o.hashDirty.load(std::memory_order_relaxed),
+                        std::memory_order_relaxed);
+        return *this;
+    }
 
     /// True iff the chunk's archetype mask carries component @p c. Used
     /// to gate dense-vector access on the few components that ride in
