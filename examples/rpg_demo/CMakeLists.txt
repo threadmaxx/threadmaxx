@@ -32,6 +32,8 @@ add_library(rpg_demo_core STATIC
     CameraSystem.cpp
     DayNightSystem.cpp
     CubeRenderSystem.cpp
+    # §3.11 batch D13 — static-terrain split from CubeRenderSystem.
+    StaticTerrainRenderSystem.cpp
     DebugOverlaySystem.cpp
     SaveLoadSystem.cpp
     HudSystem.cpp

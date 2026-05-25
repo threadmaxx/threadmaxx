@@ -5,6 +5,7 @@
 #include "CameraSystem.hpp"
 #include "CombatSystem.hpp"
 #include "CubeRenderSystem.hpp"
+#include "StaticTerrainRenderSystem.hpp"
 #include "DamageSystem.hpp"
 #include "Heightmap.hpp"
 #include "ObjLoader.hpp"
@@ -543,6 +544,12 @@ void DemoGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::make_unique<QuestSystem>(&engine, &worldState_));
     engine.registerSystem(std::make_unique<DayNightSystem>(&worldState_));
     engine.registerSystem(std::make_unique<CubeRenderSystem>(&ids_, &worldState_));
+    // §3.11 batch D13 — owns rendering for the ~92k static terrain
+    // blocks. CubeRenderSystem now skips StaticTag entities; this
+    // system precomputes their DrawItems once and per-tick does a
+    // cheap chunk-level distance cull against the player.
+    engine.registerSystem(std::make_unique<StaticTerrainRenderSystem>(
+        &engine, &ids_, &worldState_));
     // §3.11.7b.5 batch 9b.4.c — single hardcoded skinned-capsule
     // entity. Falls silent when `skinnedMeshId == 0` (headless
     // tests + builds where the renderer-side registration callback

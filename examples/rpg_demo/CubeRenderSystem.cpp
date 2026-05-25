@@ -120,6 +120,10 @@ void CubeRenderSystem::update(threadmaxx::SystemContext& ctx) {
         const auto& chunk = w.archetypeChunk(c);
         if (!chunk.mask.has(cubeBit)) continue;
         if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+        // §3.11 batch D13 — static terrain blocks live in
+        // StaticTerrainRenderSystem's precomputed cache; skip them
+        // here so this system only walks the dynamic ~50k entities.
+        if (chunk.mask.has(threadmaxx::Component::StaticTag)) continue;
         const auto rows = chunk.entities.size();
         if (rows == 0) continue;
         CubeSlice s;
