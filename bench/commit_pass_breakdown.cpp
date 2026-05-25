@@ -326,6 +326,13 @@ PerWorkloadResult measureWorkload(const char* workloadName,
         nos && nos[0] == '1') {
         cfg.splitLargestBin = false;
     }
+    // SHARDED_OPTIMISATION.md S11 — Env-var override for the JobLatch
+    // spin-before-block path. Set THREADMAXX_NO_LATCH_SPIN=1 to revert
+    // every `JobLatch::wait()` to the pre-S11 mutex+CV-only fallback.
+    if (const char* nls = std::getenv("THREADMAXX_NO_LATCH_SPIN");
+        nls && nls[0] == '1') {
+        cfg.jobLatchSpinIters = 0;
+    }
     Engine engine(cfg);
     if (!engine.initialize(game)) {
         std::fprintf(stderr, "  init failed for %s\n", workloadName);

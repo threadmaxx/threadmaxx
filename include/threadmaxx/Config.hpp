@@ -184,6 +184,41 @@ struct Config {
     /// sorts chunks by `mask.bits()` before folding so the rollup is
     /// independent of sub-bin execution order.
     bool splitLargestBin = false;
+
+    /// SHARDED_OPTIMISATION.md S11 — `JobLatch::wait()` spin budget.
+    /// When non-zero, the waiter hot-loops on an atomic "done" flag
+    /// for up to `jobLatchSpinIters` iterations (each is a single
+    /// `pause` / `yield` instruction, ~2-10 ns on modern hardware)
+    /// before falling back to the mutex+CV blocking path. The spin
+    /// skips the `cv_.wait()` kernel sleep + wakeup IPI (~5-15 µs
+    /// on Linux) when workers finish within the spin budget; the
+    /// mutex acquire is still taken on the win path to keep the
+    /// destructor synchronized with the worker's final unlock
+    /// (otherwise a stack-allocated latch's mutex/CV dtors race
+    /// the worker's `count_down` release).
+    ///
+    /// Default `4096` ≈ 10-40 µs spin budget — short enough that
+    /// burning a sim-thread core for the full window is in noise on
+    /// any commit-bound workload, conservative enough that worker
+    /// runs longer than the budget pay the normal mutex+CV cost.
+    /// Empirically (3-run averages, default-on vs `=0`) the win is
+    /// `setTransform/MultiArch` commit_us −22% (Pass C wait
+    /// 641 µs → 125 µs); `setTransform/Churn` commit_us −9%;
+    /// no detectable regression on no-wait workloads (Churn,
+    /// SingleArch, ManyTinyBins).
+    ///
+    /// Set to `0` to disable (legacy mutex+CV-only path; useful for
+    /// CPU-conservative builds where dead-CPU spin time is
+    /// undesirable). `THREADMAXX_NO_LATCH_SPIN=1` env in benches
+    /// force-disables.
+    ///
+    /// Determinism: identical commitHash with the knob at any
+    /// value — the spin only changes the wait/wakeup path, never
+    /// observable state. TSAN-clean because the spin path always
+    /// re-acquires the mutex before returning, preserving the
+    /// happens-before chain through the worker's `lock_guard` in
+    /// `count_down`; the cv_.wait fallback path is unchanged.
+    std::uint32_t jobLatchSpinIters = 4096;
 };
 
 } // namespace threadmaxx

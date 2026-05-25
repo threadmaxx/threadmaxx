@@ -61,6 +61,17 @@ namespace {
 // closes the wait/notify race and gives TSAN the
 // mutex-release-acquire edge it needs to see worker writes.
 //
+// SHARDED_OPTIMISATION.md S11 — `wait()` now hot-loops on an atomic
+// "done" flag for a caller-supplied iteration budget before falling
+// back to the mutex+CV path. The flag is release-stored by the final
+// decrementer and acquire-loaded by the waiter, so the spin-and-
+// return path correctly observes worker writes (the release-acquire
+// pair on `done_` carries forward the visibility that non-final
+// workers established via the mutex chain in `count_down`). The
+// mutex+CV fallback is unchanged and remains the TSAN reference
+// path; the spin only short-circuits when workers happened to finish
+// before the waiter started blocking.
+//
 // Cost: one atomic decrement per `count_down`, plus one mutex acquire
 // on the final decrement and one on the wait. Below `std::latch`'s
 // futex syscall cost in the contended case; the spec-grade test
@@ -68,8 +79,9 @@ namespace {
 // the pre-shim wall clock.
 class JobLatch {
 public:
-    explicit JobLatch(std::ptrdiff_t n) noexcept
-        : count_(n) {}
+    explicit JobLatch(std::ptrdiff_t n,
+                      std::uint32_t spinIters = 0) noexcept
+        : count_(n), done_(n == 0), spinIters_(spinIters) {}
 
     JobLatch(const JobLatch&) = delete;
     JobLatch& operator=(const JobLatch&) = delete;
@@ -91,18 +103,55 @@ public:
     void count_down() noexcept {
         std::lock_guard<std::mutex> lk(mtx_);
         if (--count_ == 0) {
+            // Release-store on `done_` synchronizes-with the waiter's
+            // acquire-load in the spin path. Non-final workers' writes
+            // are made visible via the mutex chain in count_down →
+            // count_down before reaching this final store.
+            done_.store(true, std::memory_order_release);
             cv_.notify_all();
         }
     }
 
     void wait() noexcept {
+        // S11 — spin-before-block. Hot-loop on `done_` for up to the
+        // configured budget. Note: even when the spin sees done_==true,
+        // we still ALWAYS take the mutex before returning. The mutex
+        // acquire serializes us with the final decrementer's lock_guard
+        // dtor in count_down, which is the only way to guarantee the
+        // worker has fully exited count_down (past cv_.notify_all + lock
+        // release) before this latch's mutex/CV destructors run. The
+        // spin's actual savings come from skipping the cv_.wait kernel-
+        // sleep / wakeup IPI when workers finish within the budget —
+        // the mutex acquire itself is uncontended in that case (~30 ns).
+        bool seen = done_.load(std::memory_order_acquire);
+        for (std::uint32_t i = 0; !seen && i < spinIters_; ++i) {
+#if defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(_M_ARM64)
+            asm volatile("yield" ::: "memory");
+#endif
+            seen = done_.load(std::memory_order_acquire);
+        }
+        if (seen) {
+            // Synchronize with the worker's lock_guard release in
+            // count_down. Without this, a stack-allocated latch's
+            // destructor can fire while the worker is still inside
+            // count_down — pthread_cond_destroy / pthread_mutex_destroy
+            // would race the worker's notify_all / unlock.
+            std::lock_guard<std::mutex> lk(mtx_);
+            return;
+        }
         std::unique_lock<std::mutex> lk(mtx_);
         cv_.wait(lk, [this] { return count_ == 0; });
     }
 
 private:
-    // No longer atomic — every read/write is mutex-protected.
+    // count_ is mutex-protected (not atomic). The spin path reads
+    // done_ instead, which is atomic and release-stored when count_
+    // hits zero.
     std::ptrdiff_t          count_;
+    std::atomic<bool>       done_;
+    std::uint32_t           spinIters_;
     mutable std::mutex      mtx_;
     std::condition_variable cv_;
 };
@@ -565,7 +614,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     arenas_.resize(firstIdx + chunkCount);
     installLocators(firstIdx, chunkCount);
 
-    JobLatch done(chunkCount);
+    JobLatch done(chunkCount, engine_.config().jobLatchSpinIters);
     for (std::uint32_t c = 0; c < chunkCount; ++c) {
         const std::uint32_t begin = c * grain;
         const std::uint32_t end   = std::min(begin + grain, count);
@@ -617,7 +666,7 @@ void SystemContextImpl::parallelFor(std::uint32_t count,
     arenas_.resize(firstIdx + chunkCount);
     installLocators(firstIdx, chunkCount);
 
-    JobLatch done(chunkCount);
+    JobLatch done(chunkCount, engine_.config().jobLatchSpinIters);
     for (std::uint32_t c = 0; c < chunkCount; ++c) {
         const std::uint32_t begin = c * grain;
         const std::uint32_t end   = std::min(begin + grain, count);
@@ -2120,7 +2169,8 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
             }
         }
     } else {
-        JobLatch done(static_cast<std::ptrdiff_t>(latchedJobs));
+        JobLatch done(static_cast<std::ptrdiff_t>(latchedJobs),
+                      cfg_.jobLatchSpinIters);
         for (std::size_t k = 0; k < shardChunkBins_.size(); ++k) {
             auto& bin = shardChunkBins_[k];
             if (bin.size() < kMinBinForJob) continue;
@@ -2210,7 +2260,8 @@ std::uint64_t EngineImpl::finalizeCommitHash() {
     // each job writes to its own chunk's cachedHash so there's no
     // sharing. Single-chunk falls through to a serial recompute.
     if (dirty.size() >= 2 && jobs_) {
-        JobLatch done(static_cast<std::ptrdiff_t>(dirty.size()));
+        JobLatch done(static_cast<std::ptrdiff_t>(dirty.size()),
+                      cfg_.jobLatchSpinIters);
         for (std::uint32_t idx : dirty) {
             ArchetypeChunk* c = &chunks[idx];
             jobs_->submit([c, &done] {
@@ -2556,7 +2607,8 @@ void EngineImpl::step() {
             // parked on a CV, so wakeup is sub-µs instead of multi-ms
             // thread create. The tail still runs on the sim thread to
             // avoid a wasted submit + wait round-trip.
-            JobLatch waveDone(static_cast<std::ptrdiff_t>(wave.size() - 1));
+            JobLatch waveDone(static_cast<std::ptrdiff_t>(wave.size() - 1),
+                              cfg_.jobLatchSpinIters);
             for (std::size_t k = 0; k + 1 < wave.size(); ++k) {
                 jobs_->submit([&runIndex, &waveDone, k] {
                     runIndex(k);

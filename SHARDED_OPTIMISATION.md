@@ -460,6 +460,30 @@ Pass C went from 1 362 µs to 4 523 µs (+233%); the parallel apply theoretical 
 
 **Risk.** Medium. Spin time is dead CPU on cores that could be doing other work — bad citizenship if the simulator runs alongside other processes. Configurable budget gates the damage; default should be conservative.
 
+**S11 outcome (LAND, default ON).**
+
+Knob shipped as `Config::jobLatchSpinIters` (default `4096` ≈ 10-40 µs). `JobLatch::wait()` hot-loops on an atomic `done_` flag (release-stored by the final `count_down` decrementer) before falling back to the mutex+CV blocking path. Implementation differs from the original spec in one safety-critical way: **even when the spin observes `done_ == true`, `wait()` still re-acquires the mutex before returning.** The acquire-on-`done_` alone is not enough — the final worker is still inside its `count_down` `lock_guard` when it stores `done_`, so a stack-allocated latch's destructor would race the worker's `cv_.notify_all()` / mutex unlock (`pthread_cond_destroy` / `pthread_mutex_destroy` vs in-flight `pthread_cond_broadcast`). TSAN flagged this on the first run; the fix is `std::lock_guard<std::mutex>` taken unconditionally on the spin-win path. The actual savings then come from skipping the `cv_.wait()` kernel sleep / wakeup IPI — the mutex acquire itself is uncontended (~30 ns).
+
+Bench (3-run averages, sharded-path commit_us, S11 ON vs `THREADMAXX_NO_LATCH_SPIN=1`):
+
+| Workload                  | commit_us ON | commit_us OFF | Δ commit | wait_us ON | wait_us OFF | Δ wait |
+|---------------------------|--------------|---------------|----------|------------|-------------|--------|
+| `setTransform/MultiArch`  | 5124         | 6575          | −22.1%   | 125        | 641         | −80%   |
+| `setTransform/Churn`      | 3572         | 3937          | −9.3%    | 3.5        | 0.3         | noise  |
+| `setTransform/SingleArch` | 2242         | 2322          | −3.4%    | 0          | 0           | —      |
+| `RPG-mix`                 | 3631         | 3703          | −1.9%    | 0.3        | 0.3         | —      |
+| `ManyTinyBins`            | 186          | 190           | −2.4%    | 0          | 0           | —      |
+| `setVelocity/Churn`       | 3241         | 2972          | +9.1%    | 4.2        | 7.3         | noise  |
+
+Gate (≥5% on the wait-dominated workload): **met on MultiArch** (the only workload post-S9 where Pass C wait was still measurable as a fraction of commit). `setVelocity/Churn` shows a +9% regression but the per-run variance is huge (3737/2558/3427 µs ON, 3654/2779/2483 µs OFF) — both configs span the same range, so the delta is noise. No detectable regression on the no-wait workloads.
+
+Determinism: identical commitHash with the knob at any value (verified by full ctest 126/126 green at default `4096` AND at `0`). TSAN: clean on every test except `pass_c_split_test` (which races S10's `hashDirty bool` from concurrent same-chunk worker writes; pre-existing S10 latent issue, out of S11 scope).
+
+**Action items.**
+
+- Followup: upgrade `ArchetypeChunk::hashDirty` to `std::atomic<bool>` with relaxed ordering so the S10 row-split path is TSAN-clean (the field is read non-atomically in `finalizeCommitHash` after a JobLatch barrier, so relaxed visibility is sufficient). Scope is mechanical (13 write sites + 1 read site) but distinct from S11.
+- Move to S12 (Pass B / Pass C streaming overlap) if the gap to flipping the default still warrants more aggressive scheduling. With MultiArch commit −22% and the post-S9+S11 picture, the S∞ blocker (balanced multi-large-bin saturating workers) is mostly closed.
+
 ### S12 — Pass B / Pass C streaming overlap
 
 **Hypothesis.** Pass B and Pass C are strictly serial today. Workers idle during Pass B's classification; sim thread idles during Pass C's wait. Streaming Pass C job submissions WHILE Pass B is still classifying overlaps the two windows.

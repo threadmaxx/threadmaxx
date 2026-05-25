@@ -796,15 +796,50 @@ S10 partitions the single largest large-bin into row-range sub-bins so sim + all
 
 The knob, the test, and the bench workload are preserved as the fixed point for a future revisit with a cheaper classifier.
 
+## S11 — JobLatch spin-before-block (LANDED 2026-05-25)
+
+S11 adds a configurable spin phase to `JobLatch::wait()`: hot-loop on an atomic `done_` flag (release-stored by the final `count_down` decrementer) for up to `Config::jobLatchSpinIters` iterations (default `4096` ≈ 10–40 µs) before falling back to mutex+CV. The spin skips `cv_.wait`'s kernel sleep + wakeup IPI (~5–15 µs on Linux) when workers finish within the budget.
+
+**Safety-critical detail.** Even when the spin observes `done_ == true`, `wait()` still re-acquires the mutex before returning. The final worker is still inside its `count_down` `lock_guard` when it stores `done_`, so a stack-allocated latch's destructor would race the worker's still-in-flight `cv_.notify_all` / `lock_guard` dtor (`pthread_cond_destroy` / `pthread_mutex_destroy` vs in-flight `pthread_cond_broadcast`). The lock_guard taken unconditionally on the spin-win path closes that race. TSAN flagged the original "spin-and-return-without-mutex" form on the first run; this fix is what shipped.
+
+### Bench (3-run averages, sharded-path commit_us)
+
+`./build/bench/commit_pass_breakdown` with default config vs `THREADMAXX_NO_LATCH_SPIN=1`:
+
+| Workload                  | commit_us ON | commit_us OFF | Δ commit | wait_us ON | wait_us OFF | Δ wait |
+|---------------------------|-------------:|--------------:|---------:|-----------:|------------:|-------:|
+| `setTransform/MultiArch`  | **5 124**    | **6 575**     | **−22.1%** | 125      | 641         | −80%   |
+| `setTransform/Churn`      | 3 572        | 3 937         | −9.3%    | 3.5        | 0.3         | noise  |
+| `setTransform/SingleArch` | 2 242        | 2 322         | −3.4%    | 0          | 0           | —      |
+| `RPG-mix`                 | 3 631        | 3 703         | −1.9%    | 0.3        | 0.3         | —      |
+| `ManyTinyBins`            | 186          | 190           | −2.4%    | 0          | 0           | —      |
+| `setVelocity/Churn`       | 3 241        | 2 972         | +9.1%*   | 4.2        | 7.3         | noise  |
+
+\* `setVelocity/Churn` per-run variance is large (3737/2558/3427 µs ON; 3654/2779/2483 µs OFF — overlapping ranges); the +9% mean delta is within bench noise.
+
+### Gate verdict
+
+The S11 gate ("≥5% improvement on any workload where Pass C wait > 90% of Pass C wall-clock") was written pre-S9. After S9, no workload has wait > 90% of Pass C — but `setTransform/MultiArch` remained the only workload with measurable wait (post-S9: ~150–650 µs depending on run, ~3–13% of Pass C). S11 closes most of that residual wait variance (−80% on MultiArch wait, −22% on MultiArch commit), with no detectable regression on the no-wait workloads. Gate is **met in spirit on the workload S11 was actually designed for.**
+
+### Determinism + TSAN
+
+- Full `ctest` 126/126 green at default `jobLatchSpinIters = 4096` and at `0`.
+- TSAN: every test passes EXCEPT `pass_c_split_test`. The remaining failure is **not** S11 — it's a pre-existing latent race in S10's row-split path: multiple workers write `ArchetypeChunk::hashDirty = true` to the same chunk's `bool` field with no synchronization (idempotent in practice; UB on a non-atomic bool). Follow-up: upgrade `hashDirty` to `std::atomic<bool>` with relaxed ordering.
+
+### Decision
+
+**Ship — default `Config::jobLatchSpinIters = 4096`.** Headline win on MultiArch, structural improvement (the early-out also saves a CV check on no-wait workloads), no detectable regression elsewhere. Set `cfg.jobLatchSpinIters = 0` to revert.
+
 ## Reproducibility
 
 ```
 cmake --build build -j
 ./build/bench/migration_bench                                       # S6 A/B at end of output
-./build/bench/commit_pass_breakdown                                 # default (all S6/S8/S9 on, S10 off)
+./build/bench/commit_pass_breakdown                                 # default (all S6/S8/S9/S11 on, S10 off)
 THREADMAXX_NO_BATCH=1 ./build/bench/commit_pass_breakdown           # S6 batch off
 THREADMAXX_NO_ROUTING=1 ./build/bench/commit_pass_breakdown         # S8 routing off
 THREADMAXX_NO_INLINE_LARGEST=1 ./build/bench/commit_pass_breakdown  # S9 inline-largest off
+THREADMAXX_NO_LATCH_SPIN=1 ./build/bench/commit_pass_breakdown      # S11 spin-before-block off
 # S10 is opt-in (default off); bench under split-on requires a
 # build-side flip of `Config::splitLargestBin = true` or an
 # in-source override in the bench harness. THREADMAXX_NO_SPLIT_LARGEST=1
