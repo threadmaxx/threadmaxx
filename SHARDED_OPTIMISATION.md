@@ -561,6 +561,28 @@ The mechanism isn't fully explained by the small absolute cost of the extra `pus
 
 S∞ readiness unchanged from S12: serial commit stays default, sharded stays opt-in for Pass-C-balanced workloads.
 
+### S16 — Workload-aware auto fallthrough (LANDED 2026-05-25)
+
+**Hypothesis.** S12 identified that on RPG-mix-shaped workloads, sharded's Pass B is dominated by the serial global-lane apply rather than the bucket-walk demotion that sharding parallelizes. S13 confirmed the bucket-walk wins exist (−37 … −46% per-pass on every value-only workload) but don't recover the global-lane cost. A cheap auto-fallthrough on `globalCount / totalCommands` would let users opt into sharded without manually classifying every workload — the engine picks sharded only when its parallelism actually applies. Zero record-time cost: the counters (`totalCommands`, `totalValueOnly`) are already tallied at the top of `commitBuffersSharded`.
+
+**Implementation landed.** Two new opt-in Config knobs: `bool workloadAwareCommit = false` and `std::uint32_t workloadAwareGlobalPercent = 30`. A fourth pre-condition in `commitBuffersSharded`: when `workloadAwareCommit == true` AND `globalCount * 100 >= totalCommands * workloadAwareGlobalPercent`, the call falls through to the per-buffer serial commit path. New `CommitBreakdown::workloadAwareFallthrough` counter exposes the per-step fire count (subset of `fallbackCalls`). Env-var overrides for benching: `THREADMAXX_WORKLOAD_AWARE=1` enables; `THREADMAXX_WORKLOAD_AWARE_PCT=N` overrides the threshold. `tests/workload_aware_commit_test.cpp` pins three properties: (a) high-global workloads (~50% mixed) trip the gate, (b) low-global workloads (100% value-only) run sharded, (c) commitHash stream is identical across `workloadAwareCommit={true,false}` on both shapes. Full ctest 127/127 green.
+
+**Bench result** (one-run-per-config, this machine has high run-to-run variance on the sharded path; columns: commit_us, `(sh)` = sharded path ran, `(fb)` = fell through to serial):
+
+| Workload | serial | sharded default | S16 PCT=30 | S16 PCT=5 | S16 PCT=1 |
+|---|---|---|---|---|---|
+| RPG-mix | ~2050 | 2763 (sh) | 2723 (sh) | 2606 (sh) | **1970 (fb)** |
+| setTransform/MultiArch | ~1500 | 5456 (sh) | 3942 (sh) | 4140 (sh) | 3135 (sh) |
+| setTransform/Churn | ~1470 | 2558 (sh) | 3713 (sh) | 3098 (sh) | 3254 (sh) |
+| setTransform/SingleArch | ~1360 | 1660 (sh) | 1614 (sh) | 1630 (sh) | 1623 (sh) |
+| ManyTinyBins | ~105 | 150 (sh) | 144 (sh) | 137 (sh) | 142 (sh) |
+
+**Verdict: landed as a tunable opt-in mechanism.** The gate works mechanically (PCT=1 demonstrates it firing on RPG-mix, dropping commit_us from sharded-default ~2763 → ~1970 µs which matches the serial baseline). Value-only workloads keep their sharded path at any threshold because their global ratio is 0%. The default 30% threshold is honest as a conservative gate that only trips on heavily-mixed workloads (≥30% global); RPG-mix's actual global ratio is ~4% (3400 mask flips + 1024 spawn/destroy ≈ 4430 over ~109k total commands), so the gate does NOT trip at the default — explicit user opt-in via `workloadAwareGlobalPercent = 3` (or lower) is needed to catch RPG-mix-shape signal.
+
+**Limitation: count-based signal undershoots time-dominated workloads.** RPG-mix's 4% global IS the structural killer for sharded commit on that workload, but a count threshold can't distinguish "4% of cheap commands" (benign) from "4% of expensive commands like spawn/destroy" (toxic). A future S-batch could add a time-weighted signal (track per-system cumulative apply time over a window and decide based on observed perf rather than command counts) that catches time-dominated global lanes without misclassifying balanced ones. For now, users who want auto-fallthrough on RPG-mix-shape must tune the percent threshold to their workload's measured global-count ratio.
+
+**S∞ readiness unchanged.** S16 is a useful tunable for opt-in sharded users; it does NOT close the RPG-mix gate at default settings, and so does NOT unblock the default flip. Serial commit stays default; sharded stays opt-in. The post-S16 shipping configuration is the same as post-S13: serial reference path, sharded opt-in with documented workload-shape requirements, plus the new auto-fallthrough hook for users who want a per-call mode decision without manual workload measurement.
+
 ### S13-original — Cross-tick commit pipelining (S∞ blocker territory)
 
 **Hypothesis.** Most aggressive: allow tick N's Pass C to run while tick N+1 begins recording. The sim thread starts the next tick's update() while the previous tick's apply is still in flight.

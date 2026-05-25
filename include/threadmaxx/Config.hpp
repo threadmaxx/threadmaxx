@@ -219,6 +219,45 @@ struct Config {
     /// happens-before chain through the worker's `lock_guard` in
     /// `count_down`; the cv_.wait fallback path is unchanged.
     std::uint32_t jobLatchSpinIters = 4096;
+
+    /// SHARDED_OPTIMISATION.md S16 — workload-aware auto fallthrough.
+    /// When `true`, `commitBuffersSharded` adds a fourth pre-condition
+    /// to its early-out check: if the fraction of non-value-only
+    /// commands (`globalCount / totalCommands`) meets or exceeds
+    /// `workloadAwareGlobalPercent / 100`, the call falls through to
+    /// the per-buffer serial commit path. Default `false` preserves
+    /// pre-S16 behavior; flip it to `true` to let the engine pick
+    /// single-vs-sharded per call based on cheap counters that are
+    /// already maintained for free.
+    ///
+    /// Motivation. The S12 outcome identified that on RPG-mix-shaped
+    /// workloads (≈50% global), Pass B time is dominated by the
+    /// serial global-lane apply, not by the bucket-walk demotion that
+    /// sharding parallelizes. The bucket-walk wins exist (`S13`
+    /// landed −37 … −46% on every value-only workload's Pass B) but
+    /// don't recover the global-lane cost. A static fallthrough on
+    /// `globalCount / totalCommands` lets users opt into sharded mode
+    /// without manually classifying every workload — the engine picks
+    /// sharded only when its parallelism actually applies.
+    ///
+    /// Ignored when `singleThreadedCommit == true` (no sharded path
+    /// runs). Affects only the per-call mode decision; commitHash
+    /// stream is identical to a run with the flag off plus matching
+    /// manual `singleThreadedCommit` selection.
+    bool workloadAwareCommit = false;
+
+    /// SHARDED_OPTIMISATION.md S16 — global-lane percentage threshold
+    /// for the workload-aware fallthrough. When `workloadAwareCommit
+    /// == true` AND `globalCount * 100 >= totalCommands *
+    /// workloadAwareGlobalPercent`, the call falls through to the
+    /// serial commit path. Default `30` was picked from the S16 bench
+    /// matrix: RPG-mix (≈50% global) trips it; setTransform variants
+    /// (≈0% global) sail through to sharded. Raise to be less
+    /// aggressive about falling through; lower to require more
+    /// value-only purity before sharding kicks in.
+    ///
+    /// Ignored when `workloadAwareCommit == false`.
+    std::uint32_t workloadAwareGlobalPercent = 30;
 };
 
 } // namespace threadmaxx

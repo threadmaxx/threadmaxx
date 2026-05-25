@@ -870,6 +870,28 @@ The mechanism isn't explained by the per-cmd memory cost alone (~4 bytes per com
 
 **Cascade implications:** S15 (row-bucketed record-time routing — the S10 revisit) is blocked by the same record-time cost concern at higher amplitude; the next experiment slot should instead try the bucket-entry-packing variant (smaller record-time write surface), or move to S16 (workload-aware auto mode) which doesn't add record-time cost.
 
+## S16 — Workload-aware auto fallthrough (LANDED 2026-05-25)
+
+Added `Config::workloadAwareCommit` (opt-in, default `false`) and `Config::workloadAwareGlobalPercent` (default `30`). When the auto-mode flag is on, `commitBuffersSharded` adds a fourth pre-condition to its early-out: when `globalCount * 100 >= totalCommands * workloadAwareGlobalPercent`, the call falls through to the per-buffer serial commit path. New `CommitBreakdown::workloadAwareFallthrough` counter exposes the per-step fire count. Zero record-time cost (uses counters already maintained at the top of `commitBuffersSharded`).
+
+`tests/workload_aware_commit_test.cpp` pins three properties: (a) high-global workloads (~50% mixed) trip the gate, (b) low-global workloads (100% value-only) run sharded, (c) commitHash stream is identical across `workloadAwareCommit={true,false}` on both shapes. Full ctest 127/127 green.
+
+Bench (commit_pass_breakdown, one-run-per-config, machine has high run-to-run variance on the sharded path; columns: commit_us, `(sh)` = sharded path ran, `(fb)` = fell through to serial):
+
+| Workload | serial | sharded default | S16 PCT=30 | S16 PCT=5 | S16 PCT=1 |
+|---|---|---|---|---|---|
+| RPG-mix | ~2050 | 2763 (sh) | 2723 (sh) | 2606 (sh) | **1970 (fb)** |
+| setTransform/MultiArch | ~1500 | 5456 (sh) | 3942 (sh) | 4140 (sh) | 3135 (sh) |
+| setTransform/Churn | ~1470 | 2558 (sh) | 3713 (sh) | 3098 (sh) | 3254 (sh) |
+| setTransform/SingleArch | ~1360 | 1660 (sh) | 1614 (sh) | 1630 (sh) | 1623 (sh) |
+| ManyTinyBins | ~105 | 150 (sh) | 144 (sh) | 137 (sh) | 142 (sh) |
+
+The gate works mechanically (PCT=1 demonstrates it firing on RPG-mix; commit_us drops to the serial baseline; value-only workloads keep their sharded path at any threshold because their global ratio is 0%). The default 30% threshold is honest as a conservative auto-mode that only trips on heavily-mixed workloads (≥30% global) — RPG-mix's actual global ratio is ~4%, so the default does NOT trip on it. Users wanting auto-fallthrough on RPG-mix-shape must tune the threshold to their workload's measured global-count ratio (e.g. `workloadAwareGlobalPercent = 3`).
+
+**Limitation: count-based signal undershoots time-dominated workloads.** RPG-mix's 4% global IS the structural killer for sharded on that workload, but a count threshold can't distinguish "4% of cheap commands" from "4% of expensive spawn/destroy commands". A future revisit could add a time-weighted signal that catches time-dominated global lanes without misclassifying balanced ones.
+
+S∞ readiness: unchanged. S16 does NOT unblock the default flip at default settings; it's a tunable opt-in for users who want a per-call mode decision without manual workload measurement.
+
 ## Reproducibility
 
 ```
@@ -880,11 +902,13 @@ THREADMAXX_NO_BATCH=1 ./build/bench/commit_pass_breakdown           # S6 batch o
 THREADMAXX_NO_ROUTING=1 ./build/bench/commit_pass_breakdown         # S8 routing off
 THREADMAXX_NO_INLINE_LARGEST=1 ./build/bench/commit_pass_breakdown  # S9 inline-largest off
 THREADMAXX_NO_LATCH_SPIN=1 ./build/bench/commit_pass_breakdown      # S11 spin-before-block off
+THREADMAXX_WORKLOAD_AWARE=1 ./build/bench/commit_pass_breakdown     # S16 auto-fallthrough on (default 30% threshold)
+THREADMAXX_WORKLOAD_AWARE=1 THREADMAXX_WORKLOAD_AWARE_PCT=N ...     # S16 with custom threshold (e.g. PCT=1 for RPG-mix demo)
 # S10 is opt-in (default off); bench under split-on requires a
 # build-side flip of `Config::splitLargestBin = true` or an
 # in-source override in the bench harness. THREADMAXX_NO_SPLIT_LARGEST=1
 # is a no-op when the default is already off.
-cd build && ctest --output-on-failure                               # full gate (126 tests)
+cd build && ctest --output-on-failure                               # full gate (127 tests)
 cmake -S . -B build-long-soak -DCMAKE_BUILD_TYPE=Release \
     -DTHREADMAXX_BUILD_LONG_SOAK=ON
 cmake --build build-long-soak --target concurrency_soak_long

@@ -333,6 +333,25 @@ PerWorkloadResult measureWorkload(const char* workloadName,
         nls && nls[0] == '1') {
         cfg.jobLatchSpinIters = 0;
     }
+    // SHARDED_OPTIMISATION.md S16 — Env-var override to opt the bench
+    // run into workload-aware fallthrough. Set THREADMAXX_WORKLOAD_AWARE=1
+    // to enable; the gate falls through to serial when globalCount /
+    // totalCommands >= workloadAwareGlobalPercent / 100. Use to A/B
+    // the S16 gate against the pre-S16 sharded default. Set
+    // THREADMAXX_WORKLOAD_AWARE_PCT=N to override the default 30 %
+    // threshold; useful for sweeping over the threshold to find the
+    // workload-specific tradeoff point.
+    if (const char* wac = std::getenv("THREADMAXX_WORKLOAD_AWARE");
+        wac && wac[0] == '1') {
+        cfg.workloadAwareCommit = true;
+    }
+    if (const char* pct = std::getenv("THREADMAXX_WORKLOAD_AWARE_PCT");
+        pct && pct[0] != '\0') {
+        const long parsed = std::strtol(pct, nullptr, 10);
+        if (parsed >= 0 && parsed <= 100) {
+            cfg.workloadAwareGlobalPercent = static_cast<std::uint32_t>(parsed);
+        }
+    }
     Engine engine(cfg);
     if (!engine.initialize(game)) {
         std::fprintf(stderr, "  init failed for %s\n", workloadName);

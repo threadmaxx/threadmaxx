@@ -1470,14 +1470,30 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
     //     the value-only commands would all bin into one job; no
     //     parallelism possible.
     //
+    // SHARDED_OPTIMISATION.md S16 adds a fourth, OPT-IN gate:
+    // (4) `cfg_.workloadAwareCommit` AND
+    //     `globalCount * 100 >= totalCommands * workloadAwareGlobalPercent`
+    //     — Pass B time on global-heavy workloads is dominated by the
+    //     serial global-lane apply (not the bucket-walk demotion that
+    //     sharding parallelizes), so sharded structurally loses on
+    //     these shapes. The check uses counters already tallied above
+    //     — zero record-time cost, zero new memory traffic.
+    //
     // The migration-heavy workload (`addRemoveTag` in commit_path_bench)
     // is the killer — it hit all three failure modes simultaneously
     // and paid ~2× the single-threaded cost in classifier overhead.
     constexpr std::size_t kShardedMinCommands = 256;
     const std::size_t chunkCount = storage.archetypes().chunks().size();
+    const std::size_t globalCount = totalCommands - totalValueOnly;
+    const bool workloadAwareGated =
+        cfg_.workloadAwareCommit &&
+        globalCount * 100 >=
+            totalCommands *
+                static_cast<std::size_t>(cfg_.workloadAwareGlobalPercent);
     if (totalCommands < kShardedMinCommands ||
         totalValueOnly == 0 ||
-        chunkCount < 2) {
+        chunkCount < 2 ||
+        workloadAwareGated) {
         for (auto& cb : buffers) commitBuffer(cb);
         // SHARDED_OPTIMISATION.md S0 — fallback path bookkeeping. Pass
         // A/B/C ns stay zero; `nsTotal` captures the serial-commit cost.
@@ -1485,6 +1501,9 @@ void EngineImpl::commitBuffersSharded(std::vector<CommandBuffer>& buffers) {
         commitBreakdown_.chunkCount     = chunkCount;
         commitBreakdown_.nsTotal       += bdElapsedNs(bdT0, bdT1);
         commitBreakdown_.fallbackCalls += 1;
+        if (workloadAwareGated) {
+            commitBreakdown_.workloadAwareFallthrough += 1;
+        }
         return;
     }
 

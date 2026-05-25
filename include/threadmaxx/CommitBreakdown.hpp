@@ -79,6 +79,15 @@ struct CommitBreakdown {
     /// when `inlineLargestApplied` didn't fire, or when the largest
     /// bin was below `2 * kMinBinForJob`.
     std::uint64_t splitLargestApplied = 0;
+    /// SHARDED_OPTIMISATION.md S16 — number of sharded calls this step
+    /// that fell through to the per-buffer serial path because
+    /// `Config::workloadAwareCommit` was on AND the call's global-
+    /// command fraction met or exceeded the configured threshold.
+    /// Counts the gated-fallthrough subset; the broader `fallbackCalls`
+    /// field still counts ALL fallthrough cases (small-batch, no
+    /// value-only, single archetype, AND workload-aware).
+    /// Zero when `Config::workloadAwareCommit == false`.
+    std::uint64_t workloadAwareFallthrough = 0;
 
     /// Wall-clock ns spent in Pass A (migrating-entity bitmap build).
     std::uint64_t nsPassA = 0;
