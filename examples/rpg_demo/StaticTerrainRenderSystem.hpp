@@ -14,19 +14,22 @@ namespace threadmaxx { class Engine; }
 namespace rpg {
 
 /// §3.11 batch D13 — terrain split out of CubeRenderSystem.
+/// §3.11 batch D14 — fused update + BRF; no per-tick SoA scratch.
 ///
 /// Owns rendering for every `StaticTag + CubeRender` entity in the
 /// world (i.e. the ~92k voxel terrain blocks). At first tick scans
-/// the world once, precomputes `(DrawItem, BoundingVolume, center,
-/// radius)` per block, and buckets the precomputed entries by their
-/// `TerrainChunk` UC (16×16-cell groups → 36 buckets at the demo's
-/// 96-cell terrain).
+/// the world once, precomputes `(DrawItem, center, radius)` per
+/// block, and buckets the entries by their `TerrainChunk` UC
+/// (16×16-cell groups → 36 buckets at the demo's 96-cell terrain).
 ///
-/// Per tick: bucket-level XZ distance cull against the player using
-/// the precomputed bucket bounding sphere. Surviving buckets memcpy
-/// their slice into the per-tick scratch arrays. `buildRenderFrame`
-/// runs the same SIMD sphere broad-phase against active cameras and
-/// emits DrawItems.
+/// `update()` does cache maintenance only — first-tick build plus
+/// per-bucket rebuild on `BlockBroken` / `BlockPlaced`. All per-tick
+/// culling and emission happens in `buildRenderFrame()`: bucket-level
+/// XZ distance cull → SIMD frustum sphere broad-phase against active
+/// cameras directly on the bucket's centers/radii → per-block distance
+/// re-check on straddling buckets → emit DrawItems. There is no
+/// intermediate items_/bounds_/centers_/radii_ scratch — every
+/// surviving block is visited exactly once per tick.
 ///
 /// Invalidation: subscribes to `BlockBroken` / `BlockPlaced` events;
 /// the affected `TerrainChunk` bucket is marked dirty and re-scanned
@@ -53,10 +56,11 @@ public:
 private:
     /// One bucket per `TerrainChunk(chunkX, chunkZ)`. Bucket index =
     /// `chunkZ * chunksPerSide + chunkX`. Precomputed at first tick,
-    /// rebuilt per-bucket on `BlockBroken` / `BlockPlaced`.
+    /// rebuilt per-bucket on `BlockBroken` / `BlockPlaced`. D14 dropped
+    /// the BoundingVolume sidecar — the SIMD frustum cull only needs
+    /// centers + radii; the scalar fallback derives an AABB inline.
     struct Bucket {
         std::vector<threadmaxx::DrawItem>       items;
-        std::vector<threadmaxx::BoundingVolume> bounds;
         std::vector<threadmaxx::Vec3>           centers;
         std::vector<float>                      radii;
         // XZ bounding circle of all blocks in this bucket — used for
@@ -86,13 +90,13 @@ private:
     std::vector<Bucket>       buckets_;
     std::vector<bool>         bucketDirty_;
 
-    // Per-tick scratch — survivors of the bucket-distance cull,
-    // re-populated each tick by memcpy from the surviving buckets.
-    std::vector<threadmaxx::DrawItem>       items_;
-    std::vector<threadmaxx::BoundingVolume> bounds_;
-    std::vector<threadmaxx::Vec3>           centers_;
-    std::vector<float>                      radii_;
-    std::vector<std::uint8_t>               sphereVisible_;
+    // D14 — per-BRF scratch sized to the largest bucket. `sphereVisible_`
+    // is the SIMD frustum cull output (one byte per block per camera
+    // pass); `perBlockMask_` accumulates the per-block camera bitset as
+    // the per-camera passes fold in. Both grow monotonically; never
+    // shrunk to avoid steady-state churn.
+    std::vector<std::uint8_t>  sphereVisible_;
+    std::vector<std::uint32_t> perBlockMask_;
 };
 
 } // namespace rpg

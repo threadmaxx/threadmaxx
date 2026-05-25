@@ -3,6 +3,7 @@
 #include <threadmaxx/Components.hpp>
 #include <threadmaxx/Engine.hpp>
 #include <threadmaxx/EventChannel.hpp>
+#include <threadmaxx/RenderFrame.hpp>
 #include <threadmaxx/UserComponent.hpp>
 #include <threadmaxx/World.hpp>
 #include <threadmaxx/internal/Archetype.hpp>
@@ -11,10 +12,10 @@
 
 #if RPG_DEMO_HAS_SIMD
 #  include <threadmaxx_simd/aabb_ops.hpp>
-#  include <threadmaxx_simd/vec3_ops.hpp>
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 
@@ -82,18 +83,10 @@ void StaticTerrainRenderSystem::buildCache(threadmaxx::SystemContext& ctx) {
             const float hx = 0.5f * std::abs(di.transform.scale.x);
             const float hy = 0.5f * std::abs(di.transform.scale.y);
             const float hz = 0.5f * std::abs(di.transform.scale.z);
-            threadmaxx::BoundingVolume bv{
-                {di.transform.position.x - hx,
-                 di.transform.position.y - hy,
-                 di.transform.position.z - hz},
-                {di.transform.position.x + hx,
-                 di.transform.position.y + hy,
-                 di.transform.position.z + hz}};
             const threadmaxx::Vec3 center = di.transform.position;
             const float radius = std::sqrt(hx * hx + hy * hy + hz * hz);
 
             b.items.push_back(di);
-            b.bounds.push_back(bv);
             b.centers.push_back(center);
             b.radii.push_back(radius);
         }
@@ -139,7 +132,6 @@ void StaticTerrainRenderSystem::rebuildBucket(threadmaxx::SystemContext& ctx,
     const float savedCx = b.circleCenterX;
     const float savedCz = b.circleCenterZ;
     b.items.clear();
-    b.bounds.clear();
     b.centers.clear();
     b.radii.clear();
 
@@ -185,13 +177,6 @@ void StaticTerrainRenderSystem::rebuildBucket(threadmaxx::SystemContext& ctx,
             const float hy = 0.5f * std::abs(di.transform.scale.y);
             const float hz = 0.5f * std::abs(di.transform.scale.z);
             b.items.push_back(di);
-            b.bounds.push_back(threadmaxx::BoundingVolume{
-                {di.transform.position.x - hx,
-                 di.transform.position.y - hy,
-                 di.transform.position.z - hz},
-                {di.transform.position.x + hx,
-                 di.transform.position.y + hy,
-                 di.transform.position.z + hz}});
             b.centers.push_back(di.transform.position);
             b.radii.push_back(std::sqrt(hx * hx + hy * hy + hz * hz));
         }
@@ -239,122 +224,122 @@ void StaticTerrainRenderSystem::drainInvalidations() {
 }
 
 void StaticTerrainRenderSystem::update(threadmaxx::SystemContext& ctx) {
+    // D14: update is cache maintenance only — first-tick build plus
+    // per-bucket rebuild on BlockBroken/BlockPlaced. All per-tick
+    // culling moved to buildRenderFrame() so survivors are walked once.
     if (!cacheBuilt_) {
         buildCache(ctx);
-        if (!cacheBuilt_) return;
-    } else {
-        drainInvalidations();
-        for (std::size_t i = 0; i < bucketDirty_.size(); ++i) {
-            if (!bucketDirty_[i]) continue;
-            rebuildBucket(ctx, i);
-            bucketDirty_[i] = false;
-        }
+        return;
     }
+    drainInvalidations();
+    for (std::size_t i = 0; i < bucketDirty_.size(); ++i) {
+        if (!bucketDirty_[i]) continue;
+        rebuildBucket(ctx, i);
+        bucketDirty_[i] = false;
+    }
+}
 
-    // Per-tick bucket distance cull. Mirrors CubeRenderSystem's draw
-    // radius (36 m normal / 12 m stress). The chunk's XZ bounding
-    // circle includes a half-cell slack; we add the bucket radius to
-    // the draw radius for the conservative "any block in this chunk
-    // might be visible" test.
-    if (!worldState_) return;
+void StaticTerrainRenderSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
+    if (!cacheBuilt_ || !worldState_ || !engine_) return;
+
+    const auto& w = engine_->world();
     const auto playerH = worldState_->player;
-    const auto& w = ctx.world();
     float pX = 0.0f, pZ = 0.0f;
     if (playerH.valid() && w.alive(playerH)) {
         const auto& pt = w.get<threadmaxx::Transform>(playerH);
         pX = pt.position.x;
         pZ = pt.position.z;
     }
+
     constexpr float kStressDrawRadius = 12.0f;
     constexpr float kNormalDrawRadius = 36.0f;
     const float drawRadius = worldState_->stressMode ? kStressDrawRadius
                                                      : kNormalDrawRadius;
     const float drawRadiusSq = drawRadius * drawRadius;
 
-    items_.clear();
-    bounds_.clear();
-    centers_.clear();
-    radii_.clear();
-    for (const auto& b : buckets_) {
-        if (b.items.empty()) continue;
-        const float dx = b.circleCenterX - pX;
-        const float dz = b.circleCenterZ - pZ;
+    const auto cams = std::span<const threadmaxx::Camera>(worldState_->activeCameras);
+    if (cams.empty()) return;
+
+    // Precompute frustums once per BRF; cheap (handful of cameras).
+    std::array<threadmaxx::Frustum, threadmaxx::kMaxCameras> frustums{};
+    const std::size_t camCount = std::min(cams.size(), frustums.size());
+    for (std::size_t ci = 0; ci < camCount; ++ci) {
+        frustums[ci] = threadmaxx::extractFrustum(cams[ci]);
+    }
+
+    for (const auto& bucket : buckets_) {
+        if (bucket.items.empty()) continue;
+
+        // Tier 1: bucket-distance cull (XZ).
+        const float dx = bucket.circleCenterX - pX;
+        const float dz = bucket.circleCenterZ - pZ;
         const float distSq = dx * dx + dz * dz;
-        // Fully outside: chunk centre + its radius can't reach the
-        // draw circle. Cheap skip — discards majority of buckets.
-        const float farCutoff = drawRadius + b.circleRadius;
+        const float farCutoff = drawRadius + bucket.circleRadius;
         if (distSq > farCutoff * farCutoff) continue;
-        // Fully inside: every block in the chunk is within draw
-        // radius. Bulk-append the precomputed slice.
-        const float nearCutoff = drawRadius - b.circleRadius;
-        if (nearCutoff > 0.0f && distSq < nearCutoff * nearCutoff) {
-            items_.insert  (items_.end(),   b.items.begin(),   b.items.end());
-            bounds_.insert (bounds_.end(),  b.bounds.begin(),  b.bounds.end());
-            centers_.insert(centers_.end(), b.centers.begin(), b.centers.end());
-            radii_.insert  (radii_.end(),   b.radii.begin(),   b.radii.end());
-            continue;
-        }
-        // Straddles the boundary — per-block distance cull inside
-        // the bucket. Cheap (6 ops/block) and prevents the bulk
-        // memcpy of mostly-invisible blocks at the bucket fringe.
-        const std::size_t n = b.items.size();
-        for (std::size_t i = 0; i < n; ++i) {
-            const auto& center = b.centers[i];
-            const float bdx = center.x - pX;
-            const float bdz = center.z - pZ;
-            if (bdx * bdx + bdz * bdz > drawRadiusSq) continue;
-            items_  .push_back(b.items  [i]);
-            bounds_ .push_back(b.bounds [i]);
-            centers_.push_back(b.centers[i]);
-            radii_  .push_back(b.radii  [i]);
-        }
-    }
-}
 
-void StaticTerrainRenderSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
-    if (items_.empty()) return;
-    const std::span<const threadmaxx::Camera> cams =
-        worldState_ ? std::span<const threadmaxx::Camera>(worldState_->activeCameras)
-                    : std::span<const threadmaxx::Camera>{};
+        const std::size_t n = bucket.items.size();
+        const float nearCutoff = drawRadius - bucket.circleRadius;
+        const bool fullyInside = (nearCutoff > 0.0f &&
+                                  distSq < nearCutoff * nearCutoff);
 
-#if RPG_DEMO_HAS_SIMD
-    if (!cams.empty()) {
-        const std::size_t n = items_.size();
-        if (sphereVisible_.size() < n * cams.size()) {
-            sphereVisible_.assign(n * cams.size(), 0);
-        } else {
-            std::fill_n(sphereVisible_.begin(), n * cams.size(),
+        // SIMD sphere/frustum cull, fold per-camera into a single
+        // mask buffer. Scratch grows monotonically with the largest
+        // bucket the demo sees.
+        if (perBlockMask_.size() < n) perBlockMask_.resize(n);
+        if (sphereVisible_.size() < n) sphereVisible_.resize(n);
+        std::fill_n(perBlockMask_.begin(), n, static_cast<std::uint32_t>(0));
+
+        for (std::size_t ci = 0; ci < camCount; ++ci) {
+            std::fill_n(sphereVisible_.begin(), n,
                         static_cast<std::uint8_t>(0));
-        }
-        for (std::size_t ci = 0; ci < cams.size(); ++ci) {
-            threadmaxx::Frustum f = threadmaxx::extractFrustum(cams[ci]);
+#if RPG_DEMO_HAS_SIMD
             threadmaxx::simd::frustum_cull(
-                std::span<const threadmaxx::Vec3>(centers_),
-                std::span<const float>(radii_),
-                f,
-                std::span<std::uint8_t>(
-                    sphereVisible_.data() + ci * n, n));
-        }
-        for (std::size_t i = 0; i < n; ++i) {
-            std::uint32_t mask = 0;
-            for (std::size_t ci = 0; ci < cams.size(); ++ci) {
-                if (sphereVisible_[ci * n + i]) mask |= (1u << ci);
-            }
-            items_[i].cameraMask = mask;
-        }
-    }
+                std::span<const threadmaxx::Vec3>(bucket.centers),
+                std::span<const float>(bucket.radii),
+                frustums[ci],
+                std::span<std::uint8_t>(sphereVisible_.data(), n));
 #else
-    if (!cams.empty()) {
-        threadmaxx::cullByFrustum(
-            std::span<threadmaxx::DrawItem>(items_),
-            std::span<const threadmaxx::BoundingVolume>(bounds_),
-            cams);
-    }
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto& c = bucket.centers[i];
+                const float r = bucket.radii[i];
+                bool inside = true;
+                for (const auto& p : frustums[ci].planes) {
+                    const float d = p[0] * c.x + p[1] * c.y +
+                                    p[2] * c.z + p[3];
+                    if (d < -r) { inside = false; break; }
+                }
+                sphereVisible_[i] = inside ? 1u : 0u;
+            }
 #endif
+            const std::uint32_t bit = 1u << ci;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (sphereVisible_[i]) perBlockMask_[i] |= bit;
+            }
+        }
 
-    for (const auto& di : items_) {
-        if (di.cameraMask == 0) continue;
-        b.addDrawItem(threadmaxx::RenderPass::Opaque, di);
+        // Emit. Fully-inside buckets skip the per-block distance test;
+        // straddling buckets re-check XZ distance per block.
+        if (fullyInside) {
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::uint32_t mask = perBlockMask_[i];
+                if (mask == 0) continue;
+                threadmaxx::DrawItem di = bucket.items[i];
+                di.cameraMask = mask;
+                b.addDrawItem(threadmaxx::RenderPass::Opaque, di);
+            }
+        } else {
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::uint32_t mask = perBlockMask_[i];
+                if (mask == 0) continue;
+                const auto& c = bucket.centers[i];
+                const float bdx = c.x - pX;
+                const float bdz = c.z - pZ;
+                if (bdx * bdx + bdz * bdz > drawRadiusSq) continue;
+                threadmaxx::DrawItem di = bucket.items[i];
+                di.cameraMask = mask;
+                b.addDrawItem(threadmaxx::RenderPass::Opaque, di);
+            }
+        }
     }
 }
 
