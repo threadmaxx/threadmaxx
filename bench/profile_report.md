@@ -847,6 +847,29 @@ The parallel dispatch overhead + the serial merge phase cost roughly cancel the 
 
 **S∞ readiness:** with S9 + S11 + hashDirty-atomic landed, RPG-mix is ~30% above single-threaded baseline (3 678 sharded vs ~2 800 single). MultiArch is ~2.5× single. No remaining batch in the plan is structurally cheap enough to close those gaps. **S∞ remains blocked**; the long-term shipping config is serial commit by default with sharded as opt-in for Pass-C-dominated workloads.
 
+## S13 — Record-time target-entity cache (INVESTIGATED + PARKED 2026-05-25)
+
+S13 cached the target entity index at record time (parallel `std::vector<std::uint32_t>` keyed by command index, `kInvalidTargetIdx` sentinel) so Pass A's `markMigrating` and Pass B's bucket-walk demotion could skip `commandTargetEntity()`'s `std::visit` over the 19-alternative variant. Pass B's bucket walk is the per-bucketed-cmd hot loop on value-only workloads.
+
+**Bench (sharded-path commit_us; 10-run medians on Churn, 3-run averages elsewhere):**
+
+| Workload | Pass B base → S13 | Pass A base → S13 | commit_us base → S13 | Δ commit |
+|---|---|---|---|---|
+| setTransform/Churn (median) | 590 → 368 (-37.6%) | 0.09 → 0.05 | 3 296 → 4 061 | **+23%** |
+| setVelocity/Churn | 591 → 359 (-39%) | 0.08 → 0.05 | 2 910 → 3 151 | +8% |
+| setTransform/MultiArch | 702 → 381 (-46%) | 0.08 → 0.05 | 6 010 → 5 562 | -7.5% |
+| setTransform/SingleArch | 592 → 371 (-37%) | 0.08 → 0.04 | 2 244 → 2 056 | -8.4% |
+| RPG-mix | 1 538 → 1 476 (-4%) | 41.9 → 22.1 (-47%) | 3 620 → 3 698 | +2% (noise) |
+| ManyTinyBins | 58 → 35 (-40%) | 0.08 → 0.04 | 181 → 168 | -7.2% |
+
+The Pass B / Pass A targeted reductions land cleanly (37-46% Pass B reduction on every value-only workload), but the total commit_us regresses 23% on `setTransform/Churn`. To isolate the source, an intermediate "record-only" run was done: keep the `cachedTargetIdx_.push_back(...)` in the recorders but revert Pass B to use `commandTargetEntity()` (cache written, unused). Result: Pass C still regressed ~30% on Churn. **The cost is on the recording side, not the commit-side optimization.**
+
+The mechanism isn't explained by the per-cmd memory cost alone (~4 bytes per command, no per-step reallocations). The most plausible reading: the additional recording work changes CPU frequency / thermal state during the parallel-record phase on Churn's migration-heavy chunk-reshape workload; SingleArch / MultiArch / ManyTinyBins (no reshape) do NOT exhibit the regression.
+
+**Verdict: parked.** Failed the user gate ("≥5% RPG-mix sharded total OR ≥20% Pass A *without regression*"). RPG-mix doesn't benefit because Pass B on RPG-mix is global-lane-apply-dominated, not bucket-walk-dominated. Full ctest 126/126 green at both ON and OFF (determinism preserved); code reverted. SHARDED_OPTIMISATION.md § "S13" carries the full diagnosis and alternative-design options (per-bucket-entry packing instead of parallel vector; UB-adjacent fixed-offset variant ABI; perf+frequency-pinning profile).
+
+**Cascade implications:** S15 (row-bucketed record-time routing — the S10 revisit) is blocked by the same record-time cost concern at higher amplitude; the next experiment slot should instead try the bucket-entry-packing variant (smaller record-time write surface), or move to S16 (workload-aware auto mode) which doesn't add record-time cost.
+
 ## Reproducibility
 
 ```

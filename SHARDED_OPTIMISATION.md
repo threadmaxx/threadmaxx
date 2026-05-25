@@ -526,7 +526,42 @@ Per the spec's skip condition ("If S9 + S10 + S11 close the gap, skip S12"), the
 - Defer S∞ pending a fresh ideas — neither S12 nor S13 (cross-tick pipelining, even higher risk) is on the near-term roadmap.
 - Consider documenting the post-S11 + atomic state as the long-term shipping configuration: serial commit remains the default; sharded commit available as an opt-in for workloads that profile as Pass-C-dominated (single-largest-bin or balanced-multi-bin shapes where S9/S11 deliver clean wins).
 
-### S13 — Cross-tick commit pipelining (S∞ blocker territory)
+### S13 — Record-time target-entity cache (INVESTIGATED + PARKED 2026-05-25)
+
+(Repurposed slot from the original "Cross-tick commit pipelining" S13 entry below — a much cheaper attempt at the same goal: close the sharded gap.)
+
+**Hypothesis.** `commandTargetEntity()` is a per-cmd `std::visit` over a 19-alternative variant; its bucket-walk-demotion call site in Pass B dominates Pass B on value-only workloads. Cache the target entity index at record time in a `std::vector<std::uint32_t>` parallel to `commands_` so Pass A/B skip the visit and read a single 32-bit value at a known offset.
+
+**Implementation landed.** New `CommandBuffer::cachedTargetIdx_` vector, `kInvalidTargetIdx` sentinel, push from every recording method, `noteGlobalCommand(cmdIdx, entity)` two-arg form, `clear()` resets it. Pass A's `markMigrating` and Pass B's bucket-walk demotion read `targetIdx[idx]` directly. Determinism unchanged (same bitmap, same demotion logic, just a faster index read). Full ctest 126/126 green at both ON and OFF.
+
+**Bench result** (10-run medians on `setTransform/Churn`, the regression workload; 3-run averages elsewhere):
+
+| Workload | Pass B base → S13 | Pass A base → S13 | commit_us base → S13 | Δ commit |
+|---|---|---|---|---|
+| setTransform/Churn (median) | 590 → 368 (-37.6%) | 0.09 → 0.05 | 3296 → 4061 | **+23%** |
+| setVelocity/Churn | 591 → 359 (-39%) | 0.08 → 0.05 | 2910 → 3151 | +8% |
+| setTransform/MultiArch | 702 → 381 (-46%) | 0.08 → 0.05 | 6010 → 5562 | -7.5% |
+| setTransform/SingleArch | 592 → 371 (-37%) | 0.08 → 0.04 | 2244 → 2056 | -8.4% |
+| RPG-mix | 1538 → 1476 (-4%) | 41.9 → 22.1 (-47%) | 3620 → 3698 | +2% (noise) |
+| ManyTinyBins | 58 → 35 (-40%) | 0.08 → 0.04 | 181 → 168 | -7.2% |
+
+**The Pass B optimization itself works** — 37–46% per-pass reduction on every value-only workload, exactly as the std::visit-cost model predicted. **But `setTransform/Churn` regresses ~23% in total commit_us** (median).
+
+**Diagnosis.** Pass C grows by ~30% on Churn (median 2509 → 3328 µs) while Pass A/B savings only recover ~250 µs. To isolate the cause, an intermediate "record-only" run was done: keep `cachedTargetIdx_.push_back(...)` in the recorders but revert Pass B to use `commandTargetEntity()` (so the cache is written but unused). Result: Pass C still regressed ~30%. **The cost is on the recording side, not the commit-side optimization.**
+
+The mechanism isn't fully explained by the small absolute cost of the extra `push_back` (~4 bytes / cmd, no per-step reallocations after the first iteration thanks to `clear()` preserving capacity). The most plausible reading: the additional recording work changes CPU frequency / thermal state during the parallel record phase, which propagates into Pass C's worker-thread apply on this specific workload shape (lots of migrations + chunk reshape). SingleArch/MultiArch/ManyTinyBins do NOT show this regression — Churn's signature is migration-driven chunk reshape colocated with value-only recording.
+
+**Verdict: parked.** The user's gate ("≥5% RPG-mix sharded total OR ≥20% Pass A *without regression*") is failed by Churn. RPG-mix doesn't benefit because its Pass B time is dominated by global-lane apply, not bucket-walk demotion. A future revisit could try a different design that avoids the per-cmd record-time push:
+
+- Store the entity inside the bucket entry itself (`std::pair<uint32_t, uint32_t>` per bucket entry) so only routed-value-only cmds pay the extra 4 bytes; trade bucket-entry size for parallel-vector size.
+- Lift `EntityHandle` to a fixed offset within the variant payload via UB-adjacent variant ABI tricks (skip the `std::visit` jump table by directly reading at offset 0). Fragile.
+- Profile under `perf` with CPU-frequency pinning to confirm or rule out the thermal hypothesis on Churn.
+
+**Per-batch consequence.** S15 (row-bucketed record-time routing — the S10 revisit) is also blocked by the same record-time-cost concern: it would require even MORE per-cmd record-time work (chunk + row), and would inherit Churn's record-time-cost issue at higher amplitude. Without solving the Churn record-time-cost mystery first, S15 is unlikely to net-win.
+
+S∞ readiness unchanged from S12: serial commit stays default, sharded stays opt-in for Pass-C-balanced workloads.
+
+### S13-original — Cross-tick commit pipelining (S∞ blocker territory)
 
 **Hypothesis.** Most aggressive: allow tick N's Pass C to run while tick N+1 begins recording. The sim thread starts the next tick's update() while the previous tick's apply is still in flight.
 
