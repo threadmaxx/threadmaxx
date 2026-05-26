@@ -40,6 +40,28 @@ public:
         std::uint32_t                   height,
         std::span<const std::uint8_t>   rgba);
 
+    /// M3.2 — upload a tightly-packed RGBA8 sub-rect into an existing
+    /// `Texture`'s image. `tex` MUST currently sit in
+    /// `SHADER_READ_ONLY_OPTIMAL` (the layout `createFromRgba` leaves
+    /// it in). Region is `[x, x+w) × [y, y+h)` in image pixels; must be
+    /// fully inside the image. `rgba.size_bytes()` MUST equal
+    /// `w * h * 4`.
+    ///
+    /// The transfer pipelines a SHADER_READ_ONLY → TRANSFER_DST →
+    /// SHADER_READ_ONLY round-trip on the graphics queue with a
+    /// one-shot command buffer + fence, so the function blocks only on
+    /// its own fence (NOT `vkDeviceWaitIdle`). On return the image is
+    /// back in SHADER_READ_ONLY_OPTIMAL and the staging buffer +
+    /// command pool have been destroyed. Returns false on input
+    /// validation failure.
+    bool updateRgbaRegion(
+        Texture*                        tex,
+        std::uint32_t                   x,
+        std::uint32_t                   y,
+        std::uint32_t                   w,
+        std::uint32_t                   h,
+        std::span<const std::uint8_t>   rgba);
+
     /// See @ref MeshLoader::releaseGpuResources — called by the renderer
     /// before the Vulkan device is destroyed.
     void releaseGpuResources() noexcept;

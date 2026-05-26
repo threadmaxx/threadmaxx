@@ -244,6 +244,148 @@ threadmaxx::ResourceHandle<Texture> TextureLoader::createFromRgba(
     return engine.resources().addRefCounted<Texture>(t);
 }
 
+bool TextureLoader::updateRgbaRegion(
+    Texture*                      tex,
+    std::uint32_t                 x,
+    std::uint32_t                 y,
+    std::uint32_t                 w,
+    std::uint32_t                 h,
+    std::span<const std::uint8_t> rgba) {
+    if (!tex || tex->image == VK_NULL_HANDLE) return false;
+    if (w == 0 || h == 0)                     return false;
+    if (x + w > tex->width)                   return false;
+    if (y + h > tex->height)                  return false;
+    const VkDeviceSize bytes =
+        static_cast<VkDeviceSize>(w) * static_cast<VkDeviceSize>(h) * 4u;
+    if (rgba.size_bytes() != bytes) return false;
+
+    const VkDevice device = ctx_.device();
+
+    // ---- 1. Staging buffer (host-visible, throwaway) ---------------------
+    VkBuffer       staging       = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    {
+        VkBufferCreateInfo bi = {};
+        bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bi.size  = bytes;
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VK_CHECK(vkCreateBuffer(device, &bi, nullptr, &staging));
+
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(device, staging, &mr);
+        VkMemoryAllocateInfo ma = {};
+        ma.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ma.allocationSize = mr.size;
+        ma.memoryTypeIndex = ctx_.findMemoryType(mr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VK_CHECK(vkAllocateMemory(device, &ma, nullptr, &stagingMemory));
+        VK_CHECK(vkBindBufferMemory(device, staging, stagingMemory, 0));
+
+        void* p = nullptr;
+        VK_CHECK(vkMapMemory(device, stagingMemory, 0, bytes, 0, &p));
+        std::memcpy(p, rgba.data(), bytes);
+        vkUnmapMemory(device, stagingMemory);
+    }
+
+    // ---- 2. One-shot cmd buffer + fence ----------------------------------
+    VkCommandPool   cmdPool = VK_NULL_HANDLE;
+    VkCommandBuffer cmd     = VK_NULL_HANDLE;
+    {
+        VkCommandPoolCreateInfo ci = {};
+        ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        ci.queueFamilyIndex = ctx_.graphicsQueueIndex();
+        ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        VK_CHECK(vkCreateCommandPool(device, &ci, nullptr, &cmdPool));
+
+        VkCommandBufferAllocateInfo ai = {};
+        ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ai.commandPool = cmdPool;
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        VK_CHECK(vkAllocateCommandBuffers(device, &ai, &cmd));
+    }
+
+    VkCommandBufferBeginInfo bi = {};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
+
+    auto barrier = [&](VkImageLayout oldL, VkImageLayout newL,
+                       VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                       VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+        VkImageMemoryBarrier2 b = {};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        b.srcStageMask  = srcStage;
+        b.srcAccessMask = srcAccess;
+        b.dstStageMask  = dstStage;
+        b.dstAccessMask = dstAccess;
+        b.oldLayout = oldL;
+        b.newLayout = newL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = tex->image;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = 1;
+        VkDependencyInfo di = {};
+        di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di.imageMemoryBarrierCount = 1;
+        di.pImageMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &di);
+    };
+
+    // SHADER_READ_ONLY → TRANSFER_DST. srcStage = FRAGMENT_SHADER pins
+    // ordering against any in-flight render-frame sampling: the GPU
+    // doesn't start the transfer until the prior fragment shaders that
+    // sample this image have finished. No `vkDeviceWaitIdle` needed.
+    barrier(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {static_cast<std::int32_t>(x),
+                          static_cast<std::int32_t>(y), 0};
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyBufferToImage(cmd, staging, tex->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    VK_CHECK(vkEndCommandBuffer(cmd));
+
+    VkFence fence = VK_NULL_HANDLE;
+    {
+        VkFenceCreateInfo fci = {};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VK_CHECK(vkCreateFence(device, &fci, nullptr, &fence));
+    }
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers    = &cmd;
+    VK_CHECK(vkQueueSubmit(ctx_.graphicsQueue(), 1, &si, fence));
+    VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+
+    vkDestroyFence(device, fence, nullptr);
+    vkDestroyCommandPool(device, cmdPool, nullptr);  // frees cmd too
+    vkDestroyBuffer(device, staging, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+    return true;
+}
+
 threadmaxx::ResourceHandle<Texture> TextureLoader::createFallback(threadmaxx::Engine& engine) {
     Texture t;
     t.width = 1;

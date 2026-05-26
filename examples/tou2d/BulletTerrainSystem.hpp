@@ -62,6 +62,12 @@ public:
     using DestroyCallback = std::function<void(std::int32_t cellX, std::int32_t cellY)>;
     void setDestroyCallback(DestroyCallback cb) noexcept { destroyCb_ = std::move(cb); }
 
+    /// Mark our tile cache stale so the next `preStep` rebuilds it.
+    /// Called by `TerrainCollisionSystem` when its crash-damage path
+    /// destroys a tile, so the bullet hit-test doesn't keep blocking on
+    /// a freshly-emptied cell.
+    void markDirty() noexcept { dirty_ = true; }
+
 private:
     UserComponentIds        ids_;
     TerrainCollisionSystem* collision_ = nullptr;   // borrowed

@@ -141,6 +141,20 @@ public:
                                std::uint32_t                 width,
                                std::uint32_t                 height);
 
+    /// M3.2 — partial-rect update of the currently-installed background
+    /// texture. `rgba` is tightly-packed RGBA8, `w * h * 4` bytes,
+    /// covering pixels `[x, x+w) × [y, y+h)`. The image stays in place
+    /// (no realloc, no descriptor rewrite), so this is the destruction
+    /// hot path: per-tile destroys are O(tile area) bytes, not
+    /// O(image area), and pipeline through the graphics queue's own
+    /// barriers — no `vkDeviceWaitIdle`. Returns false if no
+    /// background is installed or the region falls outside the image.
+    bool updateBackgroundRegion(std::uint32_t                 x,
+                                std::uint32_t                 y,
+                                std::uint32_t                 w,
+                                std::uint32_t                 h,
+                                std::span<const std::uint8_t> rgba);
+
     /// M3.2 — placement of the world-space quad the background texture
     /// is painted onto. The quad spans
     /// `[centerX - halfW, centerX + halfW] × [centerY - halfH, centerY + halfH]`

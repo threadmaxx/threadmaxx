@@ -15,6 +15,7 @@ namespace tou2d {
 
 class BulletTerrainSystem;
 class CameraSystem;
+class TerrainCollisionSystem;
 
 /// IGame implementation for the M1 thrust-loop proof + M2 synthetic
 /// arena.
@@ -68,6 +69,7 @@ private:
     UserComponentIds         ids_;
     CameraSystem*            camera_         = nullptr;   // borrowed
     BulletTerrainSystem*     bulletTerrain_  = nullptr;   // borrowed
+    TerrainCollisionSystem*  collision_      = nullptr;   // borrowed
     threadmaxx::EntityHandle playerShip_     = {};
     std::filesystem::path    levelDir_;   // empty -> synthetic arena
     std::int32_t             cellsX_         = 0;

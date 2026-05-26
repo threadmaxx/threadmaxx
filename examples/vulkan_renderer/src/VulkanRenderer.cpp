@@ -585,6 +585,23 @@ bool VulkanRenderer::setBackgroundFromRgba(std::span<const std::uint8_t> rgba,
     return true;
 }
 
+bool VulkanRenderer::updateBackgroundRegion(std::uint32_t                 x,
+                                             std::uint32_t                 y,
+                                             std::uint32_t                 w,
+                                             std::uint32_t                 h,
+                                             std::span<const std::uint8_t> rgba) {
+    if (!impl_->textureLoader)            return false;
+    if (!impl_->backgroundTexture.valid()) return false;
+
+    // The handle hands us a `const Texture*`. We're mutating the image
+    // contents only — view/sampler/layout stay put — so a localised
+    // const-cast is safe and avoids touching the `ResourceRegistry`'s
+    // value-semantics contract.
+    Texture* tex = const_cast<Texture*>(impl_->backgroundTexture.get());
+    if (!tex || tex->image == VK_NULL_HANDLE) return false;
+    return impl_->textureLoader->updateRgbaRegion(tex, x, y, w, h, rgba);
+}
+
 void VulkanRenderer::reloadShaders() {
     if (!impl_->engine) return;
     int requested = 0;

@@ -7,7 +7,6 @@
 
 #include "CameraSystem.hpp"
 #include "DemoTypes.hpp"
-#include "LevelLoader.hpp"
 #include "TouGame.hpp"
 
 #include <threadmaxx_vk/VulkanRenderer.hpp>
@@ -225,6 +224,18 @@ int main(int argc, char** argv) {
         int                                halfY    = 0;
         threadmaxx_vk::VulkanRenderer*     renderer = nullptr;
 
+        // Per-frame dirty bbox in image pixels. Coalesced inside the
+        // tick; flushed once after `engine.step()` returns so the
+        // expensive Vulkan upload + barrier round-trip happens at most
+        // once per frame regardless of how many tiles were destroyed.
+        // `dirty` flips true when any tile was painted; `flush()`
+        // resets it. Scratch row-buffer reused to ship the bbox-cut
+        // sub-rect contiguously to `updateBackgroundRegion`.
+        bool                      dirty   = false;
+        int                       minX = 0, minY = 0;
+        int                       maxX = 0, maxY = 0;
+        std::vector<std::uint8_t> uploadScratch;
+
         void paintTile(int worldCellX, int worldCellY) {
             // Inverse of LevelLoader's image -> world mapping:
             //   worldCellX = imageCx - halfX  =>  imageCx = worldCellX + halfX
@@ -234,12 +245,15 @@ int main(int argc, char** argv) {
             const int tilePx = tou2d::kImportedPxPerTile;
             const int px0 = imgCx * tilePx;
             const int py0 = imgCy * tilePx;
-            for (int dy = 0; dy < tilePx; ++dy) {
-                const int y = py0 + dy;
-                if (y < 0 || y >= height) continue;
-                for (int dx = 0; dx < tilePx; ++dx) {
-                    const int x = px0 + dx;
-                    if (x < 0 || x >= width) continue;
+
+            const int clampedX0 = std::max(0, px0);
+            const int clampedY0 = std::max(0, py0);
+            const int clampedX1 = std::min(width,  px0 + tilePx);
+            const int clampedY1 = std::min(height, py0 + tilePx);
+            if (clampedX1 <= clampedX0 || clampedY1 <= clampedY0) return;
+
+            for (int y = clampedY0; y < clampedY1; ++y) {
+                for (int x = clampedX0; x < clampedX1; ++x) {
                     const std::size_t off =
                         (static_cast<std::size_t>(y) *
                          static_cast<std::size_t>(width) +
@@ -250,12 +264,45 @@ int main(int argc, char** argv) {
                     pixels[off + 3] = 255;
                 }
             }
-            if (renderer) {
-                renderer->setBackgroundFromRgba(
-                    std::span<const std::uint8_t>(pixels.data(), pixels.size()),
-                    static_cast<std::uint32_t>(width),
-                    static_cast<std::uint32_t>(height));
+
+            if (!dirty) {
+                dirty = true;
+                minX = clampedX0; minY = clampedY0;
+                maxX = clampedX1; maxY = clampedY1;
+            } else {
+                minX = std::min(minX, clampedX0);
+                minY = std::min(minY, clampedY0);
+                maxX = std::max(maxX, clampedX1);
+                maxY = std::max(maxY, clampedY1);
             }
+        }
+
+        void flush() {
+            if (!dirty || !renderer) return;
+            const int rectW = maxX - minX;
+            const int rectH = maxY - minY;
+            const std::size_t bytes =
+                static_cast<std::size_t>(rectW) *
+                static_cast<std::size_t>(rectH) * 4u;
+            uploadScratch.resize(bytes);
+            for (int row = 0; row < rectH; ++row) {
+                const std::uint8_t* src = pixels.data() +
+                    (static_cast<std::size_t>(minY + row) *
+                     static_cast<std::size_t>(width) +
+                     static_cast<std::size_t>(minX)) * 4u;
+                std::uint8_t* dst = uploadScratch.data() +
+                    static_cast<std::size_t>(row) *
+                    static_cast<std::size_t>(rectW) * 4u;
+                std::memcpy(dst, src,
+                            static_cast<std::size_t>(rectW) * 4u);
+            }
+            renderer->updateBackgroundRegion(
+                static_cast<std::uint32_t>(minX),
+                static_cast<std::uint32_t>(minY),
+                static_cast<std::uint32_t>(rectW),
+                static_cast<std::uint32_t>(rectH),
+                std::span<const std::uint8_t>(uploadScratch.data(), bytes));
+            dirty = false;
         }
     } bgPainter;
 
@@ -362,6 +409,11 @@ int main(int argc, char** argv) {
     while (!glfwWindowShouldClose(window) && !engine.quitRequested()) {
         glfwPollEvents();
         engine.step();
+        // Flush any per-tick background dirty rect once after the
+        // tick's commits — the painter accumulated paint events from
+        // BulletTerrain + Collision destroy callbacks; one
+        // `updateBackgroundRegion` covers the union bbox.
+        bgPainter.flush();
         ++tick;
         if (maxTicks && tick >= maxTicks) {
             std::printf("[tou2d] reached %llu ticks; exiting\n",

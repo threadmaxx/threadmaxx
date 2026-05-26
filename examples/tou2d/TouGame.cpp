@@ -91,6 +91,12 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera_         = camera.get();
     bulletTerrain_  = bulletTerrainPtr;
+    collision_      = collisionPtr;
+
+    // Crash-damage path destroys tiles too — let collision tell the
+    // bullet system to drop its cached tile index so the next bullet
+    // hit-test doesn't keep blocking on a freshly-emptied cell.
+    collisionPtr->setBulletTerrain(bulletTerrainPtr);
 
     engine.registerSystem(std::move(input));
     engine.registerSystem(std::move(movement));
@@ -171,10 +177,16 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
                          threadmaxx::World&  /*world*/) {
     camera_        = nullptr;
     bulletTerrain_ = nullptr;
+    collision_     = nullptr;
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {
-    if (bulletTerrain_) bulletTerrain_->setDestroyCallback(std::move(cb));
+    // Fan out to BOTH destruction paths — bullet-damage (in
+    // BulletTerrainSystem) and crash-damage (in TerrainCollisionSystem).
+    // Both hit the same painter so the JPG keeps in sync regardless of
+    // which system tore the tile down.
+    if (bulletTerrain_) bulletTerrain_->setDestroyCallback(cb);
+    if (collision_)     collision_    ->setDestroyCallback(std::move(cb));
 }
 
 } // namespace tou2d
