@@ -104,6 +104,57 @@ path wins by 3.4× — no `SpatialHash` height-aware variant needed,
 no `threadmaxx_terrain` sibling-library spinup. v1.2's abstractions
 hold for D8.
 
+## [1.2.1] — 2026-05-26 — JobSystem missed-wakeup fix
+
+Patch release. Engine-internal change only; no public API surface
+moved.
+
+### Fixed
+
+- **`JobSystem` missed-wakeup hang under nested parallelism on
+  high-core hosts.** Pre-fix, `submit()` only notified the
+  round-robin target worker's per-worker CV; if that worker was
+  busy (typically blocked in a nested `JobLatch::wait`), the
+  notify was wasted, and other parked workers — whose predicate
+  was `self.hasWork() || stopping_` — re-parked on any wake
+  whose work landed on a sibling queue. Stranded work was
+  observable as an intermittent ~1/5 hang on
+  `examples/rpg_demo/perf_audit_rpg_demo 300 --stress` at the
+  auto worker count (71 on a 72-core host).
+- **Fix is three cooperating pieces in `src/JobSystem.{hpp,cpp}`:**
+  a monotonic `wakeSeq_` atomic bumped after every successful
+  queue push (workers snapshot before parking; predicate exits
+  on any advance), a `parkedCount_` atomic gating fan-out so the
+  steady-state hot path pays zero extra cost when no worker is
+  parked, and a single helper `notify_one` at `(target + 1) % n`
+  that rotates across workers over a wave so any reachable
+  parked worker is notified at least once. See the wake-contract
+  comment block at the top of `src/JobSystem.hpp` and the
+  "Wake contract (2026-05-25, missed-wakeup fix)" subsection in
+  `CLAUDE.md`.
+- **Pinned by `tests/job_system_missed_wakeup_test.cpp`** — 200
+  nested-parallelism iterations at every worker count from 4 to
+  `hardware_concurrency`, with a 60-second per-config watchdog.
+
+### Performance
+
+- No regression versus pre-bug timings: `rpg_demo --stress 300`
+  at 71 workers, real 29–30 s / sys 2.9–3.0 s (pre-patch with
+  bug 31.7 s / 3.1 s; intermediate semaphore + N-wide-notify
+  forms regressed sys to 49–174 s before the helper-only design
+  landed). Low-worker configs (4/8/16) measure sys 0.43–0.69 s.
+
+### Notes
+
+- Determinism contract unchanged — the fix is a scheduling-side
+  wake signal and never touches storage or commit order. Same
+  command stream → same `commitHash` stream.
+- Do NOT re-introduce a single global wake futex (semaphore or
+  otherwise): at 71 workers the contention costs ~50× the
+  per-worker-CV design's sys time. Do NOT drop the `wakeSeq_`
+  leg of the predicate: workers will re-park on any non-direct-
+  queue wake and strand sibling work.
+
 ## [1.2.0] — 2026-05-21 — Phase 8: workload-driven library tightening
 
 Additive minor release covering the Phase 8 work (batches 26–32). Two

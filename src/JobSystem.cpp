@@ -48,7 +48,37 @@ void JobSystem::submit(JobFn fn, JobPriority priority) {
         std::lock_guard<std::mutex> lk(w.mtx);
         w.queues[pri].emplace_back(std::move(fn));
     }
+
+    // Advance the wake sequence BEFORE notifying. Workers' park
+    // predicate re-reads `wakeSeq_` with acquire ordering, so any
+    // parked worker that observes the new value also observes the
+    // queue push above (which happens-before via release of `w.mtx`).
+    wakeSeq_.fetch_add(1, std::memory_order_release);
+
+    // Fast path: the target worker. If it's parked on its own CV,
+    // this is the one notify that wakes the actual owner of the
+    // queue we just pushed to.
     w.cv.notify_one();
+
+    // Helper notify: when at least one worker is parked, wake a single
+    // sibling at `(idx + 1) % n` so that — if `w` itself is busy in
+    // some user wait (e.g. JobLatch::wait inside a nested parallelFor)
+    // — at least one parked worker escapes `cv.wait` to scan + trySteal
+    // the just-pushed work. Combined with the worker's pre-park
+    // `wakeSeq_` snapshot, the helper is sufficient: any submit that
+    // races with a parking worker is observed via the `wakeSeq_` leg
+    // of the predicate, so even if the helper happens to be busy this
+    // round, the next submit's helper (idx+2) gets the wake. Over a
+    // wave's worth of submits the helper rotates through every worker,
+    // so any reachable parked worker is notified at least once.
+    //
+    // Only one extra notify per submit — keeps the cost flat across
+    // worker count (no N-wide fan-out). `notify_one` on an idle CV is
+    // a cheap load+compare; on a parked CV it's a single futex_wake.
+    if (n > 1 && parkedCount_.load(std::memory_order_acquire) > 0) {
+        const std::uint32_t helperIdx = (idx + 1) % n;
+        workers_[helperIdx]->cv.notify_one();
+    }
 }
 
 JobSystemStats JobSystem::stats() const noexcept {
@@ -133,29 +163,54 @@ void JobSystem::workerLoop(std::uint32_t selfIdx) {
     };
     for (;;) {
         JobFn job;
-
         bool fromOwn = false;
+
         // 1) Drain own queues first, priority-ordered.
         {
             std::lock_guard<std::mutex> lk(self.mtx);
             if (popOwn(job)) fromOwn = true;
         }
 
-        // 2) If own queues are empty, try stealing from siblings.
+        // 2) If own queues are empty, try stealing from siblings. The
+        //    helper-notify in submit() relies on workers always doing
+        //    trySteal here before parking — that is the path that picks
+        //    up work pushed onto a busy sibling's queue.
         if (!job) job = trySteal(selfIdx);
 
-        // 3) Still nothing — park until the producer notifies us or we are
-        //    asked to stop.
+        // 3) Still nothing — snapshot `wakeSeq_`, register as parked,
+        //    and park. The predicate exits when own queue gets work,
+        //    when the engine is stopping, OR when `wakeSeq_` has
+        //    advanced past the snapshot (meaning a submit happened
+        //    somewhere — possibly onto a sibling queue we can now
+        //    steal from). The snapshot is taken BEFORE incrementing
+        //    `parkedCount_` so a submit racing with our park sees one
+        //    of two states: (a) its `parkedCount_` read is 0 and its
+        //    wake-seq bump is later than our snapshot — we observe the
+        //    bump and skip cv.wait; or (b) its read is 1 and it fans
+        //    out — we get the notify and re-check. Either way we don't
+        //    block on stranded work.
         if (!job) {
-            std::unique_lock<std::mutex> lk(self.mtx);
-            self.cv.wait(lk, [this, &self] {
-                return self.hasWork() ||
-                       stopping_.load(std::memory_order_acquire);
-            });
-            if (stopping_.load(std::memory_order_acquire) && !self.hasWork()) {
+            const std::uint64_t snapshot =
+                wakeSeq_.load(std::memory_order_acquire);
+            parkedCount_.fetch_add(1, std::memory_order_acq_rel);
+            {
+                std::unique_lock<std::mutex> lk(self.mtx);
+                self.cv.wait(lk, [this, &self, snapshot] {
+                    return self.hasWork() ||
+                           stopping_.load(std::memory_order_acquire) ||
+                           wakeSeq_.load(std::memory_order_acquire) != snapshot;
+                });
+                if (popOwn(job)) fromOwn = true;
+            }
+            parkedCount_.fetch_sub(1, std::memory_order_acq_rel);
+            if (stopping_.load(std::memory_order_acquire) && !job &&
+                !self.hasWork()) {
                 return;
             }
-            if (popOwn(job)) fromOwn = true;
+            // If wakeSeq_ tripped but our own queue is still empty,
+            // `job` stays null and we fall through to the top of the
+            // outer loop, which re-runs popOwn + trySteal. That's the
+            // path that picks up work pushed to a sibling queue.
         }
 
         if (fromOwn) self.ownPops.fetch_add(1, std::memory_order_relaxed);
