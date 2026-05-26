@@ -42,8 +42,29 @@ public:
 
     void update(threadmaxx::SystemContext& ctx) override;
 
+    /// Hard X/Y clamp applied to every ship after thrust + gravity
+    /// integration. The ship's AABB is kept fully inside the rect
+    /// `[minX + shipHalf, maxX - shipHalf]` in X (same in Y); the
+    /// offending velocity axis is zeroed on contact. The rect is
+    /// passed in directly so an asymmetric cell-grid extent (which
+    /// happens whenever cellsX or cellsY is even) is honored.
+    /// Pass-through default leaves bounds disabled.
+    void setLevelRect(float minX, float minY,
+                      float maxX, float maxY) noexcept {
+        levelMinX_   = minX;
+        levelMinY_   = minY;
+        levelMaxX_   = maxX;
+        levelMaxY_   = maxY;
+        levelActive_ = (maxX > minX) && (maxY > minY);
+    }
+
 private:
     UserComponentIds ids_;
+    float            levelMinX_   = 0.0f;
+    float            levelMinY_   = 0.0f;
+    float            levelMaxX_   = 0.0f;
+    float            levelMaxY_   = 0.0f;
+    bool             levelActive_ = false;
 };
 
 } // namespace tou2d

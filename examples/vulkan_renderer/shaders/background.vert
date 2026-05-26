@@ -1,19 +1,33 @@
 #version 450
 
-// Fullscreen-triangle background pass. No vertex buffer is bound; we
-// derive the three NDC corners + UVs from gl_VertexIndex 0..2.
+// World-space background quad. The two triangles are derived from
+// gl_VertexIndex 0..5. Vertex positions are placed at +/- worldHalfExtent
+// in X/Y at world z = -1.0 (slightly behind the gameplay plane at z=0)
+// then transformed by the host-pushed viewProj so the JPG appears
+// anchored to the world — moving with the camera rather than fixed to
+// the screen.
 //
-// The renderer's default viewport flips Y (height < 0), so NDC y = +1
-// lands at framebuffer y = 0 (top of screen). We pre-flip the V
-// coordinate here so a stb_image-decoded JPEG (row 0 = top of image)
-// samples as UV (0,0) at the top-left pixel.
+// stb_image decodes JPEGs with row 0 at the top of the image. The
+// world's +Y axis points up, so c.y = +1 (world top) samples v = 0
+// (image top row).
+
+layout(push_constant) uniform Push {
+    mat4 viewProj;
+    vec4 worldRect;   // x=centerX, y=centerY, z=halfW, w=halfH
+} pc;
 
 layout(location = 0) out vec2 vUv;
 
+const vec2 kCorners[6] = vec2[6](
+    vec2(-1.0, -1.0), vec2(+1.0, -1.0), vec2(-1.0, +1.0),
+    vec2(-1.0, +1.0), vec2(+1.0, -1.0), vec2(+1.0, +1.0)
+);
+
 void main() {
-    vec2 uv = vec2(float((gl_VertexIndex << 1) & 2),
-                   float(gl_VertexIndex & 2));      // (0,0), (2,0), (0,2)
-    vec2 ndc = uv * 2.0 - vec2(1.0);                // (-1,-1), (3,-1), (-1,3)
-    vUv = vec2(uv.x, 1.0 - uv.y);                   // image-space V (0..1)
-    gl_Position = vec4(ndc, 1.0, 1.0);              // z = 1.0 — sits at far plane
+    vec2 c = kCorners[gl_VertexIndex];
+    vec3 worldPos = vec3(pc.worldRect.x + c.x * pc.worldRect.z,
+                         pc.worldRect.y + c.y * pc.worldRect.w,
+                         -1.0);
+    gl_Position = pc.viewProj * vec4(worldPos, 1.0);
+    vUv = vec2((c.x + 1.0) * 0.5, (1.0 - c.y) * 0.5);
 }

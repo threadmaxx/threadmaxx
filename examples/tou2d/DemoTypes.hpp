@@ -83,15 +83,48 @@ struct TerrainBlock {
 };
 static_assert(sizeof(TerrainBlock) == 8, "TerrainBlock must stay 8 bytes");
 
-/// World-units per terrain tile and the half-extent of the synthetic
-/// arena. M2's synthetic level spawns a (2*kArenaHalfCells + 1) ×
-/// (2*kArenaHalfCells + 1) grid centered on origin; M2.7 replaces it
-/// with the imported grid (its dimensions come from the level config).
+/// In-flight projectile. Spawned by WeaponFireSystem, advanced by
+/// ProjectileSystem (integrates Transform via the entity's Velocity +
+/// decrements `ttlSeconds`), consumed by BulletTerrainSystem on tile
+/// contact. The bullet entity also carries Transform + Velocity +
+/// RenderTag so it renders as a small forward-traveling cube and
+/// participates in the standard movement integration.
 ///
-/// kTileWorldUnits matches the ship's per-side extent (28 in M1) so a
-/// ship occupies roughly one tile — sane scale for first-pass collision
-/// tuning.
-inline constexpr float kTileWorldUnits   = 28.0f;
+/// `weaponKind == 0` is Dumbfire — the one weapon shipped in M3.1.
+/// Other weapon kinds land in M3.2+.
+struct Bullet {
+    float         ttlSeconds = 0.0f;
+    std::uint8_t  damage     = 0;
+    std::uint8_t  weaponKind = 0;
+    std::uint16_t ownerSlot  = 0;
+};
+static_assert(sizeof(Bullet) == 8, "Bullet must stay 8 bytes");
+
+/// Number of source attribute / visual-JPG pixels that map to one
+/// runtime tile along each axis. Picked so a typical 1000×1091
+/// imported level produces ~32×35 tiles — comfortably visible inside
+/// the ~11×7-tile camera viewport without flooding the scene with
+/// cubes. Reducing this gives finer destruction granularity (each
+/// shot punches a smaller hole) at the cost of many more terrain
+/// entities; see TOU_PLAN M3+ for the path toward 1 px/tile.
+inline constexpr std::int32_t kImportedPxPerTile = 32;
+
+/// World units per source image pixel — held INDEPENDENT of
+/// `kImportedPxPerTile` so changing the tile granularity does NOT
+/// change the JPG's on-screen size, the ship's visual scale, the
+/// camera zoom, or the level's playable extent in world units. At
+/// the M3.1 sweet-spot of 32 px/tile this gives kTileWorldUnits =
+/// 28 (matching the original M1 value); halving px/tile halves
+/// kTileWorldUnits proportionally so the cell grid stays at the
+/// same overall world size, just denser.
+inline constexpr float kWorldUnitsPerImagePixel = 0.875f;   // = 28.0 / 32
+
+/// World-units per terrain tile = pxPerTile × wuPerImagePixel.
+/// Derived so the cell grid's world extent stays ≈ constant as
+/// `kImportedPxPerTile` changes.
+inline constexpr float kTileWorldUnits =
+    static_cast<float>(kImportedPxPerTile) * kWorldUnitsPerImagePixel;
+
 inline constexpr int   kArenaHalfCells   = 16;   // synthetic arena is 33×33 cells
 
 /// Ids handed back by `Engine::registerUserComponent`. One per
@@ -102,6 +135,7 @@ struct UserComponentIds {
     threadmaxx::UserComponentId localPlayer;
     threadmaxx::UserComponentId ship;
     threadmaxx::UserComponentId terrainBlock;
+    threadmaxx::UserComponentId bullet;
 };
 
 } // namespace tou2d

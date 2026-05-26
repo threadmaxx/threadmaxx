@@ -25,6 +25,9 @@ add_library(tou2d_core STATIC
     CameraSystem.cpp
     TerrainCollisionSystem.cpp
     LevelLoader.cpp
+    WeaponFireSystem.cpp
+    ProjectileSystem.cpp
+    BulletTerrainSystem.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

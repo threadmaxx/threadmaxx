@@ -141,6 +141,17 @@ public:
                                std::uint32_t                 width,
                                std::uint32_t                 height);
 
+    /// M3.2 — placement of the world-space quad the background texture
+    /// is painted onto. The quad spans
+    /// `[centerX - halfW, centerX + halfW] × [centerY - halfH, centerY + halfH]`
+    /// at world z = -1, sampled via camera 0's viewProj. Center
+    /// defaults to (0, 0) — pass non-zero when the cell grid is not
+    /// symmetric around the world origin (e.g. even cellsX / cellsY
+    /// counts produce a half-tile offset).
+    void setBackgroundWorldExtent(float halfW, float halfH,
+                                  float centerX = 0.0f,
+                                  float centerY = 0.0f) noexcept;
+
     /// §3.11.7b.5 batch 9b.4.b — upload the per-frame bone matrices.
     /// `matrices` is a packed array of `mat4` values, column-major
     /// (Vulkan std140 convention). The renderer copies into the

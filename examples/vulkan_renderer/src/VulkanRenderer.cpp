@@ -116,6 +116,14 @@ struct VulkanRenderer::Impl {
     VkDescriptorPool                    backgroundDescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet                     backgroundDescriptorSet  = VK_NULL_HANDLE;
     threadmaxx::ResourceHandle<Texture> backgroundTexture;
+    /// World-space half-extent the background quad covers in X / Y.
+    /// Set via `setBackgroundWorldExtent`; defaults are degenerate so a
+    /// caller that uploads pixels without setting an extent gets a
+    /// near-invisible quad rather than a blown-up screen-fill.
+    float                               backgroundWorldHalfW  = 1.0f;
+    float                               backgroundWorldHalfH  = 1.0f;
+    float                               backgroundWorldCenterX = 0.0f;
+    float                               backgroundWorldCenterY = 0.0f;
 
     // §3.11.2 batch D2 — per-camera slice into the pre-packed
     // instance buffer. §3.11 batch 9b.2b — the single
@@ -496,6 +504,14 @@ void VulkanRenderer::setBoneMatrices(std::span<const float> matrices) noexcept {
     if (oldHandle != pf.boneBuffer) {
         impl_->updateBoneDescriptor(fi, pf);
     }
+}
+
+void VulkanRenderer::setBackgroundWorldExtent(float halfW, float halfH,
+                                               float centerX, float centerY) noexcept {
+    if (halfW > 0.0f) impl_->backgroundWorldHalfW  = halfW;
+    if (halfH > 0.0f) impl_->backgroundWorldHalfH  = halfH;
+    impl_->backgroundWorldCenterX = centerX;
+    impl_->backgroundWorldCenterY = centerY;
 }
 
 bool VulkanRenderer::setBackgroundFromRgba(std::span<const std::uint8_t> rgba,
@@ -957,20 +973,52 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
     VkRect2D sc = {{0, 0}, ext};
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    // ---- Background (M2.8) -------------------------------------------------
+    // ---- Background (M2.8 → M3.2 world-space) -----------------------------
     //
-    // Single fullscreen-triangle draw with the default (full-screen,
-    // Y-flipped) viewport. Sits at NDC z = 1.0 with depth test/write
-    // off, so subsequent opaque draws overpaint freely. Skipped when
-    // no backdrop has been installed.
+    // World-space textured quad spanning ± `backgroundWorldHalfW/H`,
+    // sampled via `camera 0`'s viewProj. As the camera moves, the
+    // JPG appears anchored to the world — the same image position
+    // tracks the same world position. Depth test/write OFF so it
+    // never occludes anything; opaque draws overpaint freely.
+    //
+    // Skipped when there's no backdrop installed OR no camera (smoke
+    // frames before the first user `addCamera` call).
     if (backgroundDescriptorSet != VK_NULL_HANDLE &&
-        pipes.backgroundPipe()  != VK_NULL_HANDLE) {
+        pipes.backgroundPipe()  != VK_NULL_HANDLE &&
+        !frame.cameras.empty()) {
+        const auto& cam = frame.cameras[0];
+
+        // viewProj = projection * view, column-major. worldRect packs
+        // (centerX, centerY, halfW, halfH) so the vertex shader can
+        // place a non-origin-centered quad without changing layout.
+        struct BackgroundPush {
+            float viewProj[16];
+            float worldRect[4];   // centerX, centerY, halfW, halfH
+        } push = {};
+        for (int col = 0; col < 4; ++col) {
+            for (int row = 0; row < 4; ++row) {
+                float s = 0.0f;
+                for (int k = 0; k < 4; ++k) {
+                    s += cam.projection[static_cast<std::size_t>(k * 4 + row)] *
+                         cam.view[static_cast<std::size_t>(col * 4 + k)];
+                }
+                push.viewProj[col * 4 + row] = s;
+            }
+        }
+        push.worldRect[0] = backgroundWorldCenterX;
+        push.worldRect[1] = backgroundWorldCenterY;
+        push.worldRect[2] = backgroundWorldHalfW;
+        push.worldRect[3] = backgroundWorldHalfH;
+
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           pipes.backgroundPipe());
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipes.backgroundLayout(), /*firstSet=*/0,
                                 1, &backgroundDescriptorSet, 0, nullptr);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
+                           VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
     }
 
     // ---- Multi-camera pass --------------------------------------------------
@@ -1083,7 +1131,16 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
             virt.meshId = inst.meshId;
             virt.materialId = inst.materialId;
             virt.flags = inst.flags;
-            if (inst.meshId < 0 || inst.materialId < 0) {
+            // Per-instance tint via RenderTag.flags. Convention:
+            // high bit (0x80000000) "use tint" + lower 24 bits = packed
+            // RGB (R<<16 | G<<8 | B). flags=0 means "no tint" and falls
+            // back to the legacy default-by-materialId color.
+            if (inst.flags & 0x80000000u) {
+                const float r = static_cast<float>((inst.flags >> 16) & 0xFFu) / 255.0f;
+                const float g = static_cast<float>((inst.flags >>  8) & 0xFFu) / 255.0f;
+                const float b = static_cast<float>( inst.flags        & 0xFFu) / 255.0f;
+                virt.materialOverride.params = {r, g, b, 1.0f};
+            } else if (inst.meshId < 0 || inst.materialId < 0) {
                 virt.materialOverride.params = {0.85f, 0.85f, 0.88f, 1.0f};
             } else {
                 virt.materialOverride.params = {1.0f, 1.0f, 1.0f, 1.0f};

@@ -119,6 +119,13 @@ LoadedLevelInfo loadImportedLevel(threadmaxx::Engine& engine,
     const std::int32_t halfX = cellsX / 2;
     const std::int32_t halfY = cellsY / 2;
 
+    // Solid tiles spawn as collision-only entities (no RenderTag) —
+    // the JPG background is in world space and shows the level's
+    // visual directly. Air cells contribute nothing: the camera shows
+    // the JPG everywhere within the level extent, and destruction
+    // edits the JPG bitmap directly (BulletTerrainSystem fires a
+    // tile-destroyed callback to paint that region black in the
+    // backing CPU buffer, then re-upload).
     for (std::int32_t cy = 0; cy < cellsY; ++cy) {
         for (std::int32_t cx = 0; cx < cellsX; ++cx) {
             const Attribute attr = classifyTile(img, cx, cy);
@@ -137,19 +144,17 @@ LoadedLevelInfo loadImportedLevel(threadmaxx::Engine& engine,
                 static_cast<float>(worldCellY) * kTileWorldUnits,
                 0.0f,
             };
-            b.transform.scale = {kTileWorldUnits * 0.96f,
-                                 kTileWorldUnits * 0.96f,
+            b.transform.scale = {kTileWorldUnits,
+                                 kTileWorldUnits,
                                  kTileWorldUnits};
-            b.renderTag = threadmaxx::RenderTag{0, 1, 0u};
             b.initialMask = threadmaxx::ComponentSet{
                 threadmaxx::Component::Transform,
-                threadmaxx::Component::RenderTag,
             };
             seed.spawnBundle(handle, b);
 
             TerrainBlock blk{};
             blk.attr  = attr;
-            blk.hp    = 0xFF;
+            blk.hp    = 192;
             blk.cellX = static_cast<std::int16_t>(worldCellX);
             blk.cellY = static_cast<std::int16_t>(worldCellY);
             threadmaxx::addUserComponent(seed, terrainBlockId, handle, blk);

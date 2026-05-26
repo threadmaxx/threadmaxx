@@ -674,10 +674,18 @@ bool VulkanPipelines::create(VulkanContext& ctx,
         VK_CHECK(vkCreateDescriptorSetLayout(device, &dsl, nullptr,
                                              &backgroundSetLayout_));
 
+        // Push constant range = mat4 viewProj + vec4 worldHalfExtent
+        // (80 B total, well under the 128 B portable minimum).
+        VkPushConstantRange pcRange = {};
+        pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pcRange.size       = sizeof(float) * (16 + 4);
+
         VkPipelineLayoutCreateInfo lc = {};
         lc.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        lc.setLayoutCount = 1;
-        lc.pSetLayouts    = &backgroundSetLayout_;
+        lc.setLayoutCount         = 1;
+        lc.pSetLayouts            = &backgroundSetLayout_;
+        lc.pushConstantRangeCount = 1;
+        lc.pPushConstantRanges    = &pcRange;
         VK_CHECK(vkCreatePipelineLayout(device, &lc, nullptr,
                                         &backgroundLayout_));
 

@@ -20,12 +20,6 @@ struct LoadedLevelInfo {
     std::int32_t solidCount = 0;  // # tiles spawned (Air tiles skipped)
 };
 
-/// Number of source attribute-TGA pixels that map to one runtime tile
-/// along each axis. Picked so a typical 1000×1091 imported level
-/// produces ~31×34 tiles — comfortably visible inside the ~11×7-tile
-/// camera viewport without flooding the scene with cubes.
-inline constexpr std::int32_t kImportedPxPerTile = 32;
-
 /// Load an imported level directory (produced by `tou2d_import_lev`).
 /// The directory must contain `attribute.tga` — a 24-bit uncompressed
 /// TGA. Optional companions (`visual.jpg`, `parallax.jpg`,

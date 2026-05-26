@@ -86,15 +86,24 @@ void TerrainCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                 const std::int32_t cx = worldToCell(t.position.x);
                 const std::int32_t cy = worldToCell(t.position.y);
 
-                // Sample 3×3 neighbors; iterate multiple times so that
-                // a wedge between two solid tiles is resolved cleanly
-                // (axis-of-least-penetration push-out can swap the
-                // dominant axis after the first resolve).
+                // Sample a (2*range+1)² neighborhood sized to cover
+                // any tile whose AABB can overlap the ship at its
+                // current cell. range = ceil((shipHalf + tileHalf) /
+                // tileSize) — at the M3.1 default (px=32 → tile=28)
+                // this collapses to 3×3; at finer tile granularity it
+                // grows automatically so collision keeps working.
+                // Iterate multiple times so a wedge between two solid
+                // tiles is resolved cleanly (axis-of-least-penetration
+                // push-out can swap the dominant axis after the first
+                // resolve).
+                const int range = static_cast<int>(std::ceil(
+                    (kShipCollisionHalfExtent + kTileWorldUnits * 0.5f) /
+                    kTileWorldUnits));
                 bool anyMoved = false;
                 for (int pass = 0; pass < 2; ++pass) {
                     bool moved = false;
-                    for (int dy = -1; dy <= 1; ++dy) {
-                        for (int dx = -1; dx <= 1; ++dx) {
+                    for (int dy = -range; dy <= range; ++dy) {
+                        for (int dx = -range; dx <= range; ++dx) {
                             const auto it = grid_.find(packCell(cx + dx, cy + dy));
                             if (it == grid_.end()) continue;
                             if (it->second != Attribute::Solid) continue;

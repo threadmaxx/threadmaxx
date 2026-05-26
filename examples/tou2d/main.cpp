@@ -6,6 +6,8 @@
 // turn the ship with arrow keys, watch it fall under gravity.
 
 #include "CameraSystem.hpp"
+#include "DemoTypes.hpp"
+#include "LevelLoader.hpp"
 #include "TouGame.hpp"
 
 #include <threadmaxx_vk/VulkanRenderer.hpp>
@@ -20,12 +22,16 @@
 #define STB_IMAGE_STATIC
 #include <stb/stb_image.h>
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -200,26 +206,139 @@ int main(int argc, char** argv) {
         game.cameraSystem()->setViewport(kInitialWidth, kInitialHeight);
     }
 
-    // M2.8 — install the imported level's visual.jpg as a fullscreen
-    // background. Decoded once via stb_image and uploaded synchronously
-    // to a device-local image; no work happens per-tick. Skipped
-    // silently when there's no level dir (synthetic arena mode) or
-    // when the file is missing / unreadable.
+    // M3.2 — install the imported level's visual.jpg as a WORLD-SPACE
+    // background. The image is positioned to span the level extent
+    // (cellsX*tile × cellsY*tile in world units), so the camera sees
+    // the same image position as it would see a same-world-position
+    // entity. We keep the decoded RGBA on the CPU so the
+    // BulletTerrainSystem destroy callback can paint destroyed tiles
+    // black and re-upload; the JPG IS the destructible terrain.
+    //
+    // Painter is on the stack and outlives the engine loop below — by
+    // the time the loop ends the engine has shut down and the callback
+    // is no longer reachable.
+    struct BackgroundPainter {
+        std::vector<std::uint8_t>          pixels;
+        int                                width    = 0;
+        int                                height   = 0;
+        int                                halfX    = 0;
+        int                                halfY    = 0;
+        threadmaxx_vk::VulkanRenderer*     renderer = nullptr;
+
+        void paintTile(int worldCellX, int worldCellY) {
+            // Inverse of LevelLoader's image -> world mapping:
+            //   worldCellX = imageCx - halfX  =>  imageCx = worldCellX + halfX
+            //   worldCellY = halfY - imageCy  =>  imageCy = halfY - worldCellY
+            const int imgCx = worldCellX + halfX;
+            const int imgCy = halfY     - worldCellY;
+            const int tilePx = tou2d::kImportedPxPerTile;
+            const int px0 = imgCx * tilePx;
+            const int py0 = imgCy * tilePx;
+            for (int dy = 0; dy < tilePx; ++dy) {
+                const int y = py0 + dy;
+                if (y < 0 || y >= height) continue;
+                for (int dx = 0; dx < tilePx; ++dx) {
+                    const int x = px0 + dx;
+                    if (x < 0 || x >= width) continue;
+                    const std::size_t off =
+                        (static_cast<std::size_t>(y) *
+                         static_cast<std::size_t>(width) +
+                         static_cast<std::size_t>(x)) * 4u;
+                    pixels[off + 0] = 0;
+                    pixels[off + 1] = 0;
+                    pixels[off + 2] = 0;
+                    pixels[off + 3] = 255;
+                }
+            }
+            if (renderer) {
+                renderer->setBackgroundFromRgba(
+                    std::span<const std::uint8_t>(pixels.data(), pixels.size()),
+                    static_cast<std::uint32_t>(width),
+                    static_cast<std::uint32_t>(height));
+            }
+        }
+    } bgPainter;
+
     if (!levelDir.empty()) {
         const std::filesystem::path bgPath =
             std::filesystem::path(levelDir) / "visual.jpg";
         int w = 0, h = 0, n = 0;
         if (stbi_uc* pixels = stbi_load(bgPath.string().c_str(),
                                         &w, &h, &n, /*req_comp=*/4)) {
-            const std::size_t byteCount =
-                static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4u;
+            // Pad the image up to (cellsX * pxPerTile) × (cellsY *
+            // pxPerTile) so the texture's pixel grid is EXACT-aligned
+            // with the cell grid. Without this step the JPG's
+            // image-pixel-to-world-pixel ratio drifts cumulatively
+            // across the image (~21 wu by the right edge on the
+            // jungle level), which makes the visible image misalign
+            // with the collision grid (and the destruction paint
+            // lands one tile right of where the user shot). The pad
+            // is opaque black (0,0,0,255) — matches "void / off-level"
+            // intent.
+            const int cellsX  = game.levelCellsX() > 0 ? game.levelCellsX() : 1;
+            const int cellsY  = game.levelCellsY() > 0 ? game.levelCellsY() : 1;
+            const int tilePx  = tou2d::kImportedPxPerTile;
+            const int paddedW = cellsX * tilePx;
+            const int paddedH = cellsY * tilePx;
+            const std::size_t paddedBytes =
+                static_cast<std::size_t>(paddedW) *
+                static_cast<std::size_t>(paddedH) * 4u;
+            bgPainter.pixels.assign(paddedBytes, std::uint8_t{0});
+            for (std::size_t i = 3; i < paddedBytes; i += 4) {
+                bgPainter.pixels[i] = 0xFF;  // opaque
+            }
+            const int copyH = std::min(h, paddedH);
+            const int copyW = std::min(w, paddedW);
+            for (int y = 0; y < copyH; ++y) {
+                const std::uint8_t* srcRow =
+                    pixels + static_cast<std::ptrdiff_t>(y) * w * 4;
+                std::uint8_t* dstRow =
+                    bgPainter.pixels.data() +
+                    static_cast<std::ptrdiff_t>(y) * paddedW * 4;
+                std::memcpy(dstRow, srcRow,
+                            static_cast<std::size_t>(copyW) * 4u);
+            }
+            bgPainter.width    = paddedW;
+            bgPainter.height   = paddedH;
+            bgPainter.halfX    = cellsX / 2;
+            bgPainter.halfY    = cellsY / 2;
+            bgPainter.renderer = renderer.get();
+
             const bool ok = renderer->setBackgroundFromRgba(
-                std::span<const std::uint8_t>(pixels, byteCount),
-                static_cast<std::uint32_t>(w),
-                static_cast<std::uint32_t>(h));
+                std::span<const std::uint8_t>(bgPainter.pixels.data(),
+                                              bgPainter.pixels.size()),
+                static_cast<std::uint32_t>(paddedW),
+                static_cast<std::uint32_t>(paddedH));
+
+            // World-space placement of the JPG quad — matches the cell
+            // grid's actual extent. For LevelLoader's mapping
+            //   worldCellX = imgCx - halfX,  worldCellY = halfY - imgCy
+            // (halfX/Y = cellsX/Y / 2, integer division) the cells run
+            //   X: [-halfX, cellsX - halfX - 1]
+            //   Y: [-(cellsY - halfY - 1), halfY]
+            // For even cellsX, X is asymmetric → center at -tile/2; for
+            // even cellsY, Y is asymmetric → center at +tile/2.
+            const float tile  = tou2d::kTileWorldUnits;
+            const int   halfX = cellsX / 2;
+            const int   halfY = cellsY / 2;
+            const float minWorldX = -static_cast<float>(halfX) * tile - tile * 0.5f;
+            const float maxWorldX = static_cast<float>(cellsX - halfX - 1) * tile + tile * 0.5f;
+            const float minWorldY = -static_cast<float>(cellsY - halfY - 1) * tile - tile * 0.5f;
+            const float maxWorldY = static_cast<float>(halfY) * tile + tile * 0.5f;
+            renderer->setBackgroundWorldExtent(
+                (maxWorldX - minWorldX) * 0.5f,
+                (maxWorldY - minWorldY) * 0.5f,
+                (maxWorldX + minWorldX) * 0.5f,
+                (maxWorldY + minWorldY) * 0.5f);
+
+            game.setTileDestroyCallback(
+                [&bgPainter](int cx, int cy) { bgPainter.paintTile(cx, cy); });
+
             stbi_image_free(pixels);
-            std::printf("[tou2d] background %s: %dx%d (channels=%d) installed=%d\n",
-                        bgPath.string().c_str(), w, h, n, int(ok));
+            std::printf("[tou2d] background %s: %dx%d -> padded %dx%d "
+                        "(channels=%d) installed=%d\n",
+                        bgPath.string().c_str(), w, h, paddedW, paddedH,
+                        n, int(ok));
         } else {
             std::fprintf(stderr,
                 "[tou2d] background %s: stbi_load failed (%s)\n",
@@ -231,6 +350,14 @@ int main(int argc, char** argv) {
                 maxTicks ? "bounded" : "unbounded");
     std::printf("[tou2d] controls: arrow keys to thrust/turn, gravity is on\n");
 
+    // Frame pacing — pin the loop to 60 Hz. Engine integrates in fixed
+    // 1/60 s steps internally, so wall-clock pacing here is what
+    // determines visible speed. Bounded runs (`maxTicks` set, used by
+    // smoke tests) skip the sleep so they finish promptly.
+    using clock = std::chrono::steady_clock;
+    constexpr auto kFrameInterval = std::chrono::nanoseconds(16'666'667);  // 1/60 s
+    auto nextFrame = clock::now() + kFrameInterval;
+
     std::uint64_t tick = 0;
     while (!glfwWindowShouldClose(window) && !engine.quitRequested()) {
         glfwPollEvents();
@@ -240,6 +367,14 @@ int main(int argc, char** argv) {
             std::printf("[tou2d] reached %llu ticks; exiting\n",
                         static_cast<unsigned long long>(maxTicks));
             break;
+        }
+        if (!maxTicks) {
+            std::this_thread::sleep_until(nextFrame);
+            nextFrame += kFrameInterval;
+            // If we fell behind by more than one frame (e.g. window
+            // dragged), resync rather than playing catch-up.
+            const auto now = clock::now();
+            if (nextFrame < now) nextFrame = now + kFrameInterval;
         }
     }
 

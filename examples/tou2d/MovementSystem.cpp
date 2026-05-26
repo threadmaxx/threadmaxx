@@ -100,6 +100,22 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
                 t.position.x += v.linear.x * dt;
                 t.position.y += v.linear.y * dt;
 
+                // ---- Level bounds clamp ------------------------------------
+                // Hard wall at the level extent. Ship-half = 14 (visual
+                // scale 28 / 2). Zero the velocity in the clamped axis
+                // so the ship sticks at the edge rather than skating.
+                if (levelActive_) {
+                    constexpr float shipHalf = 14.0f;
+                    const float minX = levelMinX_ + shipHalf;
+                    const float maxX = levelMaxX_ - shipHalf;
+                    if (t.position.x < minX) { t.position.x = minX; v.linear.x = 0.0f; }
+                    if (t.position.x > maxX) { t.position.x = maxX; v.linear.x = 0.0f; }
+                    const float minY = levelMinY_ + shipHalf;
+                    const float maxY = levelMaxY_ - shipHalf;
+                    if (t.position.y < minY) { t.position.y = minY; v.linear.y = 0.0f; }
+                    if (t.position.y > maxY) { t.position.y = maxY; v.linear.y = 0.0f; }
+                }
+
                 cb.setVelocity(entities[row], v);
                 cb.setTransform(entities[row], t);
             }
