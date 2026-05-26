@@ -1,7 +1,5 @@
 #include "BulletTerrainSystem.hpp"
 
-#include "TerrainCollisionSystem.hpp"
-
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Query.hpp>
 #include <threadmaxx/World.hpp>
@@ -19,52 +17,32 @@ inline std::int32_t worldToCell(float wx) noexcept {
 
 } // namespace
 
-BulletTerrainSystem::BulletTerrainSystem(UserComponentIds        ids,
-                                         TerrainCollisionSystem* collision) noexcept
-    : ids_(ids), collision_(collision) {}
-
-void BulletTerrainSystem::preStep(threadmaxx::SystemContext& ctx) {
-    if (!dirty_) return;
-
-    const auto idsTb = ids_.terrainBlock;
-    if (!idsTb.valid()) return;
-
-    tileIndex_.clear();
-
-    const auto& view = ctx.worldView();
-    const auto chunkPtrs = view.chunks();
-    for (std::size_t ci = 0, n = chunkPtrs.size(); ci < n; ++ci) {
-        const auto* chunk = chunkPtrs[ci];
-        if (!chunk) continue;
-        if (!chunk->mask.has(idsTb.componentBit())) continue;
-
-        const auto tbSpan   = threadmaxx::user::chunkSpan<TerrainBlock>(*chunk, idsTb);
-        const auto entities = chunk->entities;
-        for (std::size_t row = 0, m = entities.size(); row < m; ++row) {
-            const auto& blk = tbSpan[row];
-            tileIndex_[packCell(blk.cellX, blk.cellY)] =
-                TileEntry{entities[row], ci, row};
-        }
-    }
-
-    dirty_ = false;
-}
+BulletTerrainSystem::BulletTerrainSystem(UserComponentIds ids,
+                                         TerrainGrid*     grid) noexcept
+    : ids_(ids), grid_(grid) {}
 
 void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
-    const auto idsBl = ids_.bullet;
-    const auto idsTb = ids_.terrainBlock;
-    if (!idsBl.valid() || !idsTb.valid()) return;
-    if (tileIndex_.empty())                return;
+    const auto idsBl   = ids_.bullet;
+    const auto idsShip = ids_.ship;
+    if (!idsBl.valid()) return;
+    if (!grid_)         return;
 
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
+
+        // First pass: tally up per-owner scores so we can credit kills
+        // back to the shooter even though ships live in different
+        // chunks. Small flat array keyed by ownerSlot (0..3 + bots…).
+        // M3.3 ships 4 local players; sized for that.
+        std::array<std::uint32_t, 16> scoreDelta{};
+
         for (const auto* chunkPtr : view.chunks()) {
             if (!chunkPtr) continue;
             const auto& chunk = *chunkPtr;
             if (!chunk.mask.has(idsBl.componentBit()))             continue;
             if (!chunk.mask.has(threadmaxx::Component::Transform)) continue;
 
-            const auto blSpan      = threadmaxx::user::chunkSpan<Bullet>(chunk, idsBl);
+            const auto blSpan = threadmaxx::user::chunkSpan<Bullet>(chunk, idsBl);
             const auto entities    = chunk.entities;
             const auto& positions  = chunk.transforms;
             const std::size_t n    = entities.size();
@@ -74,43 +52,57 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
                 const std::int32_t cx = worldToCell(bp.x);
                 const std::int32_t cy = worldToCell(bp.y);
 
-                const auto it = tileIndex_.find(packCell(cx, cy));
-                if (it == tileIndex_.end()) continue;
+                if (!grid_->inBounds(cx, cy)) continue;
+                const std::uint8_t cellHp = grid_->hpAt(cx, cy);
+                if (cellHp == 0) continue;  // Air — bullet flies on
 
-                const auto& entry = it->second;
-                const auto* tileChunk = view.chunks()[entry.chunkIndex];
-                if (!tileChunk) continue;
+                if (grid_->attrAt(cx, cy) != Attribute::Solid) continue;
 
-                const auto tbSpan =
-                    threadmaxx::user::chunkSpan<TerrainBlock>(*tileChunk, idsTb);
-                if (entry.rowInChunk >= tbSpan.size()) continue;
-                TerrainBlock blk = tbSpan[entry.rowInChunk];
-                if (blk.attr != Attribute::Solid) continue;
-
-                // Bedrock — bullet stops, tile survives. Bullet still
-                // gets consumed so the player gets visual feedback.
-                if (blk.hp == 0xFF) {
+                // Bedrock — bullet stops, tile survives.
+                if (cellHp == 0xFF) {
                     cb.destroy(entities[row]);
                     continue;
                 }
 
-                const std::uint8_t dmg = blSpan[row].damage;
-                if (blk.hp <= dmg) {
-                    // Tile destroyed. Paint that cell black in the
-                    // backing JPG bitmap (host wires this), drop the
-                    // collision entity, and mark our cache + the
-                    // ship-collision grid stale so both rebuild on
-                    // next tick.
-                    cb.destroy(entry.handle);
-                    if (destroyCb_) destroyCb_(blk.cellX, blk.cellY);
-                    dirty_ = true;
-                    if (collision_) collision_->invalidate();
+                const Bullet& blt = blSpan[row];
+                const std::uint8_t dmg = blt.damage;
+                if (cellHp <= dmg) {
+                    grid_->clear(cx, cy);
+                    if (destroyCb_) destroyCb_(cx, cy);
+                    if (blt.ownerSlot < scoreDelta.size()) {
+                        scoreDelta[blt.ownerSlot] += 1;
+                    }
                 } else {
-                    blk.hp = static_cast<std::uint8_t>(blk.hp - dmg);
-                    threadmaxx::addUserComponent(cb, idsTb, entry.handle, blk);
+                    grid_->hp[grid_->indexOf(cx, cy)] =
+                        static_cast<std::uint8_t>(cellHp - dmg);
                 }
 
                 cb.destroy(entities[row]);
+            }
+        }
+
+        // Second pass: walk ship chunks; credit any score deltas
+        // accumulated above to the matching LocalPlayer slot. Cheap
+        // (≤4 ships), and keeps the bullet loop clear of ship lookups.
+        if (idsShip.valid()) {
+            for (const auto* chunkPtr : view.chunks()) {
+                if (!chunkPtr) continue;
+                const auto& chunk = *chunkPtr;
+                if (!chunk.mask.has(idsShip.componentBit()))                   continue;
+                if (!chunk.mask.has(ids_.localPlayer.componentBit()))          continue;
+
+                const auto shipSpan = threadmaxx::user::chunkSpan<Ship>(chunk, idsShip);
+                const auto lpSpan   = threadmaxx::user::chunkSpan<LocalPlayer>(
+                    chunk, ids_.localPlayer);
+                const auto entities = chunk.entities;
+                for (std::size_t row = 0, m = entities.size(); row < m; ++row) {
+                    const std::uint8_t slot = lpSpan[row].slot;
+                    if (slot >= scoreDelta.size())   continue;
+                    if (scoreDelta[slot] == 0)       continue;
+                    Ship ship = shipSpan[row];
+                    ship.score += scoreDelta[slot];
+                    threadmaxx::addUserComponent(cb, idsShip, entities[row], ship);
+                }
             }
         }
     });

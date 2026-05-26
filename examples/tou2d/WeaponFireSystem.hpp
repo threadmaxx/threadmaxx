@@ -45,10 +45,11 @@ public:
 private:
     UserComponentIds                                ids_;
     /// Per-ship cooldown keyed by EntityHandle.index — stores the tick
-    /// at which the ship last fired. A small std::unordered_map is fine
-    /// at M3.1 scale (≤4 ships); revisit if multiplayer-with-bots
-    /// pushes this hot enough to warrant a flat-vector lookup.
+    /// at which the ship last fired the named weapon. Separate maps so
+    /// Dumbfire and Spread cooldowns don't share a slot (firing one
+    /// doesn't block the other).
     std::unordered_map<std::uint32_t, std::uint64_t> lastFireTick_;
+    std::unordered_map<std::uint32_t, std::uint64_t> lastSpreadTick_;
 };
 
 } // namespace tou2d

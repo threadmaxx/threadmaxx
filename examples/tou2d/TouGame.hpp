@@ -5,6 +5,7 @@
 #include <threadmaxx/Game.hpp>
 #include <threadmaxx/Handles.hpp>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -17,23 +18,23 @@ class BulletTerrainSystem;
 class CameraSystem;
 class TerrainCollisionSystem;
 
-/// IGame implementation for the M1 thrust-loop proof + M2 synthetic
-/// arena.
+/// IGame implementation for the tou2d demo.
 ///
 /// onSetup:
-///   * Registers user components.
-///   * Registers InputSystem (preStep), MovementSystem, CameraSystem.
-///   * Spawns one ship at world origin with LocalPlayer slot=0,
-///     Transform + Velocity + (initially zero) PlayerInput + a meshId
-///     that the renderer fills with its default unit cube.
-///   * Spawns a 33×33 synthetic arena (perimeter walls + floor).
+///   * Registers user components (PlayerInput, LocalPlayer, Ship,
+///     Bullet — no per-tile entity in M3.3+; terrain lives in
+///     `TerrainGrid grid_`).
+///   * Registers Input / Movement / Collision / WeaponFire /
+///     Projectile / BulletTerrain / ShipLifecycle / Camera.
+///   * Populates `grid_` from either an imported `.lev` directory or
+///     the synthetic arena fallback.
+///   * Spawns 4 ships, one per LocalPlayer slot (P2-P4 share the
+///     keyboard; physically present even when nobody's holding the
+///     keys — they just sit at their spawn point).
 class TouGame : public threadmaxx::IGame {
 public:
     explicit TouGame(GLFWwindow* window) noexcept;
 
-    /// Optional level directory (produced by `tou2d_import_lev`). If
-    /// set BEFORE `Engine::initialize`, onSetup loads the imported grid
-    /// instead of spawning the synthetic arena.
     void setLevelDir(std::filesystem::path p) noexcept { levelDir_ = std::move(p); }
 
     void onSetup(threadmaxx::Engine& engine,
@@ -42,24 +43,16 @@ public:
     void onTeardown(threadmaxx::Engine& engine,
                     threadmaxx::World&  world) override;
 
-    /// Borrowed; set after Engine::initialize so the host can forward
-    /// resize events to the camera. CameraSystem owns the viewport.
     CameraSystem* cameraSystem() noexcept { return camera_; }
 
     /// Handle of P1's ship — host-side smoke tests use this to verify
-    /// final position post-shutdown. Valid only between onSetup and
-    /// onTeardown.
-    threadmaxx::EntityHandle playerShip() const noexcept { return playerShip_; }
+    /// final position. Valid only between onSetup and onTeardown.
+    threadmaxx::EntityHandle playerShip() const noexcept { return playerShips_[0]; }
 
-    /// Loaded-level dimensions in tile units, populated during onSetup
-    /// if a `--level` directory was provided. Zero when the synthetic
-    /// arena fallback ran instead.
     std::int32_t levelCellsX() const noexcept { return cellsX_; }
     std::int32_t levelCellsY() const noexcept { return cellsY_; }
 
-    /// Fires once per destroyed tile (BulletTerrainSystem-driven).
-    /// Host wires this to the background-JPG painter. Must be called
-    /// AFTER `Engine::initialize` so the system is constructed.
+    /// Fires once per destroyed tile from either destruction path.
     using TileDestroyCallback =
         std::function<void(std::int32_t cellX, std::int32_t cellY)>;
     void setTileDestroyCallback(TileDestroyCallback cb);
@@ -70,10 +63,11 @@ private:
     CameraSystem*            camera_         = nullptr;   // borrowed
     BulletTerrainSystem*     bulletTerrain_  = nullptr;   // borrowed
     TerrainCollisionSystem*  collision_      = nullptr;   // borrowed
-    threadmaxx::EntityHandle playerShip_     = {};
-    std::filesystem::path    levelDir_;   // empty -> synthetic arena
+    std::array<threadmaxx::EntityHandle, 4> playerShips_{};
+    std::filesystem::path    levelDir_;
     std::int32_t             cellsX_         = 0;
     std::int32_t             cellsY_         = 0;
+    TerrainGrid              grid_;
 };
 
 } // namespace tou2d

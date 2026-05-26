@@ -53,6 +53,9 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
             if (!chunk.mask.has(threadmaxx::Component::Transform))   continue;
             if (!chunk.mask.has(threadmaxx::Component::Velocity))    continue;
             if (!chunk.mask.has(idsPi.componentBit()))               continue;
+            // Dead/respawning ships sit out — DisabledTag splits the
+            // archetype chunk, so this check is a single mask test.
+            if (chunk.mask.has(threadmaxx::Component::DisabledTag))  continue;
 
             const auto piSpan = threadmaxx::user::chunkSpan<PlayerInput>(chunk, idsPi);
             const auto entities  = chunk.entities;
