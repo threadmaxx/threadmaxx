@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace threadmaxx_vk {
@@ -26,6 +27,18 @@ public:
     /// Create the fallback 1x1 white texture. Idempotent — a second call
     /// replaces the previous resident copy.
     threadmaxx::ResourceHandle<Texture> createFallback(threadmaxx::Engine& engine);
+
+    /// M2.8 — upload an RGBA8 (R, G, B, A; 4 bytes/pixel) buffer to a
+    /// device-local, OPTIMAL-tiling, SAMPLED_BIT image and return a
+    /// refcounted registry handle. Blocks on a one-shot command buffer
+    /// + fence so the texture is GPU-resident on return. Returns an
+    /// empty handle on input validation failure (mismatched span size
+    /// or zero extent).
+    threadmaxx::ResourceHandle<Texture> createFromRgba(
+        threadmaxx::Engine&             engine,
+        std::uint32_t                   width,
+        std::uint32_t                   height,
+        std::span<const std::uint8_t>   rgba);
 
     /// See @ref MeshLoader::releaseGpuResources — called by the renderer
     /// before the Vulkan device is destroyed.

@@ -109,6 +109,14 @@ struct VulkanRenderer::Impl {
     // below; this pool just owns the allocation.
     VkDescriptorPool boneDescriptorPool = VK_NULL_HANDLE;
 
+    // M2.8 — single descriptor set + pool for the background combined-
+    // image-sampler. Allocated lazily on first `setBackgroundFromRgba`
+    // and reused across calls (the texture handle behind it changes,
+    // the set object is rewritten via `vkUpdateDescriptorSets`).
+    VkDescriptorPool                    backgroundDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet                     backgroundDescriptorSet  = VK_NULL_HANDLE;
+    threadmaxx::ResourceHandle<Texture> backgroundTexture;
+
     // §3.11.2 batch D2 — per-camera slice into the pre-packed
     // instance buffer. §3.11 batch 9b.2b — the single
     // (offset, count) pair is now a list of per-meshId sub-slices.
@@ -379,6 +387,18 @@ void VulkanRenderer::shutdown() {
     impl_->meshSlots.clear();
     impl_->skinnedMeshSlots.clear();
     impl_->destroyBoneDescriptorResources();
+
+    // M2.8 — tear down the background descriptor pool and drop the
+    // backdrop texture handle BEFORE the texture loader's
+    // `releaseGpuResources` runs.
+    impl_->backgroundTexture.reset();
+    if (impl_->backgroundDescriptorPool) {
+        vkDestroyDescriptorPool(impl_->ctx.device(),
+                                impl_->backgroundDescriptorPool, nullptr);
+        impl_->backgroundDescriptorPool = VK_NULL_HANDLE;
+        impl_->backgroundDescriptorSet  = VK_NULL_HANDLE;
+    }
+
     impl_->cubeHandle.reset();
     impl_->destroyPerFrame();
     impl_->pipes.destroy(impl_->ctx);
@@ -476,6 +496,77 @@ void VulkanRenderer::setBoneMatrices(std::span<const float> matrices) noexcept {
     if (oldHandle != pf.boneBuffer) {
         impl_->updateBoneDescriptor(fi, pf);
     }
+}
+
+bool VulkanRenderer::setBackgroundFromRgba(std::span<const std::uint8_t> rgba,
+                                           std::uint32_t                 width,
+                                           std::uint32_t                 height) {
+    if (!impl_->textureLoader || !impl_->engine) return false;
+
+    // ---- Empty → clear the backdrop ---------------------------------------
+    if (rgba.empty() || width == 0 || height == 0) {
+        if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+        impl_->backgroundTexture.reset();
+        impl_->backgroundDescriptorSet = VK_NULL_HANDLE;
+        // Pool stays — cheap to reuse on the next install.
+        return true;
+    }
+
+    // ---- 1. Upload texture ----------------------------------------------
+    auto handle = impl_->textureLoader->createFromRgba(*impl_->engine,
+                                                       width, height, rgba);
+    if (!handle.valid()) return false;
+
+    // ---- 2. Ensure a descriptor pool exists ------------------------------
+    if (impl_->backgroundDescriptorPool == VK_NULL_HANDLE) {
+        VkDescriptorPoolSize poolSize = {};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pci = {};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets       = 1;
+        pci.poolSizeCount = 1;
+        pci.pPoolSizes    = &poolSize;
+        VK_CHECK(vkCreateDescriptorPool(impl_->ctx.device(), &pci, nullptr,
+                                        &impl_->backgroundDescriptorPool));
+    }
+
+    // ---- 3. Allocate the set once; rewrite contents per install ----------
+    if (impl_->backgroundDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetLayout layout = impl_->pipes.backgroundSetLayout();
+        VkDescriptorSetAllocateInfo ai = {};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool     = impl_->backgroundDescriptorPool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts        = &layout;
+        VK_CHECK(vkAllocateDescriptorSets(impl_->ctx.device(), &ai,
+                                          &impl_->backgroundDescriptorSet));
+    }
+
+    // The set may currently be in use by an in-flight frame — block
+    // until the GPU is idle before we rewrite it. setBackgroundFromRgba
+    // is a level-load operation; the stall is fine.
+    if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+
+    const Texture* tex = handle.get();
+    VkDescriptorImageInfo ii = {};
+    ii.sampler     = tex->sampler;
+    ii.imageView   = tex->view;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet w = {};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = impl_->backgroundDescriptorSet;
+    w.dstBinding      = 0;
+    w.descriptorCount = 1;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo      = &ii;
+    vkUpdateDescriptorSets(impl_->ctx.device(), 1, &w, 0, nullptr);
+
+    // Replace the pin AFTER the descriptor write completes so the
+    // previous backdrop's image view stays alive long enough for the
+    // device-wait above. The move drops the old handle's refcount.
+    impl_->backgroundTexture = std::move(handle);
+    return true;
 }
 
 void VulkanRenderer::reloadShaders() {
@@ -865,6 +956,22 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
     vkCmdSetViewport(cmd, 0, 1, &vp);
     VkRect2D sc = {{0, 0}, ext};
     vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    // ---- Background (M2.8) -------------------------------------------------
+    //
+    // Single fullscreen-triangle draw with the default (full-screen,
+    // Y-flipped) viewport. Sits at NDC z = 1.0 with depth test/write
+    // off, so subsequent opaque draws overpaint freely. Skipped when
+    // no backdrop has been installed.
+    if (backgroundDescriptorSet != VK_NULL_HANDLE &&
+        pipes.backgroundPipe()  != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipes.backgroundPipe());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipes.backgroundLayout(), /*firstSet=*/0,
+                                1, &backgroundDescriptorSet, 0, nullptr);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
 
     // ---- Multi-camera pass --------------------------------------------------
     auto tPackStart = profileEnabled ? std::chrono::steady_clock::now()

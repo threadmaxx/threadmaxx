@@ -26,6 +26,8 @@ set(VK_RENDERER_SHADERS
     debug_line.frag
     debug_point.vert
     debug_point.frag
+    background.vert
+    background.frag
 )
 
 set(VK_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)

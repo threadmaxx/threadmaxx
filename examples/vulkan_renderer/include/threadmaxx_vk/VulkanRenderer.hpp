@@ -125,6 +125,22 @@ public:
         std::span<const float>         vertices,
         std::span<const std::uint16_t> indices) noexcept;
 
+    /// M2.8 — install a fullscreen background texture rendered behind
+    /// all opaque + debug draws. `rgba` is tightly-packed RGBA8
+    /// (R,G,B,A; 4 bytes per pixel; row-major; row 0 = top of the
+    /// image — i.e. stb_image's default decode order). Blocks on a
+    /// `vkDeviceWaitIdle` + GPU upload + fence; safe to call between
+    /// frames at level-load time. Passing `rgba.empty()` (or zero
+    /// extent) clears the background. Returns true on success.
+    ///
+    /// Subsequent calls release the previous backdrop's refcount
+    /// before installing the new one. Resampler / view / image stay
+    /// alive as long as the renderer's `ResourceHandle<Texture>`
+    /// pins them; freed at `shutdown()` via the loader.
+    bool setBackgroundFromRgba(std::span<const std::uint8_t> rgba,
+                               std::uint32_t                 width,
+                               std::uint32_t                 height);
+
     /// §3.11.7b.5 batch 9b.4.b — upload the per-frame bone matrices.
     /// `matrices` is a packed array of `mat4` values, column-major
     /// (Vulkan std140 convention). The renderer copies into the

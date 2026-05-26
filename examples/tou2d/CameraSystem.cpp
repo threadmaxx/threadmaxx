@@ -10,20 +10,21 @@ namespace tou2d {
 
 namespace {
 
-/// Build a column-major right-handed orthographic projection matrix in
-/// GL-style NDC z ∈ [-1, 1]. The Vulkan renderer in the project flips
-/// Y at the viewport stage and treats GL-form perspective matrices as
-/// input — same convention applies for ortho.
+/// Build a column-major right-handed orthographic projection matrix
+/// targeting Vulkan NDC z ∈ [0, 1] (CLAUDE.md "Projection MUST be
+/// Vulkan-style"). With camera looking down -Z, a point at eye-space
+/// z' = -n maps to NDC z=0, z' = -f maps to NDC z=1. Mirrors the
+/// `buildTopDownOrtho` form in `examples/rpg_demo/CameraSystem.cpp`.
 std::array<float, 16> buildOrthoProj(float halfW, float halfH, float n, float f) noexcept {
     const float invHW = 1.0f / halfW;
     const float invHH = 1.0f / halfH;
-    const float invNF = 1.0f / (n - f);
+    const float nf    = 1.0f / (n - f);
     // Column-major std::array<float, 16> — index = col*4 + row.
     return {
-        invHW,  0.0f,   0.0f,            0.0f,
-        0.0f,   invHH,  0.0f,            0.0f,
-        0.0f,   0.0f,   2.0f * invNF,    0.0f,
-        0.0f,   0.0f,   (n + f) * invNF, 1.0f,
+        invHW,  0.0f,   0.0f,     0.0f,
+        0.0f,   invHH,  0.0f,     0.0f,
+        0.0f,   0.0f,   nf,       0.0f,
+        0.0f,   0.0f,   n * nf,   1.0f,
     };
 }
 

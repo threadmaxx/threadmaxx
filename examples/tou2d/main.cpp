@@ -16,9 +16,16 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_STATIC
+#include <stb/stb_image.h>
+
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
@@ -191,6 +198,33 @@ int main(int argc, char** argv) {
     // having ever fired, so it still holds the constructor default.
     if (game.cameraSystem()) {
         game.cameraSystem()->setViewport(kInitialWidth, kInitialHeight);
+    }
+
+    // M2.8 — install the imported level's visual.jpg as a fullscreen
+    // background. Decoded once via stb_image and uploaded synchronously
+    // to a device-local image; no work happens per-tick. Skipped
+    // silently when there's no level dir (synthetic arena mode) or
+    // when the file is missing / unreadable.
+    if (!levelDir.empty()) {
+        const std::filesystem::path bgPath =
+            std::filesystem::path(levelDir) / "visual.jpg";
+        int w = 0, h = 0, n = 0;
+        if (stbi_uc* pixels = stbi_load(bgPath.string().c_str(),
+                                        &w, &h, &n, /*req_comp=*/4)) {
+            const std::size_t byteCount =
+                static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4u;
+            const bool ok = renderer->setBackgroundFromRgba(
+                std::span<const std::uint8_t>(pixels, byteCount),
+                static_cast<std::uint32_t>(w),
+                static_cast<std::uint32_t>(h));
+            stbi_image_free(pixels);
+            std::printf("[tou2d] background %s: %dx%d (channels=%d) installed=%d\n",
+                        bgPath.string().c_str(), w, h, n, int(ok));
+        } else {
+            std::fprintf(stderr,
+                "[tou2d] background %s: stbi_load failed (%s)\n",
+                bgPath.string().c_str(), stbi_failure_reason());
+        }
     }
 
     std::printf("[tou2d] running %s — Ctrl-C / window close to exit\n",

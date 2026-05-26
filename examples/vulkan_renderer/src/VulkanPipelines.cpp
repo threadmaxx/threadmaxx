@@ -12,6 +12,8 @@
 #include "debug_line_frag_spv.hpp"
 #include "debug_point_vert_spv.hpp"
 #include "debug_point_frag_spv.hpp"
+#include "background_vert_spv.hpp"
+#include "background_frag_spv.hpp"
 
 #include <array>
 #include <cstdio>
@@ -53,6 +55,8 @@ std::filesystem::path shaderPathFor(PipelineShaderSlot slot) {
         case PipelineShaderSlot::DebugLineFrag:     file = "debug_line.frag.spv";     break;
         case PipelineShaderSlot::DebugPointVert:    file = "debug_point.vert.spv";    break;
         case PipelineShaderSlot::DebugPointFrag:    file = "debug_point.frag.spv";    break;
+        case PipelineShaderSlot::BackgroundVert:    file = "background.vert.spv";     break;
+        case PipelineShaderSlot::BackgroundFrag:    file = "background.frag.spv";     break;
         case PipelineShaderSlot::Count:             file = "<invalid>";               break;
     }
     return std::filesystem::path(THREADMAXX_VK_SHADER_DIR) / file;
@@ -104,6 +108,8 @@ std::span<const std::uint32_t> embeddedSpvFor(PipelineShaderSlot slot) {
         case PipelineShaderSlot::DebugLineFrag:     return k_debug_line_frag_spv;
         case PipelineShaderSlot::DebugPointVert:    return k_debug_point_vert_spv;
         case PipelineShaderSlot::DebugPointFrag:    return k_debug_point_frag_spv;
+        case PipelineShaderSlot::BackgroundVert:    return k_background_vert_spv;
+        case PipelineShaderSlot::BackgroundFrag:    return k_background_frag_spv;
         case PipelineShaderSlot::Count: break;
     }
     return {};
@@ -467,6 +473,76 @@ VkPipeline VulkanPipelines::buildOpaqueSkinnedPipeline(VkDevice device,
     return pipe;
 }
 
+VkPipeline VulkanPipelines::buildBackgroundPipeline(VkDevice device,
+                                                    VkShaderModule vs,
+                                                    VkShaderModule fs,
+                                                    VkFormat colorFormat,
+                                                    VkFormat depthFormat) {
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs; stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs; stages[1].pName = "main";
+
+    // Vertex pull — the fullscreen-triangle vert derives positions
+    // from gl_VertexIndex, so no buffers, no attributes, no bindings.
+    VkPipelineVertexInputStateCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo ia = {};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineRasterizationStateCreateInfo rs;
+    VkPipelineMultisampleStateCreateInfo   ms;
+    VkPipelineColorBlendAttachmentState    cb;
+    VkPipelineColorBlendStateCreateInfo    cbs;
+    VkPipelineViewportStateCreateInfo      vp;
+    fillStandardState(rs, ms, cb, cbs, vp);
+    rs.cullMode = VK_CULL_MODE_NONE;   // triangle's CCW vs CW depends on viewport Y-flip; skip the dance.
+
+    // Depth test off, write off — the background sits behind everything
+    // and must not occlude (or be occluded by) the cleared depth.
+    VkPipelineDepthStencilStateCreateInfo ds = {};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+    ds.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn = {};
+    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates = dynStates;
+
+    VkPipelineRenderingCreateInfo rci = {};
+    rci.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rci.colorAttachmentCount = 1;
+    rci.pColorAttachmentFormats = &colorFormat;
+    rci.depthAttachmentFormat = depthFormat;
+
+    VkGraphicsPipelineCreateInfo gc = {};
+    gc.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gc.pNext = &rci;
+    gc.stageCount = static_cast<std::uint32_t>(stages.size());
+    gc.pStages = stages.data();
+    gc.pVertexInputState = &vi;
+    gc.pInputAssemblyState = &ia;
+    gc.pViewportState = &vp;
+    gc.pRasterizationState = &rs;
+    gc.pMultisampleState = &ms;
+    gc.pDepthStencilState = &ds;
+    gc.pColorBlendState = &cbs;
+    gc.pDynamicState = &dyn;
+    gc.layout = backgroundLayout_;
+
+    VkPipeline pipe = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gc, nullptr, &pipe));
+    return pipe;
+}
+
 bool VulkanPipelines::create(VulkanContext& ctx,
                              VkFormat colorFormat,
                              VkFormat depthFormat,
@@ -578,6 +654,43 @@ bool VulkanPipelines::create(VulkanContext& ctx,
         vkDestroyShaderModule(device, fs, nullptr);
     }
 
+    // ----------------- Background pipeline -----------------------------
+    //
+    // M2.8 — single combined-image-sampler at set 0, binding 0. The
+    // descriptor pool + per-instance set allocation lives in the
+    // renderer's `setBackgroundFromRgba` path; here we just stand up
+    // the layout + pipeline so they're ready when game code calls in.
+    {
+        VkDescriptorSetLayoutBinding texBinding = {};
+        texBinding.binding         = 0;
+        texBinding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        texBinding.descriptorCount = 1;
+        texBinding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo dsl = {};
+        dsl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dsl.bindingCount = 1;
+        dsl.pBindings    = &texBinding;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &dsl, nullptr,
+                                             &backgroundSetLayout_));
+
+        VkPipelineLayoutCreateInfo lc = {};
+        lc.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lc.setLayoutCount = 1;
+        lc.pSetLayouts    = &backgroundSetLayout_;
+        VK_CHECK(vkCreatePipelineLayout(device, &lc, nullptr,
+                                        &backgroundLayout_));
+
+        VkShaderModule vs = makeShader(device,
+            embeddedSpvFor(PipelineShaderSlot::BackgroundVert));
+        VkShaderModule fs = makeShader(device,
+            embeddedSpvFor(PipelineShaderSlot::BackgroundFrag));
+        backgroundPipe_ = buildBackgroundPipeline(
+            device, vs, fs, colorFormat, depthFormat);
+        vkDestroyShaderModule(device, vs, nullptr);
+        vkDestroyShaderModule(device, fs, nullptr);
+    }
+
     return true;
 }
 
@@ -595,10 +708,16 @@ bool VulkanPipelines::recreatePipelines(VulkanContext& ctx,
     if (!rebuildDebugLine(ctx, engine))      return false;
     if (!rebuildDebugPoint(ctx, engine))     return false;
     if (!rebuildOpaqueSkinned(ctx, engine))  return false;
+    if (!rebuildBackground(ctx, engine))     return false;
     return true;
 }
 
 void VulkanPipelines::destroy(VulkanContext& ctx) noexcept {
+    // M2.8 — tear down background state.
+    if (backgroundPipe_)      { vkDestroyPipeline(ctx.device(), backgroundPipe_, nullptr); backgroundPipe_ = VK_NULL_HANDLE; }
+    if (backgroundLayout_)    { vkDestroyPipelineLayout(ctx.device(), backgroundLayout_, nullptr); backgroundLayout_ = VK_NULL_HANDLE; }
+    if (backgroundSetLayout_) { vkDestroyDescriptorSetLayout(ctx.device(), backgroundSetLayout_, nullptr); backgroundSetLayout_ = VK_NULL_HANDLE; }
+
     // §3.11.7b.5 batch 9b.4.a — tear down skinned state.
     if (opaqueSkinnedPipe_)          { vkDestroyPipeline(ctx.device(), opaqueSkinnedPipe_, nullptr); opaqueSkinnedPipe_ = VK_NULL_HANDLE; }
     if (opaqueSkinnedLayout_)        { vkDestroyPipelineLayout(ctx.device(), opaqueSkinnedLayout_, nullptr); opaqueSkinnedLayout_ = VK_NULL_HANDLE; }
@@ -718,6 +837,29 @@ bool VulkanPipelines::rebuildOpaqueSkinned(VulkanContext& ctx, threadmaxx::Engin
     return true;
 }
 
+bool VulkanPipelines::rebuildBackground(VulkanContext& ctx, threadmaxx::Engine& engine) {
+    const auto vsSpv = spvFromRegistry(engine,
+                                       shaders_[static_cast<std::size_t>(
+                                           PipelineShaderSlot::BackgroundVert)].id());
+    const auto fsSpv = spvFromRegistry(engine,
+                                       shaders_[static_cast<std::size_t>(
+                                           PipelineShaderSlot::BackgroundFrag)].id());
+    if (vsSpv.empty() || fsSpv.empty()) return false;
+
+    const VkDevice device = ctx.device();
+    VkShaderModule vs = makeShader(device, vsSpv);
+    VkShaderModule fs = makeShader(device, fsSpv);
+
+    VkPipeline fresh = buildBackgroundPipeline(device, vs, fs, colorFormat_, depthFormat_);
+    vkDestroyShaderModule(device, vs, nullptr);
+    vkDestroyShaderModule(device, fs, nullptr);
+    if (fresh == VK_NULL_HANDLE) return false;
+
+    if (backgroundPipe_) vkDestroyPipeline(device, backgroundPipe_, nullptr);
+    backgroundPipe_ = fresh;
+    return true;
+}
+
 bool VulkanPipelines::rebuildIfMatches(VulkanContext& ctx,
                                        threadmaxx::Engine& engine,
                                        threadmaxx::ResourceId<Shader> oldId,
@@ -761,6 +903,9 @@ bool VulkanPipelines::rebuildIfMatches(VulkanContext& ctx,
         case PipelineShaderSlot::DebugPointVert:
         case PipelineShaderSlot::DebugPointFrag:
             return rebuildDebugPoint(ctx, engine);
+        case PipelineShaderSlot::BackgroundVert:
+        case PipelineShaderSlot::BackgroundFrag:
+            return rebuildBackground(ctx, engine);
         case PipelineShaderSlot::Count:
             return false;
     }

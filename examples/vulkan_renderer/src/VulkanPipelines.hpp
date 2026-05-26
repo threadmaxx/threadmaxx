@@ -43,7 +43,9 @@ enum class PipelineShaderSlot : std::uint8_t {
     DebugPointVert = 4,
     DebugPointFrag = 5,
     OpaqueSkinnedVert = 6,
-    Count = 7,
+    BackgroundVert = 7,
+    BackgroundFrag = 8,
+    Count = 9,
 };
 
 /// Builds and owns the three pipelines + their layouts. Pipelines depend
@@ -105,6 +107,14 @@ public:
         return opaqueSkinnedBoneSetLayout_;
     }
 
+    /// M2.8 — fullscreen-triangle background pipeline. Samples a
+    /// single combined-image-sampler at set 0, binding 0. No vertex
+    /// buffers, no push constants, depth test off / write off so it
+    /// neither contributes to nor reads depth.
+    VkPipelineLayout      backgroundLayout()    const noexcept { return backgroundLayout_; }
+    VkPipeline            backgroundPipe()      const noexcept { return backgroundPipe_; }
+    VkDescriptorSetLayout backgroundSetLayout() const noexcept { return backgroundSetLayout_; }
+
     /// §3.11 batch 9b.3 — react to a shader hot-reload. Walks the
     /// tracked shader slots; if `oldId` matches one, fetches the new
     /// SPIR-V from `engine.resources().get<Shader>(newId)`, calls
@@ -158,6 +168,14 @@ private:
     /// pattern as the other rebuilds.
     bool rebuildOpaqueSkinned(VulkanContext& ctx, threadmaxx::Engine& engine);
 
+    /// M2.8 — build / rebuild the fullscreen-triangle background
+    /// pipeline. Vertex stage has no inputs; the fragment stage reads
+    /// a single combined-image-sampler.
+    VkPipeline buildBackgroundPipeline(VkDevice device,
+                                       VkShaderModule vs, VkShaderModule fs,
+                                       VkFormat colorFormat, VkFormat depthFormat);
+    bool rebuildBackground(VulkanContext& ctx, threadmaxx::Engine& engine);
+
     VkPipelineLayout opaqueLayout_     = VK_NULL_HANDLE;
     VkPipeline       opaquePipe_       = VK_NULL_HANDLE;
 
@@ -169,6 +187,11 @@ private:
     VkDescriptorSetLayout opaqueSkinnedBoneSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout      opaqueSkinnedLayout_        = VK_NULL_HANDLE;
     VkPipeline            opaqueSkinnedPipe_          = VK_NULL_HANDLE;
+
+    // M2.8 — background pipeline state.
+    VkDescriptorSetLayout backgroundSetLayout_ = VK_NULL_HANDLE;
+    VkPipelineLayout      backgroundLayout_    = VK_NULL_HANDLE;
+    VkPipeline            backgroundPipe_      = VK_NULL_HANDLE;
 
     // §3.11 batch 9b.3 — per-stage shader handles. The loader owns
     // the slots; we hold copies so refcounts pin them open.
