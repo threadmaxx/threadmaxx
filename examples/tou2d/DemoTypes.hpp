@@ -32,9 +32,15 @@ static_assert(sizeof(PlayerInput) == 8, "PlayerInput must stay 8 bytes");
 
 /// Marks an entity as one of the local players. `slot` ∈ [0, 3] picks
 /// the key-binding row (P1 arrows / P2 WSAD / P3 IJKL / P4 numpad).
+///
+/// `isBot != 0` switches the input source from keyboard (InputSystem)
+/// to seek-and-fire AI (BotControlSystem). Both systems are preStep —
+/// BotControlSystem is registered AFTER InputSystem so it overrides
+/// the keyboard read for bot ships only.
 struct LocalPlayer {
-    std::uint8_t slot = 0;
-    std::uint8_t _pad[7] = {};
+    std::uint8_t slot  = 0;
+    std::uint8_t isBot = 0;
+    std::uint8_t _pad[6] = {};
 };
 static_assert(sizeof(LocalPlayer) == 8, "LocalPlayer must stay 8 bytes");
 

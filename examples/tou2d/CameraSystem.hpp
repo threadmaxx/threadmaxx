@@ -35,6 +35,16 @@ public:
     /// so the projection matrix uses the right aspect next frame.
     void setViewport(std::uint32_t width, std::uint32_t height) noexcept;
 
+    /// Latched at the end of `update()` (i.e. each tick) — readable by
+    /// HudSystem's buildRenderFrame so the HUD anchors to the camera's
+    /// current view extents without recomputing.
+    threadmaxx::Vec3 followCenter() const noexcept { return followTarget_; }
+    float            orthoHalfH()   const noexcept { return orthoHalfH_; }
+    float            aspect()       const noexcept {
+        return static_cast<float>(viewportW_) /
+               static_cast<float>(viewportH_ > 0 ? viewportH_ : 1);
+    }
+
 private:
     UserComponentIds ids_;
     threadmaxx::Vec3 followTarget_ = {0.0f, 0.0f, 0.0f};

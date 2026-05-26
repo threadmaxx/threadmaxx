@@ -4,6 +4,9 @@
 
 #include <threadmaxx/System.hpp>
 
+#include <array>
+#include <cstdint>
+
 namespace tou2d {
 
 /// M3.3 — runs after movement / collision / weaponFire. Owns the
@@ -44,13 +47,31 @@ public:
         };
     }
 
-    void update(threadmaxx::SystemContext& ctx) override;
+    void update          (threadmaxx::SystemContext& ctx) override;
+    void buildRenderFrame(threadmaxx::RenderFrameBuilder& b) override;
 
     /// 3 s @ 60 Hz fixed step.
     static constexpr std::uint16_t kRespawnTicks = 180;
 
+    /// Visual lifetime of the death starburst, in ticks. Independent of
+    /// `kRespawnTicks` — the spark dies well before the ship comes
+    /// back so the player sees the impact moment cleanly.
+    static constexpr std::uint16_t kSparkTicks   = 36;
+
 private:
-    UserComponentIds ids_;
+    /// Small ring of recent death events; `buildRenderFrame` emits a
+    /// fading starburst per active entry. Sized generously (8) — even
+    /// 4P with simultaneous deaths only uses 4.
+    struct DeathSpark {
+        float          x        = 0.0f;
+        float          y        = 0.0f;
+        std::uint32_t  color    = 0xFFFFFFFFu;
+        std::uint16_t  ticksLeft = 0;     ///< 0 = slot inactive
+    };
+
+    UserComponentIds                ids_;
+    std::array<DeathSpark, 8>       sparks_{};
+    std::uint32_t                   nextSpark_ = 0;
 };
 
 } // namespace tou2d

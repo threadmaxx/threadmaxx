@@ -29,6 +29,8 @@ add_library(tou2d_core STATIC
     ProjectileSystem.cpp
     BulletTerrainSystem.cpp
     ShipLifecycleSystem.cpp
+    BotControlSystem.cpp
+    HudSystem.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

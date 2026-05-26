@@ -252,15 +252,50 @@ int main(int argc, char** argv) {
             const int clampedY1 = std::min(height, py0 + tilePx);
             if (clampedX1 <= clampedX0 || clampedY1 <= clampedY0) return;
 
+            // M3.4 — anti-chunkiness paint. Solid black fill makes the
+            // pxPerTile grid visible after destruction; instead darken
+            // each pixel by an envelope that:
+            //   * fades from ~75% of original at the rect's edge to ~0%
+            //     at the rect's interior (chebyshev distance from edge)
+            //   * adds a per-pixel hash-jitter (±10%) so the dark zone
+            //     reads as rocky texture rather than a flat fill
+            // When two adjacent tiles fall, each keeps its own edge
+            // falloff and the seam reads as a damage-crack instead of a
+            // straight grid line.
+            const int   rectW = clampedX1 - clampedX0;
+            const int   rectH = clampedY1 - clampedY0;
+            const float half  = static_cast<float>(std::min(rectW, rectH)) * 0.5f;
+            const float invHalf = half > 0.0f ? 1.0f / half : 1.0f;
             for (int y = clampedY0; y < clampedY1; ++y) {
+                const int dyEdge = std::min(y - clampedY0, clampedY1 - 1 - y);
                 for (int x = clampedX0; x < clampedX1; ++x) {
+                    const int dxEdge = std::min(x - clampedX0, clampedX1 - 1 - x);
+                    const int edge   = std::min(dxEdge, dyEdge);
+                    const float t    = std::min(1.0f, static_cast<float>(edge) * invHalf);
+
+                    // Cheap xor-mix hash on (x, y). Top byte gives a
+                    // uniform [-1, +1] when normalized; scale to ±0.1.
+                    const std::uint32_t h =
+                        (static_cast<std::uint32_t>(x) * 0x9E3779B1u) ^
+                        (static_cast<std::uint32_t>(y) * 0x85EBCA77u);
+                    const float jitter =
+                        (static_cast<float>(h >> 24) / 255.0f - 0.5f) * 0.2f;
+
+                    // 0.25 at edge → 1.10 at center (clamped to 1.0).
+                    const float darken =
+                        std::clamp(0.25f + 0.85f * t + jitter, 0.0f, 1.0f);
+                    const float keep   = 1.0f - darken;
+
                     const std::size_t off =
                         (static_cast<std::size_t>(y) *
                          static_cast<std::size_t>(width) +
                          static_cast<std::size_t>(x)) * 4u;
-                    pixels[off + 0] = 0;
-                    pixels[off + 1] = 0;
-                    pixels[off + 2] = 0;
+                    pixels[off + 0] = static_cast<std::uint8_t>(
+                        static_cast<float>(pixels[off + 0]) * keep);
+                    pixels[off + 1] = static_cast<std::uint8_t>(
+                        static_cast<float>(pixels[off + 1]) * keep);
+                    pixels[off + 2] = static_cast<std::uint8_t>(
+                        static_cast<float>(pixels[off + 2]) * keep);
                     pixels[off + 3] = 255;
                 }
             }

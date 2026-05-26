@@ -1,7 +1,9 @@
 #include "TouGame.hpp"
 
+#include "BotControlSystem.hpp"
 #include "BulletTerrainSystem.hpp"
 #include "CameraSystem.hpp"
+#include "HudSystem.hpp"
 #include "InputSystem.hpp"
 #include "LevelLoader.hpp"
 #include "MovementSystem.hpp"
@@ -40,12 +42,14 @@ void populateSyntheticArena(TerrainGrid& grid) {
 
 /// Spawn one ship at (x, y) with LocalPlayer slot `slot`. P1 uses
 /// (0, 0) so the existing smoke test still works; P2-P4 are offset
-/// just enough to be visible inside the synthetic arena.
+/// just enough to be visible inside the synthetic arena. `isBot` flips
+/// the input source — P1 is the human, P2-P4 are bots by default.
 threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
                                    threadmaxx::CommandBuffer& seed,
                                    const UserComponentIds& ids,
                                    std::uint8_t slot,
-                                   float x, float y) {
+                                   float x, float y,
+                                   std::uint8_t isBot) {
     const auto h = engine.reserveEntityHandle();
 
     threadmaxx::Bundle b = {};
@@ -60,7 +64,10 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     };
     seed.spawnBundle(h, b);
 
-    threadmaxx::addUserComponent(seed, ids.localPlayer, h, LocalPlayer{slot, {}});
+    LocalPlayer lp{};
+    lp.slot  = slot;
+    lp.isBot = isBot;
+    threadmaxx::addUserComponent(seed, ids.localPlayer, h, lp);
     threadmaxx::addUserComponent(seed, ids.playerInput, h, PlayerInput{});
 
     Ship s{};
@@ -124,6 +131,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
 
     // ---- Systems ------------------------------------------------------------
     auto input         = std::make_unique<InputSystem>(window_, ids_);
+    auto botControl    = std::make_unique<BotControlSystem>(ids_);
     auto movement      = std::make_unique<MovementSystem>(ids_);
     auto* movementPtr  = movement.get();
     auto collision     = std::make_unique<TerrainCollisionSystem>(ids_, &grid_);
@@ -138,11 +146,13 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     camera_         = camera.get();
     bulletTerrain_  = bulletTerrainPtr;
     collision_      = collisionPtr;
+    auto hud        = std::make_unique<HudSystem>(ids_, camera_);
 
     movementPtr  ->setLevelRect(minX, minY, maxX, maxY);
     projectilePtr->setLevelRect(minX, minY, maxX, maxY);
 
     engine.registerSystem(std::move(input));
+    engine.registerSystem(std::move(botControl));   // overrides PlayerInput for bot slots
     engine.registerSystem(std::move(movement));
     engine.registerSystem(std::move(collision));
     engine.registerSystem(std::move(weaponFire));
@@ -150,12 +160,14 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(bulletTerrain));
     engine.registerSystem(std::move(shipLife));     // late — sees commits from movement/collision
     engine.registerSystem(std::move(camera));
+    engine.registerSystem(std::move(hud));          // last — buildRenderFrame reads camera state
 
     // ---- Seed 4 ships ------------------------------------------------------
     // P1 stays at (0, 0) so the headless smoke test continues to find
     // it. P2-P4 are placed at small offsets — close enough that they
     // remain inside the synthetic arena's interior, far enough that
-    // they don't visually overlap on spawn.
+    // they don't visually overlap on spawn. P1 is human; P2-P4 are
+    // bots by default (BotControlSystem drives PlayerInput for them).
     constexpr float kOffset = 40.0f;
     const std::array<std::pair<float, float>, 4> seeds = {{
         { 0.0f,        0.0f       },   // P1
@@ -165,8 +177,9 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     }};
     for (std::uint8_t slot = 0; slot < 4; ++slot) {
         const auto& sp = seeds[slot];
+        const std::uint8_t isBot = (slot == 0) ? std::uint8_t{0} : std::uint8_t{1};
         playerShips_[slot] = spawnShip(engine, seed, ids_,
-                                       slot, sp.first, sp.second);
+                                       slot, sp.first, sp.second, isBot);
     }
 }
 
