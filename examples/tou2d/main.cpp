@@ -11,6 +11,7 @@
 #include <threadmaxx_vk/VulkanRenderer.hpp>
 
 #include <threadmaxx/Engine.hpp>
+#include <threadmaxx/World.hpp>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -104,8 +105,21 @@ void glfwResizeCb(GLFWwindow* win, int width, int height) {
 
 int main(int argc, char** argv) {
     std::uint64_t maxTicks = 0;
-    if (argc >= 2) {
-        maxTicks = std::strtoull(argv[1], nullptr, 10);
+    std::string   levelDir;
+
+    // Lightweight arg parse — supports any order of:
+    //   <N>            : bounded run for N ticks (otherwise headless / Ctrl-C)
+    //   --level <path> : load imported level dir produced by tou2d_import_lev
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--level" && i + 1 < argc) {
+            levelDir = argv[++i];
+        } else if (!a.empty() && std::isdigit(static_cast<unsigned char>(a[0]))) {
+            maxTicks = std::strtoull(a.c_str(), nullptr, 10);
+        } else {
+            std::fprintf(stderr, "[tou2d] unknown arg '%s'\n", a.c_str());
+            return 2;
+        }
     }
 
     if (!glfwInit()) {
@@ -132,6 +146,10 @@ int main(int argc, char** argv) {
     threadmaxx::Engine engine(cfg);
 
     tou2d::TouGame game(window);
+    if (!levelDir.empty()) {
+        game.setLevelDir(levelDir);
+        std::printf("[tou2d] loading level from %s\n", levelDir.c_str());
+    }
 
     threadmaxx_vk::VulkanRenderer::Config vrcfg;
     vrcfg.width          = kInitialWidth;
@@ -189,6 +207,15 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(maxTicks));
             break;
         }
+    }
+
+    // Headless verification: log the ship's final position so a bounded
+    // smoke run (`threadmaxx_tou2d 600`) can be checked from CI / stdout.
+    // Removed once a proper acceptance harness lands.
+    if (const auto* finalT = engine.world().tryGetTransform(game.playerShip())) {
+        std::printf("[tou2d] final ship pos = (%.2f, %.2f, %.2f); tick=%llu\n",
+                    finalT->position.x, finalT->position.y, finalT->position.z,
+                    static_cast<unsigned long long>(tick));
     }
 
     engine.shutdown();

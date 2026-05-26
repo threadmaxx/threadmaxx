@@ -52,6 +52,48 @@ struct Ship {
 };
 static_assert(sizeof(Ship) == 16, "Ship must stay 16 bytes");
 
+/// Tile-grid terrain classification. The byte is sourced from the
+/// imported `.lev` attribute layer (M2.5/M2.6) and rounded into one of
+/// these categories at load time. Per-tile semantics:
+///
+///   * `Air`     — no collision, no damage. Drawn empty.
+///   * `Solid`   — blocks ship movement, blocks projectiles. HP=0xFF
+///                 means indestructible bedrock; anything lower is
+///                 chip-away terrain (M3 will mutate this).
+///   * `Damage`  — passable but applies a per-tick HP drain on overlap
+///                 (lava / acid / spikes in the original).
+enum class Attribute : std::uint8_t {
+    Air    = 0,
+    Solid  = 1,
+    Damage = 2,
+};
+
+/// Per-tile terrain state. Spawned as a regular entity for every
+/// non-Air cell of the active level so the chunk-iteration paths in
+/// CollisionSystem and (M3) WeaponDamageSystem can walk the dense
+/// arrays just like any other game-side entity.
+///
+/// Air tiles are *not* spawned — empty cells contribute nothing.
+struct TerrainBlock {
+    Attribute    attr   = Attribute::Solid;
+    std::uint8_t hp     = 0xFF;       ///< 0xFF = indestructible.
+    std::int16_t cellX  = 0;          ///< Grid coordinate, signed so the world can be centered on origin.
+    std::int16_t cellY  = 0;
+    std::uint8_t _pad[2] = {};
+};
+static_assert(sizeof(TerrainBlock) == 8, "TerrainBlock must stay 8 bytes");
+
+/// World-units per terrain tile and the half-extent of the synthetic
+/// arena. M2's synthetic level spawns a (2*kArenaHalfCells + 1) ×
+/// (2*kArenaHalfCells + 1) grid centered on origin; M2.7 replaces it
+/// with the imported grid (its dimensions come from the level config).
+///
+/// kTileWorldUnits matches the ship's per-side extent (28 in M1) so a
+/// ship occupies roughly one tile — sane scale for first-pass collision
+/// tuning.
+inline constexpr float kTileWorldUnits   = 28.0f;
+inline constexpr int   kArenaHalfCells   = 16;   // synthetic arena is 33×33 cells
+
 /// Ids handed back by `Engine::registerUserComponent`. One per
 /// user-component type; carried on the IGame to give every system a
 /// resolved handle without re-doing the typeid() lookup.
@@ -59,6 +101,7 @@ struct UserComponentIds {
     threadmaxx::UserComponentId playerInput;
     threadmaxx::UserComponentId localPlayer;
     threadmaxx::UserComponentId ship;
+    threadmaxx::UserComponentId terrainBlock;
 };
 
 } // namespace tou2d

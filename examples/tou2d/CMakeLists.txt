@@ -23,6 +23,8 @@ add_library(tou2d_core STATIC
     InputSystem.cpp
     MovementSystem.cpp
     CameraSystem.cpp
+    TerrainCollisionSystem.cpp
+    LevelLoader.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -42,6 +44,17 @@ target_link_libraries(threadmaxx_tou2d PRIVATE
     threadmaxx::vulkan_renderer
 )
 set_target_properties(threadmaxx_tou2d PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+
+# ---- tou2d_import_lev (Tier-1 .lev importer CLI) ------------------------
+# Standalone — no engine / no Vulkan / no GLFW. Builds wherever the rest
+# of the project builds; runs offline to unpack <foo>.lev into a
+# directory the runtime loader (M2.7) can consume.
+add_executable(tou2d_import_lev tou2d_import_lev.cpp)
+set_target_properties(tou2d_import_lev PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
