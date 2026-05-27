@@ -47,12 +47,15 @@ void populateSyntheticArena(TerrainGrid& grid) {
 /// (0, 0) so the existing smoke test still works; P2-P4 are offset
 /// just enough to be visible inside the synthetic arena. `isBot` flips
 /// the input source — P1 is the human, P2-P4 are bots by default.
+/// `shipKindIdx` indexes `kShipKinds` — see TouGame::onSetup for slot
+/// → kind assignments.
 threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
                                    threadmaxx::CommandBuffer& seed,
                                    const UserComponentIds& ids,
                                    std::uint8_t slot,
                                    float x, float y,
-                                   std::uint8_t isBot) {
+                                   std::uint8_t isBot,
+                                   std::uint16_t shipKindIdx) {
     const auto h = engine.reserveEntityHandle();
 
     threadmaxx::Bundle b = {};
@@ -73,12 +76,16 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     threadmaxx::addUserComponent(seed, ids.localPlayer, h, lp);
     threadmaxx::addUserComponent(seed, ids.playerInput, h, PlayerInput{});
 
+    // M4.5 — per-kind HP from the manual stat table.
+    const ShipKind& kind = shipKindAt(shipKindIdx);
+    const float kindHp = kind.strength * kShipHpPerStrength;
+
     Ship s{};
-    s.currentHp   = kBaseShipHp;
-    s.maxHp       = kBaseShipHp;
+    s.currentHp   = kindHp;
+    s.maxHp       = kindHp;
     s.spawnX      = x;
     s.spawnY      = y;
-    s.shipKindIdx    = 0;
+    s.shipKindIdx    = shipKindIdx;
     s.respawnIn      = 0;
     s.kills          = 0;
     s.tilesDestroyed = 0;
@@ -207,18 +214,25 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // remain inside the synthetic arena's interior, far enough that
     // they don't visually overlap on spawn. P1 is human; P2-P4 are
     // bots by default (BotControlSystem drives PlayerInput for them).
+    //
+    // M4.5 — distinct ship kinds per slot show off the stat-spread:
+    //   P1 = Basic ship   (150 HP, 1.0× thrust, 1.0× turn) — neutral
+    //   P2 = Bee          ( 50 HP, 3.3× thrust, 2.2× turn) — fast/fragile
+    //   P3 = X Wing       (125 HP, 1.5× thrust, 1.3× turn) — balanced
+    //   P4 = Destroyer    (300 HP, 0.5× thrust, 0.3× turn) — tank/slow
     constexpr float kOffset = 40.0f;
-    const std::array<std::pair<float, float>, 4> seeds = {{
-        { 0.0f,        0.0f       },   // P1
-        { +kOffset,    0.0f       },   // P2
-        { -kOffset,    0.0f       },   // P3
-        { 0.0f,        +kOffset   },   // P4
+    struct ShipSeed { float x, y; std::uint16_t kindIdx; };
+    const std::array<ShipSeed, 4> seeds = {{
+        { 0.0f,        0.0f,     0 },   // P1 — Basic
+        { +kOffset,    0.0f,     6 },   // P2 — Bee
+        { -kOffset,    0.0f,     4 },   // P3 — X Wing
+        { 0.0f,        +kOffset, 8 },   // P4 — Destroyer
     }};
     for (std::uint8_t slot = 0; slot < 4; ++slot) {
         const auto& sp = seeds[slot];
         const std::uint8_t isBot = (slot == 0) ? std::uint8_t{0} : std::uint8_t{1};
         playerShips_[slot] = spawnShip(engine, seed, ids_,
-                                       slot, sp.first, sp.second, isBot);
+                                       slot, sp.x, sp.y, isBot, sp.kindIdx);
     }
 }
 

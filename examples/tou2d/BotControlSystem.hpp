@@ -72,6 +72,24 @@ private:
     /// Per-slot retreat latch — see header comment. Persists across
     /// ticks; hysteresis edges are 0.30 (enter) / 0.50 (exit).
     std::array<bool, 4> retreating_{};
+
+    /// M4.5 — wander state. When `wanderTicksLeft_[slot] > 0` AND the
+    /// bot has no in-range target, it chases `wanderAngle_[slot]`
+    /// (world-space heading) and thrusts toward it. On reaching 0 a
+    /// new direction + duration is rolled — duration is uniform in
+    /// `[60, 180]` ticks (1-3 s) and direction is full 2π uniform.
+    /// Pulls from the same `rngBySlot_` stream as the spread roll, so
+    /// the schedule is fully deterministic per seed.
+    std::array<std::uint16_t, 4> wanderTicksLeft_{};
+    std::array<float, 4>         wanderAngle_{};
+
+    /// M4.5 — aim wobble phase. Per-slot tick counter; the engaged-fire
+    /// path adds `sin(phase * kAimWobbleFreq) * kAimWobbleAmp` to the
+    /// computed lead angle. This makes the aim oscillate left-right
+    /// of the target by a few degrees, which in turn causes the ship
+    /// to perpetually chase a moving aim point — natural left-right
+    /// weave, no special-case "strafe" logic needed.
+    std::array<std::uint32_t, 4> aimWobblePhase_{};
 };
 
 } // namespace tou2d

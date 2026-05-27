@@ -16,20 +16,33 @@ constexpr float         kMuzzleSpeed       = 600.0f;   // world units / s
 constexpr float         kBulletTtlSeconds  = 1.2f;
 constexpr float         kMuzzleOffset      = 18.0f;
 constexpr float         kBulletScale       = 4.0f;
-// M4.4 — lowered from 64 to 24 so the bumped 200 HP gives Dumbfire a
-// TTK of ~9 hits at the 8-tick cadence (≈ 1.2 s of held fire). Still
-// substantial enough to read in the HUD HP bar after each hit.
-constexpr std::uint8_t  kDumbfireDamage    = 24;
+// M4.5 — second nerf pass. 8 dmg vs Basic-ship 150 HP → TTK ≈ 19
+// hits at the new 6-tick cadence ≈ 1.9 s of held fire; vs Bee 50 HP
+// → ≈ 700 ms, vs Destroyer 300 HP → ≈ 3.8 s. Engagements now hinge on
+// sustained tracking, not single-trigger taps.
+constexpr std::uint8_t  kDumbfireDamage    = 8;
 
 // M3.3 Spread tunables — 3 bullets at ±kSpreadAngle around forward.
 constexpr float         kSpreadAngleRad      = 0.30f;  // ~17°
 constexpr float         kSpreadSpeed         = 520.0f; // slightly slower than Dumbfire
 constexpr float         kSpreadTtlSeconds    = 0.9f;
-// M4.4 — 3 × 18 = 54 per full-pellet burst against 200 HP → ~4 full
-// bursts to kill (was 120 burst → one-shot on 100 HP). Per-pellet
-// damage is still meaningful (18) so a single grazing pellet from a
-// spread hit reads as damage in the HP bar.
-constexpr std::uint8_t  kSpreadDamage        = 18;
+// M4.5 — 3 × 5 = 15 per full-pellet burst vs Basic 150 HP → ≈ 10
+// bursts to kill at the new ~370 ms burst cadence ≈ 3.7 s.
+constexpr std::uint8_t  kSpreadDamage        = 5;
+
+// M4.5 — per-shot / per-burst "loader" cooldown. Fire ALWAYS sets the
+// cooldown; the next trigger pull is gated on it returning to 0. This
+// is the "few hundred millis between bursts" the user asked for —
+// the chambered-round model where the gun has to re-feed between
+// shots regardless of how many rounds are left in the mag.
+//
+// Dumbfire: 6 ticks @ 60 Hz ≈ 100 ms — fast but not instant; full
+//   12-round magazine empties in 12 × 6 = 72 ticks ≈ 1.2 s.
+// Spread:   22 ticks @ 60 Hz ≈ 367 ms — clearly a "few hundred ms"
+//   gap between successive bursts; full 4-burst mag = 4 × 22 = 88
+//   ticks ≈ 1.5 s.
+constexpr std::uint16_t kDumbfireCooldownTicks =  6;
+constexpr std::uint16_t kSpreadCooldownTicks   = 22;
 
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
@@ -147,7 +160,7 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                 const auto& shipT = positions[row];
                 const auto& shipV = velocities[row];
 
-                // ---- Tick reloads down first ------------------------
+                // ---- Tick reloads + loader cooldowns down first -----
                 // A reload that LANDS this tick (reloadIn == 1 → 0)
                 // refills ammo but is NOT yet eligible to fire this
                 // step — fire below uses `reloadIn == 0` AFTER the
@@ -168,14 +181,25 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                         ld.spreadAmmo = kSpreadMagazine;
                     }
                 }
+                // M4.5 — independent per-shot loader cooldown. Ticks
+                // every step regardless of input; fire is gated on it
+                // reaching 0.
+                if (ld.dumbfireCooldown > 0) {
+                    ld.dumbfireCooldown = static_cast<std::uint16_t>(ld.dumbfireCooldown - 1);
+                }
+                if (ld.spreadCooldown > 0) {
+                    ld.spreadCooldown = static_cast<std::uint16_t>(ld.spreadCooldown - 1);
+                }
 
                 // ---- Dumbfire (fireBasic) ---------------------------
                 // Gate: input held AND ammo available AND not reloading
-                // AND post-reload one-tick cooldown elapsed (the latter
-                // is enforced naturally by the "refill this tick → fire
-                // next tick" sequencing above).
+                // AND the per-shot loader is ready. Loader is set on
+                // EVERY fire so holding the trigger fires at the
+                // cooldown cadence rather than every tick.
                 const bool canDumbfire =
-                    ld.dumbfireReloadIn == 0 && ld.dumbfireAmmo > 0;
+                    ld.dumbfireReloadIn == 0 &&
+                    ld.dumbfireCooldown == 0 &&
+                    ld.dumbfireAmmo > 0;
                 if (in.fireBasic && canDumbfire) {
                     spawnBullet(ctx, cb, idsBl, shipT, shipV,
                                 angle,
@@ -184,7 +208,8 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                                 kDumbfireDamage,
                                 /*weaponKind*/ 0,
                                 ownerSlot);
-                    ld.dumbfireAmmo = static_cast<std::uint16_t>(ld.dumbfireAmmo - 1);
+                    ld.dumbfireAmmo     = static_cast<std::uint16_t>(ld.dumbfireAmmo - 1);
+                    ld.dumbfireCooldown = kDumbfireCooldownTicks;
                     if (ld.dumbfireAmmo == 0) {
                         ld.dumbfireReloadIn = kDumbfireReloadTicks;
                     }
@@ -192,7 +217,9 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
 
                 // ---- Spread (fireSpecial) ---------------------------
                 const bool canSpread =
-                    ld.spreadReloadIn == 0 && ld.spreadAmmo > 0;
+                    ld.spreadReloadIn == 0 &&
+                    ld.spreadCooldown == 0 &&
+                    ld.spreadAmmo > 0;
                 if (in.fireSpecial && canSpread) {
                     for (int i = -1; i <= 1; ++i) {
                         spawnBullet(ctx, cb, idsBl, shipT, shipV,
@@ -203,7 +230,8 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                                     /*weaponKind*/ 1,
                                     ownerSlot);
                     }
-                    ld.spreadAmmo = static_cast<std::uint16_t>(ld.spreadAmmo - 1);
+                    ld.spreadAmmo     = static_cast<std::uint16_t>(ld.spreadAmmo - 1);
+                    ld.spreadCooldown = kSpreadCooldownTicks;
                     if (ld.spreadAmmo == 0) {
                         ld.spreadReloadIn = kSpreadReloadTicks;
                     }

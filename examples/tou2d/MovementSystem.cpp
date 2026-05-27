@@ -10,14 +10,17 @@ namespace tou2d {
 
 namespace {
 
-// M1 tunables — no per-level config yet. M2 will read these from a
-// parsed Normal.txt-style level config (gravity / resistance / etc.).
-constexpr float kThrustAccel     = 240.0f;   // world units / s² along forward
-constexpr float kReverseAccel    = 100.0f;   // weaker than forward, mirrors TOU
-constexpr float kTurnRate        = 4.5f;     // radians / s
-constexpr float kGravityAccel    = 120.0f;   // world units / s² along -Y
-constexpr float kAirDamping      = 0.45f;    // 1/s — velocity *= exp(-damp * dt)
-constexpr float kMaxAngularSpeed = 6.0f;
+// M1 / M4.5 tunables. The thrust / turn / cap constants below are the
+// REFERENCE values that match the "Basic ship" stat row (Strength 3 /
+// Thrusters 3 / Turning 3). Every other ship is computed as a ratio
+// against the Basic baseline via `ShipKind::thrustForce / turnRate`,
+// so editing the constants here rescales the whole fleet uniformly.
+constexpr float kThrustAccelBase  = 240.0f;   // wu / s² @ thrustForce 3.0
+constexpr float kReverseAccelBase = 100.0f;   // weaker than forward
+constexpr float kTurnRateBase     =   4.5f;   // rad / s   @ turnRate 3.0
+constexpr float kGravityAccel     = 120.0f;
+constexpr float kAirDamping       =   0.45f;
+constexpr float kMaxAngularSpeedBase = 6.0f;  // cap @ turnRate 3.0
 
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     // For a pure-Z rotation we stored (0, 0, sin(θ/2), cos(θ/2));
@@ -36,7 +39,8 @@ inline threadmaxx::Quat quatFromAngleZ(float theta) noexcept {
 MovementSystem::MovementSystem(UserComponentIds ids) noexcept : ids_(ids) {}
 
 void MovementSystem::update(threadmaxx::SystemContext& ctx) {
-    const auto idsPi = ids_.playerInput;
+    const auto idsPi   = ids_.playerInput;
+    const auto idsShip = ids_.ship;
     if (!idsPi.valid()) return;
 
     const float dt = static_cast<float>(ctx.dt());
@@ -58,6 +62,14 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
             if (chunk.mask.has(threadmaxx::Component::DisabledTag))  continue;
 
             const auto piSpan = threadmaxx::user::chunkSpan<PlayerInput>(chunk, idsPi);
+            // M4.5 — per-ship stats come from the ShipKind table indexed
+            // by Ship.shipKindIdx. Bot-driven and human ships both end
+            // up in chunks that carry Ship, so the mask-gate here is
+            // also defence-in-depth; absent Ship → Basic-ship stats.
+            const bool hasShip = idsShip.valid() && chunk.mask.has(idsShip.componentBit());
+            const auto shipSpan = hasShip
+                ? threadmaxx::user::chunkSpan<Ship>(chunk, idsShip)
+                : std::span<const Ship>{};
             const auto entities  = chunk.entities;
             const auto& positions = chunk.transforms;
             const auto& velocities = chunk.velocities;
@@ -68,15 +80,26 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
                 threadmaxx::Transform t = positions[row];
                 threadmaxx::Velocity  v = velocities[row];
 
+                // Per-kind scalars vs the Basic-ship baseline (3/3/3).
+                const ShipKind& kind = hasShip
+                    ? shipKindAt(shipSpan[row].shipKindIdx)
+                    : kShipKinds[0];
+                const float thrustScale = kind.thrustForce / kShipKindStatReference;
+                const float turnScale   = kind.turnRate    / kShipKindStatReference;
+                const float thrustAccel  = kThrustAccelBase     * thrustScale;
+                const float reverseAccel = kReverseAccelBase    * thrustScale;
+                const float turnRate     = kTurnRateBase        * turnScale;
+                const float maxAngular   = kMaxAngularSpeedBase * turnScale;
+
                 // ---- Turn ---------------------------------------------------
                 const float turnDir = static_cast<float>(in.turnLeft) -
                                       static_cast<float>(in.turnRight);
                 float angle = orientationAngleZ(t.orientation);
-                angle += turnDir * kTurnRate * dt;
+                angle += turnDir * turnRate * dt;
                 t.orientation = quatFromAngleZ(angle);
-                v.angular = {0.0f, 0.0f, turnDir * kTurnRate};
-                if (std::fabs(v.angular.z) > kMaxAngularSpeed) {
-                    v.angular.z = (v.angular.z > 0 ? 1.0f : -1.0f) * kMaxAngularSpeed;
+                v.angular = {0.0f, 0.0f, turnDir * turnRate};
+                if (std::fabs(v.angular.z) > maxAngular) {
+                    v.angular.z = (v.angular.z > 0 ? 1.0f : -1.0f) * maxAngular;
                 }
 
                 // ---- Thrust (forward = local +Y rotated by `angle`) --------
@@ -86,8 +109,8 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
                 const threadmaxx::Vec3 forward = {-sa, ca, 0.0f};
 
                 const float thrustMag =
-                    static_cast<float>(in.thrust)  * kThrustAccel -
-                    static_cast<float>(in.back)    * kReverseAccel;
+                    static_cast<float>(in.thrust)  * thrustAccel -
+                    static_cast<float>(in.back)    * reverseAccel;
 
                 v.linear.x += forward.x * thrustMag * dt;
                 v.linear.y += forward.y * thrustMag * dt;

@@ -38,6 +38,28 @@ constexpr float kSpreadChanceMid   = 0.10f;
 // from a single shared constant; not worth a per-weapon lead.
 constexpr float kBulletReferenceSpeed = 600.0f;
 
+// M4.5 — wander. Bots without a visible target or with the nearest
+// target outside `kWanderRange` switch to wander mode: roll a random
+// world-space heading and chase it for `[kWanderTicksMin,
+// kWanderTicksMax]` ticks. Stops them sitting motionless when alone.
+constexpr float kWanderRange     = 360.0f;  // engage if target closer; else wander
+constexpr std::uint16_t kWanderTicksMin = 60;   // 1.0 s @ 60 Hz
+constexpr std::uint16_t kWanderTicksMax = 180;  // 3.0 s
+constexpr float kWanderFacingThrust = 1.05f;    // ~60° — looser than engage
+                                                 // facing so the bot keeps
+                                                 // momentum through turns
+
+// M4.5 — aim wobble: in engage mode, the bot's perceived target angle
+// is perturbed by `sin(phase) * kAimWobbleAmp + xorshiftChaos`. The
+// sine drives the steady left-right oscillation; the xorshift adds
+// unpredictability so two bots wobble out of phase. Amplitudes are
+// small fractions of a radian (~5-6°) — large enough to spoil
+// pixel-perfect aim, small enough that the bot still lands hits in
+// the fire arc.
+constexpr float kAimWobbleAmp        = 0.10f;   // ~5.7°
+constexpr float kAimWobbleFreqPerTick = 0.18f;  // rad / tick; period ≈ 35 ticks (~580 ms)
+constexpr float kAimChaosAmp         = 0.06f;   // ~3.4°
+
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
                       1.0f - 2.0f * (q.y * q.y + q.z * q.z));
@@ -171,10 +193,24 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
 
                 PlayerInput in{};  // all zero — drift if no target
 
-                if (tgt) {
+                // M4.5 — wander/engage gate. Engage only when a target
+                // exists AND it's inside `kWanderRange`. The further-out
+                // case (or no-target case) drops into the wander branch
+                // so the bot keeps moving instead of sitting idle.
+                const bool hasEngageTarget = tgt != nullptr;
+                float       engageRange    = 0.0f;
+                if (hasEngageTarget) {
+                    const float dx0 = tgt->x - selfT.position.x;
+                    const float dy0 = tgt->y - selfT.position.y;
+                    engageRange     = std::sqrt(dx0 * dx0 + dy0 * dy0);
+                }
+                const bool engage = hasEngageTarget && engageRange < kWanderRange;
+
+                if (engage) {
+                    // ---- ENGAGE ----------------------------------------
                     const float dx0   = tgt->x - selfT.position.x;
                     const float dy0   = tgt->y - selfT.position.y;
-                    const float range = std::sqrt(dx0 * dx0 + dy0 * dy0);
+                    const float range = engageRange;
 
                     // Aim-lead: project the target forward by the time the
                     // bullet would need to cross the present range. Uses
@@ -195,6 +231,27 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     if (retreat) {
                         tgtAngle += 3.14159265359f;  // mirror
                     }
+
+                    // M4.5 — aim wobble. Sine wave gives a smooth left/
+                    // right oscillation; xorshift chaos adds per-tick
+                    // randomness so two bots aren't in phase. Combined
+                    // amplitude is ~9° peak — enough to spoil precision
+                    // aim, small enough to still land hits in the ±10°
+                    // fire arc.
+                    if (slot < aimWobblePhase_.size()) {
+                        ++aimWobblePhase_[slot];
+                        const float phaseRad = static_cast<float>(aimWobblePhase_[slot]) *
+                                               kAimWobbleFreqPerTick;
+                        tgtAngle += std::sin(phaseRad) * kAimWobbleAmp;
+                    }
+                    if (slot < rngBySlot_.size()) {
+                        // Map [0, 1) → [-1, 1) then scale to chaos amp.
+                        const float r = static_cast<float>(
+                            xorshift32(rngBySlot_[slot]) >> 8) /
+                            static_cast<float>(1u << 24);
+                        tgtAngle += (r * 2.0f - 1.0f) * kAimChaosAmp;
+                    }
+
                     const float curAngle  = orientationAngleZ(selfT.orientation);
                     const float angDelta  = wrapPi(tgtAngle - curAngle);
 
@@ -227,6 +284,33 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                             }
                         }
                     }
+                } else if (slot < wanderTicksLeft_.size()) {
+                    // ---- WANDER ----------------------------------------
+                    // Roll a new heading + duration whenever the current
+                    // one expires. Direction is uniform in [0, 2π);
+                    // duration in [kWanderTicksMin, kWanderTicksMax].
+                    if (wanderTicksLeft_[slot] == 0) {
+                        if (slot < rngBySlot_.size()) {
+                            const float a = static_cast<float>(
+                                xorshift32(rngBySlot_[slot]) >> 8) /
+                                static_cast<float>(1u << 24);
+                            wanderAngle_[slot]     = a * 6.28318530718f;
+                            const std::uint32_t r2 = xorshift32(rngBySlot_[slot]);
+                            const std::uint16_t span =
+                                static_cast<std::uint16_t>(kWanderTicksMax - kWanderTicksMin);
+                            wanderTicksLeft_[slot] = static_cast<std::uint16_t>(
+                                kWanderTicksMin + (r2 % (span + 1u)));
+                        } else {
+                            wanderTicksLeft_[slot] = kWanderTicksMin;
+                        }
+                    }
+                    wanderTicksLeft_[slot] = static_cast<std::uint16_t>(wanderTicksLeft_[slot] - 1);
+
+                    const float curAngle = orientationAngleZ(selfT.orientation);
+                    const float angDelta = wrapPi(wanderAngle_[slot] - curAngle);
+                    if (angDelta >  kAngEpsilon) in.turnLeft  = 1;
+                    if (angDelta < -kAngEpsilon) in.turnRight = 1;
+                    if (std::fabs(angDelta) < kWanderFacingThrust) in.thrust = 1;
                 }
 
                 threadmaxx::addUserComponent(cb, idsPi, entities[row], in);

@@ -68,13 +68,65 @@ struct Ship {
 };
 static_assert(sizeof(Ship) == 24, "Ship must stay 24 bytes");
 
-/// Default per-ship max HP. Raised from 100 (M3.5) to 200 alongside the
-/// damage-tuning pass: the previous 64-damage Dumbfire put TTK at 2
-/// hits and the 120-burst Spread one-shot anything alive. With HP 200
-/// + Dumbfire 24 + Spread (3×18 = 54 burst), Dumbfire TTK ≈ 9 hits and
-/// Spread TTK ≈ 4 full bursts — closer to TOU's "a sustained engagement
-/// finishes the kill, not a single trigger pull" feel.
-inline constexpr float kBaseShipHp = 200.0f;
+/// Default per-ship max HP — used only as a fallback for cases where
+/// `Ship.shipKindIdx` is out of range. Per-kind HP is now derived from
+/// `ShipKind::strength * kShipHpPerStrength` (see `kShipKinds`); the
+/// flat 200 used in M4.4 became the baseline-Basic 150 once strength
+/// 3.0 × 50 = 150 wired through.
+inline constexpr float kBaseShipHp = 150.0f;
+
+/// M4.5 — immutable ship-design archetype. Maps directly onto the
+/// `toudoc_ships.htm` Strength/Thrusters/Turning table. `displayName`
+/// is a fixed 12-byte NUL-padded slot so the POD stays trivially
+/// copyable (engine memcpys user components into chunked storage).
+///
+/// Stat -> game mapping:
+///   * `strength`    → maxHp = strength * kShipHpPerStrength (Basic=150,
+///                              Bee=50, Destroyer=300 at scale 50).
+///   * `thrustForce` → MovementSystem thrust scalar; ratio against the
+///                     Basic baseline (3.0) — Bee=10/3≈3.33×, Dest=0.5×.
+///   * `turnRate`    → MovementSystem turn-rate + angular-speed scalar;
+///                     same Basic-baseline ratio.
+struct ShipKind {
+    std::array<char, 12> displayName;
+    float                strength;
+    float                thrustForce;
+    float                turnRate;
+};
+static_assert(sizeof(ShipKind) == 24, "ShipKind must stay 24 bytes");
+
+/// HP per `strength` unit. Picked so Basic-ship strength 3 lands on
+/// 150 HP — near M4.4's flat 200 baseline, so combat feels close to
+/// the previous calibration while the kinds spread HP across 50..300.
+inline constexpr float kShipHpPerStrength = 50.0f;
+
+/// Reference strength/thrust/turn around which per-ship scalars are
+/// computed. Basic ship sits exactly here; every other kind is a
+/// signed ratio (Bee thrust 10/3 = 3.33×, Destroyer 1.5/3 = 0.5×).
+inline constexpr float kShipKindStatReference = 3.0f;
+
+/// 9 ship designs from the manual table (Strength / Thrusters / Turning).
+/// Slot indices are stable — DON'T reorder; `Ship.shipKindIdx` is a
+/// direct index into this array AND is round-tripped via WorldSnapshot.
+inline constexpr ShipKind kShipKinds[] = {
+    {{'B','a','s','i','c',' ','s','h','i','p',0,0}, 3.0f, 3.0f,  3.0f}, // 0
+    {{'B','a','t','m','a','n',0,0,0,0,0,0},          2.5f, 4.0f,  3.5f}, // 1
+    {{'B','2',' ','S','t','e','a','l','t','h',0,0},  2.0f, 5.0f,  4.0f}, // 2
+    {{'S','p','e','e','d','i','e',0,0,0,0,0},        1.5f, 7.0f,  3.0f}, // 3
+    {{'X',' ','W','i','n','g',0,0,0,0,0,0},          2.5f, 4.5f,  4.0f}, // 4
+    {{'T','i','e',' ','F','i','g','h','t','e','r',0},2.5f, 5.0f,  4.5f}, // 5
+    {{'B','e','e',0,0,0,0,0,0,0,0,0},                1.0f, 10.0f, 6.5f}, // 6
+    {{'F','l','y',0,0,0,0,0,0,0,0,0},                4.0f, 3.0f,  2.0f}, // 7
+    {{'D','e','s','t','r','o','y','e','r',0,0,0},    6.0f, 1.5f,  1.0f}, // 8
+};
+inline constexpr std::size_t kShipKindCount =
+    sizeof(kShipKinds) / sizeof(kShipKinds[0]);
+
+/// Bounds-checked lookup. Out-of-range returns Basic so a corrupt
+/// `shipKindIdx` from a stale snapshot can't crash anything.
+inline const ShipKind& shipKindAt(std::uint16_t idx) noexcept {
+    return kShipKinds[idx < kShipKindCount ? idx : 0];
+}
 
 /// M3.5 — emitted once when any slot crosses `kFragLimit`. Listeners
 /// (currently just the host logger) can react however they like; the
@@ -140,28 +192,39 @@ struct Bullet {
 };
 static_assert(sizeof(Bullet) == 8, "Bullet must stay 8 bytes");
 
-/// M4.2 — per-ship weapon ammo + reload state.
+/// M4.2 / M4.5 — per-ship weapon ammo + reload state.
 ///
-/// Each weapon has a magazine (`*Ammo`) and a reload timer (`*ReloadIn`,
-/// measured in sim ticks). Fire is gated on `ammo > 0 && reloadIn == 0`.
-/// On a successful fire `ammo` decrements; when it hits 0 the system
-/// sets `reloadIn = kReload*Ticks`. Every tick, a non-zero `reloadIn`
-/// decrements; when it reaches 0 the magazine refills to its starting
-/// value. The post-fire mid-reload state survives across input bursts
-/// — players who hold the fire key get exactly `ammo` shots then a
-/// forced silence, matching the original TOU's "weapons can't fire
-/// infinitely" feel.
+/// Two cycles per weapon:
+///   * **Loader cooldown** (`*Cooldown`) — per-shot / per-burst gap. A
+///     fire ALWAYS sets this to `kFire*CooldownTicks`; the next fire is
+///     gated on `cooldown == 0`. M4.5 — this is the "few hundred ms
+///     between bursts" the user asked for, and matches the chambered-
+///     round mental model. Dumbfire cooldown is short (~100 ms);
+///     Spread cooldown is the burst-to-burst gap (~370 ms).
+///   * **Magazine reload** (`*Ammo` + `*ReloadIn`) — runs out of ammo
+///     → `reloadIn = kReload*Ticks`, ticks down each step, on zero the
+///     magazine refills.
 ///
-/// Kept at 8 bytes so it costs the same dense-storage footprint as
-/// PlayerInput / LocalPlayer / Bullet (one cache line carries any
-/// four).
+/// Fire gate is `ammo > 0 && reloadIn == 0 && cooldown == 0`. The
+/// loader and reload counters are independent — pressing fire while
+/// the loader is recharging just no-ops; pressing fire after an empty
+/// mag has reloaded ALSO requires the loader to be clear (it always
+/// is right after a refill — refill never sets a cooldown).
+///
+/// Bumped from 8 → 16 bytes in M4.5. Still cheap (≤4 ships × 16 B);
+/// the two trailing pad uint16s keep the layout stable if a third
+/// weapon ever lands.
 struct WeaponLoadout {
     std::uint16_t dumbfireAmmo     = 0;   ///< rounds remaining in magazine
-    std::uint16_t dumbfireReloadIn = 0;   ///< ticks until reload finishes; 0 = ready
+    std::uint16_t dumbfireReloadIn = 0;   ///< ticks until mag refill; 0 = ready
+    std::uint16_t dumbfireCooldown = 0;   ///< ticks until next shot loader-ready
+    std::uint16_t _pad0            = 0;
     std::uint16_t spreadAmmo       = 0;
     std::uint16_t spreadReloadIn   = 0;
+    std::uint16_t spreadCooldown   = 0;   ///< burst-to-burst gap
+    std::uint16_t _pad1            = 0;
 };
-static_assert(sizeof(WeaponLoadout) == 8, "WeaponLoadout must stay 8 bytes");
+static_assert(sizeof(WeaponLoadout) == 16, "WeaponLoadout must stay 16 bytes");
 
 /// Magazine sizes — chosen so a sustained burst lands a satisfying
 /// volley before the forced reload. Dumbfire fires every 8 ticks
