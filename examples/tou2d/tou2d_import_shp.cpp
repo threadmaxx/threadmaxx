@@ -18,20 +18,31 @@
 //                          hold the palettized sprite frames; the
 //                          format is opaque pending RE work.
 //
-// What we DO decode:
+// What we DO decode (M4.7b extended-header pass):
 //   * Leading 0x00 padding / version byte.
 //   * NUL-terminated display name at offset 1.
 //   * 3-byte stat triplet immediately after the name terminator (the
 //     bytes correlate weakly with the manual's Strength / Thrusters /
 //     Turning table; cross-checked against all 9 stock SHP files but
 //     not bit-exact yet — see TOU_PLAN.md § 3.0).
+//   * 4-byte stat-extra block following the stat triplet. The 4th
+//     byte is always 0x32 = 50 across all stock files; almost
+//     certainly the engine-internal max-HP value.
+//   * Frame width / height / rotation-count, parsed from the
+//     `WW 00 HH 00 18 20` anchor that appears at a variable offset
+//     within the header (the per-ship marker region in between has
+//     different lengths and is not yet decoded).
 //
 // What we DEFER:
-//   * Sprite frame decoding (palette indices + per-frame dimensions).
+//   * Sprite frame decoding. The body is NOT raw indexed pixels at
+//     any reasonable frame dimensions — none of the 9 stock body
+//     sizes divide cleanly by `W * H * N` for any plausible N. The
+//     body is clearly a custom sparse/RLE encoding (`XX XX YY`
+//     triplets dominate the hex view); the encoding rules are TBD.
 //     The opaque body is preserved as body.bin so a follow-up batch
 //     can reverse it without re-reading the .SHP.
-//   * The constant `01 02 01 05 04` byte run observed mid-header across
-//     all 9 files — likely a section-marker; meaning unknown.
+//   * The variable-length per-ship "marker region" between the
+//     stat-extra block and the W/H/rot anchor.
 //
 // Usage:
 //   tou2d_import_shp <input.SHP> <outdir>
@@ -267,6 +278,19 @@ int main(int argc, char** argv) {
             << static_cast<int>(hdr.statTriplet[1]) << ' '
             << static_cast<int>(hdr.statTriplet[2])
             << std::dec << '\n';
+        cfg << "# 4-byte stat-extra block (last byte = max-HP, others unresolved):\n";
+        cfg << "stat_extra_hex = "
+            << std::hex
+            << static_cast<int>(hdr.statExtra[0]) << ' '
+            << static_cast<int>(hdr.statExtra[1]) << ' '
+            << static_cast<int>(hdr.statExtra[2]) << ' '
+            << static_cast<int>(hdr.statExtra[3])
+            << std::dec << '\n';
+        cfg << "max_hp = "          << static_cast<int>(hdr.maxHp)         << '\n';
+        cfg << "frame_width = "     << hdr.frameWidth                      << '\n';
+        cfg << "frame_height = "    << hdr.frameHeight                     << '\n';
+        cfg << "rotation_count = "  << static_cast<int>(hdr.rotationCount) << '\n';
+        cfg << "anchor_offset = "   << hdr.anchorOffset                    << '\n';
         if (manual) {
             cfg << "# Manual fall-back stats (from TOU_PLAN.md § 3.0):\n";
             cfg << "manual_name = "      << manual->manualName << '\n';
@@ -311,6 +335,15 @@ int main(int argc, char** argv) {
     std::printf("  name:        %s\n", hdr.displayName.c_str());
     std::printf("  stats (hex): %02x %02x %02x\n",
                 hdr.statTriplet[0], hdr.statTriplet[1], hdr.statTriplet[2]);
+    std::printf("  extra (hex): %02x %02x %02x %02x  (max_hp=%u)\n",
+                hdr.statExtra[0], hdr.statExtra[1],
+                hdr.statExtra[2], hdr.statExtra[3],
+                static_cast<unsigned>(hdr.maxHp));
+    std::printf("  frame:       %ux%u  rotations=%u  (anchor@%zu)\n",
+                static_cast<unsigned>(hdr.frameWidth),
+                static_cast<unsigned>(hdr.frameHeight),
+                static_cast<unsigned>(hdr.rotationCount),
+                hdr.anchorOffset);
     std::printf("  header.bin:  %zu bytes\n", header.size());
     std::printf("  body.bin:    %zu bytes (sprite section — opaque)\n",
                 body.size());

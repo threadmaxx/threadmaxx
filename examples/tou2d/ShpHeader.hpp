@@ -5,15 +5,47 @@
 // (tests/tou2d_shp_import_test.cpp) can include the same source of
 // truth without dragging in the rest of the engine.
 //
-// The parser is intentionally narrow — it decodes only the bytes the
-// reverse-engineering pass has confirmed:
-//   * Leading 0x00 padding / version byte.
-//   * NUL-terminated ASCII display name at offset 1.
-//   * 3-byte stat triplet immediately after the name terminator.
-// Everything past the triplet is opaque body and lives in body.bin.
+// Parser scope (what we DO decode — empirically confirmed across all
+// 9 stock SHP files in `TOU/ships/`):
 //
-// See TOU_PLAN.md § 3.0 for the inventory of stock-ship files and the
-// open questions about the stat encoding.
+//   1. Leading 0x00 padding / version byte.
+//   2. NUL-terminated ASCII display name at offset 1.
+//   3. 3-byte stat triplet (Strength / Thrusters / Turning encodings).
+//   4. 4-byte stat extra block. Byte 3 (`statExtra[3]`) is the
+//      ship's max-HP at the engine's internal scale (manual quotes
+//      Strength on a 1-10 scale; observed max-HP correlates with the
+//      "weak ship" entries):
+//        * 0x32 = 50: BATM, BEE2, DEST, FLYY, PERU, TIEF, XWIN  (7/9)
+//        * 0x28 = 40: SPED  (manual Strength = 1.5 — "Micro Speedie")
+//        * 0x14 = 20: PERH  ("Butterfly" — not in the manual table;
+//                            evidently a deliberately fragile variant)
+//      The first three bytes vary per ship and don't correlate with
+//      anything in the manual — likely engine-internal physics
+//      coefficients (mass, drag, turn-acceleration?).
+//   5. A variable-length section ending in the anchor `WW 00 HH 00
+//      18 20` (frame width LE-u16, frame height LE-u16, byte 0x18 = 24
+//      rotation steps, trailing constant 0x20). The bytes between the
+//      stat-extra block and this anchor differ per ship (a presumed
+//      "section marker" begins `?? 01 02 01 05 04` in 8 of 9 ships;
+//      XWIN's variant is `01 01 02 01 02 03`). Parser searches for
+//      the W/H/rot anchor within `kAnchorSearchSpan` bytes.
+//
+// What we DEFER (verified blocked, not just unknown):
+//   * Sprite frame decoding. The body is NOT raw indexed pixels at
+//     any reasonable frame dimensions — none of the 9 stock body
+//     sizes (65483, 75851, 98891, 86987, 55883, 47051) divide cleanly
+//     by `W * H * N` for any plausible (W, H, N). The body is clearly
+//     a custom sparse/RLE encoding (`XX XX YY` triplets dominate the
+//     hex view, with long stretches of zeros between non-zero runs);
+//     the encoding rules are TBD pending further reverse engineering.
+//   * The exact role of the per-ship marker region (8 ships:
+//     `?? 01 02 01 05 04`; XWIN: `01 01 02 01 02 03`).
+//   * The 200+ bytes of mostly-zero data observed between the W/H
+//     anchor and the first non-zero pixel run — possibly a per-frame
+//     offset table reserved but never populated; possibly padding.
+//
+// See TOU_PLAN.md § M4.7b for the open RE questions and the recipe
+// for the next batch.
 
 #include <array>
 #include <cstddef>
@@ -29,12 +61,25 @@ namespace tou2d::shp {
 /// input.
 inline constexpr std::size_t kNameMax = 64;
 
-/// Decoded header fields. Anything not listed here lives in body.bin
-/// (presumed sprite frames; format unresolved).
+/// How far past the stat-extra block to scan for the W/H/rot anchor.
+/// All 9 stock ships have the anchor within ≤ 22 bytes of the
+/// stat-extra block; 96 gives generous headroom without making
+/// malformed input expensive.
+inline constexpr std::size_t kAnchorSearchSpan = 96;
+
+/// Decoded header fields. `payloadStart` is the offset of the first
+/// byte past the W/H/rot anchor — that's the start of the opaque
+/// sprite section the parser does NOT yet decode.
 struct ParsedHeader {
     std::string                 displayName;
-    std::array<std::uint8_t, 3> statTriplet{};
-    std::size_t                 payloadStart = 0;
+    std::array<std::uint8_t, 3> statTriplet{};   // bytes after name terminator
+    std::array<std::uint8_t, 4> statExtra{};     // 4 bytes after stat triplet
+    std::uint8_t                maxHp = 0;       // == statExtra[3]; 0x32 in all stock files
+    std::uint16_t               frameWidth = 0;  // from "WW 00 HH 00 18 20" anchor
+    std::uint16_t               frameHeight = 0; // same anchor
+    std::uint8_t                rotationCount = 0; // anchor[4]; 0x18 = 24 in all stock files
+    std::size_t                 anchorOffset = 0;  // byte offset of the W/H/rot anchor
+    std::size_t                 payloadStart = 0;  // anchorOffset + 6 (past the 6-byte anchor)
 };
 
 /// Pure parser — no I/O. Returns true on success; on failure the
@@ -42,7 +87,7 @@ struct ParsedHeader {
 /// for the validation rules.
 inline bool parseHeader(std::span<const std::uint8_t> data,
                         ParsedHeader& out) {
-    if (data.size() < 5)         return false;
+    if (data.size() < 12)        return false;
     if (data[0] != 0x00)         return false;
 
     std::size_t nameEnd = 1;
@@ -57,14 +102,54 @@ inline bool parseHeader(std::span<const std::uint8_t> data,
     if (nameEnd >= data.size())         return false;
     if (data[nameEnd] != 0x00)          return false;
     if (nameEnd == 1)                   return false;  // empty name
-    if (nameEnd + 3 >= data.size())     return false;
+    // Need 3 stat + 4 extra bytes after the name terminator.
+    if (nameEnd + 7 >= data.size())     return false;
 
     out.displayName.assign(reinterpret_cast<const char*>(data.data() + 1),
                            nameEnd - 1);
     out.statTriplet[0] = data[nameEnd + 1];
     out.statTriplet[1] = data[nameEnd + 2];
     out.statTriplet[2] = data[nameEnd + 3];
-    out.payloadStart   = nameEnd + 4;
+    out.statExtra[0]   = data[nameEnd + 4];
+    out.statExtra[1]   = data[nameEnd + 5];
+    out.statExtra[2]   = data[nameEnd + 6];
+    out.statExtra[3]   = data[nameEnd + 7];
+    out.maxHp          = out.statExtra[3];
+
+    // Search for the W/H/rot anchor: "WW 00 HH 00 18 20", where WW
+    // and HH are non-zero width/height LE-u16, 0x18 is the (stock)
+    // rotation-count constant, and 0x20 is a trailing invariant.
+    // Anchor offset varies per ship (depends on the per-ship marker
+    // region's length); a bounded linear scan is cheap.
+    const std::size_t searchStart = nameEnd + 8;
+    if (searchStart + 6 > data.size()) return false;
+    const std::size_t searchEnd =
+        (searchStart + kAnchorSearchSpan + 6 <= data.size())
+            ? searchStart + kAnchorSearchSpan
+            : data.size() - 6;
+
+    std::size_t anchor = static_cast<std::size_t>(-1);
+    for (std::size_t i = searchStart; i < searchEnd; ++i) {
+        if (data[i + 1] != 0x00) continue;
+        if (data[i + 3] != 0x00) continue;
+        if (data[i + 4] != 0x18) continue;
+        if (data[i + 5] != 0x20) continue;
+        if (data[i]     == 0x00) continue;  // width  must be non-zero
+        if (data[i + 2] == 0x00) continue;  // height must be non-zero
+        anchor = i;
+        break;
+    }
+    if (anchor == static_cast<std::size_t>(-1)) return false;
+
+    out.frameWidth =
+        static_cast<std::uint16_t>(data[anchor]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[anchor + 1]) << 8);
+    out.frameHeight =
+        static_cast<std::uint16_t>(data[anchor + 2]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[anchor + 3]) << 8);
+    out.rotationCount = data[anchor + 4];
+    out.anchorOffset  = anchor;
+    out.payloadStart  = anchor + 6;
     return true;
 }
 

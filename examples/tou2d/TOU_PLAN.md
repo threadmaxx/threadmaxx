@@ -339,38 +339,99 @@ that cleanly divide the body sizes above, eyeballing the resulting
 strips for ship-shaped blobs, then promote the speculative decoder
 to a real one.
 
-#### M4.7b — Reverse-engineer the sprite layout (next, NOT in the current batch)
+#### M4.7b — Extended-header decode (landed, partial)
 
-What we still don't know:
-- Frame width/height per ship (a small set of guesses listed above).
-- Number of rotation steps (16? 32? 64? — common 90s values).
-- Whether each frame stores a 2-byte width/height or relies on a
-  ship-global dim.
-- The role of the constant `01 02 01 05 04` mid-header marker (seen
-  at the same byte offset in all 9 files).
-- The 4 bytes following the stat triplet — likely additional stats
-  (the last is always 0x32 = 50, plausible max-HP).
+Header parser now extracts **frame dimensions, rotation count, and
+max-HP** directly from the bytes around the per-ship anchor pattern
+`WW 00 HH 00 18 20` (frame-width LE-u16, frame-height LE-u16, byte
+0x18 = 24 rotation steps, trailing invariant 0x20). The anchor sits
+at a per-ship-variable offset (`anchorOffset` field in `ParsedHeader`)
+because the marker region between the stat-extra block and the
+anchor differs in length per ship — search-based location is needed.
 
-Practical recipe:
-1. Re-run the importer with `--width 24`, `--width 26`, `--width 28`,
-   `--width 32` and visually compare body_strip.tga's for blob
-   alignment.
-2. Once a width matches: divide body_bytes by width to get total
-   rows, then by likely rotation counts (16/24/32/36) and try frame
-   heights that make the math integer.
-3. Promote `PalCol.hpp` + a `decodeFrames()` function out of the
-   speculative path into a real frame extractor, write per-rotation
-   TGA frames.
+Empirically pinned across all 9 stock ships:
 
-#### M4.8 — Runtime sprite rendering (NOT in the current batch)
+| File | Display name in file | Frame | rot | max-HP | stat triplet | stat extra (hex) |
+|---|---|---|---|---|---|---|
+| PERH | "Butterfly" | 26×26 | 24 | **20** | `02 02 01` | `6e 55 14 14` |
+| TIEF | "Imperium Tie Fighter" | 26×26 | 24 | 50 | `02 02 02` | `32 46 1c 32` |
+| BATM | "Batman ship" | 28×28 | 24 | 50 | `03 03 05` | `41 37 1a 32` |
+| BEE2 | "B2 Stealth fighter" | 28×28 | 24 | 50 | `0a 01 04` | `4b 41 17 32` |
+| PERU | "Basic TOU ship" | 24×24 | 24 | 50 | `04 01 03` | `32 32 1e 32` |
+| SPED | "Speedie" | 22×22 | 24 | **40** | `04 01 03` | `5a 32 1a 28` |
+| DEST | "Destroyer" | 30×30 | 24 | 50 | `06 02 06` | `23 23 25 32` |
+| FLYY | "Fly" | 32×32 | 24 | 50 | `01 01 03` | `32 28 22 32` |
+| XWIN | "X-Wing fighter" | 32×32 | 24 | 50 | `01 02 04` | `46 3c 19 32` |
 
-Deferred until M4.7b lands a verified frame decoder. The work:
+Notes:
+- **Display names in the actual SHP files don't match the manual's
+  stock-ship table.** The manual lists "Basic ship", "Bee", "Tie
+  Fighter", etc.; the files say "Butterfly", "B2 Stealth fighter",
+  "Imperium Tie Fighter". The `ManualEntry` table in the CLI is
+  therefore unreliable for stem → display-name mapping; the parser's
+  `displayName` field is authoritative.
+- **W == H in all 9 files**, and **rotation count = 24 (0x18) in all
+  9 files**. Plausibly invariants of the engine's sprite layout.
+- **`statExtra[3]` varies (0x14 / 0x28 / 0x32)** — earlier hypothesis
+  that it was always 0x32 was wrong. The value tracks weakness:
+  Butterfly (PERH) is a 20-HP glass cannon; Speedie (SPED) is a
+  40-HP fast frame; everything else maxes at 50.
+- **First three bytes of `statExtra` remain unresolved** — they don't
+  obviously correlate with the manual's Strength/Thrusters/Turning
+  numbers. Likely engine-internal physics coefficients (mass / drag /
+  turn-acceleration). Cross-checking with the playable demo could
+  isolate which is which, but it's out of scope for the importer.
+
+Body format remains opaque. The earlier hypothesis that body.bin was
+raw indexed pixels at some width was **falsified**: none of the 6
+distinct body sizes (47022, 55854, 65454, 75822, 86958, 98862) divide
+cleanly by `W * H * N` for any plausible (W, H, N) — at 24 rotations
+× ≥ 4 animation frames × W×H pixels we'd see 24 × 4 × 26² = 64,896
+bytes for PERH's body of 65,454 bytes, which is close but not exact;
+the gap grows for the other ships. Hex inspection shows the body is
+dominated by `XX XX YY` triplet patterns with long zero stretches —
+clearly a custom sparse/RLE encoding, not raw pixels. The strip-TGA
+visualizer the previous batch shipped is still useful for spotting
+pixel structure but should not be misread as a real decoder.
+
+What's still unknown (next batch's work):
+- **Body encoding rules**. The `XX XX YY` triplets dominate but the
+  framing is unclear — per-row? per-frame? Is there a start-of-frame
+  marker? An offset table? The ~200-byte mostly-zero stretch between
+  the W/H/rot anchor and the first non-zero data could be an empty
+  per-frame TOC reserved but never populated — or padding.
+- **Per-ship marker region** (the bytes between `statExtra` and the
+  W/H/rot anchor). 8 ships start with `?? 01 02 01 05 04`; XWIN's
+  variant is `01 01 02 01 02 03`. Role unknown — possibly a section
+  marker, possibly per-ship animation timing data, possibly version.
+- **First three bytes of `statExtra`** — likely physics, but mapping
+  to manual entries (mass / thruster force / turning rate) needs
+  cross-checking against in-game behavior.
+
+A future batch tackling the body decoder should treat it as serious
+reverse-engineering work — pattern matching alone is insufficient,
+and there's no public source / spec / oracle. Suggested approach:
+write an interactive hex visualizer (probably in Python) that lets
+the operator step through hypothesis decodings frame-by-frame, then
+back-port the verified algorithm into a C++ decoder.
+
+#### M4.8 — Runtime sprite rendering (still deferred, now firmly so)
+
+Originally planned as "next batch after M4.7b" — with M4.7b's body
+decoder confirmed as a genuinely hard RE problem (not a recipe-driven
+unknown), M4.8 is **blocked indefinitely** on the body decoder. The
+sprite pipeline can be built without it, but it would render solid
+cubes or checkerboards in lieu of real ship art — the same placeholder
+the cube-instance lane already produces, just through a more elaborate
+pipeline. No forward progress.
+
+When M4.7b's decoder lands, the M4.8 work plan is unchanged:
 1. New Vulkan pipeline (`sprite_quad.vert/frag`) for textured 2D
    quads sharing the existing orthographic camera plumbing. Uses a
    sprite-atlas texture sampled by per-instance UV rect.
 2. `SpriteAtlas` resource type registered through `ResourceRegistry`,
-   loaded from the per-ship TGA frames M4.7b emits. One atlas per
-   ship, plus a global "weapons/effects" atlas.
+   loaded from the per-ship TGA frames the decoder emits. One atlas
+   per ship, plus a global "weapons/effects" atlas.
 3. `SpriteRef { atlasId, frameId, rotationFrames, currentFrame }`
    user-component (already inventoried in §3.7); a render system
    computes the right frame from the ship's `Heading` user-component
@@ -383,8 +444,14 @@ Deferred until M4.7b lands a verified frame decoder. The work:
 Risk: the renderer is 4.3k LOC of cube-instance pipeline. Adding a
 parallel 2D pipeline is the same shape as the existing background
 texture path (`backgroundTexture` in `VulkanRenderer.cpp`), but with
-per-instance UV. Estimate: a single focused batch once M4.7b is
-done.
+per-instance UV. Estimate: a single focused batch once the body
+decoder is done.
+
+**Sanity check before starting M4.8**: confirm the decoder produces a
+verifiable round-trip — round-trip-encode some hand-drawn test frames,
+decode them, byte-match. Don't ship M4.8 against a decoder that only
+*looks* right; M4.7b's body-format defeat shows how easy it is to
+pattern-match a wrong hypothesis.
 
 ### Tier 3 — Native source-asset workflow (milestone 5+)
 Skip the binary containers entirely. The user's editing workflow becomes:
