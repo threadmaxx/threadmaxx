@@ -33,16 +33,19 @@
 //     within the header (the per-ship marker region in between has
 //     different lengths and is not yet decoded).
 //
+// What we DO decode (M4.7c sprite-body breakthrough):
+//   * 32-rotation sprite sheet anchored from the END of the file
+//     (file_size = header + 32 * 3 * W * H). When --palette is
+//     supplied the CLI also emits `rotations.tga` (frame_w * 32 wide,
+//     frame_h tall) composited via byte[2] (cockpit) over byte[0]
+//     (hull). See `ShpBody.hpp` for the parser.
+//
 // What we DEFER:
-//   * Sprite frame decoding. The body is NOT raw indexed pixels at
-//     any reasonable frame dimensions — none of the 9 stock body
-//     sizes divide cleanly by `W * H * N` for any plausible N. The
-//     body is clearly a custom sparse/RLE encoding (`XX XX YY`
-//     triplets dominate the hex view); the encoding rules are TBD.
-//     The opaque body is preserved as body.bin so a follow-up batch
-//     can reverse it without re-reading the .SHP.
 //   * The variable-length per-ship "marker region" between the
 //     stat-extra block and the W/H/rot anchor.
+//   * The ~500 bytes between the W/H anchor and the body start —
+//     candidates: per-rotation offset tables, anim timing, weapon
+//     hardpoints. Not consumed by the renderer.
 //
 // Usage:
 //   tou2d_import_shp <input.SHP> <outdir>
@@ -51,6 +54,7 @@
 // or the renderer.
 
 #include "ShpHeader.hpp"
+#include "ShpBody.hpp"
 #include "PalCol.hpp"
 #include "TgaWriter.hpp"
 
@@ -168,6 +172,42 @@ bool writeBodyStripTga(const fs::path&                       outPath,
         }
     }
     return tou2d::shp::writeTga24(outPath.string(), width, height,
+                                  std::span<const tou2d::shp::Rgb>(pixels));
+}
+
+/// Render all 32 rotation frames of a parsed body as a horizontal
+/// sprite sheet TGA (frame_w * 32 wide, frame_h tall). Composite uses
+/// `byte[2]` (cockpit) over `byte[0]` (hull); palette index 0 is
+/// rendered as solid magenta so transparent pixels are visible in any
+/// viewer.
+bool writeRotationSheetTga(const fs::path&            outPath,
+                           const tou2d::shp::ParsedBody& body,
+                           const tou2d::shp::Palette&    pal) {
+    const std::uint16_t fw = body.frameWidth;
+    const std::uint16_t fh = body.frameHeight;
+    const std::uint16_t sheetW =
+        static_cast<std::uint16_t>(fw * tou2d::shp::kBodyRotationCount);
+    std::vector<tou2d::shp::Rgb> pixels(static_cast<std::size_t>(sheetW) * fh);
+    for (std::uint32_t r = 0; r < tou2d::shp::kBodyRotationCount; ++r) {
+        const auto fb = body.frame(r);
+        for (std::uint16_t y = 0; y < fh; ++y) {
+            for (std::uint16_t x = 0; x < fw; ++x) {
+                const std::size_t o = (static_cast<std::size_t>(y) * fw + x) * 3;
+                const std::uint8_t hull    = fb[o];
+                const std::uint8_t cockpit = fb[o + 2];
+                const std::uint8_t idx     = cockpit ? cockpit : hull;
+                const std::size_t pi =
+                    static_cast<std::size_t>(y) * sheetW + r * fw + x;
+                if (idx == 0) {
+                    pixels[pi] = { 0xFF, 0x00, 0xFF };  // magenta = transparent
+                } else {
+                    const auto& e = pal.entries[idx];
+                    pixels[pi] = { e.r, e.g, e.b };
+                }
+            }
+        }
+    }
+    return tou2d::shp::writeTga24(outPath.string(), sheetW, fh,
                                   std::span<const tou2d::shp::Rgb>(pixels));
 }
 
@@ -306,6 +346,7 @@ int main(int argc, char** argv) {
     // ---- Optional palette + body visualization --------------------------
     bool wrotePalette = false;
     bool wroteStrip   = false;
+    bool wroteSheet   = false;
     if (!palettePath.empty()) {
         std::vector<std::uint8_t> palRaw;
         if (!readFile(palettePath, palRaw)) {
@@ -327,6 +368,18 @@ int main(int argc, char** argv) {
             std::fprintf(stderr,
                 "[import_shp] failed to write palette.tga / body_strip.tga\n");
             return 1;
+        }
+
+        // M4.7c: decoded 32-rotation sprite sheet using ShpBody.hpp.
+        tou2d::shp::ParsedBody parsedBody;
+        if (tou2d::shp::parseBody(all, hdr, parsedBody)) {
+            wroteSheet = writeRotationSheetTga(
+                outDir / "rotations.tga", parsedBody, pal);
+            if (!wroteSheet) {
+                std::fprintf(stderr,
+                    "[import_shp] failed to write rotations.tga\n");
+                return 1;
+            }
         }
     }
 
@@ -353,6 +406,11 @@ int main(int argc, char** argv) {
         std::printf("  body_strip:  %ux%zu speculative-decode strip\n",
                     static_cast<unsigned>(stripWidth),
                     (body.size() + stripWidth - 1) / stripWidth);
+    }
+    if (wroteSheet) {
+        std::printf("  rotations.tga: %ux%u 32-rotation composite sheet (M4.7c)\n",
+                    static_cast<unsigned>(hdr.frameWidth * 32),
+                    static_cast<unsigned>(hdr.frameHeight));
     }
     if (!manual) {
         std::printf("  manual:      no stock-ship match for '%s'\n",

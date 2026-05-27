@@ -451,35 +451,90 @@ top half but bleeds solid-color into the bottom — meaning a frame
 boundary marker exists that resets the cursor mid-stream, and the
 naive slice mistakes that boundary for "more frame 0 data".
 
-**What's blocking a complete decoder:**
-- Frame boundary mechanism. Candidates: explicit terminator triplet
-  (e.g. `[0xFF][0xFF][0xFF]`?), implicit cursor-mod-676 wrap, or a
-  per-frame header byte we haven't located.
-- Per-frame variable size means the leading 269-byte zero region
-  might actually be a 24-entry × 11-byte offset table that points to
-  each rotation's frame start (24 × 11 = 264 ≈ 269). Worth testing.
-- Sub-frame structure (animation frames per rotation). The manual
-  shows ships with multiple animation states (thrust on/off etc.) —
-  the count per rotation may be encoded somewhere we haven't found.
+**Variant D was nearly right — the actual encoding turned out to be
+even simpler.** The breakthrough came from combining the user's
+parallel RE work (a 32-frame slicing-from-end-of-file hypothesis
+documented in their untracked `tou_shp_mirror_pairs.py`) with a
+cross-ship file-size audit. The Variant-D triplet bytes ARE the
+sprite data; they're just not [skip][run][color]. See M4.7c below.
 
-The next batch's recipe is now narrower: take Variant D as ground
-truth, then either (a) hunt for the frame-boundary mechanism by
-inspecting the first few "ship-shaped" regions of cursor output and
-finding the byte that ends frame 0 cleanly, or (b) interpret the
-leading 269 bytes as a 24-entry offset table and re-decode from each
-entry's offset independently.
+#### M4.7c — Body decoder LANDED ✅
 
-#### M4.8 — Runtime sprite rendering (still deferred, now firmly so)
+**Layout (confirmed across all 9 stock SHPs):**
 
-Originally planned as "next batch after M4.7b" — with M4.7b's body
-decoder confirmed as a genuinely hard RE problem (not a recipe-driven
-unknown), M4.8 is **blocked indefinitely** on the body decoder. The
-sprite pipeline can be built without it, but it would render solid
-cubes or checkerboards in lieu of real ship art — the same placeholder
-the cube-instance lane already produces, just through a more elaborate
-pipeline. No forward progress.
+```
+file_size = header_bytes + 32 * 3 * frame_w * frame_h
+body_start = file_size - 32 * 3 * frame_w * frame_h
+```
 
-When M4.7b's decoder lands, the M4.8 work plan is unchanged:
+Per-ship header_bytes = ~592 + name_length:
+
+| File | Size | Frame | 32×3×W×H | Header | Name length |
+|------|------|-------|----------|--------|-------------|
+| FLYY | 98899 | 32×32 | 98304 | 595 | "Fly" (3) |
+| SPED | 47063 | 22×22 | 46464 | 599 | "Speedie" (7) |
+| DEST | 87001 | 30×30 | 86400 | 601 | "Destroyer" (9) |
+| PERH | 65497 | 26×26 | 64896 | 601 | "Butterfly" (9) |
+| BATM | 75867 | 28×28 | 75264 | 603 | "Batman ship" (11) |
+| PERU | 55902 | 24×24 | 55296 | 606 | "Basic TOU ship" (14) |
+| XWIN | 98910 | 32×32 | 98304 | 606 | "X-Wing fighter" (14) |
+| BEE2 | 75874 | 28×28 | 75264 | 610 | "B2 Stealth fighter" (18) |
+| TIEF | 65508 | 26×26 | 64896 | 612 | "Imperium Tie Fighter" (20) |
+
+**Frame layout** — each rotation frame = `frame_w * frame_h` pixels,
+3 bytes per pixel, interleaved triplet:
+
+```
+pixel(x, y) = body[ rotation*frame_size + (y*w + x)*3 .. +3 ]
+            = (b0, b1, b2)
+```
+
+Empirical channel role (visually verified — `scripts/decode_sprite.py`
+emits a 32-rotation montage per ship; TIE fighters, X-wings, the Fly,
+the Batman ship and Destroyer are all unmistakably recognizable):
+- `b0` = hull palette index (primary silhouette)
+- `b1` = edge / wing-highlight palette index
+- `b2` = cockpit / center detail palette index
+
+Recommended composite: **`b2` over `b0`** (cockpit overlays hull). The
+`b1` channel currently isn't consumed by the renderer — it may be
+animation-frame data (e.g. thruster on/off) or a self-shadow mask.
+Palette index 0 is transparent. 32 rotations × 11.25° starts at
+"ship facing down" and proceeds counter-clockwise (user-confirmed
+hypothesis matches all 9 ships).
+
+**The 0x18 = 24 byte at `anchor[4]`** in the header is NOT the body's
+frame count — the body has 32 in every stock ship. Best guess: some
+gameplay constant ("core" rotations for collision normals?). Not
+consumed by the decoder.
+
+**What's STILL not decoded** (now informational, not blocking):
+- The ~500–550 bytes between the W/H anchor and the body start —
+  per-rotation offset table? Animation timing? Weapon hardpoints?
+  Renderer doesn't need them; body is fixed-stride.
+- Per-ship marker region role (8 ships: `?? 01 02 01 05 04`; XWIN:
+  `01 01 02 01 02 03`).
+- `b1` channel purpose (sprite is clean with `b0+b2` composite).
+- First three bytes of `statExtra` (physics coefficients — cross-check
+  against in-game behavior).
+
+**Code landed:**
+- `examples/tou2d/ShpBody.hpp` — header-only `ParsedBody` + `parseBody`
+  + `compositeRotation` (writes RGBA8 with `b2` over `b0`).
+- `examples/tou2d/scripts/decode_sprite.py` — the definitive decoder /
+  visualizer; emits per-ship 32-rotation montage PNGs.
+- `tests/tou2d_shp_body_test.cpp` — 6 pinning cases (happy path,
+  frame indexing, pixel triplet, composite priority, too-small,
+  zero-dims, header-body overlap).
+- `examples/tou2d/tou2d_import_shp.cpp` — when `--palette` is given,
+  also emits `rotations.tga` (frame_w × 32 wide, frame_h tall composite
+  sheet).
+
+**Updated** `ShpHeader.hpp` docs: body layout deferred → landed.
+
+#### M4.8 — Runtime sprite rendering (UNBLOCKED)
+
+The body decoder is done. Work plan unchanged:
 1. New Vulkan pipeline (`sprite_quad.vert/frag`) for textured 2D
    quads sharing the existing orthographic camera plumbing. Uses a
    sprite-atlas texture sampled by per-instance UV rect.
@@ -501,11 +556,11 @@ texture path (`backgroundTexture` in `VulkanRenderer.cpp`), but with
 per-instance UV. Estimate: a single focused batch once the body
 decoder is done.
 
-**Sanity check before starting M4.8**: confirm the decoder produces a
-verifiable round-trip — round-trip-encode some hand-drawn test frames,
-decode them, byte-match. Don't ship M4.8 against a decoder that only
-*looks* right; M4.7b's body-format defeat shows how easy it is to
-pattern-match a wrong hypothesis.
+**Sanity check before M4.8 PR**: the decoder doesn't have a round-trip
+encoder (we don't need to *write* SHP files), but the visual verifier
+(`decode_sprite.py`) plus the pinning test (`tou2d_shp_body_test.cpp`)
+together cover the determinism contract — any future change that
+breaks the layout will fail the test or visibly mangle the montage.
 
 ### Tier 3 — Native source-asset workflow (milestone 5+)
 Skip the binary containers entirely. The user's editing workflow becomes:

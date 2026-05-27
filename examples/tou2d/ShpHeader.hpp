@@ -30,22 +30,33 @@
 //      XWIN's variant is `01 01 02 01 02 03`). Parser searches for
 //      the W/H/rot anchor within `kAnchorSearchSpan` bytes.
 //
-// What we DEFER (verified blocked, not just unknown):
-//   * Sprite frame decoding. The body is NOT raw indexed pixels at
-//     any reasonable frame dimensions — none of the 9 stock body
-//     sizes (65483, 75851, 98891, 86987, 55883, 47051) divide cleanly
-//     by `W * H * N` for any plausible (W, H, N). The body is clearly
-//     a custom sparse/RLE encoding (`XX XX YY` triplets dominate the
-//     hex view, with long stretches of zeros between non-zero runs);
-//     the encoding rules are TBD pending further reverse engineering.
+// Sprite body decoding LANDED — see `ShpBody.hpp` for the parser
+// and `scripts/decode_sprite.py` for the visual verification. Short
+// version of the body layout:
+//
+//   file_size = header_bytes + 32 * 3 * frameWidth * frameHeight
+//   body_start = file_size - 32 * 3 * frameWidth * frameHeight
+//
+// Each rotation frame holds `frameWidth * frameHeight` pixels at 3
+// bytes per pixel (interleaved triplet): byte 0 = hull palette index,
+// byte 1 = edge highlight, byte 2 = cockpit/detail. Composite is
+// "byte 2 over byte 0" (cockpit overlays hull). Index 0 transparent.
+// 32 rotations × 11.25° starting from "ship facing down" CCW.
+//
+// The 0x18 = 24 at `anchor[4]` here is therefore NOT the body's
+// rotation count (the body is always 32 frames). It's a different
+// gameplay constant we don't currently consume.
+//
+// What's STILL deferred:
 //   * The exact role of the per-ship marker region (8 ships:
 //     `?? 01 02 01 05 04`; XWIN: `01 01 02 01 02 03`).
-//   * The 200+ bytes of mostly-zero data observed between the W/H
-//     anchor and the first non-zero pixel run — possibly a per-frame
-//     offset table reserved but never populated; possibly padding.
+//   * The 500+ bytes between the W/H anchor and the body start —
+//     candidate fields include per-rotation offset tables (never
+//     needed for decode now that the body is fixed-stride),
+//     animation timing, or weapon hardpoints. Not decoded.
 //
-// See TOU_PLAN.md § M4.7b for the open RE questions and the recipe
-// for the next batch.
+// See TOU_PLAN.md § M4.7c for the body breakthrough writeup and
+// § M4.8 for the runtime renderer hookup recipe.
 
 #include <array>
 #include <cstddef>
