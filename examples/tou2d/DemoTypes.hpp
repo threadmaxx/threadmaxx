@@ -192,6 +192,39 @@ struct Bullet {
 };
 static_assert(sizeof(Bullet) == 8, "Bullet must stay 8 bytes");
 
+/// M4.8 — per-ship sprite reference. `atlasIdx` points into the
+/// SpriteCompositor's atlas table. The compositor maintains its own
+/// per-entity prev-frame cache (last blit position + rotation) so the
+/// user component stays a tiny POD that's safe to memcpy across mask
+/// changes.
+struct ShipSpriteRef {
+    std::int32_t atlasIdx = -1;
+    std::uint8_t _pad[4]  = {};
+};
+static_assert(sizeof(ShipSpriteRef) == 8, "ShipSpriteRef must stay 8 bytes");
+
+/// M4.8 — typed event channel for one-shot audio cues. Game systems
+/// emit; AudioSystem subscribes and routes to a miniaudio sound
+/// instance. `soundId` is an opaque index into AudioSystem's bank.
+/// `volume` is 0..1; 0 means "use bank default".
+struct AudioPlay {
+    std::uint16_t soundId = 0;
+    std::uint8_t  volume  = 0;
+    std::uint8_t  _pad    = 0;
+};
+static_assert(sizeof(AudioPlay) == 4, "AudioPlay must stay 4 bytes");
+
+/// Stable IDs into the AudioSystem sound bank. Add new entries at the
+/// end; never reorder (would invalidate any persisted sound choices).
+namespace audio {
+inline constexpr std::uint16_t kSoundDumbfire   = 0;  ///< basic weapon fire
+inline constexpr std::uint16_t kSoundSpread     = 1;  ///< spread weapon fire
+inline constexpr std::uint16_t kSoundHit        = 2;  ///< bullet hits a ship
+inline constexpr std::uint16_t kSoundExplode    = 3;  ///< ship explosion / death
+inline constexpr std::uint16_t kSoundTileBreak  = 4;  ///< terrain tile destroyed
+inline constexpr std::uint16_t kSoundCount      = 5;
+} // namespace audio
+
 /// M4.2 / M4.5 — per-ship weapon ammo + reload state.
 ///
 /// Two cycles per weapon:
@@ -265,6 +298,7 @@ struct UserComponentIds {
     threadmaxx::UserComponentId ship;
     threadmaxx::UserComponentId bullet;
     threadmaxx::UserComponentId loadout;  ///< M4.2 — per-ship ammo / reload state
+    threadmaxx::UserComponentId sprite;   ///< M4.8 — per-ship sprite reference
 };
 
 /// M3.3 — flat array of (hp, attribute) per cell. Replaces the per-tile

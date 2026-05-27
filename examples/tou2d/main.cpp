@@ -7,6 +7,7 @@
 
 #include "CameraSystem.hpp"
 #include "DemoTypes.hpp"
+#include "SpriteCompositor.hpp"
 #include "TouGame.hpp"
 
 #include <threadmaxx_vk/VulkanRenderer.hpp>
@@ -175,6 +176,16 @@ int main(int argc, char** argv) {
         game.setLevelDir(levelDir);
         std::printf("[tou2d] loading level from %s\n", levelDir.c_str());
     }
+    // M4.8 — point the game at the asset root. Defaults to `./assets/`
+    // relative to the binary's cwd; the user typically runs from the
+    // project root or passes an explicit dir via `--assets`. The
+    // SpriteCompositor (declared below) is borrowed for atlas loading.
+    {
+        const char* envAssets = std::getenv("TOU2D_ASSETS");
+        game.setAssetDir(envAssets ? envAssets : "assets");
+    }
+    tou2d::SpriteCompositor compositor;
+    game.setSpriteCompositor(&compositor);
     game.setMatchMode(matchMode);
     std::printf("[tou2d] match mode: %s\n",
                 matchMode == tou2d::MatchMode::LastShipStanding
@@ -434,6 +445,27 @@ int main(int argc, char** argv) {
             game.setTileDestroyCallback(
                 [&bgPainter](int cx, int cy) { bgPainter.paintTile(cx, cy); });
 
+            // M4.8 — size the sprite compositor's foreground buffer to
+            // match the background. World rect is identical so
+            // foreground pixels land 1:1 over background pixels.
+            compositor.resize(paddedW, paddedH,
+                              halfX * tilePx,
+                              halfY * tilePx,
+                              tou2d::kWorldUnitsPerImagePixel);
+            {
+                const bool fgOk = renderer->setForegroundFromRgba(
+                    compositor.pixels(),
+                    static_cast<std::uint32_t>(paddedW),
+                    static_cast<std::uint32_t>(paddedH));
+                renderer->setForegroundWorldExtent(
+                    (maxWorldX - minWorldX) * 0.5f,
+                    (maxWorldY - minWorldY) * 0.5f,
+                    (maxWorldX + minWorldX) * 0.5f,
+                    (maxWorldY + minWorldY) * 0.5f);
+                std::printf("[tou2d] foreground sprite layer installed=%d\n",
+                            int(fgOk));
+            }
+
             stbi_image_free(pixels);
             std::printf("[tou2d] background %s: %dx%d -> padded %dx%d "
                         "(channels=%d) installed=%d\n",
@@ -459,6 +491,7 @@ int main(int argc, char** argv) {
     auto nextFrame = clock::now() + kFrameInterval;
 
     std::uint64_t tick = 0;
+    std::vector<std::uint8_t> spriteUploadScratch;
     while (!glfwWindowShouldClose(window) && !engine.quitRequested()) {
         glfwPollEvents();
         engine.step();
@@ -467,6 +500,25 @@ int main(int argc, char** argv) {
         // BulletTerrain + Collision destroy callbacks; one
         // `updateBackgroundRegion` covers the union bbox.
         bgPainter.flush();
+        // M4.8 — composite sprites into the foreground texture for
+        // every ship that's alive + has a SpriteRef. The dirty bbox
+        // unions every ship's prev + current bbox so a single
+        // `updateForegroundRegion` upload covers all four player
+        // sprites at once.
+        compositor.tick(engine.world(), game.userComponentIds());
+        {
+            std::int32_t rx, ry, rw, rh;
+            if (compositor.consumeDirty(rx, ry, rw, rh)) {
+                compositor.copyRegion(rx, ry, rw, rh, spriteUploadScratch);
+                renderer->updateForegroundRegion(
+                    static_cast<std::uint32_t>(rx),
+                    static_cast<std::uint32_t>(ry),
+                    static_cast<std::uint32_t>(rw),
+                    static_cast<std::uint32_t>(rh),
+                    std::span<const std::uint8_t>(spriteUploadScratch.data(),
+                                                  spriteUploadScratch.size()));
+            }
+        }
         ++tick;
         if (maxTicks && tick >= maxTicks) {
             std::printf("[tou2d] reached %llu ticks; exiting\n",

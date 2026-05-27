@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <functional>
 
+namespace threadmaxx { class Engine; }
+
 namespace tou2d {
 
 /// Bullet vs static terrain. Runs in its own wave AFTER
@@ -23,7 +25,8 @@ namespace tou2d {
 ///   * writes = {EntityStructural}  — destroys spent bullets.
 class BulletTerrainSystem : public threadmaxx::ISystem {
 public:
-    BulletTerrainSystem(UserComponentIds ids, TerrainGrid* grid) noexcept;
+    BulletTerrainSystem(UserComponentIds ids, TerrainGrid* grid,
+                        threadmaxx::Engine* engine = nullptr) noexcept;
 
     const char*              name()   const noexcept override { return "tou2d.bulletTerrain"; }
     threadmaxx::ComponentSet reads()  const noexcept override {
@@ -45,9 +48,10 @@ public:
     void setDestroyCallback(DestroyCallback cb) noexcept { destroyCb_ = std::move(cb); }
 
 private:
-    UserComponentIds ids_;
-    TerrainGrid*     grid_ = nullptr;   // borrowed; owned by TouGame
-    DestroyCallback  destroyCb_;
+    UserComponentIds    ids_;
+    TerrainGrid*        grid_   = nullptr;   // borrowed; owned by TouGame
+    threadmaxx::Engine* engine_ = nullptr;   // borrowed; AudioPlay only
+    DestroyCallback     destroyCb_;
 };
 
 } // namespace tou2d

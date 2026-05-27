@@ -2,6 +2,7 @@
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/Query.hpp>
 #include <threadmaxx/World.hpp>
 
@@ -106,7 +107,9 @@ void spawnBullet(threadmaxx::SystemContext& ctx,
 
 } // namespace
 
-WeaponFireSystem::WeaponFireSystem(UserComponentIds ids) noexcept : ids_(ids) {}
+WeaponFireSystem::WeaponFireSystem(UserComponentIds ids,
+                                   threadmaxx::Engine* engine) noexcept
+    : ids_(ids), engine_(engine) {}
 
 void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
     const auto idsPi = ids_.playerInput;
@@ -213,6 +216,10 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                     if (ld.dumbfireAmmo == 0) {
                         ld.dumbfireReloadIn = kDumbfireReloadTicks;
                     }
+                    if (engine_) {
+                        engine_->events<AudioPlay>().emit(
+                            AudioPlay{audio::kSoundDumbfire, 0, 0});
+                    }
                 }
 
                 // ---- Spread (fireSpecial) ---------------------------
@@ -234,6 +241,10 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                     ld.spreadCooldown = kSpreadCooldownTicks;
                     if (ld.spreadAmmo == 0) {
                         ld.spreadReloadIn = kSpreadReloadTicks;
+                    }
+                    if (engine_) {
+                        engine_->events<AudioPlay>().emit(
+                            AudioPlay{audio::kSoundSpread, 0, 0});
                     }
                 }
 

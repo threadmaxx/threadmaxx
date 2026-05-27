@@ -166,6 +166,34 @@ public:
                                   float centerX = 0.0f,
                                   float centerY = 0.0f) noexcept;
 
+    /// M4.8 — install a transparent foreground texture rendered AFTER
+    /// the opaque pass / debug overlays. Twin of `setBackgroundFromRgba`;
+    /// same RGBA8 layout, same blocking-upload semantics. The
+    /// foreground draws as a world-space quad placed via
+    /// `setForegroundWorldExtent`, blended onto the back buffer with
+    /// straight alpha. Used by tou2d to overlay decoded SHP sprites at
+    /// each ship's current rotation without touching the cube path.
+    bool setForegroundFromRgba(std::span<const std::uint8_t> rgba,
+                               std::uint32_t                 width,
+                               std::uint32_t                 height);
+
+    /// M4.8 — partial-rect update of the foreground texture. Same
+    /// contract as `updateBackgroundRegion`. Hot path: the per-tick
+    /// sprite compositor flushes one bbox covering every ship that
+    /// moved or changed rotation since last frame.
+    bool updateForegroundRegion(std::uint32_t                 x,
+                                std::uint32_t                 y,
+                                std::uint32_t                 w,
+                                std::uint32_t                 h,
+                                std::span<const std::uint8_t> rgba);
+
+    /// M4.8 — world-space placement of the foreground quad. Typically
+    /// matches the background extent exactly so foreground pixels line
+    /// up with background pixels 1:1.
+    void setForegroundWorldExtent(float halfW, float halfH,
+                                  float centerX = 0.0f,
+                                  float centerY = 0.0f) noexcept;
+
     /// §3.11.7b.5 batch 9b.4.b — upload the per-frame bone matrices.
     /// `matrices` is a packed array of `mat4` values, column-major
     /// (Vulkan std140 convention). The renderer copies into the

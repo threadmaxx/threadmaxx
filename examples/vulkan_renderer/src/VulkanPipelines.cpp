@@ -503,6 +503,20 @@ VkPipeline VulkanPipelines::buildBackgroundPipeline(VkDevice device,
     fillStandardState(rs, ms, cb, cbs, vp);
     rs.cullMode = VK_CULL_MODE_NONE;   // triangle's CCW vs CW depends on viewport Y-flip; skip the dance.
 
+    // M4.8 — straight-alpha blending. Background images are opaque
+    // (alpha=255 padded by the host) so this is a no-op for the
+    // background draw, but the same pipeline is also used by the
+    // foreground sprite layer (see VulkanRenderer's `foreground*`
+    // path) which carries proper transparency via the SHP sprite
+    // alpha channel.
+    cb.blendEnable         = VK_TRUE;
+    cb.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    cb.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cb.colorBlendOp        = VK_BLEND_OP_ADD;
+    cb.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cb.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cb.alphaBlendOp        = VK_BLEND_OP_ADD;
+
     // Depth test off, write off — the background sits behind everything
     // and must not occlude (or be occluded by) the cleared depth.
     VkPipelineDepthStencilStateCreateInfo ds = {};

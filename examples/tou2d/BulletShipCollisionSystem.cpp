@@ -160,6 +160,17 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                 victim.currentHp     = newHp < 0.0f ? 0.0f : newHp;
                 threadmaxx::addUserComponent(cb, idsShip, entities[row], victim);
 
+                // M4.8 — audio cue. Hit on every damage tick; explode on
+                // the transition from alive → 0 HP.
+                if (engine_) {
+                    engine_->events<AudioPlay>().emit(
+                        AudioPlay{audio::kSoundHit, 0, 0});
+                    if (wasAlive && victim.currentHp <= 0.0f) {
+                        engine_->events<AudioPlay>().emit(
+                            AudioPlay{audio::kSoundExplode, 0, 0});
+                    }
+                }
+
                 if (wasAlive && victim.currentHp <= 0.0f) {
                     const std::uint8_t shooter = firstShooterBySlot[slot];
                     if (shooter != kNoShooter && shooter != slot) {

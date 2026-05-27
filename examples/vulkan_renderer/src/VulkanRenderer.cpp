@@ -125,6 +125,20 @@ struct VulkanRenderer::Impl {
     float                               backgroundWorldCenterX = 0.0f;
     float                               backgroundWorldCenterY = 0.0f;
 
+    // M4.8 — twin of the background fields above. The foreground quad
+    // shares the background pipeline (alpha blending was enabled in
+    // batch M4.8 for both) and is drawn AFTER opaque + debug overlays,
+    // so RGBA sprite pixels composite onto whatever the camera pass
+    // produced. tou2d's sprite compositor writes ship rotations here;
+    // other consumers can use it for any per-frame transparent layer.
+    VkDescriptorPool                    foregroundDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet                     foregroundDescriptorSet  = VK_NULL_HANDLE;
+    threadmaxx::ResourceHandle<Texture> foregroundTexture;
+    float                               foregroundWorldHalfW    = 1.0f;
+    float                               foregroundWorldHalfH    = 1.0f;
+    float                               foregroundWorldCenterX  = 0.0f;
+    float                               foregroundWorldCenterY  = 0.0f;
+
     // §3.11.2 batch D2 — per-camera slice into the pre-packed
     // instance buffer. §3.11 batch 9b.2b — the single
     // (offset, count) pair is now a list of per-meshId sub-slices.
@@ -406,6 +420,14 @@ void VulkanRenderer::shutdown() {
         impl_->backgroundDescriptorPool = VK_NULL_HANDLE;
         impl_->backgroundDescriptorSet  = VK_NULL_HANDLE;
     }
+    // M4.8 — twin teardown for the foreground sprite layer.
+    impl_->foregroundTexture.reset();
+    if (impl_->foregroundDescriptorPool) {
+        vkDestroyDescriptorPool(impl_->ctx.device(),
+                                impl_->foregroundDescriptorPool, nullptr);
+        impl_->foregroundDescriptorPool = VK_NULL_HANDLE;
+        impl_->foregroundDescriptorSet  = VK_NULL_HANDLE;
+    }
 
     impl_->cubeHandle.reset();
     impl_->destroyPerFrame();
@@ -598,6 +620,96 @@ bool VulkanRenderer::updateBackgroundRegion(std::uint32_t                 x,
     // const-cast is safe and avoids touching the `ResourceRegistry`'s
     // value-semantics contract.
     Texture* tex = const_cast<Texture*>(impl_->backgroundTexture.get());
+    if (!tex || tex->image == VK_NULL_HANDLE) return false;
+    return impl_->textureLoader->updateRgbaRegion(tex, x, y, w, h, rgba);
+}
+
+// ---------------------------------------------------------------------------
+// M4.8 — foreground sprite layer. Twin of the background path above; the
+// only differences are the variables (foreground* fields) and the fact
+// that the quad is drawn AFTER opaque + debug. The pipeline state is
+// shared with background (both go through `pipes.backgroundPipe()`) —
+// alpha blending was added in M4.8 so transparent sprite pixels
+// composite cleanly over whatever's already in the back buffer.
+// ---------------------------------------------------------------------------
+
+void VulkanRenderer::setForegroundWorldExtent(float halfW, float halfH,
+                                               float centerX, float centerY) noexcept {
+    if (halfW > 0.0f) impl_->foregroundWorldHalfW = halfW;
+    if (halfH > 0.0f) impl_->foregroundWorldHalfH = halfH;
+    impl_->foregroundWorldCenterX = centerX;
+    impl_->foregroundWorldCenterY = centerY;
+}
+
+bool VulkanRenderer::setForegroundFromRgba(std::span<const std::uint8_t> rgba,
+                                           std::uint32_t                 width,
+                                           std::uint32_t                 height) {
+    if (!impl_->textureLoader || !impl_->engine) return false;
+
+    if (rgba.empty() || width == 0 || height == 0) {
+        if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+        impl_->foregroundTexture.reset();
+        impl_->foregroundDescriptorSet = VK_NULL_HANDLE;
+        return true;
+    }
+
+    auto handle = impl_->textureLoader->createFromRgba(*impl_->engine,
+                                                       width, height, rgba);
+    if (!handle.valid()) return false;
+
+    if (impl_->foregroundDescriptorPool == VK_NULL_HANDLE) {
+        VkDescriptorPoolSize poolSize = {};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pci = {};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets       = 1;
+        pci.poolSizeCount = 1;
+        pci.pPoolSizes    = &poolSize;
+        VK_CHECK(vkCreateDescriptorPool(impl_->ctx.device(), &pci, nullptr,
+                                        &impl_->foregroundDescriptorPool));
+    }
+
+    if (impl_->foregroundDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetLayout layout = impl_->pipes.backgroundSetLayout();
+        VkDescriptorSetAllocateInfo ai = {};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool     = impl_->foregroundDescriptorPool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts        = &layout;
+        VK_CHECK(vkAllocateDescriptorSets(impl_->ctx.device(), &ai,
+                                          &impl_->foregroundDescriptorSet));
+    }
+
+    if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+
+    const Texture* tex = handle.get();
+    VkDescriptorImageInfo ii = {};
+    ii.sampler     = tex->sampler;
+    ii.imageView   = tex->view;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet w = {};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = impl_->foregroundDescriptorSet;
+    w.dstBinding      = 0;
+    w.descriptorCount = 1;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo      = &ii;
+    vkUpdateDescriptorSets(impl_->ctx.device(), 1, &w, 0, nullptr);
+
+    impl_->foregroundTexture = std::move(handle);
+    return true;
+}
+
+bool VulkanRenderer::updateForegroundRegion(std::uint32_t                 x,
+                                             std::uint32_t                 y,
+                                             std::uint32_t                 w,
+                                             std::uint32_t                 h,
+                                             std::span<const std::uint8_t> rgba) {
+    if (!impl_->textureLoader)             return false;
+    if (!impl_->foregroundTexture.valid()) return false;
+
+    Texture* tex = const_cast<Texture*>(impl_->foregroundTexture.get());
     if (!tex || tex->image == VK_NULL_HANDLE) return false;
     return impl_->textureLoader->updateRgbaRegion(tex, x, y, w, h, rgba);
 }
@@ -1294,6 +1406,48 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
             profileSumDrawCalls += drawsThisFrame;
             profileSumInstances += totalInstancesThisFrame;
         }
+    }
+
+    // ---- M4.8 — Foreground sprite layer (single draw, last) ---------------
+    //
+    // Shares the background pipeline; the sole differences are the
+    // bound descriptor set and the push-constant `worldRect`. Drawn
+    // AFTER every camera pass so opaque cubes / debug overlays show
+    // through the sprite's transparent pixels and ship sprites sit on
+    // top of in-flight bullets. Camera 0 supplies the viewProj — for
+    // tou2d's single-camera setup that's the entire game view.
+    if (foregroundDescriptorSet != VK_NULL_HANDLE &&
+        pipes.backgroundPipe()  != VK_NULL_HANDLE &&
+        !frame.cameras.empty()) {
+        const auto& cam = frame.cameras[0];
+        struct ForegroundPush {
+            float viewProj[16];
+            float worldRect[4];
+        } push = {};
+        for (int col = 0; col < 4; ++col) {
+            for (int row = 0; row < 4; ++row) {
+                float s = 0.0f;
+                for (int k = 0; k < 4; ++k) {
+                    s += cam.projection[static_cast<std::size_t>(k * 4 + row)] *
+                         cam.view[static_cast<std::size_t>(col * 4 + k)];
+                }
+                push.viewProj[col * 4 + row] = s;
+            }
+        }
+        push.worldRect[0] = foregroundWorldCenterX;
+        push.worldRect[1] = foregroundWorldCenterY;
+        push.worldRect[2] = foregroundWorldHalfW;
+        push.worldRect[3] = foregroundWorldHalfH;
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipes.backgroundPipe());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipes.backgroundLayout(), /*firstSet=*/0,
+                                1, &foregroundDescriptorSet, 0, nullptr);
+        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
+                           VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
     }
 
     vkCmdEndRendering(cmd);

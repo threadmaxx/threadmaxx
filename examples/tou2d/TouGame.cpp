@@ -1,5 +1,6 @@
 #include "TouGame.hpp"
 
+#include "AudioSystem.hpp"
 #include "BotControlSystem.hpp"
 #include "BulletShipCollisionSystem.hpp"
 #include "BulletTerrainSystem.hpp"
@@ -11,12 +12,15 @@
 #include "ProjectileSystem.hpp"
 #include "RoundRestartSystem.hpp"
 #include "ShipLifecycleSystem.hpp"
+#include "SpriteAtlas.hpp"
 #include "TerrainCollisionSystem.hpp"
 #include "WeaponFireSystem.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Engine.hpp>
 #include <threadmaxx/EventChannel.hpp>
+
+#include <cstdio>
 
 namespace tou2d {
 
@@ -55,19 +59,30 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
                                    std::uint8_t slot,
                                    float x, float y,
                                    std::uint8_t isBot,
-                                   std::uint16_t shipKindIdx) {
+                                   std::uint16_t shipKindIdx,
+                                   std::int32_t  spriteAtlasIdx) {
     const auto h = engine.reserveEntityHandle();
 
     threadmaxx::Bundle b = {};
     b.transform.position = {x, y, 0.0f};
     b.transform.scale    = {28.0f, 28.0f, 28.0f};
     b.velocity           = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
+    // M4.8 — ships with a loaded sprite atlas render via the
+    // foreground sprite layer (SpriteCompositor) and have no
+    // RenderTag so the cube path doesn't double-render under them.
+    // Ships without an atlas keep the cube fallback.
+    const bool useSprite = spriteAtlasIdx >= 0;
     b.renderTag          = threadmaxx::RenderTag{0, -1, 0u};
-    b.initialMask        = threadmaxx::ComponentSet{
-        threadmaxx::Component::Transform,
-        threadmaxx::Component::Velocity,
-        threadmaxx::Component::RenderTag,
-    };
+    b.initialMask        = useSprite
+        ? threadmaxx::ComponentSet{
+              threadmaxx::Component::Transform,
+              threadmaxx::Component::Velocity,
+          }
+        : threadmaxx::ComponentSet{
+              threadmaxx::Component::Transform,
+              threadmaxx::Component::Velocity,
+              threadmaxx::Component::RenderTag,
+          };
     seed.spawnBundle(h, b);
 
     LocalPlayer lp{};
@@ -102,6 +117,12 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     loadout.spreadReloadIn   = 0;
     threadmaxx::addUserComponent(seed, ids.loadout, h, loadout);
 
+    if (useSprite && ids.sprite.valid()) {
+        ShipSpriteRef ref{};
+        ref.atlasIdx = spriteAtlasIdx;
+        threadmaxx::addUserComponent(seed, ids.sprite, h, ref);
+    }
+
     return h;
 }
 
@@ -118,6 +139,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     ids_.ship        = engine.registerUserComponent<Ship>();
     ids_.bullet      = engine.registerUserComponent<Bullet>();
     ids_.loadout     = engine.registerUserComponent<WeaponLoadout>();
+    ids_.sprite      = engine.registerUserComponent<ShipSpriteRef>();
 
     // ---- Pre-warm typed event channels on the sim thread -------------------
     // M4.3 — collision is now the authoritative writer for the round-
@@ -127,6 +149,9 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // on the sim thread so the first emit doesn't race a concurrent
     // factory call.
     (void) engine.events<RoundEnded>();
+    // M4.8 — pre-warm the AudioPlay channel before gameplay systems
+    // start emitting so the first emission doesn't race the factory.
+    (void) engine.events<AudioPlay>();
 
     // ---- Seed terrain grid --------------------------------------------------
     // Populate BEFORE constructing systems so the system constructors
@@ -173,14 +198,14 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto* movementPtr  = movement.get();
     auto collision     = std::make_unique<TerrainCollisionSystem>(ids_, &grid_);
     auto* collisionPtr = collision.get();
-    auto weaponFire    = std::make_unique<WeaponFireSystem>(ids_);
+    auto weaponFire    = std::make_unique<WeaponFireSystem>(ids_, &engine);
     weaponFire->setRoundEndedFlag(roundEnded_);
     auto projectile    = std::make_unique<ProjectileSystem>(ids_);
     auto* projectilePtr = projectile.get();
     auto bulletShip        = std::make_unique<BulletShipCollisionSystem>(ids_, &engine);
     bulletShip->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
     bulletShip->setMatchMode(&matchMode_);
-    auto bulletTerrain     = std::make_unique<BulletTerrainSystem>(ids_, &grid_);
+    auto bulletTerrain     = std::make_unique<BulletTerrainSystem>(ids_, &grid_, &engine);
     auto* bulletTerrainPtr = bulletTerrain.get();
     auto shipLife          = std::make_unique<ShipLifecycleSystem>(ids_);
     shipLife->setMatchMode(&matchMode_);
@@ -208,6 +233,12 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(camera));
     engine.registerSystem(std::move(hud));          // last — buildRenderFrame reads camera state
 
+    // M4.8 — register AudioSystem (subscribes to AudioPlay; no ECS
+    // reads/writes; sits in its own wave at the end).
+    if (!assetDir_.empty()) {
+        engine.registerSystem(std::make_unique<AudioSystem>(&engine, assetDir_));
+    }
+
     // ---- Seed 4 ships ------------------------------------------------------
     // P1 stays at (0, 0) so the headless smoke test continues to find
     // it. P2-P4 are placed at small offsets — close enough that they
@@ -221,18 +252,45 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     //   P3 = X Wing       (125 HP, 1.5× thrust, 1.3× turn) — balanced
     //   P4 = Destroyer    (300 HP, 0.5× thrust, 0.3× turn) — tank/slow
     constexpr float kOffset = 40.0f;
-    struct ShipSeed { float x, y; std::uint16_t kindIdx; };
+    struct ShipSeed {
+        float x, y;
+        std::uint16_t kindIdx;
+        const char*   shpStem;   ///< basename in TOU/ships (no extension)
+    };
     const std::array<ShipSeed, 4> seeds = {{
-        { 0.0f,        0.0f,     0 },   // P1 — Basic
-        { +kOffset,    0.0f,     6 },   // P2 — Bee
-        { -kOffset,    0.0f,     4 },   // P3 — X Wing
-        { 0.0f,        +kOffset, 8 },   // P4 — Destroyer
+        { 0.0f,        0.0f,     0, "TIEF" },   // P1 — Basic kind, TIE Fighter sprite
+        { +kOffset,    0.0f,     6, "BEE2" },   // P2 — Bee kind, B2 Stealth sprite
+        { -kOffset,    0.0f,     4, "XWIN" },   // P3 — X Wing kind + sprite
+        { 0.0f,        +kOffset, 8, "DEST" },   // P4 — Destroyer kind + sprite
     }};
+
+    // M4.8 — try to load each ship's SHP from <assetDir>/ships/<STEM>.SHP
+    // with that slot's per-team `ShipColors`. Ships whose SHP is
+    // missing fall back to cube rendering (spawnShip's useSprite path
+    // gates on `atlasIdx >= 0`).
+    std::array<std::int32_t, 4> atlasIdx{ -1, -1, -1, -1 };
+    if (compositor_ && !assetDir_.empty()) {
+        const std::filesystem::path shipsDir = assetDir_ / "ships";
+        for (std::uint8_t slot = 0; slot < 4; ++slot) {
+            const std::filesystem::path p =
+                shipsDir / (std::string(seeds[slot].shpStem) + ".SHP");
+            SpriteAtlas atlas;
+            if (loadSpriteAtlas(p, kSlotColors[slot], atlas)) {
+                atlasIdx[slot] = compositor_->addAtlas(std::move(atlas));
+            } else {
+                std::fprintf(stderr,
+                    "[tou2d] sprite atlas missing for slot %u (%s)\n",
+                    unsigned(slot), p.string().c_str());
+            }
+        }
+    }
+
     for (std::uint8_t slot = 0; slot < 4; ++slot) {
         const auto& sp = seeds[slot];
         const std::uint8_t isBot = (slot == 0) ? std::uint8_t{0} : std::uint8_t{1};
         playerShips_[slot] = spawnShip(engine, seed, ids_,
-                                       slot, sp.x, sp.y, isBot, sp.kindIdx);
+                                       slot, sp.x, sp.y, isBot, sp.kindIdx,
+                                       atlasIdx[slot]);
     }
 }
 

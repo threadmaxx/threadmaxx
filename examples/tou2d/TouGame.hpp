@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DemoTypes.hpp"
+#include "SpriteCompositor.hpp"
 
 #include <threadmaxx/Game.hpp>
 #include <threadmaxx/Handles.hpp>
@@ -38,6 +39,21 @@ public:
     explicit TouGame(GLFWwindow* window) noexcept;
 
     void setLevelDir(std::filesystem::path p) noexcept { levelDir_ = std::move(p); }
+    /// M4.8 — runtime path that hosts `ships/*.SHP` and `sfx/*.WAV`.
+    /// Defaults to the install's `assets/` if not overridden. Set
+    /// BEFORE `engine.initialize(game)` so onSetup can load atlases
+    /// + sound bank.
+    void setAssetDir(std::filesystem::path p) noexcept { assetDir_ = std::move(p); }
+    /// M4.8 — borrowed compositor pointer; main.cpp owns the canonical
+    /// instance and the engine fills it during onSetup. The compositor
+    /// is also the sole reader from main.cpp's per-tick driver.
+    void setSpriteCompositor(SpriteCompositor* c) noexcept { compositor_ = c; }
+    SpriteCompositor* spriteCompositor() noexcept { return compositor_; }
+
+    /// M4.8 — borrowed view of the user-component IDs. main.cpp needs
+    /// the sprite-id to feed the compositor's per-tick walk. Valid
+    /// between onSetup and onTeardown.
+    const UserComponentIds& userComponentIds() const noexcept { return ids_; }
 
     /// M4.3 — select round mode. Default is `Deathmatch` (kFragLimit
     /// kills wins, ships respawn). `LastShipStanding` means death is
@@ -92,6 +108,8 @@ private:
     TerrainCollisionSystem*  collision_      = nullptr;   // borrowed
     std::array<threadmaxx::EntityHandle, 4> playerShips_{};
     std::filesystem::path    levelDir_;
+    std::filesystem::path    assetDir_;
+    SpriteCompositor*        compositor_     = nullptr;   // borrowed
     std::int32_t             cellsX_         = 0;
     std::int32_t             cellsY_         = 0;
     TerrainGrid              grid_;

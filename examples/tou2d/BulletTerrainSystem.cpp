@@ -1,6 +1,8 @@
 #include "BulletTerrainSystem.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
+#include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/Query.hpp>
 #include <threadmaxx/World.hpp>
 
@@ -17,9 +19,10 @@ inline std::int32_t worldToCell(float wx) noexcept {
 
 } // namespace
 
-BulletTerrainSystem::BulletTerrainSystem(UserComponentIds ids,
-                                         TerrainGrid*     grid) noexcept
-    : ids_(ids), grid_(grid) {}
+BulletTerrainSystem::BulletTerrainSystem(UserComponentIds    ids,
+                                         TerrainGrid*        grid,
+                                         threadmaxx::Engine* engine) noexcept
+    : ids_(ids), grid_(grid), engine_(engine) {}
 
 void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
     const auto idsBl   = ids_.bullet;
@@ -72,6 +75,10 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
                     if (destroyCb_) destroyCb_(cx, cy);
                     if (blt.ownerSlot < tilesDelta.size()) {
                         tilesDelta[blt.ownerSlot] += 1;
+                    }
+                    if (engine_) {
+                        engine_->events<AudioPlay>().emit(
+                            AudioPlay{audio::kSoundTileBreak, 0, 0});
                     }
                 } else {
                     grid_->hp[grid_->indexOf(cx, cy)] =

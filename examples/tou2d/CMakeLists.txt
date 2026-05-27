@@ -33,10 +33,19 @@ add_library(tou2d_core STATIC
     BotControlSystem.cpp
     HudSystem.cpp
     RoundRestartSystem.cpp
+    AudioSystem.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(tou2d_core PUBLIC threadmaxx::threadmaxx glfw)
+
+# M4.8 — AudioSystem.cpp pulls in miniaudio (system header at
+# /usr/include/miniaudio/miniaudio.h). Per its docs the Linux build
+# needs `-ldl -lpthread -lm`. miniaudio is the only TU that
+# `#define MINIAUDIO_IMPLEMENTATION`s so the symbol is unique to
+# tou2d_core; no header bleed into other targets.
+find_package(Threads REQUIRED)
+target_link_libraries(tou2d_core PUBLIC ${CMAKE_DL_LIBS} Threads::Threads m)
 
 set_target_properties(tou2d_core PROPERTIES
     CXX_STANDARD 20

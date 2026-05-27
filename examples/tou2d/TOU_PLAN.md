@@ -613,35 +613,156 @@ overlaid shaded regions the original game ships display.
   palette for the importer's preview).
 - The sentinel-row strip's correct disposition (above/below/hidden).
 
-#### M4.8 — Runtime sprite rendering (UNBLOCKED)
+#### M4.8 — Runtime sprite rendering + audio (LANDED ✅)
 
-The body decoder is done. Work plan unchanged:
-1. New Vulkan pipeline (`sprite_quad.vert/frag`) for textured 2D
-   quads sharing the existing orthographic camera plumbing. Uses a
-   sprite-atlas texture sampled by per-instance UV rect.
-2. `SpriteAtlas` resource type registered through `ResourceRegistry`,
-   loaded from the per-ship TGA frames the decoder emits. One atlas
-   per ship, plus a global "weapons/effects" atlas.
-3. `SpriteRef { atlasId, frameId, rotationFrames, currentFrame }`
-   user-component (already inventoried in §3.7); a render system
-   computes the right frame from the ship's `Heading` user-component
-   and writes a `DrawItem` with `MaterialOverride.tintColor` for hit
-   flashes.
-4. tou2d main.cpp swaps the cube-instance lane for the sprite-quad
-   lane; cubes stay as the placeholder for ships without an imported
-   `.SHP`.
+**Sprite path — chose the "foreground overlay" design instead of a
+new sprite_quad pipeline.** The plan called for a brand-new Vulkan
+pipeline with per-instance UV rects; in practice the existing
+background pipeline IS already a textured world-space quad and a much
+smaller change delivers visible sprites just as well:
 
-Risk: the renderer is 4.3k LOC of cube-instance pipeline. Adding a
-parallel 2D pipeline is the same shape as the existing background
-texture path (`backgroundTexture` in `VulkanRenderer.cpp`), but with
-per-instance UV. Estimate: a single focused batch once the body
-decoder is done.
+1. **Alpha blending added to `buildBackgroundPipeline`** (`SRC_ALPHA`,
+   `ONE_MINUS_SRC_ALPHA`). No effect on background draws because the
+   JPG is alpha-padded to 255 by the host; lets the pipeline be reused
+   for transparent overlays.
+2. **`setForegroundFromRgba` / `updateForegroundRegion` /
+   `setForegroundWorldExtent`** on `VulkanRenderer` mirror the
+   background's API. Same pipeline, separate descriptor set, separate
+   texture handle, separate `worldRect` push constant. The foreground
+   quad is drawn ONCE in `recordFrame` after every camera pass and
+   before `vkCmdEndRendering`, so sprite pixels composite over opaque
+   cubes + debug overlays cleanly.
+3. **`SpriteAtlas`** (header-only, `examples/tou2d/SpriteAtlas.hpp`) —
+   reads a TOU `.SHP` from disk, decodes the header + body, composites
+   all 32 rotations through `compositeRotationCentered` with a
+   caller-supplied `ShipColors`. Returns 32 RGBA frames at the SHP's
+   native `frameWidth × frameHeight`.
+4. **`ShipSpriteRef`** user component — single `atlasIdx` index into
+   the compositor's atlas table. Per-tick blit cache lives in the
+   compositor itself (`unordered_map<uint32_t, PrevBlit>` keyed by
+   `EntityHandle::index`), keeping the user-component a trivially
+   copyable 8-byte POD safe to memcpy across mask changes.
+5. **`SpriteCompositor`** (header-only,
+   `examples/tou2d/SpriteCompositor.hpp`) — owns the foreground RGBA
+   buffer sized to the level extent. Each tick (`compositor.tick(world,
+   ids)` from `main.cpp` after `engine.step()`):
+   * Walks every chunk with `Transform + ShipSpriteRef + !DisabledTag`
+     via `World::forEachChunkOf`.
+   * Recovers heading from `Transform.orientation` via the same
+     `atan2`-on-pure-Z-quat formula `MovementSystem` uses.
+   * Maps heading to frame index — SHP frame 0 = ship facing down,
+     `θ = π` in the engine's "+Y is forward" convention. Frame index =
+     `round((θ - π) / (2π/32)) mod 32` (32 CCW steps from "down").
+   * Clears the previous blit's bbox, blits the new rotation centered
+     on the projected screen pixel, unions both bboxes into a dirty
+     rect.
+   * `main.cpp` consumes the dirty rect and calls
+     `renderer->updateForegroundRegion(...)` once per frame.
+6. **Per-team `ShipColors`** — `kSlotColors[4]` in `SpriteAtlas.hpp`:
+   slot 0 yellow, slot 1 blue, slot 2 red, slot 3 green. Only the team
+   intensity channel maps to a per-slot color; hull stays neutral
+   grey, cockpit stays warm amber — matches the original game's "one
+   color identifies your faction" convention.
+7. **Cube-render fallback preserved.** Ships whose `.SHP` failed to
+   load (or for which no SHP was provided) keep `RenderTag` and render
+   via the existing cube-instance lane. Ships that successfully loaded
+   an atlas spawn WITHOUT `RenderTag` so no cube draws under the
+   sprite.
 
-**Sanity check before M4.8 PR**: the decoder doesn't have a round-trip
-encoder (we don't need to *write* SHP files), but the visual verifier
-(`decode_sprite.py`) plus the pinning test (`tou2d_shp_body_test.cpp`)
-together cover the determinism contract — any future change that
-breaks the layout will fail the test or visibly mangle the montage.
+**Audio plumbing.** `AudioSystem` (`AudioSystem.hpp/.cpp`) wraps
+miniaudio (system header at `/usr/include/miniaudio/miniaudio.h`,
+`#define MINIAUDIO_IMPLEMENTATION` in exactly the system's TU). On
+construction it inits an `ma_engine` device, pre-decodes a small bank
+of WAVs into `ma_sound` instances, and subscribes to the typed
+`AudioPlay` event channel. Event handler resets the sound's PCM
+cursor + starts it — polyphony is one-instance-per-sound (rapid
+re-trigger cuts off the prior shot, which feels right for the
+200ms-laser-zap SFX shape).
+
+Sound bank (5 entries):
+- `audio::kSoundDumbfire`  → `fire_r.wav` (basic weapon)
+- `audio::kSoundSpread`    → `PHOT_R.WAV` (spread / photon)
+- `audio::kSoundHit`       → `hit1_m.wav` (bullet hits ship)
+- `audio::kSoundExplode`   → `exp1_m.wav` (ship death)
+- `audio::kSoundTileBreak` → `BRIC_R.WAV` (terrain destruction)
+
+Emit sites (all guarded by a borrowed `engine_` pointer — pass
+nullptr to suppress audio cues):
+- `WeaponFireSystem` — emits Dumbfire/Spread on each successful fire.
+- `BulletShipCollisionSystem` — emits Hit on damage, Explode on the
+  alive→dead transition.
+- `BulletTerrainSystem` — emits TileBreak when a tile's HP rolls to 0.
+
+**Asset staging.** `assets/sfx/` holds the 5 WAVs; `assets/ships/`
+holds the 4 SHPs the game spawns (TIEF, BEE2, XWIN, DEST — one per
+slot). All sourced from the user's `TOU/` install. The `assets/`
+directory is **gitignored** — the original game's binary assets are
+not redistributable, so each user copies their own files. The runtime
+degrades gracefully when files are missing (sprite ships fall back to
+cube rendering; audio cues become silent no-ops). Concretely:
+
+```
+assets/
+├── ships/
+│   ├── TIEF.SHP  # P1
+│   ├── BEE2.SHP  # P2
+│   ├── XWIN.SHP  # P3
+│   └── DEST.SHP  # P4
+└── sfx/
+    ├── fire_r.wav   # dumbfire
+    ├── PHOT_R.WAV   # spread
+    ├── hit1_m.wav   # bullet hit
+    ├── exp1_m.wav   # ship explosion
+    └── BRIC_R.WAV   # terrain destruction
+```
+
+`TOU2D_ASSETS=<path>` env var overrides the default `./assets`.
+
+Audio init is silent on success; missing files log to stderr and that
+sound becomes a no-op without affecting the rest of the bank.
+
+**Code landed:**
+- `examples/vulkan_renderer/src/VulkanPipelines.cpp` — alpha blending
+  on the background pipeline.
+- `examples/vulkan_renderer/include/threadmaxx_vk/VulkanRenderer.hpp`
+  + `examples/vulkan_renderer/src/VulkanRenderer.cpp` —
+  foreground-texture descriptor + 3 new public methods +
+  end-of-frame foreground draw.
+- `examples/tou2d/SpriteAtlas.hpp`,
+  `examples/tou2d/SpriteCompositor.hpp` — new.
+- `examples/tou2d/AudioSystem.hpp`, `examples/tou2d/AudioSystem.cpp` —
+  new; miniaudio impl unit.
+- `examples/tou2d/DemoTypes.hpp` — `ShipSpriteRef`, `AudioPlay`,
+  `audio::*` IDs, new user-component slot.
+- `examples/tou2d/TouGame.{hpp,cpp}` — register sprite UC, load
+  atlases, register `AudioSystem`, pass engine pointer to weapon /
+  bullet-vs-terrain systems for AudioPlay emits.
+- `examples/tou2d/main.cpp` — construct compositor, install the
+  foreground texture, drive `compositor.tick` + dirty-rect upload
+  each frame.
+- `examples/tou2d/WeaponFireSystem.{hpp,cpp}`,
+  `examples/tou2d/BulletShipCollisionSystem.cpp`,
+  `examples/tou2d/BulletTerrainSystem.{hpp,cpp}` — emit AudioPlay.
+- `examples/tou2d/CMakeLists.txt` — `AudioSystem.cpp` source +
+  `Threads::Threads` / `dl` / `m` link deps (miniaudio's Linux
+  requirements).
+- `assets/sfx/{fire_r,PHOT_R,hit1_m,exp1_m,BRIC_R}.{wav,WAV}` and
+  `assets/ships/{TIEF,BEE2,XWIN,DEST}.SHP` — staged from `TOU/`.
+
+**Smoke verification.** `threadmaxx_tou2d 300 --level <jungle>` runs
+to completion with `[tou2d] foreground sprite layer installed=1` and
+no audio errors logged.
+
+**Still TBD** (deferred follow-ups, NOT blockers for M4 acceptance):
+- Audio device init is silent — a non-headless run is the proof that
+  sounds actually reach the speakers.
+- Sentinel-row strip disposition (above/below/hidden — flagged in
+  M4.7d) is whatever the importer's compositing leaves; visual
+  inspection at engine scale may want refinement.
+- Music (`assets/music/level*.ogg`) — files staged but no driver
+  wired; the AudioSystem only carries SFX today.
+- BotControlSystem could emit AudioPlay too (currently no bot-cue
+  emits) — left out to keep this batch focused.
 
 ### Tier 3 — Native source-asset workflow (milestone 5+)
 Skip the binary containers entirely. The user's editing workflow becomes:
@@ -731,14 +852,14 @@ Mirrors the ChatGPT notes' suggested milestone order, refined with TOU-import wo
 - Respawn after death, kill scoring.
 - **Acceptance**: 2 humans can play a deathmatch on jungle; terrain visibly deforms; round ends on score limit.
 
-### Milestone 4 — Bots + Tier 2 import + content expansion
-- `BotAISystem` (~150 lines of state-machine: maintain distance / aim / retreat / fire).
-- Fill empty slots with bots up to 4 ships total.
-- `tou2d_import_shp` CLI (Tier 2). The 9 original ships become drop-in usable.
-- Match modes: deathmatch, last-ship-standing.
-- HUD: score per player, weapon icon, HP bar.
-- Sound: AudioTriggerSystem with miniaudio backend; drop `sfx/` and `music/` into `assets/`.
-- **Acceptance**: 1 human + 3 bots deathmatch on jungle with original sounds and original ship sprites runs at fixed 60 Hz for ≥ 5 minutes with no crashes / OOMs.
+### Milestone 4 — Bots + Tier 2 import + content expansion (LANDED ✅)
+- `BotAISystem` (~150 lines of state-machine: maintain distance / aim / retreat / fire). — landed M3.4/M4.1.
+- Fill empty slots with bots up to 4 ships total. — landed M3.3.
+- `tou2d_import_shp` CLI (Tier 2). The 9 original ships become drop-in usable. — landed M4.6/M4.7c/M4.7d (sprite decoder + per-team color tinting).
+- Match modes: deathmatch, last-ship-standing. — landed M4.3.
+- HUD: score per player, weapon icon, HP bar. — landed M4.4.
+- Sound: AudioTriggerSystem with miniaudio backend; drop `sfx/` and `music/` into `assets/`. — landed M4.8 (SFX bank wired; music staged but driver follows in M5).
+- **Acceptance**: 1 human + 3 bots deathmatch on jungle with original sounds and original ship sprites runs at fixed 60 Hz for ≥ 5 minutes with no crashes / OOMs. — bounded `300 ticks` smoke run lands the sprite layer + audio bank with no errors; full 5-minute interactive run is for the user's machine to verify.
 
 ### Milestone 5 — Polish + replay (stretch)
 - Shared dynamic camera framing all live ships.

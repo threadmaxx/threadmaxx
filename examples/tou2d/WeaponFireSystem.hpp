@@ -7,6 +7,8 @@
 #include <atomic>
 #include <memory>
 
+namespace threadmaxx { class Engine; }
+
 namespace tou2d {
 
 /// Reads PlayerInput.fireBasic + ship Transform per local-player ship,
@@ -31,7 +33,10 @@ namespace tou2d {
 ///              rewriting WeaponLoadout each tick.
 class WeaponFireSystem : public threadmaxx::ISystem {
 public:
-    explicit WeaponFireSystem(UserComponentIds ids) noexcept;
+    /// `engine` borrowed for `events<AudioPlay>` emission only (M4.8).
+    /// Optional — pass nullptr to suppress audio cues.
+    WeaponFireSystem(UserComponentIds ids,
+                     threadmaxx::Engine* engine = nullptr) noexcept;
 
     const char*              name()   const noexcept override { return "tou2d.weaponFire"; }
     threadmaxx::ComponentSet reads()  const noexcept override {
@@ -61,6 +66,7 @@ public:
 private:
     UserComponentIds                   ids_;
     std::shared_ptr<std::atomic<bool>> roundEnded_;
+    threadmaxx::Engine*                engine_ = nullptr;   // borrowed; AudioPlay emit only
 };
 
 } // namespace tou2d

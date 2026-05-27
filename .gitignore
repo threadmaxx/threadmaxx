@@ -10,3 +10,7 @@ bench/commit_pass_breakdown_baseline.jsonl
 bench/s5_breakdown*.jsonl
 Testing
 TOU
+# tou2d runtime asset dir — user copies SHP/WAV/OGG from their TOU
+# install into here (see examples/tou2d/TOU_PLAN.md § M4.8). The
+# original game's assets are NOT redistributable; not tracked in git.
+assets
