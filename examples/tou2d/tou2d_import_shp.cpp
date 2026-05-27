@@ -40,6 +40,8 @@
 // or the renderer.
 
 #include "ShpHeader.hpp"
+#include "PalCol.hpp"
+#include "TgaWriter.hpp"
 
 #include <array>
 #include <cctype>
@@ -113,20 +115,102 @@ bool writeFile(const fs::path& p, std::span<const std::uint8_t> bytes) {
 
 int usage() {
     std::fprintf(stderr,
-        "usage: tou2d_import_shp <input.SHP> <outdir>\n"
+        "usage: tou2d_import_shp <input.SHP> <outdir> [--palette <file>] [--width N]\n"
         "  Decodes the display name + stat triplet from a TOU ship file\n"
         "  and writes config.txt + header.bin + body.bin into\n"
-        "  <outdir>/<stem>/. The sprite section is preserved as body.bin\n"
-        "  pending reverse-engineering — see TOU_PLAN.md § 3.0.\n");
+        "  <outdir>/<stem>/. With --palette, also emits palette.tga (a\n"
+        "  16x16 swatch of the loaded VGA palette) and body_strip.tga\n"
+        "  (a best-effort visualization of body.bin interpreted as a raw\n"
+        "  indexed-pixel strip at the given --width, default 24).\n"
+        "  Sprite framing inside body.bin is still opaque — see\n"
+        "  TOU_PLAN.md M4.7 for the open RE questions.\n");
     return 2;
+}
+
+/// Best-effort visualization: interpret `body` as raw 8-bit palette
+/// indices laid out as a single strip of `width` pixels per row. NO
+/// frame boundary detection — successive rows are just successive
+/// width-byte chunks of body. The result is a tall thin TGA the user
+/// can scroll through; sprite frames (if width matches) appear as
+/// visible blobs in the strip. Width is a hypothesis; the user can
+/// re-run with different --width values to probe.
+bool writeBodyStripTga(const fs::path&                       outPath,
+                       std::span<const std::uint8_t>         body,
+                       const tou2d::shp::Palette&            pal,
+                       std::uint16_t                         width) {
+    if (width == 0) return false;
+    const std::size_t rows = (body.size() + width - 1) / width;
+    if (rows == 0)              return false;
+    if (rows > 65535)           return false;
+    const std::uint16_t height = static_cast<std::uint16_t>(rows);
+
+    std::vector<tou2d::shp::Rgb> pixels;
+    pixels.resize(static_cast<std::size_t>(width) * height);
+    for (std::size_t y = 0; y < rows; ++y) {
+        for (std::size_t x = 0; x < width; ++x) {
+            const std::size_t i = y * width + x;
+            const std::size_t src = y * width + x;
+            std::uint8_t idx = 0;
+            if (src < body.size()) idx = body[src];
+            const auto& e = pal.entries[idx];
+            pixels[i] = { e.r, e.g, e.b };
+        }
+    }
+    return tou2d::shp::writeTga24(outPath.string(), width, height,
+                                  std::span<const tou2d::shp::Rgb>(pixels));
+}
+
+bool writePaletteSwatchTga(const fs::path&            outPath,
+                           const tou2d::shp::Palette& pal) {
+    // 16x16 swatch, one entry per cell, scaled 8x for human inspection:
+    // 128x128 final image — readable in any viewer without zoom.
+    constexpr std::uint16_t cell  = 8;
+    constexpr std::uint16_t dim   = 16 * cell;
+    std::vector<tou2d::shp::Rgb> pixels(static_cast<std::size_t>(dim) * dim);
+    for (std::uint16_t y = 0; y < dim; ++y) {
+        for (std::uint16_t x = 0; x < dim; ++x) {
+            const std::uint16_t cx = static_cast<std::uint16_t>(x / cell);
+            const std::uint16_t cy = static_cast<std::uint16_t>(y / cell);
+            const std::size_t   pi = static_cast<std::size_t>(cy) * 16 + cx;
+            const auto&         e  = pal.entries[pi];
+            pixels[static_cast<std::size_t>(y) * dim + x] = { e.r, e.g, e.b };
+        }
+    }
+    return tou2d::shp::writeTga24(outPath.string(), dim, dim,
+                                  std::span<const tou2d::shp::Rgb>(pixels));
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 3) return usage();
+    if (argc < 3) return usage();
     const fs::path inputPath = argv[1];
     const fs::path outRoot   = argv[2];
+
+    // ---- Optional flags --------------------------------------------------
+    // --palette <path>  load 768-byte VGA palette, emit palette.tga +
+    //                   body_strip.tga; without it those files are skipped.
+    // --width   N       width-per-row hypothesis for the body strip
+    //                   visualization (default 24 — matches the apparent
+    //                   24x24-ish frame dim of the PERH/DEST sprites).
+    fs::path        palettePath;
+    std::uint16_t   stripWidth = 24;
+    for (int i = 3; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--palette" && i + 1 < argc) {
+            palettePath = argv[++i];
+        } else if (a == "--width" && i + 1 < argc) {
+            const int v = std::atoi(argv[++i]);
+            if (v <= 0 || v > 65535) {
+                std::fprintf(stderr, "[import_shp] --width must be in [1, 65535]\n");
+                return 2;
+            }
+            stripWidth = static_cast<std::uint16_t>(v);
+        } else {
+            std::fprintf(stderr, "[import_shp] unrecognized flag: %s\n", a.c_str());
+            return usage();
+        }
+    }
 
     std::vector<std::uint8_t> data;
     if (!readFile(inputPath, data)) {
@@ -195,6 +279,33 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Optional palette + body visualization --------------------------
+    bool wrotePalette = false;
+    bool wroteStrip   = false;
+    if (!palettePath.empty()) {
+        std::vector<std::uint8_t> palRaw;
+        if (!readFile(palettePath, palRaw)) {
+            std::fprintf(stderr, "[import_shp] failed to read palette %s\n",
+                         palettePath.string().c_str());
+            return 1;
+        }
+        tou2d::shp::Palette pal;
+        if (!tou2d::shp::parsePalette(palRaw, pal)) {
+            std::fprintf(stderr,
+                "[import_shp] palette %s is not a 768-byte VGA palette\n",
+                palettePath.string().c_str());
+            return 1;
+        }
+        wrotePalette = writePaletteSwatchTga(outDir / "palette.tga", pal);
+        wroteStrip   = writeBodyStripTga(outDir / "body_strip.tga",
+                                         body, pal, stripWidth);
+        if (!wrotePalette || !wroteStrip) {
+            std::fprintf(stderr,
+                "[import_shp] failed to write palette.tga / body_strip.tga\n");
+            return 1;
+        }
+    }
+
     std::printf("[import_shp] %s -> %s\n", inputPath.string().c_str(),
                 outDir.string().c_str());
     std::printf("  name:        %s\n", hdr.displayName.c_str());
@@ -203,6 +314,13 @@ int main(int argc, char** argv) {
     std::printf("  header.bin:  %zu bytes\n", header.size());
     std::printf("  body.bin:    %zu bytes (sprite section — opaque)\n",
                 body.size());
+    if (wrotePalette) {
+        std::printf("  palette.tga: 128x128 swatch (from %s)\n",
+                    palettePath.string().c_str());
+        std::printf("  body_strip:  %ux%zu speculative-decode strip\n",
+                    static_cast<unsigned>(stripWidth),
+                    (body.size() + stripWidth - 1) / stripWidth);
+    }
     if (!manual) {
         std::printf("  manual:      no stock-ship match for '%s'\n",
                     stem.c_str());

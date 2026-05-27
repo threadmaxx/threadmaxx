@@ -103,6 +103,7 @@ set(THREADMAXX_TESTS
     adaptive_determinism_test
     job_system_missed_wakeup_test
     tou2d_shp_import_test
+    tou2d_pal_col_test
     # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
     # (batch D-audit) which exercises the actual SaveLoadSystem rather
     # than re-implementing the wire format.

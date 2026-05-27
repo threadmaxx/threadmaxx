@@ -303,6 +303,89 @@ Stats fields we can't decode default to "Basic ship" values; the user can overri
 
 **Acceptance**: the 9 shipped `.SHP`s import and are playable, even if some stats default. Pixel-perfect sprite rendering is a stretch goal.
 
+#### M4.7 — Palette load + body visualizer (landed)
+
+`examples/tou2d/PalCol.hpp` + `examples/tou2d/TgaWriter.hpp` are
+header-only and shared between the CLI and `tests/tou2d_pal_col_test.cpp`.
+The importer now accepts:
+```
+tou2d_import_shp <in.SHP> <outdir> [--palette <pal>] [--width N]
+```
+With `--palette` it writes `palette.tga` (128x128 swatch) and
+`body_strip.tga` (a `--width`-wide visualization of body.bin
+interpreted as raw 8-bit palette indices; default width 24). This is
+a **best-effort speculative decode** — the actual sprite framing
+inside body.bin is still opaque. The strip TGA gives a visual surface
+for the user to eyeball whether 24 is the right hypothesis, or whether
+a different width (26 / 28 / 32) lines frames up vertically.
+
+**Empirical body-size evidence (collected from all 9 SHPs):**
+Several ships share *identical* body sizes despite different total
+file sizes — strongly suggesting a fixed per-rotation-step layout
+that varies only with frame dimension class:
+
+| Body size  | Ships                | Hypothesis            |
+|------------|----------------------|-----------------------|
+| 65483 B    | PERH, TIEF           | ≈ 24×24 frame class   |
+| 75851 B    | BATM, BEE2           | ≈ 28×28 frame class   |
+| 98891 B    | FLYY, XWIN           | ≈ 32×32 frame class   |
+| 87, 55, 47 | DEST, PERU, SPED     | one-off (each unique) |
+
+If frames are stored as raw indexed pixels at a fixed (W, H) per
+ship and there are N rotation steps × M animation frames per step,
+then `body_bytes = W × H × N × M + small_per_ship_header`. The next
+batch (M4.7b) is: derive `(W, H, N, M)` by trying width/height pairs
+that cleanly divide the body sizes above, eyeballing the resulting
+strips for ship-shaped blobs, then promote the speculative decoder
+to a real one.
+
+#### M4.7b — Reverse-engineer the sprite layout (next, NOT in the current batch)
+
+What we still don't know:
+- Frame width/height per ship (a small set of guesses listed above).
+- Number of rotation steps (16? 32? 64? — common 90s values).
+- Whether each frame stores a 2-byte width/height or relies on a
+  ship-global dim.
+- The role of the constant `01 02 01 05 04` mid-header marker (seen
+  at the same byte offset in all 9 files).
+- The 4 bytes following the stat triplet — likely additional stats
+  (the last is always 0x32 = 50, plausible max-HP).
+
+Practical recipe:
+1. Re-run the importer with `--width 24`, `--width 26`, `--width 28`,
+   `--width 32` and visually compare body_strip.tga's for blob
+   alignment.
+2. Once a width matches: divide body_bytes by width to get total
+   rows, then by likely rotation counts (16/24/32/36) and try frame
+   heights that make the math integer.
+3. Promote `PalCol.hpp` + a `decodeFrames()` function out of the
+   speculative path into a real frame extractor, write per-rotation
+   TGA frames.
+
+#### M4.8 — Runtime sprite rendering (NOT in the current batch)
+
+Deferred until M4.7b lands a verified frame decoder. The work:
+1. New Vulkan pipeline (`sprite_quad.vert/frag`) for textured 2D
+   quads sharing the existing orthographic camera plumbing. Uses a
+   sprite-atlas texture sampled by per-instance UV rect.
+2. `SpriteAtlas` resource type registered through `ResourceRegistry`,
+   loaded from the per-ship TGA frames M4.7b emits. One atlas per
+   ship, plus a global "weapons/effects" atlas.
+3. `SpriteRef { atlasId, frameId, rotationFrames, currentFrame }`
+   user-component (already inventoried in §3.7); a render system
+   computes the right frame from the ship's `Heading` user-component
+   and writes a `DrawItem` with `MaterialOverride.tintColor` for hit
+   flashes.
+4. tou2d main.cpp swaps the cube-instance lane for the sprite-quad
+   lane; cubes stay as the placeholder for ships without an imported
+   `.SHP`.
+
+Risk: the renderer is 4.3k LOC of cube-instance pipeline. Adding a
+parallel 2D pipeline is the same shape as the existing background
+texture path (`backgroundTexture` in `VulkanRenderer.cpp`), but with
+per-instance UV. Estimate: a single focused batch once M4.7b is
+done.
+
 ### Tier 3 — Native source-asset workflow (milestone 5+)
 Skip the binary containers entirely. The user's editing workflow becomes:
 - Paint `<level>.jpg` (visual) and `<level>.tga` (attribute map) in Photoshop/GIMP exactly per the original's `colors.png` legend.
