@@ -37,6 +37,12 @@ constexpr float kAmmoPipSize     = 2.6f;   // smaller than score pips
 constexpr float kAmmoPipSpacing  = 3.4f;   // tighter than score pips
 constexpr float kAmmoRowGapWU    = 6.0f;   // gap below HP bar
 constexpr float kAmmoTrackAlpha8 = 56.0f;  // dim placeholder for empty mag slots
+// M4.4 — weapon glyph fits in this much horizontal space, drawn before
+// the ammo pip strip so the player can read at a glance which weapon
+// the strip refers to. Pips are offset by this amount in the `dir`
+// direction; the glyph itself anchors at the row origin.
+constexpr float kWeaponGlyphWidthWU = 7.0f;
+constexpr float kWeaponGlyphHeightWU = 3.0f;
 constexpr std::uint32_t kBannerWhite  = 0xFFFFFFFFu;
 constexpr float kBannerHalfWidthWU    = 90.0f;
 constexpr float kBannerHalfHeightWU   = 22.0f;
@@ -201,6 +207,58 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             b.addDebugLine(fg);
         }
 
+        // ---- Weapon glyph + ammo strip --------------------------------
+        // Each row leads with a small weapon-identifier glyph (M4.4):
+        //   * Dumbfire — one short horizontal bar (a single bullet).
+        //   * Spread   — three short fanning ticks (the 3-pellet
+        //                  cone the weapon actually fires).
+        // The glyph occupies kWeaponGlyphWidthWU of horizontal space;
+        // ammo pips are shifted that far in the row direction so the
+        // glyph + pips read as a single banner per weapon.
+        //
+        // 0 = Dumbfire, 1 = Spread. Picked by `weaponKind` so the
+        // glyph encoding lives next to its visual definition.
+        const auto drawWeaponGlyph = [&](float rowY,
+                                         int weaponKind,
+                                         std::uint32_t glyphColor) {
+            // Glyph origin sits just inboard of the corner; the glyph
+            // grows in `dir` toward where the pips will start. Half-
+            // height controlled by kWeaponGlyphHeightWU.
+            const float gxStart = cornerX + dir * 0.5f;
+            const float gxEnd   = cornerX + dir * (kWeaponGlyphWidthWU - 0.5f);
+            if (weaponKind == 0) {
+                // Dumbfire — single forward bar.
+                threadmaxx::DebugLine ln{};
+                ln.a         = {gxStart, rowY, 0.0f};
+                ln.b         = {gxEnd,   rowY, 0.0f};
+                ln.colorRGBA = glyphColor;
+                b.addDebugLine(ln);
+            } else {
+                // Spread — three ticks fanning ±kSpreadAngle around
+                // forward. Glyph "origin" is the tail (gxStart); the
+                // three tips spread out at gxEnd with the outer two
+                // offset vertically by kWeaponGlyphHeightWU.
+                const float tipMid = gxEnd;
+                const float tipUp  = gxEnd - dir * 1.0f;  // slight pull-back so the
+                const float tipDn  = gxEnd - dir * 1.0f;  // outer ticks read distinct
+                threadmaxx::DebugLine mid{};
+                mid.a         = {gxStart, rowY, 0.0f};
+                mid.b         = {tipMid,  rowY, 0.0f};
+                mid.colorRGBA = glyphColor;
+                b.addDebugLine(mid);
+                threadmaxx::DebugLine up{};
+                up.a         = {gxStart, rowY, 0.0f};
+                up.b         = {tipUp,   rowY + kWeaponGlyphHeightWU, 0.0f};
+                up.colorRGBA = glyphColor;
+                b.addDebugLine(up);
+                threadmaxx::DebugLine dn{};
+                dn.a         = {gxStart, rowY, 0.0f};
+                dn.b         = {tipDn,   rowY - kWeaponGlyphHeightWU, 0.0f};
+                dn.colorRGBA = glyphColor;
+                b.addDebugLine(dn);
+            }
+        };
+
         // ---- Ammo strip (one tight pip per remaining round) -----------
         // Two rows: dumbfire (closer to HP bar) and spread (further
         // away). Each row draws `magazineSize` placeholder pips at low
@@ -210,12 +268,24 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         // recharged"). The visual is small enough to read alongside
         // the HP bar without crowding the corner.
         const auto drawAmmoRow = [&](float rowY,
+                                     int weaponKind,
                                      std::uint16_t magSize,
                                      std::uint16_t ammo,
                                      std::uint16_t reloadIn) {
+            // Glyph color matches the pip color used for the row state
+            // so the icon reads as "this weapon, currently …":
+            //   * reloading  → dim alpha (matches the reload track)
+            //   * ready      → full slot color
+            const std::uint32_t glyphColor = reloadIn > 0
+                ? (color & 0x00FFFFFFu) |
+                      (static_cast<std::uint32_t>(kAmmoTrackAlpha8) << 24)
+                : color;
+            drawWeaponGlyph(rowY, weaponKind, glyphColor);
+
             for (std::uint16_t i = 0; i < magSize; ++i) {
                 const float px =
-                    cornerX + dir * (kAmmoPipSize * 0.5f +
+                    cornerX + dir * (kWeaponGlyphWidthWU +
+                                     kAmmoPipSize * 0.5f +
                                      static_cast<float>(i) * kAmmoPipSpacing);
                 threadmaxx::DebugPoint dp{};
                 dp.position  = {px, rowY, 0.0f};
@@ -242,9 +312,9 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
 
         const float dumbY  = barY    - kAmmoRowGapWU * anchor.yMul;
         const float spreadY = dumbY  - kAmmoRowGapWU * anchor.yMul;
-        drawAmmoRow(dumbY,  kDumbfireMagazine,
+        drawAmmoRow(dumbY,  /*weaponKind=*/0, kDumbfireMagazine,
                     state.dumbfireAmmo, state.dumbfireReload);
-        drawAmmoRow(spreadY, kSpreadMagazine,
+        drawAmmoRow(spreadY, /*weaponKind=*/1, kSpreadMagazine,
                     state.spreadAmmo, state.spreadReload);
     }
 

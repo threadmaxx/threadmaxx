@@ -74,8 +74,8 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     threadmaxx::addUserComponent(seed, ids.playerInput, h, PlayerInput{});
 
     Ship s{};
-    s.currentHp   = 100.0f;
-    s.maxHp       = 100.0f;
+    s.currentHp   = kBaseShipHp;
+    s.maxHp       = kBaseShipHp;
     s.spawnX      = x;
     s.spawnY      = y;
     s.shipKindIdx    = 0;
@@ -161,6 +161,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     botControl->setRoundEndedFlag(roundEnded_);
     auto roundRestart  = std::make_unique<RoundRestartSystem>(window_, ids_);
     roundRestart->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
+    roundRestart->setTerrainGrid(&grid_);
     auto movement      = std::make_unique<MovementSystem>(ids_);
     auto* movementPtr  = movement.get();
     auto collision     = std::make_unique<TerrainCollisionSystem>(ids_, &grid_);
@@ -176,6 +177,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto* bulletTerrainPtr = bulletTerrain.get();
     auto shipLife          = std::make_unique<ShipLifecycleSystem>(ids_);
     shipLife->setMatchMode(&matchMode_);
+    shipLife->setTerrainGrid(&grid_);
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera_         = camera.get();
     bulletTerrain_  = bulletTerrainPtr;

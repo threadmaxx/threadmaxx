@@ -8,7 +8,9 @@
 
 #include <threadmaxx/UserComponent.hpp>
 
+#include <algorithm>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 namespace tou2d {
@@ -55,8 +57,8 @@ static_assert(sizeof(LocalPlayer) == 8, "LocalPlayer must stay 8 bytes");
 /// (incremented by `BulletTerrainSystem` when a bullet clears a tile);
 /// kept separate so deathmatch scoring isn't polluted by terrain spam.
 struct Ship {
-    float         currentHp      = 100.0f;
-    float         maxHp          = 100.0f;
+    float         currentHp      = 200.0f;
+    float         maxHp          = 200.0f;
     float         spawnX         = 0.0f;
     float         spawnY         = 0.0f;
     std::uint16_t shipKindIdx    = 0;
@@ -65,6 +67,14 @@ struct Ship {
     std::uint16_t tilesDestroyed = 0;     ///< secondary terrain-wreckage counter
 };
 static_assert(sizeof(Ship) == 24, "Ship must stay 24 bytes");
+
+/// Default per-ship max HP. Raised from 100 (M3.5) to 200 alongside the
+/// damage-tuning pass: the previous 64-damage Dumbfire put TTK at 2
+/// hits and the 120-burst Spread one-shot anything alive. With HP 200
+/// + Dumbfire 24 + Spread (3×18 = 54 burst), Dumbfire TTK ≈ 9 hits and
+/// Spread TTK ≈ 4 full bursts — closer to TOU's "a sustained engagement
+/// finishes the kill, not a single trigger pull" feel.
+inline constexpr float kBaseShipHp = 200.0f;
 
 /// M3.5 — emitted once when any slot crosses `kFragLimit`. Listeners
 /// (currently just the host logger) can react however they like; the
@@ -274,5 +284,44 @@ struct TerrainGrid {
         attr[i] = Attribute::Air;
     }
 };
+
+/// Pick a random `Attribute::Air` cell from `grid`, convert to world
+/// coords, and write to (outX, outY). Returns true on success.
+///
+/// Used by `ShipLifecycleSystem` (post-death respawn) and
+/// `RoundRestartSystem` (round reset) so respawning ships don't pile
+/// back onto the same opening positions every time. Samples uniformly
+/// from the interior (2-cell margin from the perimeter so a ship never
+/// spawns flush against a bedrock wall), rejects non-Air cells, gives
+/// up after `kMaxRespawnSampleAttempts` tries and reports failure —
+/// the caller then falls back to whatever spawn it was going to use
+/// anyway.
+inline constexpr int kMaxRespawnSampleAttempts = 32;
+
+inline bool sampleRandomRespawn(const TerrainGrid& grid,
+                                std::mt19937& rng,
+                                float& outX, float& outY) noexcept {
+    if (grid.cellsX <= 4 || grid.cellsY <= 4) return false;
+    const std::int32_t marginX = std::min<std::int32_t>(2, grid.halfX);
+    const std::int32_t marginY = std::min<std::int32_t>(2, grid.halfY);
+    const std::int32_t minCx = -grid.halfX + marginX;
+    const std::int32_t maxCx =  grid.halfX - marginX;
+    const std::int32_t minCy = -grid.halfY + marginY;
+    const std::int32_t maxCy =  grid.halfY - marginY;
+    if (minCx >= maxCx || minCy >= maxCy) return false;
+
+    std::uniform_int_distribution<std::int32_t> dx(minCx, maxCx);
+    std::uniform_int_distribution<std::int32_t> dy(minCy, maxCy);
+    for (int attempt = 0; attempt < kMaxRespawnSampleAttempts; ++attempt) {
+        const std::int32_t cx = dx(rng);
+        const std::int32_t cy = dy(rng);
+        if (grid.attrAt(cx, cy) == Attribute::Air) {
+            outX = static_cast<float>(cx) * kTileWorldUnits;
+            outY = static_cast<float>(cy) * kTileWorldUnits;
+            return true;
+        }
+    }
+    return false;
+}
 
 } // namespace tou2d

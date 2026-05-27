@@ -124,9 +124,19 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                 // respawnIn == 0 inside a Disabled chunk shouldn't
                 // happen in normal flow, but treat it the same as the
                 // last-tick case so we self-heal.
+                //
+                // M4.4 — pick a random Air cell from the terrain as
+                // the respawn target. Failing that, fall back to the
+                // original (spawnX, spawnY) so the ship still comes
+                // back somewhere known.
+                float rx = ship.spawnX;
+                float ry = ship.spawnY;
+                if (grid_) {
+                    sampleRandomRespawn(*grid_, rng_, rx, ry);
+                }
                 threadmaxx::Transform t = positions[row];
-                t.position.x = ship.spawnX;
-                t.position.y = ship.spawnY;
+                t.position.x = rx;
+                t.position.y = ry;
                 t.position.z = 0.0f;
                 cb.setTransform(entities[row], t);
 

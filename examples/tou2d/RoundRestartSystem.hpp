@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <random>
 
 struct GLFWwindow;
 
@@ -68,6 +69,13 @@ public:
         winnerKills_ = winnerKills;
     }
 
+    /// M4.4 — borrowed terrain grid. When set, the round-restart pass
+    /// drops every ship onto a random `Attribute::Air` cell instead of
+    /// returning each to its baked-in (spawnX, spawnY). Null falls
+    /// back to the original spawns (covers host-side tests with no
+    /// world).
+    void setTerrainGrid(const TerrainGrid* g) noexcept { grid_ = g; }
+
 private:
     GLFWwindow*                        window_     = nullptr;
     UserComponentIds                   ids_;
@@ -86,6 +94,13 @@ private:
     /// rising-edge transition (live → ended) rather than every tick
     /// it's ended.
     bool                               wasRoundEnded_ = false;
+
+    /// Borrowed terrain grid (random respawn pool source).
+    const TerrainGrid*                 grid_         = nullptr;
+
+    /// Per-system RNG, distinct seed from ShipLifecycleSystem so the
+    /// two systems' random streams don't braid into the same numbers.
+    std::mt19937                       rng_{0x712B0Au};
 };
 
 } // namespace tou2d

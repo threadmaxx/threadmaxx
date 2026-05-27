@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <random>
 
 namespace tou2d {
 
@@ -56,6 +57,14 @@ public:
     /// a no-op (the ship is permanently out for the round).
     void setMatchMode(const MatchMode* mode) noexcept { matchMode_ = mode; }
 
+    /// M4.4 — borrowed terrain grid. When set, respawn picks a random
+    /// `Attribute::Air` cell from the grid instead of returning the
+    /// ship to its baked-in (spawnX, spawnY). Null is fine — the
+    /// respawn falls back to the original spawn point if no grid was
+    /// installed (mostly affects host-side tests with a synthetic
+    /// empty world).
+    void setTerrainGrid(const TerrainGrid* g) noexcept { grid_ = g; }
+
     /// 3 s @ 60 Hz fixed step.
     static constexpr std::uint16_t kRespawnTicks = 180;
 
@@ -77,6 +86,10 @@ private:
 
     UserComponentIds                ids_;
     const MatchMode*                matchMode_ = nullptr;
+    const TerrainGrid*              grid_      = nullptr;
+    /// Per-system RNG for random respawn picks. Seeded with a fixed
+    /// constant in the ctor so replays / smoke tests are reproducible.
+    std::mt19937                    rng_{0xBA51CF11u};
     std::array<DeathSpark, 8>       sparks_{};
     std::uint32_t                   nextSpark_ = 0;
 };

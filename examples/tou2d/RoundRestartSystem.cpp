@@ -73,10 +73,17 @@ void RoundRestartSystem::preStep(threadmaxx::SystemContext& ctx) {
 
             for (std::size_t row = 0, n = entities.size(); row < n; ++row) {
                 Ship s = shipSpan[row];
-                // Position: back to original spawn (held inside Ship
-                // since spawn-time).
+                // Position: random Air cell (M4.4) when a grid is
+                // wired in; falls back to the baked-in spawn point
+                // if random sampling fails or no grid was installed
+                // (host-side tests without a world).
+                float rx = s.spawnX;
+                float ry = s.spawnY;
+                if (grid_) {
+                    sampleRandomRespawn(*grid_, rng_, rx, ry);
+                }
                 threadmaxx::Transform t{};
-                t.position = {s.spawnX, s.spawnY, 0.0f};
+                t.position = {rx, ry, 0.0f};
                 t.scale    = {28.0f, 28.0f, 28.0f};
                 cb.setTransform(entities[row], t);
 

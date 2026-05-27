@@ -16,13 +16,20 @@ constexpr float         kMuzzleSpeed       = 600.0f;   // world units / s
 constexpr float         kBulletTtlSeconds  = 1.2f;
 constexpr float         kMuzzleOffset      = 18.0f;
 constexpr float         kBulletScale       = 4.0f;
-constexpr std::uint8_t  kDumbfireDamage    = 64;       // ¼ of a 192-HP tile
+// M4.4 — lowered from 64 to 24 so the bumped 200 HP gives Dumbfire a
+// TTK of ~9 hits at the 8-tick cadence (≈ 1.2 s of held fire). Still
+// substantial enough to read in the HUD HP bar after each hit.
+constexpr std::uint8_t  kDumbfireDamage    = 24;
 
 // M3.3 Spread tunables — 3 bullets at ±kSpreadAngle around forward.
 constexpr float         kSpreadAngleRad      = 0.30f;  // ~17°
 constexpr float         kSpreadSpeed         = 520.0f; // slightly slower than Dumbfire
 constexpr float         kSpreadTtlSeconds    = 0.9f;
-constexpr std::uint8_t  kSpreadDamage        = 40;     // 3 × 40 = 120 burst vs 64
+// M4.4 — 3 × 18 = 54 per full-pellet burst against 200 HP → ~4 full
+// bursts to kill (was 120 burst → one-shot on 100 HP). Per-pellet
+// damage is still meaningful (18) so a single grazing pellet from a
+// spread hit reads as damage in the HP bar.
+constexpr std::uint8_t  kSpreadDamage        = 18;
 
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
