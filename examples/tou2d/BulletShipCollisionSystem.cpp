@@ -44,6 +44,12 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
     if (!idsBl.valid() || !idsLp.valid() || !idsShip.valid()) return;
     if (!engine_)                                              return;
 
+    // Latch the mode at the top of the tick — we hash a few sites
+    // below; cheaper to dereference once.
+    const MatchMode mode = matchMode_ ? *matchMode_ : MatchMode::Deathmatch;
+    const bool roundAlreadyEnded =
+        roundEnded_ && roundEnded_->load(std::memory_order_acquire);
+
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
 
@@ -163,7 +169,17 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
             }
         }
 
-        // ---- Pass 4: credit kills to shooters ---------------------------
+        // ---- Pass 4: credit kills to shooters + DM win check ------------
+        // M4.3 — also rolls up the kill totals so we can decide the LSS
+        // mutual-annihilation winner without a second walk. Per-slot
+        // post-tick kill totals reflect any +1 we apply this pass; for
+        // a slot that didn't score this tick, the chunk's existing
+        // value is reused.
+        std::array<std::uint16_t, 4> killsBySlotPostTick{};
+        bool                         dmRoundEnded = false;
+        std::uint8_t                 dmWinnerSlot = 0;
+        std::uint16_t                dmWinnerKills = 0;
+
         for (const auto* chunkPtr : view.chunks()) {
             if (!chunkPtr) continue;
             const auto& chunk = *chunkPtr;
@@ -180,28 +196,120 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                 for (std::size_t v = 0; v < killerByVictim.size(); ++v) {
                     if (killerByVictim[v] == shooterSlot) ++addKills;
                 }
-                if (addKills == 0) continue;
-                Ship shooter = shipSpan[row];
-                const std::uint32_t k =
-                    static_cast<std::uint32_t>(shooter.kills) + addKills;
-                shooter.kills = k > 0xFFFFu ? std::uint16_t{0xFFFFu}
-                                            : static_cast<std::uint16_t>(k);
-                threadmaxx::addUserComponent(cb, idsShip, entities[row], shooter);
 
-                if (!roundEnded_ && shooter.kills >= kFragLimit) {
-                    roundEnded_ = true;
-                    RoundEnded ev{};
-                    ev.winnerSlot  = shooterSlot;
-                    ev.winnerKills = shooter.kills;
-                    engine_->events<RoundEnded>().emit(ev);
-                    char msg[96];
-                    std::snprintf(msg, sizeof msg,
-                        "[tou2d] round ended: slot %u reached %u kills",
-                        static_cast<unsigned>(shooterSlot),
-                        static_cast<unsigned>(shooter.kills));
-                    engine_->logger().log(threadmaxx::LogLevel::Warn, msg);
+                Ship shooter = shipSpan[row];
+                if (addKills > 0) {
+                    const std::uint32_t k =
+                        static_cast<std::uint32_t>(shooter.kills) + addKills;
+                    shooter.kills = k > 0xFFFFu ? std::uint16_t{0xFFFFu}
+                                                : static_cast<std::uint16_t>(k);
+                    threadmaxx::addUserComponent(cb, idsShip, entities[row], shooter);
+                }
+
+                if (shooterSlot < killsBySlotPostTick.size()) {
+                    killsBySlotPostTick[shooterSlot] = shooter.kills;
+                }
+
+                if (mode == MatchMode::Deathmatch && !roundAlreadyEnded &&
+                    !dmRoundEnded && shooter.kills >= kFragLimit) {
+                    dmRoundEnded   = true;
+                    dmWinnerSlot   = shooterSlot;
+                    dmWinnerKills  = shooter.kills;
                 }
             }
+        }
+
+        // ---- Pass 5: LSS post-damage survivor census --------------------
+        // Count ships with currentHp > 0 right after this tick's damage.
+        // ≤ 1 alive triggers round-end. Winner = surviving slot if
+        // exactly one; on mutual annihilation (zero survivors) pick the
+        // slot with the most kills (deterministic tiebreak: lowest slot
+        // index wins ties).
+        bool          lssRoundEnded  = false;
+        std::uint8_t  lssWinnerSlot  = 0;
+        std::uint16_t lssWinnerKills = 0;
+        if (mode == MatchMode::LastShipStanding && !roundAlreadyEnded) {
+            std::uint32_t aliveCount = 0;
+            std::uint8_t  lastAliveSlot = 0;
+            for (const auto* chunkPtr : view.chunks()) {
+                if (!chunkPtr) continue;
+                const auto& chunk = *chunkPtr;
+                if (!chunk.mask.has(idsLp.componentBit()))    continue;
+                if (!chunk.mask.has(idsShip.componentBit()))  continue;
+                // A ship that was already DisabledTag at the top of the
+                // tick is permanently out; skip — its currentHp is
+                // whatever it was on death (0). A ship that just hit 0
+                // HP this tick is still in the !DisabledTag chunk; its
+                // post-damage write above lowered currentHp to 0, so
+                // the alive check correctly excludes it.
+                if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+
+                const auto lpSpan   = threadmaxx::user::chunkSpan<LocalPlayer>(chunk, idsLp);
+                const auto shipSpan = threadmaxx::user::chunkSpan<Ship>(chunk, idsShip);
+                for (std::size_t row = 0, n = lpSpan.size(); row < n; ++row) {
+                    const std::uint8_t slot = lpSpan[row].slot;
+                    const std::uint16_t dmg = slot < dmgBySlot.size()
+                                                  ? dmgBySlot[slot]
+                                                  : std::uint16_t{0};
+                    // Recompute post-tick HP using the same dmg sum
+                    // pass 3 applied (the chunkSpan we hold reads the
+                    // PRE-write value).
+                    const float preHp = shipSpan[row].currentHp;
+                    const float postHp =
+                        preHp > 0.0f ? preHp - static_cast<float>(dmg) : preHp;
+                    if (postHp > 0.0f) {
+                        ++aliveCount;
+                        lastAliveSlot = slot;
+                    }
+                }
+            }
+            if (aliveCount <= 1) {
+                lssRoundEnded = true;
+                if (aliveCount == 1) {
+                    lssWinnerSlot = lastAliveSlot;
+                    lssWinnerKills =
+                        lastAliveSlot < killsBySlotPostTick.size()
+                            ? killsBySlotPostTick[lastAliveSlot]
+                            : std::uint16_t{0};
+                } else {
+                    // Mutual annihilation — pick the highest kill count
+                    // (lowest slot wins ties).
+                    std::uint8_t  best     = 0;
+                    std::uint16_t bestKill = 0;
+                    for (std::size_t i = 0; i < killsBySlotPostTick.size(); ++i) {
+                        if (killsBySlotPostTick[i] > bestKill) {
+                            bestKill = killsBySlotPostTick[i];
+                            best     = static_cast<std::uint8_t>(i);
+                        }
+                    }
+                    lssWinnerSlot  = best;
+                    lssWinnerKills = bestKill;
+                }
+            }
+        }
+
+        // ---- Emit round-end (if any) ------------------------------------
+        if ((dmRoundEnded || lssRoundEnded) && roundEnded_) {
+            const std::uint8_t  winSlot  = dmRoundEnded ? dmWinnerSlot  : lssWinnerSlot;
+            const std::uint16_t winKills = dmRoundEnded ? dmWinnerKills : lssWinnerKills;
+            roundEnded_->store(true, std::memory_order_release);
+            if (winnerSlot_)  *winnerSlot_  = winSlot;
+            if (winnerKills_) *winnerKills_ = winKills;
+
+            RoundEnded ev{};
+            ev.winnerSlot  = winSlot;
+            ev.winnerKills = winKills;
+            engine_->events<RoundEnded>().emit(ev);
+
+            const char* modeStr =
+                mode == MatchMode::LastShipStanding ? "LSS" : "DM";
+            char msg[96];
+            std::snprintf(msg, sizeof msg,
+                "[tou2d] round ended (%s): slot %u with %u kills",
+                modeStr,
+                static_cast<unsigned>(winSlot),
+                static_cast<unsigned>(winKills));
+            engine_->logger().log(threadmaxx::LogLevel::Warn, msg);
         }
     });
 }

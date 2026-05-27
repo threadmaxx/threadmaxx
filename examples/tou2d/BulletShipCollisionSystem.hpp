@@ -4,6 +4,10 @@
 
 #include <threadmaxx/System.hpp>
 
+#include <atomic>
+#include <cstdint>
+#include <memory>
+
 namespace threadmaxx { class Engine; }
 
 namespace tou2d {
@@ -25,8 +29,20 @@ namespace tou2d {
 ///   * Ship HP -= bullet.damage. The bullet is destroyed.
 ///   * If the hit drops HP to ≤ 0 AND the ship was alive AND the
 ///     shooter is not the victim, the shooter's `kills++`. If that
-///     count crosses `kFragLimit`, emit a `RoundEnded` event on the
-///     typed channel (once per session — re-emission is suppressed).
+///     count crosses `kFragLimit` (Deathmatch mode), emit RoundEnded.
+///
+/// M4.3 — match-mode-aware round-end:
+///   * Deathmatch (default): emit when any shooter's kills crosses
+///     `kFragLimit`. Existing behavior.
+///   * LastShipStanding: after damage application, count ships with
+///     `currentHp > 0`. If ≤ 1 the round ends; winner = surviving slot,
+///     or (on mutual annihilation) the slot with the most kills.
+///
+/// Round-end state is the shared atomic owned by `TouGame`. Collision
+/// is now the authoritative writer (no internal mirror bool). When the
+/// atomic is true (set either by collision or by `RoundRestartSystem`'s
+/// reset), no further emissions happen until it goes false again. The
+/// `RoundRestartSystem` flips it false, re-arming the gate.
 ///
 /// reads / writes:
 ///   * reads  = {Transform, Velocity, UserData}
@@ -57,10 +73,30 @@ public:
 
     void update(threadmaxx::SystemContext& ctx) override;
 
+    /// M4.3 — install the shared round-end latch + the borrowed winner
+    /// pointers (TouGame owns both). When the round ends, this system
+    /// writes both directly so the rest of the engine sees consistent
+    /// post-condition before the next tick's preStep gates fire.
+    void setRoundEndedFlag(std::shared_ptr<std::atomic<bool>> f,
+                           std::uint8_t*  winnerSlot,
+                           std::uint16_t* winnerKills) noexcept {
+        roundEnded_  = std::move(f);
+        winnerSlot_  = winnerSlot;
+        winnerKills_ = winnerKills;
+    }
+
+    /// M4.3 — borrowed pointer to TouGame's `matchMode_` member. Read
+    /// once per update() so a future toggle (e.g. from a debug menu)
+    /// takes effect on the next tick without restarting the engine.
+    void setMatchMode(const MatchMode* mode) noexcept { matchMode_ = mode; }
+
 private:
-    UserComponentIds    ids_;
-    threadmaxx::Engine* engine_     = nullptr;
-    bool                roundEnded_ = false;   ///< once true, no further RoundEnded emits
+    UserComponentIds                   ids_;
+    threadmaxx::Engine*                engine_      = nullptr;
+    std::shared_ptr<std::atomic<bool>> roundEnded_;
+    std::uint8_t*                      winnerSlot_  = nullptr;
+    std::uint16_t*                     winnerKills_ = nullptr;
+    const MatchMode*                   matchMode_   = nullptr;
 };
 
 } // namespace tou2d

@@ -2,7 +2,6 @@
 
 #include "DemoTypes.hpp"
 
-#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/Game.hpp>
 #include <threadmaxx/Handles.hpp>
 
@@ -39,6 +38,14 @@ public:
     explicit TouGame(GLFWwindow* window) noexcept;
 
     void setLevelDir(std::filesystem::path p) noexcept { levelDir_ = std::move(p); }
+
+    /// M4.3 — select round mode. Default is `Deathmatch` (kFragLimit
+    /// kills wins, ships respawn). `LastShipStanding` means death is
+    /// permanent for the round and the last ship alive wins. Must be
+    /// called BEFORE `engine.initialize(game)` — onSetup latches the
+    /// mode through to the systems via a borrowed pointer.
+    void setMatchMode(MatchMode m) noexcept { matchMode_ = m; }
+    MatchMode matchMode() const noexcept { return matchMode_; }
 
     void onSetup(threadmaxx::Engine& engine,
                  threadmaxx::World&  world,
@@ -89,11 +96,16 @@ private:
     std::int32_t             cellsY_         = 0;
     TerrainGrid              grid_;
     /// Round-end shared latch. Always-allocated; default-false.
+    /// M4.3 — collision now writes this directly (via shared_ptr
+    /// setter), and RoundRestartSystem clears it on reset. The
+    /// subscription on the typed channel is gone — collision is the
+    /// authoritative writer and the channel remains a public hook for
+    /// future listeners (audio, telemetry).
     std::shared_ptr<std::atomic<bool>>      roundEnded_ =
         std::make_shared<std::atomic<bool>>(false);
     std::uint8_t                            winnerSlot_  = 0;
     std::uint16_t                           winnerKills_ = 0;
-    threadmaxx::Subscription                roundEndSub_{};
+    MatchMode                               matchMode_   = MatchMode::Deathmatch;
 };
 
 } // namespace tou2d

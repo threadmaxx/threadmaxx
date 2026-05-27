@@ -65,6 +65,7 @@ private:
     struct SlotState {
         bool          present       = false; ///< LocalPlayer slot exists this tick
         bool          alive         = false; ///< not DisabledTag
+        bool          permanentDead = false; ///< LSS-mode permanent death (respawnIn == sentinel)
         float         hpFrac        = 0.0f;  ///< currentHp / maxHp clamped [0, 1]
         std::uint32_t kills         = 0;
         std::uint16_t dumbfireAmmo  = 0;     ///< current magazine

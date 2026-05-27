@@ -50,6 +50,12 @@ public:
     void update          (threadmaxx::SystemContext& ctx) override;
     void buildRenderFrame(threadmaxx::RenderFrameBuilder& b) override;
 
+    /// M4.3 — borrowed pointer to TouGame's `matchMode_`. When
+    /// `LastShipStanding`, on-death stamps `respawnIn =
+    /// kPermanentDeathSentinel` and the Disabled-chunk branch becomes
+    /// a no-op (the ship is permanently out for the round).
+    void setMatchMode(const MatchMode* mode) noexcept { matchMode_ = mode; }
+
     /// 3 s @ 60 Hz fixed step.
     static constexpr std::uint16_t kRespawnTicks = 180;
 
@@ -70,6 +76,7 @@ private:
     };
 
     UserComponentIds                ids_;
+    const MatchMode*                matchMode_ = nullptr;
     std::array<DeathSpark, 8>       sparks_{};
     std::uint32_t                   nextSpark_ = 0;
 };

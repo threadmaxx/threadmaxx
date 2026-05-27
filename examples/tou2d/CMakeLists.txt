@@ -32,6 +32,7 @@ add_library(tou2d_core STATIC
     ShipLifecycleSystem.cpp
     BotControlSystem.cpp
     HudSystem.cpp
+    RoundRestartSystem.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

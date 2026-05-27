@@ -116,16 +116,29 @@ void glfwResizeCb(GLFWwindow* win, int width, int height) {
 } // namespace
 
 int main(int argc, char** argv) {
-    std::uint64_t maxTicks = 0;
-    std::string   levelDir;
+    std::uint64_t      maxTicks  = 0;
+    std::string        levelDir;
+    tou2d::MatchMode   matchMode = tou2d::MatchMode::Deathmatch;
 
     // Lightweight arg parse — supports any order of:
     //   <N>            : bounded run for N ticks (otherwise headless / Ctrl-C)
     //   --level <path> : load imported level dir produced by tou2d_import_lev
+    //   --mode=<dm|lss>: deathmatch (default) or last-ship-standing
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--level" && i + 1 < argc) {
             levelDir = argv[++i];
+        } else if (a.rfind("--mode=", 0) == 0) {
+            const std::string val = a.substr(7);
+            if (val == "dm" || val == "deathmatch") {
+                matchMode = tou2d::MatchMode::Deathmatch;
+            } else if (val == "lss" || val == "lastshipstanding") {
+                matchMode = tou2d::MatchMode::LastShipStanding;
+            } else {
+                std::fprintf(stderr,
+                    "[tou2d] --mode=%s — expected dm|lss\n", val.c_str());
+                return 2;
+            }
         } else if (!a.empty() && std::isdigit(static_cast<unsigned char>(a[0]))) {
             maxTicks = std::strtoull(a.c_str(), nullptr, 10);
         } else {
@@ -162,6 +175,11 @@ int main(int argc, char** argv) {
         game.setLevelDir(levelDir);
         std::printf("[tou2d] loading level from %s\n", levelDir.c_str());
     }
+    game.setMatchMode(matchMode);
+    std::printf("[tou2d] match mode: %s\n",
+                matchMode == tou2d::MatchMode::LastShipStanding
+                    ? "last-ship-standing"
+                    : "deathmatch");
 
     threadmaxx_vk::VulkanRenderer::Config vrcfg;
     vrcfg.width          = kInitialWidth;

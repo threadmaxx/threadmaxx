@@ -34,6 +34,11 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
     const auto idsLd   = ids_.loadout;
     if (!idsShip.valid()) return;
 
+    // M4.3 — latch mode at top of tick.
+    const MatchMode mode =
+        matchMode_ ? *matchMode_ : MatchMode::Deathmatch;
+    const bool lss = mode == MatchMode::LastShipStanding;
+
     // Tick down existing sparks first (so a fresh spark this tick lands
     // at full ticksLeft and doesn't get immediately decremented).
     for (auto& sp : sparks_) {
@@ -69,7 +74,11 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                     if (ship.currentHp > 0.0f) continue;
 
                     // ---- Begin death --------------------------------
-                    ship.respawnIn = kRespawnTicks;
+                    // M4.3 — in LSS, death is permanent for the round.
+                    // Stamp the sentinel so the Disabled-chunk branch
+                    // below knows not to count down / respawn.
+                    ship.respawnIn = lss ? kPermanentDeathSentinel
+                                         : kRespawnTicks;
                     threadmaxx::addUserComponent(cb, idsShip, entities[row], ship);
 
                     threadmaxx::Velocity v = velocities[row];
@@ -100,6 +109,12 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                 }
 
                 // ---- Disabled chunk: tick down respawn ---------------
+                // M4.3 — LSS permanent-death sentinel pins the ship in
+                // Disabled-limbo forever (until RoundRestartSystem
+                // resets it on the next round).
+                if (ship.respawnIn == kPermanentDeathSentinel) {
+                    continue;
+                }
                 if (ship.respawnIn > 1) {
                     ship.respawnIn = static_cast<std::uint16_t>(ship.respawnIn - 1);
                     threadmaxx::addUserComponent(cb, idsShip, entities[row], ship);

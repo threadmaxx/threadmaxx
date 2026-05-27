@@ -81,6 +81,35 @@ static_assert(sizeof(RoundEnded) == 4, "RoundEnded must stay 4 bytes");
 /// bot-vs-bot self-play settles a winner within a few minutes of sim.
 inline constexpr std::uint16_t kFragLimit = 10;
 
+/// M4.3 — round-mode selector.
+///
+/// `Deathmatch` (default) — every kill counts; first to `kFragLimit`
+/// wins; ships respawn after `kRespawnTicks` ticks.
+///
+/// `LastShipStanding` — death is permanent for the round. When only
+/// one ship has `currentHp > 0` remaining (or zero if mutual annihilation
+/// in the same tick), the round ends with that ship as the winner
+/// (mutual annihilation falls back to the slot with the most kills).
+/// `Ship::respawnIn` is set to `kPermanentDeathSentinel` on death so
+/// `ShipLifecycleSystem` skips the countdown / respawn branch.
+enum class MatchMode : std::uint8_t {
+    Deathmatch       = 0,
+    LastShipStanding = 1,
+};
+
+/// Sentinel respawn-counter value meaning "this ship is out of the
+/// round; never respawn." Distinct from any valid countdown value
+/// (max is kRespawnTicks ≈ 180). Used only when `matchMode ==
+/// LastShipStanding`.
+inline constexpr std::uint16_t kPermanentDeathSentinel = 0xFFFFu;
+
+/// Holdoff after round-end before the restart key is accepted. Prevents
+/// a player who is still mashing fire on round-end from immediately
+/// restarting before they have noticed the winner banner. 90 ticks @
+/// 60 Hz = 1.5 s — long enough to register the banner, short enough
+/// that the next round starts feel responsive.
+inline constexpr std::uint16_t kRestartHoldoffTicks = 90;
+
 /// Tile-grid terrain classification. Mirrors the layout of the imported
 /// `.lev` attribute byte.
 enum class Attribute : std::uint8_t {

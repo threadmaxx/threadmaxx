@@ -96,8 +96,10 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
                 const std::uint8_t slot = lpSpan[row].slot;
                 if (slot >= slots_.size()) continue;
                 const Ship& sh = shipSpan[row];
-                slots_[slot].present = true;
-                slots_[slot].alive   = !disabled;
+                slots_[slot].present       = true;
+                slots_[slot].alive         = !disabled;
+                slots_[slot].permanentDead =
+                    disabled && sh.respawnIn == kPermanentDeathSentinel;
                 slots_[slot].kills   = sh.kills;
                 const float maxHp = sh.maxHp > 0.0f ? sh.maxHp : 1.0f;
                 slots_[slot].hpFrac = std::clamp(sh.currentHp / maxHp, 0.0f, 1.0f);
@@ -163,6 +165,26 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         const float barY     = cornerY - kRowVerticalWU * anchor.yMul;
         const float barStart = cornerX;
         const float barEnd   = cornerX + dir * kHpBarLengthWU;
+
+        // M4.3 — LSS permanent-dead: replace the HP bar + ammo strips
+        // with a slot-colored "X" spanning the HP-bar footprint so the
+        // spectator can see at a glance which slot is out.
+        if (state.permanentDead) {
+            const float xHalfH = kRowVerticalWU * 1.5f;
+            const std::uint32_t xColor = (kSlotColors[s] & 0x00FFFFFFu) | 0xC0000000u;
+            threadmaxx::DebugLine d1{};
+            d1.a         = {barStart, barY + xHalfH, 0.0f};
+            d1.b         = {barEnd,   barY - xHalfH, 0.0f};
+            d1.colorRGBA = xColor;
+            b.addDebugLine(d1);
+            threadmaxx::DebugLine d2{};
+            d2.a         = {barStart, barY - xHalfH, 0.0f};
+            d2.b         = {barEnd,   barY + xHalfH, 0.0f};
+            d2.colorRGBA = xColor;
+            b.addDebugLine(d2);
+            continue;   // skip HP bar + ammo strips for this slot
+        }
+
         {
             threadmaxx::DebugLine bg{};
             bg.a         = {barStart, barY, 0.0f};
