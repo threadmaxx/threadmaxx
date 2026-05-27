@@ -32,6 +32,17 @@ constexpr float kBadgeSize     = 10.0f;    // bigger pixel point for slot badge
 constexpr float kHpBarLengthWU = 56.0f;    // full HP = this length
 constexpr float kRowVerticalWU = 8.0f;     // vertical gap between badge / pip row / HP bar
 
+// M4.2 — ammo strip + winner banner constants.
+constexpr float kAmmoPipSize     = 2.6f;   // smaller than score pips
+constexpr float kAmmoPipSpacing  = 3.4f;   // tighter than score pips
+constexpr float kAmmoRowGapWU    = 6.0f;   // gap below HP bar
+constexpr float kAmmoTrackAlpha8 = 56.0f;  // dim placeholder for empty mag slots
+constexpr std::uint32_t kBannerWhite  = 0xFFFFFFFFu;
+constexpr float kBannerHalfWidthWU    = 90.0f;
+constexpr float kBannerHalfHeightWU   = 22.0f;
+constexpr float kBannerBadgeSize      = 14.0f;
+constexpr float kBannerKillsPipSize   = 5.0f;
+
 /// Pick the (xMul, yMul, growRight) for a slot — each slot gets a
 /// distinct corner. xMul ∈ {-1, +1}, yMul ∈ {-1, +1}.
 ///   slot 0 (P1) → top-left  (-1, +1, growRight=true)
@@ -58,6 +69,7 @@ HudSystem::HudSystem(UserComponentIds ids, const CameraSystem* camera) noexcept
 void HudSystem::update(threadmaxx::SystemContext& ctx) {
     const auto idsLp   = ids_.localPlayer;
     const auto idsShip = ids_.ship;
+    const auto idsLd   = ids_.loadout;
     if (!idsLp.valid() || !idsShip.valid()) return;
 
     // Reset latches each tick.
@@ -73,6 +85,10 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
 
             const auto lpSpan   = threadmaxx::user::chunkSpan<LocalPlayer>(chunk, idsLp);
             const auto shipSpan = threadmaxx::user::chunkSpan<Ship>(chunk, idsShip);
+            const bool hasLd = idsLd.valid() && chunk.mask.has(idsLd.componentBit());
+            const auto ldSpan = hasLd
+                ? threadmaxx::user::chunkSpan<WeaponLoadout>(chunk, idsLd)
+                : std::span<const WeaponLoadout>{};
             const bool disabled =
                 chunk.mask.has(threadmaxx::Component::DisabledTag);
 
@@ -85,6 +101,13 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
                 slots_[slot].kills   = sh.kills;
                 const float maxHp = sh.maxHp > 0.0f ? sh.maxHp : 1.0f;
                 slots_[slot].hpFrac = std::clamp(sh.currentHp / maxHp, 0.0f, 1.0f);
+                if (hasLd) {
+                    const WeaponLoadout& ld = ldSpan[row];
+                    slots_[slot].dumbfireAmmo   = ld.dumbfireAmmo;
+                    slots_[slot].dumbfireReload = ld.dumbfireReloadIn;
+                    slots_[slot].spreadAmmo     = ld.spreadAmmo;
+                    slots_[slot].spreadReload   = ld.spreadReloadIn;
+                }
             }
         }
     });
@@ -154,6 +177,107 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             fg.b         = {fillEnd,  barY, 0.0f};
             fg.colorRGBA = color;
             b.addDebugLine(fg);
+        }
+
+        // ---- Ammo strip (one tight pip per remaining round) -----------
+        // Two rows: dumbfire (closer to HP bar) and spread (further
+        // away). Each row draws `magazineSize` placeholder pips at low
+        // alpha; the first `ammo` of them are overlaid in full slot
+        // color. During reload, the entire row is overlaid in a single
+        // continuous low-alpha track (visually: "the weapon is being
+        // recharged"). The visual is small enough to read alongside
+        // the HP bar without crowding the corner.
+        const auto drawAmmoRow = [&](float rowY,
+                                     std::uint16_t magSize,
+                                     std::uint16_t ammo,
+                                     std::uint16_t reloadIn) {
+            for (std::uint16_t i = 0; i < magSize; ++i) {
+                const float px =
+                    cornerX + dir * (kAmmoPipSize * 0.5f +
+                                     static_cast<float>(i) * kAmmoPipSpacing);
+                threadmaxx::DebugPoint dp{};
+                dp.position  = {px, rowY, 0.0f};
+                dp.pixelSize = kAmmoPipSize;
+                if (reloadIn > 0) {
+                    // Reload in progress — paint every slot at low
+                    // alpha so the row reads as "occupied but not
+                    // available."
+                    const std::uint32_t a8 = static_cast<std::uint32_t>(kAmmoTrackAlpha8);
+                    dp.colorRGBA = (color & 0x00FFFFFFu) | (a8 << 24);
+                } else if (i < ammo) {
+                    dp.colorRGBA = color;
+                } else {
+                    // Magazine slot consumed but reload not yet started
+                    // (the post-fire empty-but-eligible-next-tick edge
+                    // case for the last bullet) — paint at dim alpha so
+                    // the size of the magazine remains visible.
+                    const std::uint32_t a8 = static_cast<std::uint32_t>(kAmmoTrackAlpha8);
+                    dp.colorRGBA = (color & 0x00FFFFFFu) | (a8 << 24);
+                }
+                b.addDebugPoint(dp);
+            }
+        };
+
+        const float dumbY  = barY    - kAmmoRowGapWU * anchor.yMul;
+        const float spreadY = dumbY  - kAmmoRowGapWU * anchor.yMul;
+        drawAmmoRow(dumbY,  kDumbfireMagazine,
+                    state.dumbfireAmmo, state.dumbfireReload);
+        drawAmmoRow(spreadY, kSpreadMagazine,
+                    state.spreadAmmo, state.spreadReload);
+    }
+
+    // ---- M4.2 winner banner -------------------------------------------
+    // Centered at the camera follow point; outlined in white; the
+    // winner's slot color forms a large central badge surrounded by a
+    // row of pips for the final kill count. No text (the renderer
+    // doesn't draw DebugText today) — color + pip count carries the
+    // information.
+    if (roundEnded_ && roundEnded_->load(std::memory_order_acquire) &&
+        winnerSlot_ != nullptr && winnerKills_ != nullptr) {
+        const std::uint8_t  slot  = *winnerSlot_;
+        const std::uint16_t kills = *winnerKills_;
+        const std::uint32_t wcolor =
+            slot < kSlotColors.size() ? kSlotColors[slot] : kBannerWhite;
+
+        // Outline (4 line segments).
+        const float minX = center.x - kBannerHalfWidthWU;
+        const float maxX = center.x + kBannerHalfWidthWU;
+        const float minY = center.y - kBannerHalfHeightWU;
+        const float maxY = center.y + kBannerHalfHeightWU;
+        const auto outlineSegment = [&](float ax, float ay, float bx, float by) {
+            threadmaxx::DebugLine ln{};
+            ln.a         = {ax, ay, 0.0f};
+            ln.b         = {bx, by, 0.0f};
+            ln.colorRGBA = kBannerWhite;
+            b.addDebugLine(ln);
+        };
+        outlineSegment(minX, minY, maxX, minY);
+        outlineSegment(maxX, minY, maxX, maxY);
+        outlineSegment(maxX, maxY, minX, maxY);
+        outlineSegment(minX, maxY, minX, minY);
+
+        // Winner badge (large slot-colored point) left-of-center.
+        {
+            threadmaxx::DebugPoint dp{};
+            dp.position  = {center.x - kBannerHalfWidthWU * 0.55f, center.y, 0.0f};
+            dp.colorRGBA = wcolor;
+            dp.pixelSize = kBannerBadgeSize;
+            b.addDebugPoint(dp);
+        }
+
+        // Kill count expressed as pips to the right of the badge.
+        const std::uint32_t pipKills =
+            std::min<std::uint32_t>(kills, kMaxScorePips);
+        for (std::uint32_t i = 0; i < pipKills; ++i) {
+            threadmaxx::DebugPoint dp{};
+            dp.position  = {
+                center.x - kBannerHalfWidthWU * 0.30f +
+                    static_cast<float>(i) * (kBannerKillsPipSize * 1.6f),
+                center.y, 0.0f,
+            };
+            dp.colorRGBA = wcolor;
+            dp.pixelSize = kBannerKillsPipSize;
+            b.addDebugPoint(dp);
         }
     }
 }

@@ -31,6 +31,7 @@ ShipLifecycleSystem::ShipLifecycleSystem(UserComponentIds ids) noexcept
 void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
     const auto idsShip = ids_.ship;
     const auto idsLp   = ids_.localPlayer;
+    const auto idsLd   = ids_.loadout;
     if (!idsShip.valid()) return;
 
     // Tick down existing sparks first (so a fresh spark this tick lands
@@ -120,6 +121,20 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                 ship.currentHp = ship.maxHp;
                 ship.respawnIn = 0;
                 threadmaxx::addUserComponent(cb, idsShip, entities[row], ship);
+
+                // M4.2 — refresh weapon state on respawn so the player
+                // comes back with a full magazine and zero reload
+                // pending. Without this, a ship that died mid-reload
+                // would respawn with whatever ammo/reload counters it
+                // had at death tick — uncomfortable inconsistency.
+                if (idsLd.valid()) {
+                    WeaponLoadout fresh{};
+                    fresh.dumbfireAmmo     = kDumbfireMagazine;
+                    fresh.dumbfireReloadIn = 0;
+                    fresh.spreadAmmo       = kSpreadMagazine;
+                    fresh.spreadReloadIn   = 0;
+                    threadmaxx::addUserComponent(cb, idsLd, entities[row], fresh);
+                }
 
                 cb.removeTag(entities[row], threadmaxx::Component::DisabledTag);
             }

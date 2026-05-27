@@ -4,24 +4,31 @@
 
 #include <threadmaxx/System.hpp>
 
-#include <cstdint>
-#include <unordered_map>
+#include <atomic>
+#include <memory>
 
 namespace tou2d {
 
 /// Reads PlayerInput.fireBasic + ship Transform per local-player ship,
-/// spawns Dumbfire-class Bullet entities pointed along the ship's
-/// current orientation. Per-ship cooldown is tracked in an internal
-/// map keyed by EntityHandle — fire is rate-limited to `kFireCooldownSec`
-/// (TOU's Dumbfire reload cadence).
+/// spawns Bullet entities pointed along the ship's current orientation.
 ///
-/// M3.1 ships only the Dumbfire kind; other weapons land in M3.2+.
+/// M4.2 — per-ship ammo + reload via the `WeaponLoadout` user component
+/// (lives on the same entity as the ship). The system reads the
+/// loadout, gates fires on `ammo > 0 && reloadIn == 0`, decrements
+/// ammo on each fire, sets `reloadIn = kReload*Ticks` the moment the
+/// magazine hits zero, and ticks the reload counter back to zero each
+/// step. A reload that completes this tick refills ammo to the
+/// magazine size — but does NOT fire the same tick (the player has to
+/// re-press / re-hold to start the next burst). The previous
+/// per-`EntityHandle.index` cooldown maps are gone; the loadout
+/// component now carries the rate-limit state.
 ///
 /// reads / writes:
 ///   * reads  = {Transform, Velocity, UserData}  (Velocity so the bullet
 ///              inherits the ship's velocity for a clean shoot-while-
 ///              moving feel; UserData participates as a common bit).
-///   * writes = {EntityStructural}  — spawning bullets.
+///   * writes = {EntityStructural, UserData}  — spawning bullets +
+///              rewriting WeaponLoadout each tick.
 class WeaponFireSystem : public threadmaxx::ISystem {
 public:
     explicit WeaponFireSystem(UserComponentIds ids) noexcept;
@@ -37,19 +44,23 @@ public:
     threadmaxx::ComponentSet writes() const noexcept override {
         return threadmaxx::ComponentSet{
             threadmaxx::Component::EntityStructural,
+            threadmaxx::Component::UserData,
         };
     }
 
     void update(threadmaxx::SystemContext& ctx) override;
 
+    /// M4.2 — round-end shared latch. When set, update early-outs so
+    /// no bullets spawn for the duration of the freeze; reload
+    /// counters also stop ticking (consistent with the world's idea
+    /// of "frozen", and prevents post-round phantom refills).
+    void setRoundEndedFlag(std::shared_ptr<std::atomic<bool>> f) noexcept {
+        roundEnded_ = std::move(f);
+    }
+
 private:
-    UserComponentIds                                ids_;
-    /// Per-ship cooldown keyed by EntityHandle.index — stores the tick
-    /// at which the ship last fired the named weapon. Separate maps so
-    /// Dumbfire and Spread cooldowns don't share a slot (firing one
-    /// doesn't block the other).
-    std::unordered_map<std::uint32_t, std::uint64_t> lastFireTick_;
-    std::unordered_map<std::uint32_t, std::uint64_t> lastSpreadTick_;
+    UserComponentIds                   ids_;
+    std::shared_ptr<std::atomic<bool>> roundEnded_;
 };
 
 } // namespace tou2d

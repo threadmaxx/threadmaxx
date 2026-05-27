@@ -4,6 +4,9 @@
 
 #include <threadmaxx/System.hpp>
 
+#include <atomic>
+#include <memory>
+
 struct GLFWwindow;
 
 namespace tou2d {
@@ -37,9 +40,17 @@ public:
     void preStep(threadmaxx::SystemContext& ctx) override;
     void update (threadmaxx::SystemContext& /*ctx*/) override {}
 
+    /// M4.2 — install the round-end shared latch. When set, preStep
+    /// stops writing PlayerInput so neither thrust nor fire commands
+    /// reach Movement/WeaponFire. Bot system holds the same flag.
+    void setRoundEndedFlag(std::shared_ptr<std::atomic<bool>> f) noexcept {
+        roundEnded_ = std::move(f);
+    }
+
 private:
-    GLFWwindow*       window_ = nullptr;
-    UserComponentIds  ids_;
+    GLFWwindow*                          window_      = nullptr;
+    UserComponentIds                     ids_;
+    std::shared_ptr<std::atomic<bool>>   roundEnded_;
 };
 
 } // namespace tou2d

@@ -101,6 +101,41 @@ struct Bullet {
 };
 static_assert(sizeof(Bullet) == 8, "Bullet must stay 8 bytes");
 
+/// M4.2 — per-ship weapon ammo + reload state.
+///
+/// Each weapon has a magazine (`*Ammo`) and a reload timer (`*ReloadIn`,
+/// measured in sim ticks). Fire is gated on `ammo > 0 && reloadIn == 0`.
+/// On a successful fire `ammo` decrements; when it hits 0 the system
+/// sets `reloadIn = kReload*Ticks`. Every tick, a non-zero `reloadIn`
+/// decrements; when it reaches 0 the magazine refills to its starting
+/// value. The post-fire mid-reload state survives across input bursts
+/// — players who hold the fire key get exactly `ammo` shots then a
+/// forced silence, matching the original TOU's "weapons can't fire
+/// infinitely" feel.
+///
+/// Kept at 8 bytes so it costs the same dense-storage footprint as
+/// PlayerInput / LocalPlayer / Bullet (one cache line carries any
+/// four).
+struct WeaponLoadout {
+    std::uint16_t dumbfireAmmo     = 0;   ///< rounds remaining in magazine
+    std::uint16_t dumbfireReloadIn = 0;   ///< ticks until reload finishes; 0 = ready
+    std::uint16_t spreadAmmo       = 0;
+    std::uint16_t spreadReloadIn   = 0;
+};
+static_assert(sizeof(WeaponLoadout) == 8, "WeaponLoadout must stay 8 bytes");
+
+/// Magazine sizes — chosen so a sustained burst lands a satisfying
+/// volley before the forced reload. Dumbfire fires every 8 ticks
+/// (M3.1's `kFireCooldownTicks`) so a 12-round mag = 96 ticks = 1.6 s
+/// of continuous fire. Spread's 4-burst mag = 4 × 18 = 72 ticks ≈ 1.2 s.
+inline constexpr std::uint16_t kDumbfireMagazine = 12;
+inline constexpr std::uint16_t kSpreadMagazine   =  4;
+
+/// Reload durations — wall-clock-comparable to original TOU's reload
+/// feel (≈ 1.25 s for the basic weapon, ≈ 1.5 s for the burst).
+inline constexpr std::uint16_t kDumbfireReloadTicks = 75;   // 60 Hz → 1.25 s
+inline constexpr std::uint16_t kSpreadReloadTicks   = 90;   // 60 Hz → 1.50 s
+
 /// Number of source attribute / visual-JPG pixels that map to one
 /// runtime tile along each axis. After M3.3's flat-grid terrain the
 /// pxPerTile knob only governs destruction granularity + JPG-paint
@@ -127,6 +162,7 @@ struct UserComponentIds {
     threadmaxx::UserComponentId localPlayer;
     threadmaxx::UserComponentId ship;
     threadmaxx::UserComponentId bullet;
+    threadmaxx::UserComponentId loadout;  ///< M4.2 — per-ship ammo / reload state
 };
 
 /// M3.3 — flat array of (hp, attribute) per cell. Replaces the per-tile

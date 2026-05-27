@@ -83,6 +83,17 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     s.tilesDestroyed = 0;
     threadmaxx::addUserComponent(seed, ids.ship, h, s);
 
+    // M4.2 — start with a full magazine on both weapons. Reload counters
+    // are zero (ready to fire). ShipLifecycleSystem rewrites this to the
+    // same default on respawn, so a player who dies mid-reload comes
+    // back with a fresh full magazine instead of a partial-reload limbo.
+    WeaponLoadout loadout{};
+    loadout.dumbfireAmmo     = kDumbfireMagazine;
+    loadout.dumbfireReloadIn = 0;
+    loadout.spreadAmmo       = kSpreadMagazine;
+    loadout.spreadReloadIn   = 0;
+    threadmaxx::addUserComponent(seed, ids.loadout, h, loadout);
+
     return h;
 }
 
@@ -98,12 +109,26 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     ids_.localPlayer = engine.registerUserComponent<LocalPlayer>();
     ids_.ship        = engine.registerUserComponent<Ship>();
     ids_.bullet      = engine.registerUserComponent<Bullet>();
+    ids_.loadout     = engine.registerUserComponent<WeaponLoadout>();
 
     // ---- Pre-warm typed event channels on the sim thread -------------------
     // BulletShipCollisionSystem emits `RoundEnded` from inside `update()`
     // (worker-adjacent context); warming the channel here ensures the
     // first emit doesn't race a concurrent factory call.
-    (void) engine.events<RoundEnded>();
+    // M4.2 — subscribe a scoped handler that flips `roundEnded_` so the
+    // input / bot / weapon-fire systems can short-circuit. Capture by
+    // value (atomic shared_ptr copy) + raw pointers to two PODs we
+    // own — TouGame outlives the engine on the same stack frame, so
+    // the lambda is safe to fire from any drain thread.
+    auto* roundFlag = roundEnded_.get();
+    auto* winnerSlotPtr  = &winnerSlot_;
+    auto* winnerKillsPtr = &winnerKills_;
+    roundEndSub_ = engine.events<RoundEnded>().subscribeScoped(
+        [roundFlag, winnerSlotPtr, winnerKillsPtr](const RoundEnded& ev) {
+            *winnerSlotPtr  = ev.winnerSlot;
+            *winnerKillsPtr = ev.winnerKills;
+            roundFlag->store(true, std::memory_order_release);
+        });
 
     // ---- Seed terrain grid --------------------------------------------------
     // Populate BEFORE constructing systems so the system constructors
@@ -140,12 +165,15 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
 
     // ---- Systems ------------------------------------------------------------
     auto input         = std::make_unique<InputSystem>(window_, ids_);
+    input->setRoundEndedFlag(roundEnded_);
     auto botControl    = std::make_unique<BotControlSystem>(ids_);
+    botControl->setRoundEndedFlag(roundEnded_);
     auto movement      = std::make_unique<MovementSystem>(ids_);
     auto* movementPtr  = movement.get();
     auto collision     = std::make_unique<TerrainCollisionSystem>(ids_, &grid_);
     auto* collisionPtr = collision.get();
     auto weaponFire    = std::make_unique<WeaponFireSystem>(ids_);
+    weaponFire->setRoundEndedFlag(roundEnded_);
     auto projectile    = std::make_unique<ProjectileSystem>(ids_);
     auto* projectilePtr = projectile.get();
     auto bulletShip        = std::make_unique<BulletShipCollisionSystem>(ids_, &engine);
@@ -157,6 +185,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     bulletTerrain_  = bulletTerrainPtr;
     collision_      = collisionPtr;
     auto hud        = std::make_unique<HudSystem>(ids_, camera_);
+    hud->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
 
     movementPtr  ->setLevelRect(minX, minY, maxX, maxY);
     projectilePtr->setLevelRect(minX, minY, maxX, maxY);

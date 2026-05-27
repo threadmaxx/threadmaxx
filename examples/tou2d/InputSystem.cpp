@@ -59,6 +59,13 @@ void InputSystem::preStep(threadmaxx::SystemContext& ctx) {
     if (!window_ || !ids_.playerInput.valid() || !ids_.localPlayer.valid()) {
         return;
     }
+    // M4.2 — round over, freeze keyboard input. BotControlSystem also
+    // checks the same flag so neither side keeps writing PlayerInput.
+    // Ships drift to rest under existing damping; bullets in flight
+    // continue to resolve to their final hit before the world idles.
+    if (roundEnded_ && roundEnded_->load(std::memory_order_acquire)) {
+        return;
+    }
     const auto idsPi = ids_.playerInput;
     const auto idsLp = ids_.localPlayer;
 

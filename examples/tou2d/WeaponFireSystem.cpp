@@ -12,7 +12,6 @@ namespace tou2d {
 namespace {
 
 // M3.1 Dumbfire tunables.
-constexpr std::uint64_t kFireCooldownTicks = 8;        // 60 Hz → ~7.5 shots / s
 constexpr float         kMuzzleSpeed       = 600.0f;   // world units / s
 constexpr float         kBulletTtlSeconds  = 1.2f;
 constexpr float         kMuzzleOffset      = 18.0f;
@@ -20,7 +19,6 @@ constexpr float         kBulletScale       = 4.0f;
 constexpr std::uint8_t  kDumbfireDamage    = 64;       // ¼ of a 192-HP tile
 
 // M3.3 Spread tunables — 3 bullets at ±kSpreadAngle around forward.
-constexpr std::uint64_t kSpreadCooldownTicks = 18;     // ~3.3 shots / s
 constexpr float         kSpreadAngleRad      = 0.30f;  // ~17°
 constexpr float         kSpreadSpeed         = 520.0f; // slightly slower than Dumbfire
 constexpr float         kSpreadTtlSeconds    = 0.9f;
@@ -94,9 +92,18 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
     const auto idsPi = ids_.playerInput;
     const auto idsBl = ids_.bullet;
     const auto idsLp = ids_.localPlayer;
-    if (!idsPi.valid() || !idsBl.valid()) return;
+    const auto idsLd = ids_.loadout;
+    if (!idsPi.valid() || !idsBl.valid() || !idsLd.valid()) return;
 
-    const std::uint64_t now = ctx.tick();
+    // M4.2 — round over, no new bullets and no reload ticking. Stops
+    // post-victory phantom shots cleanly; resuming a round (out of
+    // scope this batch — would need a "reset round" RPC) would start
+    // every ship with whatever loadout state it had at freeze time,
+    // which is fine because TouGame::spawnShip / ShipLifecycleSystem's
+    // respawn both rewrite the loadout to a fresh default.
+    if (roundEnded_ && roundEnded_->load(std::memory_order_acquire)) {
+        return;
+    }
 
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
@@ -106,10 +113,14 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
             if (!chunk.mask.has(threadmaxx::Component::Transform)) continue;
             if (!chunk.mask.has(threadmaxx::Component::Velocity))  continue;
             if (!chunk.mask.has(idsPi.componentBit()))             continue;
-            // Dead ships can't shoot.
+            if (!chunk.mask.has(idsLd.componentBit()))             continue;
+            // Dead ships can't shoot. Their reload counter also pauses
+            // (no decrement here) — a respawn will refresh the loadout
+            // anyway via ShipLifecycleSystem.
             if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
 
             const auto piSpan = threadmaxx::user::chunkSpan<PlayerInput>(chunk, idsPi);
+            const auto ldSpan = threadmaxx::user::chunkSpan<WeaponLoadout>(chunk, idsLd);
             const bool hasLp = idsLp.valid() && chunk.mask.has(idsLp.componentBit());
             const auto lpSpan = hasLp
                 ? threadmaxx::user::chunkSpan<LocalPlayer>(chunk, idsLp)
@@ -122,43 +133,79 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
 
             for (std::size_t row = 0; row < n; ++row) {
                 const auto& in = piSpan[row];
+                WeaponLoadout ld = ldSpan[row];
                 const std::uint16_t ownerSlot =
                     hasLp ? static_cast<std::uint16_t>(lpSpan[row].slot) : 0u;
                 const float angle = orientationAngleZ(positions[row].orientation);
                 const auto& shipT = positions[row];
                 const auto& shipV = velocities[row];
 
+                // ---- Tick reloads down first ------------------------
+                // A reload that LANDS this tick (reloadIn == 1 → 0)
+                // refills ammo but is NOT yet eligible to fire this
+                // step — fire below uses `reloadIn == 0` AFTER the
+                // refill, so the player gets one tick of "ready but
+                // not used" delay between reload end and the next
+                // shot. Tiny, but deliberate: it prevents an exploit
+                // where holding fire across the reload window snaps
+                // off the next mag with zero gap.
+                if (ld.dumbfireReloadIn > 0) {
+                    ld.dumbfireReloadIn = static_cast<std::uint16_t>(ld.dumbfireReloadIn - 1);
+                    if (ld.dumbfireReloadIn == 0) {
+                        ld.dumbfireAmmo = kDumbfireMagazine;
+                    }
+                }
+                if (ld.spreadReloadIn > 0) {
+                    ld.spreadReloadIn = static_cast<std::uint16_t>(ld.spreadReloadIn - 1);
+                    if (ld.spreadReloadIn == 0) {
+                        ld.spreadAmmo = kSpreadMagazine;
+                    }
+                }
+
                 // ---- Dumbfire (fireBasic) ---------------------------
-                if (in.fireBasic) {
-                    auto& slot = lastFireTick_[entities[row].index];
-                    if (now - slot >= kFireCooldownTicks) {
-                        spawnBullet(ctx, cb, idsBl, shipT, shipV,
-                                    angle,
-                                    kMuzzleSpeed,
-                                    kBulletTtlSeconds,
-                                    kDumbfireDamage,
-                                    /*weaponKind*/ 0,
-                                    ownerSlot);
-                        slot = now;
+                // Gate: input held AND ammo available AND not reloading
+                // AND post-reload one-tick cooldown elapsed (the latter
+                // is enforced naturally by the "refill this tick → fire
+                // next tick" sequencing above).
+                const bool canDumbfire =
+                    ld.dumbfireReloadIn == 0 && ld.dumbfireAmmo > 0;
+                if (in.fireBasic && canDumbfire) {
+                    spawnBullet(ctx, cb, idsBl, shipT, shipV,
+                                angle,
+                                kMuzzleSpeed,
+                                kBulletTtlSeconds,
+                                kDumbfireDamage,
+                                /*weaponKind*/ 0,
+                                ownerSlot);
+                    ld.dumbfireAmmo = static_cast<std::uint16_t>(ld.dumbfireAmmo - 1);
+                    if (ld.dumbfireAmmo == 0) {
+                        ld.dumbfireReloadIn = kDumbfireReloadTicks;
                     }
                 }
 
                 // ---- Spread (fireSpecial) ---------------------------
-                if (in.fireSpecial) {
-                    auto& slot = lastSpreadTick_[entities[row].index];
-                    if (now - slot >= kSpreadCooldownTicks) {
-                        for (int i = -1; i <= 1; ++i) {
-                            spawnBullet(ctx, cb, idsBl, shipT, shipV,
-                                        angle + static_cast<float>(i) * kSpreadAngleRad,
-                                        kSpreadSpeed,
-                                        kSpreadTtlSeconds,
-                                        kSpreadDamage,
-                                        /*weaponKind*/ 1,
-                                        ownerSlot);
-                        }
-                        slot = now;
+                const bool canSpread =
+                    ld.spreadReloadIn == 0 && ld.spreadAmmo > 0;
+                if (in.fireSpecial && canSpread) {
+                    for (int i = -1; i <= 1; ++i) {
+                        spawnBullet(ctx, cb, idsBl, shipT, shipV,
+                                    angle + static_cast<float>(i) * kSpreadAngleRad,
+                                    kSpreadSpeed,
+                                    kSpreadTtlSeconds,
+                                    kSpreadDamage,
+                                    /*weaponKind*/ 1,
+                                    ownerSlot);
+                    }
+                    ld.spreadAmmo = static_cast<std::uint16_t>(ld.spreadAmmo - 1);
+                    if (ld.spreadAmmo == 0) {
+                        ld.spreadReloadIn = kSpreadReloadTicks;
                     }
                 }
+
+                // Write the loadout back every tick — cheap (8 B per
+                // ship × ≤4 ships) and lets reload ticking persist
+                // even when the ship doesn't fire.
+                threadmaxx::addUserComponent(cb, idsLd, entities[row], ld);
             }
         }
     });

@@ -5,7 +5,9 @@
 #include <threadmaxx/System.hpp>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
 
 namespace tou2d {
 
@@ -48,8 +50,15 @@ public:
     void preStep(threadmaxx::SystemContext& ctx) override;
     void update (threadmaxx::SystemContext& /*ctx*/) override {}
 
+    /// M4.2 — round-end shared latch. When set, preStep early-outs so
+    /// bots stop steering / firing. Same shape as InputSystem's gate.
+    void setRoundEndedFlag(std::shared_ptr<std::atomic<bool>> f) noexcept {
+        roundEnded_ = std::move(f);
+    }
+
 private:
     UserComponentIds ids_;
+    std::shared_ptr<std::atomic<bool>> roundEnded_;
     /// Per-slot xorshift32 streams, deterministically seeded from a
     /// golden-ratio constant XOR'd with a per-slot dither. Each bot
     /// pulls from its own stream so two bots looking at the same tick

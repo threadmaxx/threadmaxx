@@ -75,6 +75,11 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
     const auto idsLp = ids_.localPlayer;
     if (!idsPi.valid() || !idsLp.valid()) return;
 
+    // M4.2 — round over, bots also stop writing input.
+    if (roundEnded_ && roundEnded_->load(std::memory_order_acquire)) {
+        return;
+    }
+
     const auto idsShip = ids_.ship;
 
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
