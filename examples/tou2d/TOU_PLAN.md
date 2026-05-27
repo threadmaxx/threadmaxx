@@ -415,6 +415,60 @@ write an interactive hex visualizer (probably in Python) that lets
 the operator step through hypothesis decodings frame-by-frame, then
 back-port the verified algorithm into a C++ decoder.
 
+**Decode spike (committed: `examples/tou2d/scripts/decode_spike.py`)**
+
+A stdlib-only Python tool that parses the same header bytes the C++
+parser does and runs four decode hypotheses against the body:
+
+| Variant | Rule                                                | PERH result        |
+| ------- | --------------------------------------------------- | ------------------ |
+| A       | row = `[skip][run][color]...` until 0x00 terminator | 0 opaque (failed)  |
+| B       | row = `[N_runs][triplet * N_runs]`                  | 0 opaque (failed)  |
+| C       | classic RLE: `[count][color]`, row wraps at width   | 0 opaque (failed)  |
+| D       | pure `[skip][run][color]` triplet stream, no delim  | **584 opaque /676 in frame 0** |
+
+A–C all fail the same way: the body's leading 269 zero bytes get
+consumed as fake-empty frames (each `0x00` is interpreted as
+some kind of terminator), so the decoder never reaches real pixel
+data.
+
+**Variant D is the breakthrough.** Treating the body as a flat
+sequence of `[skip][run][color]` triplets with no row/frame
+terminators means the leading zeros decode as `[skip=0][run=0]
+[color=0]` no-ops (89 of them, 267 bytes), then bytes 270-272
+`01 01 2d` are the first real triplet (skip 1, run 1, color 0x2d).
+This is consistent with body size: PERH = 65,454 bytes = 21,818
+triplets EXACTLY (no remainder). The other 8 ships likewise have
+body sizes cleanly divisible by 3.
+
+After exhausting all 21,818 triplets, the linear pixel cursor sits
+at 592,705 pixels: 340,764 from `run` writes + 251,941 from `skip`
+advances. **This does NOT divide cleanly** by 676 (= 26×26) or by
+676 × 24 — so the encoding isn't a pure flat raster of fixed-size
+frames. Frame 0 of the naive 24-frames-back-to-back slicing shows
+clear pixel structure (86% opaque coverage, ship-density) in the
+top half but bleeds solid-color into the bottom — meaning a frame
+boundary marker exists that resets the cursor mid-stream, and the
+naive slice mistakes that boundary for "more frame 0 data".
+
+**What's blocking a complete decoder:**
+- Frame boundary mechanism. Candidates: explicit terminator triplet
+  (e.g. `[0xFF][0xFF][0xFF]`?), implicit cursor-mod-676 wrap, or a
+  per-frame header byte we haven't located.
+- Per-frame variable size means the leading 269-byte zero region
+  might actually be a 24-entry × 11-byte offset table that points to
+  each rotation's frame start (24 × 11 = 264 ≈ 269). Worth testing.
+- Sub-frame structure (animation frames per rotation). The manual
+  shows ships with multiple animation states (thrust on/off etc.) —
+  the count per rotation may be encoded somewhere we haven't found.
+
+The next batch's recipe is now narrower: take Variant D as ground
+truth, then either (a) hunt for the frame-boundary mechanism by
+inspecting the first few "ship-shaped" regions of cursor output and
+finding the byte that ends frame 0 cleanly, or (b) interpret the
+leading 269 bytes as a 24-entry offset table and re-decode from each
+entry's offset independently.
+
 #### M4.8 — Runtime sprite rendering (still deferred, now firmly so)
 
 Originally planned as "next batch after M4.7b" — with M4.7b's body
