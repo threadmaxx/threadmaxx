@@ -4,25 +4,29 @@
 
 #include <threadmaxx/System.hpp>
 
+#include <array>
+#include <cstdint>
+
 namespace tou2d {
 
 /// preStep system that overrides PlayerInput for ships with
 /// `LocalPlayer::isBot != 0`. Registered AFTER InputSystem so the bot
 /// writes win for those slots; human slots are untouched.
 ///
-/// AI is intentionally minimal — TOU's gameplay loop is bullets vs
-/// terrain vs each other; a smart bot would dwarf the rest of the
-/// demo's code. This bot:
-///   * Finds the nearest other live ship (any slot).
-///   * Computes the angle to it; sets `turnLeft` / `turnRight` to
-///     close the angular gap at the movement system's turn rate.
-///   * Sets `thrust = 1` if vaguely facing target (within ±45°) AND
-///     range > engagement distance (else lets gravity / inertia work).
-///   * Sets `fireBasic = 1` if within ±10° AND within firing range.
-///   * Uses `fireSpecial` ~10% of the time when in firing arc to spice
-///     things up.
+/// M4.1 polish over the M3.4 minimum:
+///   * Per-slot decorrelated xorshift32 stream — bots no longer
+///     fire-special on the same tick because their seeds differ.
+///   * Aim-lead: target position projected by `range / muzzleSpeed`
+///     using target's current velocity, so moving prey gets hit.
+///   * Retreat: when own hpFrac < 0.30, the bot flips its target
+///     heading and thrusts AWAY from the nearest enemy; exits retreat
+///     once hpFrac ≥ 0.50 (hysteresis stops oscillation across the
+///     boundary).
+///   * Spread chance is range-tiered: 25% close, 10% medium, 0% far —
+///     conserves the longer cooldown for shots that actually land.
 ///
-/// reads()  = Transform (other ships' positions + own orientation).
+/// reads()  = Transform (positions + orientations) + Velocity (aim-lead
+///            uses target velocity) + UserData (LocalPlayer + Ship).
 /// writes() = UserData (PlayerInput is a user component; same
 ///            conservative declaration InputSystem uses).
 class BotControlSystem : public threadmaxx::ISystem {
@@ -31,7 +35,11 @@ public:
 
     const char*              name()   const noexcept override { return "tou2d.botControl"; }
     threadmaxx::ComponentSet reads()  const noexcept override {
-        return threadmaxx::ComponentSet{threadmaxx::Component::Transform};
+        return threadmaxx::ComponentSet{
+            threadmaxx::Component::Transform,
+            threadmaxx::Component::Velocity,
+            threadmaxx::Component::UserData,
+        };
     }
     threadmaxx::ComponentSet writes() const noexcept override {
         return threadmaxx::ComponentSet{threadmaxx::Component::UserData};
@@ -42,9 +50,19 @@ public:
 
 private:
     UserComponentIds ids_;
-    /// Cheap deterministic RNG state — incremented per (slot, tick)
-    /// so bots don't all fire-special on the same tick.
-    std::uint32_t    rngState_ = 0x9E3779B9u;
+    /// Per-slot xorshift32 streams, deterministically seeded from a
+    /// golden-ratio constant XOR'd with a per-slot dither. Each bot
+    /// pulls from its own stream so two bots looking at the same tick
+    /// produce independent rolls.
+    std::array<std::uint32_t, 4> rngBySlot_{
+        0x9E3779B9u ^ 0x85EBCA6Bu,
+        0x9E3779B9u ^ (0x85EBCA6Bu * 2u + 1u),
+        0x9E3779B9u ^ (0x85EBCA6Bu * 3u + 1u),
+        0x9E3779B9u ^ (0x85EBCA6Bu * 4u + 1u),
+    };
+    /// Per-slot retreat latch — see header comment. Persists across
+    /// ticks; hysteresis edges are 0.30 (enter) / 0.50 (exit).
+    std::array<bool, 4> retreating_{};
 };
 
 } // namespace tou2d
