@@ -6,17 +6,22 @@
 //   file_size = header_bytes + 32 * 3 * frame_w * frame_h
 //   body_start = file_size - 32 * 3 * frame_w * frame_h
 //   each frame = 3 bytes per pixel, interleaved triplet
-//     byte 0 = hull palette index
-//     byte 1 = edge-highlight palette index
-//     byte 2 = cockpit/detail palette index
+//     byte 0 = hull intensity      (cross-brackets / structural elements)
+//     byte 1 = team intensity      (wings / faction-color region)
+//     byte 2 = cockpit intensity   (cockpit-sphere / center detail)
 //
 // This test drives the parser against a synthetic blob — no real
 // .SHP file required, so it runs in any CI tree. Cases:
 //   * Happy path: 32 frames at 26x26 (PERH-shaped) parse correctly.
 //   * Frame indexing returns the right rotation slice.
 //   * Pixel indexing returns the right (b0, b1, b2) triplet.
-//   * compositeRotation does byte[2] over byte[0] priority correctly.
-//   * compositeRotation makes palette index 0 fully transparent.
+//   * Legacy compositeRotation does byte[2] over byte[0] priority.
+//   * Legacy compositeRotation makes palette index 0 fully transparent.
+//   * primarySentinel returns the formula's (x, y) for f0..f30 and
+//     nullopt for f31.
+//   * compositeRotationCentered's frame-31 special case (no shift).
+//   * compositeRotationCentered clears the trailer triplet.
+//   * compositeRotationCentered blends per-channel intensities.
 //   * Too-small data returns false.
 //   * Zero width or height returns false.
 //   * Body overlapping the header returns false.
@@ -163,6 +168,273 @@ void test_composite_priority() {
     }
 }
 
+void test_primary_sentinel_formula() {
+    // PERH-shaped: 26x26, area 676. Formula: flat = 676 - 6*(31 - N).
+    // f0 -> flat 490 -> (22, 18); f31 -> nullopt.
+    {
+        auto s0 = tou2d::shp::primarySentinel(26, 26, 0);
+        CHECK(s0.has_value());
+        CHECK_EQ(static_cast<int>(s0->x), 22);
+        CHECK_EQ(static_cast<int>(s0->y), 18);
+    }
+    {
+        auto s30 = tou2d::shp::primarySentinel(26, 26, 30);
+        CHECK(s30.has_value());
+        // flat = 676 - 6 = 670 -> (670 % 26 = 20, 670 / 26 = 25).
+        CHECK_EQ(static_cast<int>(s30->x), 20);
+        CHECK_EQ(static_cast<int>(s30->y), 25);
+    }
+    {
+        auto s31 = tou2d::shp::primarySentinel(26, 26, 31);
+        CHECK(!s31.has_value());
+    }
+    // FLYY-shaped: 32x32, area 1024. f0 -> 838 -> (6, 26).
+    {
+        auto s0 = tou2d::shp::primarySentinel(32, 32, 0);
+        CHECK(s0.has_value());
+        CHECK_EQ(static_cast<int>(s0->x), 6);
+        CHECK_EQ(static_cast<int>(s0->y), 26);
+    }
+    // SPED-shaped: 22x22, area 484. f0 -> 298 -> (12, 13).
+    {
+        auto s0 = tou2d::shp::primarySentinel(22, 22, 0);
+        CHECK(s0.has_value());
+        CHECK_EQ(static_cast<int>(s0->x), 12);
+        CHECK_EQ(static_cast<int>(s0->y), 13);
+    }
+}
+
+/// Build a body where frame `targetRotation` has a single pixel set at
+/// pre-shift coordinates (px, py) with the supplied triplet. All other
+/// pixels of every frame are zero.
+std::vector<std::uint8_t>
+makeSinglePixelBlob(std::uint16_t w, std::uint16_t h,
+                    std::size_t leading,
+                    std::uint32_t targetRotation,
+                    std::uint32_t px, std::uint32_t py,
+                    std::uint8_t b0, std::uint8_t b1, std::uint8_t b2) {
+    const std::size_t frameSize =
+        std::size_t{w} * std::size_t{h} * tou2d::shp::kBodyBytesPerPixel;
+    const std::size_t bodySize =
+        std::size_t{tou2d::shp::kBodyRotationCount} * frameSize;
+    std::vector<std::uint8_t> blob(leading + bodySize, 0u);
+    const std::size_t frameBase = leading + std::size_t{targetRotation} * frameSize;
+    const std::size_t o = (std::size_t{py} * w + px) * 3;
+    blob[frameBase + o + 0] = b0;
+    blob[frameBase + o + 1] = b1;
+    blob[frameBase + o + 2] = b2;
+    return blob;
+}
+
+void test_centered_frame31_no_shift() {
+    // Frame 31 is rendered untouched. Place a single hull-only pixel at
+    // pre-shift (3, 4) — it should appear at dst (3, 4).
+    constexpr std::uint16_t W = 26;
+    constexpr std::uint16_t H = 26;
+    auto blob = makeSinglePixelBlob(W, H, /*leading=*/8, /*rot=*/31,
+                                    /*px=*/3, /*py=*/4,
+                                    /*b0=*/200, /*b1=*/0, /*b2=*/0);
+
+    tou2d::shp::ParsedHeader hdr{};
+    hdr.frameWidth   = W;
+    hdr.frameHeight  = H;
+    hdr.payloadStart = 8;
+
+    tou2d::shp::ParsedBody body{};
+    CHECK(tou2d::shp::parseBody(blob, hdr, body));
+
+    tou2d::shp::ShipColors colors{};
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(W) * H * 4, 0u);
+    tou2d::shp::compositeRotationCentered(body, 31, colors, rgba);
+
+    // Destination (3, 4) should be opaque hull-color * 200/255.
+    const std::size_t di = (4 * W + 3) * 4;
+    CHECK_EQ(static_cast<int>(rgba[di + 3]), 255);
+    // Hull-color blue channel is 180; 180 * 200/255 with round-to-nearest = 141.
+    CHECK_EQ(static_cast<int>(rgba[di + 2]), 141);
+    // Every other pixel must be transparent.
+    int opaqueCount = 0;
+    for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(W) * H; ++i) {
+        if (rgba[i * 4 + 3] != 0) ++opaqueCount;
+    }
+    CHECK_EQ(opaqueCount, 1);
+}
+
+void test_centered_trailer_suppressed() {
+    // Frame 0: place the 3-pixel trailer at the canonical sentinel position,
+    // and a regular pixel adjacent to it. After centering: the trailer pixels
+    // should appear as fully transparent at post-shift row H-1 cols 0/2/4.
+    constexpr std::uint16_t W = 26;
+    constexpr std::uint16_t H = 26;
+    const auto s = tou2d::shp::primarySentinel(W, H, 0);
+    CHECK(s.has_value());
+    const std::uint32_t sx = s->x;
+    const std::uint32_t sy = s->y;
+
+    const std::size_t leading  = 8;
+    const std::size_t frameSize =
+        std::size_t{W} * std::size_t{H} * tou2d::shp::kBodyBytesPerPixel;
+    const std::size_t bodySize =
+        std::size_t{tou2d::shp::kBodyRotationCount} * frameSize;
+    std::vector<std::uint8_t> blob(leading + bodySize, 0u);
+    const std::size_t fb0 = leading;
+    auto put = [&](std::uint32_t x, std::uint32_t y,
+                   std::uint8_t b0, std::uint8_t b1, std::uint8_t b2) {
+        const std::size_t o = (std::size_t{y} * W + x) * 3;
+        blob[fb0 + o + 0] = b0;
+        blob[fb0 + o + 1] = b1;
+        blob[fb0 + o + 2] = b2;
+    };
+    // Canonical trailer:
+    //   sentinel:   (0, 0, 2) at (sx,   sy)
+    //   secondary:  (0, 24, 0) at (sx+2, sy) — wrap not needed for PERH f0
+    //   tertiary:   (W, 0, W) at (sx+4, sy)
+    put(sx,     sy, 0, 0,  2);
+    put(sx + 2, sy, 0, 24, 0);
+    put(sx + 4, sy, W, 0,  W);
+    // A regular pixel right next to the sentinel (still pre-shift).
+    put(sx, sy + 1, 0, 0, 200);
+
+    tou2d::shp::ParsedHeader hdr{};
+    hdr.frameWidth   = W;
+    hdr.frameHeight  = H;
+    hdr.payloadStart = leading;
+
+    tou2d::shp::ParsedBody body{};
+    CHECK(tou2d::shp::parseBody(blob, hdr, body));
+
+    tou2d::shp::ShipColors colors{};
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(W) * H * 4, 0u);
+    tou2d::shp::compositeRotationCentered(body, 0, colors, rgba);
+
+    auto alphaAt = [&](std::uint32_t x, std::uint32_t y) {
+        return rgba[(std::size_t{y} * W + x) * 4 + 3];
+    };
+    // Trailer pixels at post-shift (0/2/4, H-1) MUST be transparent.
+    CHECK_EQ(static_cast<int>(alphaAt(0, H - 1)), 0);
+    CHECK_EQ(static_cast<int>(alphaAt(2, H - 1)), 0);
+    CHECK_EQ(static_cast<int>(alphaAt(4, H - 1)), 0);
+}
+
+void test_centered_blend_color_model() {
+    // Build a body where frame 31 (untouched) has one pixel with each
+    // channel set in turn, and verify the blend produces the expected
+    // additive value.
+    constexpr std::uint16_t W = 4;
+    constexpr std::uint16_t H = 4;
+    const std::size_t leading = 0;
+    const std::size_t frameSize =
+        std::size_t{W} * std::size_t{H} * tou2d::shp::kBodyBytesPerPixel;
+    std::vector<std::uint8_t> blob(
+        leading + std::size_t{tou2d::shp::kBodyRotationCount} * frameSize, 0u);
+    const std::size_t fb31 = leading + 31u * frameSize;
+    auto put = [&](std::uint32_t x, std::uint32_t y,
+                   std::uint8_t b0, std::uint8_t b1, std::uint8_t b2) {
+        const std::size_t o = (std::size_t{y} * W + x) * 3;
+        blob[fb31 + o + 0] = b0;
+        blob[fb31 + o + 1] = b1;
+        blob[fb31 + o + 2] = b2;
+    };
+    put(0, 0, 255,   0,   0);  // pure hull
+    put(1, 0,   0, 255,   0);  // pure team
+    put(2, 0,   0,   0, 255);  // pure cockpit
+    put(3, 0, 255, 255, 255);  // all three at max -> saturated white
+
+    tou2d::shp::ParsedHeader hdr{};
+    hdr.frameWidth   = W;
+    hdr.frameHeight  = H;
+    hdr.payloadStart = 0;
+
+    tou2d::shp::ParsedBody body{};
+    CHECK(tou2d::shp::parseBody(blob, hdr, body));
+
+    tou2d::shp::ShipColors colors{
+        /*hull=*/   100, 100, 100,
+        /*team=*/    50,  60,  70,
+        /*cockpit=*/ 80,  90, 100,
+    };
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(W) * H * 4, 0u);
+    tou2d::shp::compositeRotationCentered(body, 31, colors, rgba);
+
+    auto at = [&](std::uint32_t x, std::uint32_t y) {
+        const std::size_t i = (std::size_t{y} * W + x) * 4;
+        return std::array<int, 4>{
+            static_cast<int>(rgba[i + 0]), static_cast<int>(rgba[i + 1]),
+            static_cast<int>(rgba[i + 2]), static_cast<int>(rgba[i + 3])
+        };
+    };
+    auto px00 = at(0, 0);
+    CHECK_EQ(px00[0], 100); CHECK_EQ(px00[1], 100); CHECK_EQ(px00[2], 100); CHECK_EQ(px00[3], 255);
+    auto px10 = at(1, 0);
+    CHECK_EQ(px10[0],  50); CHECK_EQ(px10[1],  60); CHECK_EQ(px10[2],  70); CHECK_EQ(px10[3], 255);
+    auto px20 = at(2, 0);
+    CHECK_EQ(px20[0],  80); CHECK_EQ(px20[1],  90); CHECK_EQ(px20[2], 100); CHECK_EQ(px20[3], 255);
+    auto px30 = at(3, 0);
+    // 100 + 50 + 80 = 230; 100 + 60 + 90 = 250; 100 + 70 + 100 = 270 -> clamp 255.
+    CHECK_EQ(px30[0], 230); CHECK_EQ(px30[1], 250); CHECK_EQ(px30[2], 255); CHECK_EQ(px30[3], 255);
+    // Untouched pixel must be fully transparent.
+    auto px01 = at(0, 1);
+    CHECK_EQ(px01[3], 0);
+}
+
+void test_centered_primary_shift_alignment() {
+    // Build a body where frame 0 has its 3-pixel trailer + one extra pixel
+    // adjacent to the sentinel. After centering, the adjacent pixel should
+    // land at a known post-shift coordinate, and the trailer at row H-1.
+    constexpr std::uint16_t W = 26;
+    constexpr std::uint16_t H = 26;
+    const auto s = tou2d::shp::primarySentinel(W, H, 0);
+    CHECK(s.has_value());
+    const std::uint32_t sx = s->x;
+    const std::uint32_t sy = s->y;
+
+    const std::size_t leading = 0;
+    const std::size_t frameSize =
+        std::size_t{W} * std::size_t{H} * tou2d::shp::kBodyBytesPerPixel;
+    std::vector<std::uint8_t> blob(
+        std::size_t{tou2d::shp::kBodyRotationCount} * frameSize, 0u);
+    const std::size_t fb0 = leading;
+    auto put = [&](std::uint32_t x, std::uint32_t y,
+                   std::uint8_t b0, std::uint8_t b1, std::uint8_t b2) {
+        const std::size_t o = (std::size_t{y} * W + x) * 3;
+        blob[fb0 + o + 0] = b0;
+        blob[fb0 + o + 1] = b1;
+        blob[fb0 + o + 2] = b2;
+    };
+    // Trailer.
+    put(sx,     sy, 0, 0,  2);
+    put(sx + 2, sy, 0, 24, 0);
+    put(sx + 4, sy, W, 0,  W);
+    // Hull-only pixel one row below the sentinel in pre-shift coords.
+    // Under the (sx, sy+1) primary shift this lands at post-shift (0, 0),
+    // which is in the TOP half (top_height = H-sy-1 > 0). The secondary
+    // +6 column shift means we look for it at post-shift (W-6, 0).
+    put(sx, sy + 1, 222, 0, 0);
+
+    tou2d::shp::ParsedHeader hdr{};
+    hdr.frameWidth   = W;
+    hdr.frameHeight  = H;
+    hdr.payloadStart = leading;
+
+    tou2d::shp::ParsedBody body{};
+    CHECK(tou2d::shp::parseBody(blob, hdr, body));
+
+    tou2d::shp::ShipColors colors{};
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(W) * H * 4, 0u);
+    tou2d::shp::compositeRotationCentered(body, 0, colors, rgba);
+
+    // Without the secondary shift, the pixel would land at post-primary
+    // (0, 0). With +6 secondary, the destination column = (0 - 6 + W) % W
+    // = W - 6 = 20. So the visible pixel is at (W - tou2d::shp::kBodyTopHalfShift, 0).
+    const std::uint32_t expectedX = W - tou2d::shp::kBodyTopHalfShift;
+    auto alphaAt = [&](std::uint32_t x, std::uint32_t y) {
+        return rgba[(std::size_t{y} * W + x) * 4 + 3];
+    };
+    CHECK_EQ(static_cast<int>(alphaAt(expectedX, 0)), 255);
+    // And (0, 0) should be transparent now.
+    CHECK_EQ(static_cast<int>(alphaAt(0, 0)), 0);
+}
+
 void test_too_small() {
     std::vector<std::uint8_t> tiny(100, 0u);
     tou2d::shp::ParsedHeader hdr{};
@@ -213,6 +485,11 @@ int main() {
     test_happy_path();
     test_frame_indexing();
     test_composite_priority();
+    test_primary_sentinel_formula();
+    test_centered_frame31_no_shift();
+    test_centered_trailer_suppressed();
+    test_centered_blend_color_model();
+    test_centered_primary_shift_alignment();
     test_too_small();
     test_zero_dims();
     test_body_overlaps_header();

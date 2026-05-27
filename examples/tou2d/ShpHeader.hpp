@@ -38,14 +38,27 @@
 //   body_start = file_size - 32 * 3 * frameWidth * frameHeight
 //
 // Each rotation frame holds `frameWidth * frameHeight` pixels at 3
-// bytes per pixel (interleaved triplet): byte 0 = hull palette index,
-// byte 1 = edge highlight, byte 2 = cockpit/detail. Composite is
-// "byte 2 over byte 0" (cockpit overlays hull). Index 0 transparent.
+// bytes per pixel (interleaved triplet). Updated channel model
+// (M4.7d): the three bytes are independent intensity channels into
+// hull / team / cockpit shaded regions, blended additively into a
+// chosen color triple — NOT three palette indices.
+//
+//   byte 0 = hull    intensity (0..255)
+//   byte 1 = team    intensity (0..255)   (wings / faction-color)
+//   byte 2 = cockpit intensity (0..255)
+//
+// Body bytes are stored toroidally — every frame except frame 31
+// embeds a wrap-origin sentinel at flat position W*H - 6*(31-N).
+// The renderer applies a (sx, sy+1) toroidal shift, a top-half +6
+// column shift, and suppresses a 3-pixel metadata trailer. See the
+// full recipe in `ShpBody.hpp` and `compositeRotationCentered`.
+//
 // 32 rotations × 11.25° starting from "ship facing down" CCW.
 //
 // The 0x18 = 24 at `anchor[4]` here is therefore NOT the body's
 // rotation count (the body is always 32 frames). It's a different
-// gameplay constant we don't currently consume.
+// gameplay constant we don't currently consume — but it also reappears
+// inside every frame's metadata trailer at `(b0=0, b1=24, b2=0)`.
 //
 // What's STILL deferred:
 //   * The exact role of the per-ship marker region (8 ships:

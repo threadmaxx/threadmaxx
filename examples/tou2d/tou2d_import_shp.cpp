@@ -33,12 +33,15 @@
 //     within the header (the per-ship marker region in between has
 //     different lengths and is not yet decoded).
 //
-// What we DO decode (M4.7c sprite-body breakthrough):
+// What we DO decode (M4.7c sprite-body breakthrough + M4.7d centering):
 //   * 32-rotation sprite sheet anchored from the END of the file
-//     (file_size = header + 32 * 3 * W * H). When --palette is
-//     supplied the CLI also emits `rotations.tga` (frame_w * 32 wide,
-//     frame_h tall) composited via byte[2] (cockpit) over byte[0]
-//     (hull). See `ShpBody.hpp` for the parser.
+//     (file_size = header + 32 * 3 * W * H). When --palette is supplied
+//     the CLI emits `rotations.tga` (frame_w * 32 wide, frame_h tall)
+//     using the M4.7d recipe: toroidal-shift centering driven by the
+//     per-frame sentinel (`flat = W*H - 6*(31-N)`), secondary `+6`
+//     top-half column shift, trailer-pixel suppression, and the
+//     intensity-blend color model (b0=hull, b1=team, b2=cockpit). See
+//     `ShpBody.hpp` for the full formulation.
 //
 // What we DEFER:
 //   * The variable-length per-ship "marker region" between the
@@ -176,33 +179,39 @@ bool writeBodyStripTga(const fs::path&                       outPath,
 }
 
 /// Render all 32 rotation frames of a parsed body as a horizontal
-/// sprite sheet TGA (frame_w * 32 wide, frame_h tall). Composite uses
-/// `byte[2]` (cockpit) over `byte[0]` (hull); palette index 0 is
-/// rendered as solid magenta so transparent pixels are visible in any
-/// viewer.
-bool writeRotationSheetTga(const fs::path&            outPath,
+/// sprite sheet TGA (frame_w * 32 wide, frame_h tall) using the M4.7d
+/// centering recipe + intensity-blend color model. Fully transparent
+/// pixels are written as solid magenta so the transparency is visible
+/// in any RGB viewer.
+///
+/// The `palette` parameter is unused for the rendering itself (the
+/// blend model multiplies into the `ShipColors` directly), but it's
+/// accepted for API symmetry with the legacy palette-based renderer.
+bool writeRotationSheetTga(const fs::path&               outPath,
                            const tou2d::shp::ParsedBody& body,
-                           const tou2d::shp::Palette&    pal) {
+                           const tou2d::shp::Palette&    /*pal — unused*/) {
     const std::uint16_t fw = body.frameWidth;
     const std::uint16_t fh = body.frameHeight;
     const std::uint16_t sheetW =
         static_cast<std::uint16_t>(fw * tou2d::shp::kBodyRotationCount);
     std::vector<tou2d::shp::Rgb> pixels(static_cast<std::size_t>(sheetW) * fh);
+    const tou2d::shp::ShipColors colors{};   // built-in defaults
+    std::vector<std::uint8_t> frameRgba(
+        static_cast<std::size_t>(fw) * fh * 4u);
     for (std::uint32_t r = 0; r < tou2d::shp::kBodyRotationCount; ++r) {
-        const auto fb = body.frame(r);
+        tou2d::shp::compositeRotationCentered(body, r, colors, frameRgba);
         for (std::uint16_t y = 0; y < fh; ++y) {
             for (std::uint16_t x = 0; x < fw; ++x) {
-                const std::size_t o = (static_cast<std::size_t>(y) * fw + x) * 3;
-                const std::uint8_t hull    = fb[o];
-                const std::uint8_t cockpit = fb[o + 2];
-                const std::uint8_t idx     = cockpit ? cockpit : hull;
+                const std::size_t si =
+                    (static_cast<std::size_t>(y) * fw + x) * 4u;
                 const std::size_t pi =
                     static_cast<std::size_t>(y) * sheetW + r * fw + x;
-                if (idx == 0) {
+                if (frameRgba[si + 3] == 0) {
                     pixels[pi] = { 0xFF, 0x00, 0xFF };  // magenta = transparent
                 } else {
-                    const auto& e = pal.entries[idx];
-                    pixels[pi] = { e.r, e.g, e.b };
+                    pixels[pi] = { frameRgba[si + 0],
+                                   frameRgba[si + 1],
+                                   frameRgba[si + 2] };
                 }
             }
         }
@@ -408,7 +417,7 @@ int main(int argc, char** argv) {
                     (body.size() + stripWidth - 1) / stripWidth);
     }
     if (wroteSheet) {
-        std::printf("  rotations.tga: %ux%u 32-rotation composite sheet (M4.7c)\n",
+        std::printf("  rotations.tga: %ux%u 32-rotation centered+blended sheet (M4.7d)\n",
                     static_cast<unsigned>(hdr.frameWidth * 32),
                     static_cast<unsigned>(hdr.frameHeight));
     }

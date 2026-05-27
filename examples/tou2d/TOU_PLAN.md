@@ -532,6 +532,87 @@ consumed by the decoder.
 
 **Updated** `ShpHeader.hpp` docs: body layout deferred → landed.
 
+#### M4.7d — Centering + color model (LANDED ✅)
+
+The M4.7c composite worked but the sprites were visually off-center
+in 31 of 32 frames, and the recommended `b2`-over-`b0` palette
+composite produced rainbow accents where the original game shows
+smooth team / cockpit colors. M4.7d closes both gaps.
+
+**Toroidal-shift centering.** Body bytes are stored with the visible
+ship wrapped around the (0, 0) origin of the frame; each frame (0..30)
+embeds a single sentinel pixel at a deterministic position that marks
+the wrap origin:
+
+```
+flat_position(N) = W * H - 6 * (31 - N)
+```
+
+The `+6` step matches a fixed 3-pixel metadata trailer that every
+frame carries at the sentinel position:
+
+| Offset | (b0, b1, b2) | Meaning |
+|--------|--------------|---------|
+| +0 | (0, 0, 2) | magic marker |
+| +2 | (0, 24, 0) | rotation count (0x18, mirrors header `anchor[4]`) |
+| +4 | (W, 0, W) | frame width |
+
+For frame 31 the formula evaluates to `W*H` (one past the last pixel),
+which is the encoder saying "no sentinel — this frame is already
+centered, render straight through". Verified across all 9 stock ships.
+
+**Centering recipe** (rotations 0..30):
+
+1. Decode `(sx, sy)` from the sentinel formula.
+2. Primary toroidal shift `(sx, sy + 1)`: `post(x, y) = pre((x + sx) % W, (y + sy + 1) % H)`.
+   Using `sy + 1` puts the sentinel row at the BOTTOM (row H-1) rather
+   than the top.
+3. Secondary horizontal shift: top half (post-shift rows
+   `0 .. H - sy - 2`) gets `+6` columns. Empirically dialled across
+   TIEF/FLYY/XWIN/BATM/DEST/PERH/BEE2/PERU/SPED.
+4. Trailer pixels at post-shift `(0, H-1)`, `(2, H-1)`, `(4, H-1)`
+   cleared to transparent.
+
+The sentinel-row strip lands "above" the ship in some rotations and
+"below" in others — left as a TBD with a doc-comment note; visual
+inspection at engine-side render scale will tell us whether to keep,
+flip, or hide that strip.
+
+**Color model.** The three bytes per pixel are NOT three palette
+indices into the VGA palette. They are three independent **intensity
+channels (0..255)**, one per shaded region:
+
+- `b0` = hull intensity (cross-brackets, structural elements)
+- `b1` = team intensity (wings / faction-color region — different team
+  = different color, the original game's per-team recolor mechanism)
+- `b2` = cockpit intensity (cockpit-sphere / center detail)
+
+Final pixel = additive blend of `hull_color * b0/255 + team_color * b1/255
++ cockpit_color * b2/255` (per-channel saturating to 255), with alpha = 1
+when any channel is non-zero. Verified by dumping TIEF frame 31: `b1`
+has a smooth 0..255 gradient in two symmetric clusters (the wings),
+`b2` has a smooth 0..255 gradient in the central cockpit blob, `b0`
+has small values along the structural T-bar — exactly the three
+overlaid shaded regions the original game ships display.
+
+**Code landed:**
+- `examples/tou2d/ShpBody.hpp` — `primarySentinel(W, H, N) -> optional<Sentinel>`,
+  `ShipColors`, and `compositeRotationCentered` implementing the
+  full recipe in a single pass. Legacy `compositeRotation` kept for
+  back-compat with palette-index inspection tooling.
+- `tests/tou2d_shp_body_test.cpp` — 11 cases total (5 new in M4.7d
+  covering sentinel formula across PERH/FLYY/SPED, frame-31 no-shift
+  special case, trailer suppression, blend-color math, and the
+  primary+secondary shift composition).
+- `examples/tou2d/tou2d_import_shp.cpp` — `rotations.tga` now uses
+  `compositeRotationCentered` + the built-in `ShipColors` defaults.
+
+**Still TBD** (deferred to M4.8 alongside renderer wiring):
+- Per-team `ShipColors` table (each NPC / player needs a faction
+  color; the current `ShipColors{}` defaults are a single neutral
+  palette for the importer's preview).
+- The sentinel-row strip's correct disposition (above/below/hidden).
+
 #### M4.8 — Runtime sprite rendering (UNBLOCKED)
 
 The body decoder is done. Work plan unchanged:
