@@ -67,3 +67,16 @@ set_target_properties(tou2d_import_lev PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
+
+# ---- tou2d_import_shp (Tier-2 .SHP importer CLI) ------------------------
+# Same shape as tou2d_import_lev: standalone, no engine deps. Decodes
+# the display name + stat triplet from a TOU ship file and stages
+# header.bin / body.bin / config.txt under <outdir>/<stem>/ . The
+# sprite section is left opaque pending reverse-engineering; this CLI
+# is enough to wire imported ship names into a future loader.
+add_executable(tou2d_import_shp tou2d_import_shp.cpp)
+set_target_properties(tou2d_import_shp PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)

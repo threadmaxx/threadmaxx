@@ -16,7 +16,16 @@ namespace {
 // against the Basic baseline via `ShipKind::thrustForce / turnRate`,
 // so editing the constants here rescales the whole fleet uniformly.
 constexpr float kThrustAccelBase  = 240.0f;   // wu / s² @ thrustForce 3.0
-constexpr float kReverseAccelBase = 100.0f;   // weaker than forward
+// M4.6 — reverse must beat gravity. Previously 100 vs gravity 120 →
+// pressing Back while pointed straight down could NOT make a Basic-ship
+// rise, which felt broken (the original TOU lets you yank yourself out
+// of a falling-into-pit situation with reverse). 180 gives the Basic
+// ship 60 wu/s² of net climb when pointed down (vs 120 for forward).
+// Still weaker than forward so reverse remains a tactical "abort"
+// rather than a primary travel mode. Per-kind scaling stays in place:
+// Bee × 3.3 → 594 (still tank-of-thrust), Destroyer × 0.5 → 90 (will
+// NOT beat gravity when pointed down, on purpose — the brick falls).
+constexpr float kReverseAccelBase = 180.0f;
 constexpr float kTurnRateBase     =   4.5f;   // rad / s   @ turnRate 3.0
 constexpr float kGravityAccel     = 120.0f;
 constexpr float kAirDamping       =   0.45f;

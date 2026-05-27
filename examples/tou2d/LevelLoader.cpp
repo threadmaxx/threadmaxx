@@ -108,7 +108,15 @@ LoadedLevelInfo loadImportedLevel(TerrainGrid& grid,
 
             const std::int32_t worldCellX = cx - halfX;
             const std::int32_t worldCellY = halfY - cy;
-            grid.setSolid(worldCellX, worldCellY, /*hp=*/192, attr);
+            // M4.6 — was 192 (≈ 24 dumbfire shots / 38 spread pellets
+            // after the M4.5 damage nerf — felt like punching through
+            // armoured concrete). 24 lands a tile at ≈ 3 dumbfire
+            // shots / ≈ 5 spread pellets, in the same order of
+            // magnitude as ship combat. Bedrock (255) is still set
+            // separately by the synthetic-arena path and never used
+            // by this loader, so cosmetic perimeter walls remain
+            // unbreakable.
+            grid.setSolid(worldCellX, worldCellY, /*hp=*/24, attr);
             ++info.solidCount;
         }
     }
