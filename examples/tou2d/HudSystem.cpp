@@ -82,7 +82,7 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
                 const Ship& sh = shipSpan[row];
                 slots_[slot].present = true;
                 slots_[slot].alive   = !disabled;
-                slots_[slot].score   = sh.score;
+                slots_[slot].kills   = sh.kills;
                 const float maxHp = sh.maxHp > 0.0f ? sh.maxHp : 1.0f;
                 slots_[slot].hpFrac = std::clamp(sh.currentHp / maxHp, 0.0f, 1.0f);
             }
@@ -121,7 +121,7 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
 
         // ---- Score pip row (one pip per kill, saturating) --------------
         const std::uint32_t pips =
-            std::min<std::uint32_t>(state.score, kMaxScorePips);
+            std::min<std::uint32_t>(state.kills, kMaxScorePips);
         for (std::uint32_t i = 0; i < pips; ++i) {
             threadmaxx::DebugPoint dp{};
             dp.position  = {

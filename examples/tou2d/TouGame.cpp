@@ -1,6 +1,7 @@
 #include "TouGame.hpp"
 
 #include "BotControlSystem.hpp"
+#include "BulletShipCollisionSystem.hpp"
 #include "BulletTerrainSystem.hpp"
 #include "CameraSystem.hpp"
 #include "HudSystem.hpp"
@@ -14,6 +15,7 @@
 
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 
 namespace tou2d {
 
@@ -75,9 +77,10 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     s.maxHp       = 100.0f;
     s.spawnX      = x;
     s.spawnY      = y;
-    s.shipKindIdx = 0;
-    s.respawnIn   = 0;
-    s.score       = 0;
+    s.shipKindIdx    = 0;
+    s.respawnIn      = 0;
+    s.kills          = 0;
+    s.tilesDestroyed = 0;
     threadmaxx::addUserComponent(seed, ids.ship, h, s);
 
     return h;
@@ -95,6 +98,12 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     ids_.localPlayer = engine.registerUserComponent<LocalPlayer>();
     ids_.ship        = engine.registerUserComponent<Ship>();
     ids_.bullet      = engine.registerUserComponent<Bullet>();
+
+    // ---- Pre-warm typed event channels on the sim thread -------------------
+    // BulletShipCollisionSystem emits `RoundEnded` from inside `update()`
+    // (worker-adjacent context); warming the channel here ensures the
+    // first emit doesn't race a concurrent factory call.
+    (void) engine.events<RoundEnded>();
 
     // ---- Seed terrain grid --------------------------------------------------
     // Populate BEFORE constructing systems so the system constructors
@@ -139,6 +148,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto weaponFire    = std::make_unique<WeaponFireSystem>(ids_);
     auto projectile    = std::make_unique<ProjectileSystem>(ids_);
     auto* projectilePtr = projectile.get();
+    auto bulletShip        = std::make_unique<BulletShipCollisionSystem>(ids_, &engine);
     auto bulletTerrain     = std::make_unique<BulletTerrainSystem>(ids_, &grid_);
     auto* bulletTerrainPtr = bulletTerrain.get();
     auto shipLife          = std::make_unique<ShipLifecycleSystem>(ids_);
@@ -157,6 +167,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(collision));
     engine.registerSystem(std::move(weaponFire));
     engine.registerSystem(std::move(projectile));
+    engine.registerSystem(std::move(bulletShip));   // ships first → bullet despawn before terrain check
     engine.registerSystem(std::move(bulletTerrain));
     engine.registerSystem(std::move(shipLife));     // late — sees commits from movement/collision
     engine.registerSystem(std::move(camera));

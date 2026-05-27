@@ -49,18 +49,37 @@ static_assert(sizeof(LocalPlayer) == 8, "LocalPlayer must stay 8 bytes");
 /// `respawnIn` is the post-death freeze counter — 0 means the ship is
 /// alive; non-zero means it's hidden (DisabledTag attached) and will be
 /// rematerialized at (spawnX, spawnY) when the counter reaches 0.
-/// `score` counts tiles destroyed by THIS ship's bullets (M3.3 hook;
-/// future weapons will mix in kill credit).
+/// `kills` is the deathmatch score (incremented by
+/// `BulletShipCollisionSystem` when one of this ship's bullets deals a
+/// killing blow). `tilesDestroyed` is the secondary "wreckage" counter
+/// (incremented by `BulletTerrainSystem` when a bullet clears a tile);
+/// kept separate so deathmatch scoring isn't polluted by terrain spam.
 struct Ship {
-    float        currentHp   = 100.0f;
-    float        maxHp       = 100.0f;
-    float        spawnX      = 0.0f;
-    float        spawnY      = 0.0f;
-    std::uint16_t shipKindIdx = 0;
-    std::uint16_t respawnIn   = 0;     ///< ticks until respawn; 0 = alive
-    std::uint32_t score       = 0;
+    float         currentHp      = 100.0f;
+    float         maxHp          = 100.0f;
+    float         spawnX         = 0.0f;
+    float         spawnY         = 0.0f;
+    std::uint16_t shipKindIdx    = 0;
+    std::uint16_t respawnIn      = 0;     ///< ticks until respawn; 0 = alive
+    std::uint16_t kills          = 0;     ///< deathmatch score
+    std::uint16_t tilesDestroyed = 0;     ///< secondary terrain-wreckage counter
 };
 static_assert(sizeof(Ship) == 24, "Ship must stay 24 bytes");
+
+/// M3.5 — emitted once when any slot crosses `kFragLimit`. Listeners
+/// (currently just the host logger) can react however they like; the
+/// engine itself does NOT halt or modify state on round-end.
+struct RoundEnded {
+    std::uint8_t  winnerSlot  = 0;
+    std::uint8_t  _pad        = 0;
+    std::uint16_t winnerKills = 0;
+};
+static_assert(sizeof(RoundEnded) == 4, "RoundEnded must stay 4 bytes");
+
+/// Number of kills required to end a round. 10 matches the M3-acceptance
+/// "deathmatch round ends on score limit" requirement; small enough that
+/// bot-vs-bot self-play settles a winner within a few minutes of sim.
+inline constexpr std::uint16_t kFragLimit = 10;
 
 /// Tile-grid terrain classification. Mirrors the layout of the imported
 /// `.lev` attribute byte.

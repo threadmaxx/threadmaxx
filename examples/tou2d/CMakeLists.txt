@@ -28,6 +28,7 @@ add_library(tou2d_core STATIC
     WeaponFireSystem.cpp
     ProjectileSystem.cpp
     BulletTerrainSystem.cpp
+    BulletShipCollisionSystem.cpp
     ShipLifecycleSystem.cpp
     BotControlSystem.cpp
     HudSystem.cpp

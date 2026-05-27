@@ -30,11 +30,12 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
 
-        // First pass: tally up per-owner scores so we can credit kills
-        // back to the shooter even though ships live in different
-        // chunks. Small flat array keyed by ownerSlot (0..3 + bots…).
-        // M3.3 ships 4 local players; sized for that.
-        std::array<std::uint32_t, 16> scoreDelta{};
+        // First pass: tally up per-owner tile-destroy counts so we can
+        // credit them back to the shooter even though ships live in
+        // different chunks. Kills (deathmatch score) are handled by
+        // BulletShipCollisionSystem; this only tracks the secondary
+        // `tilesDestroyed` wreckage counter.
+        std::array<std::uint32_t, 16> tilesDelta{};
 
         for (const auto* chunkPtr : view.chunks()) {
             if (!chunkPtr) continue;
@@ -69,8 +70,8 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
                 if (cellHp <= dmg) {
                     grid_->clear(cx, cy);
                     if (destroyCb_) destroyCb_(cx, cy);
-                    if (blt.ownerSlot < scoreDelta.size()) {
-                        scoreDelta[blt.ownerSlot] += 1;
+                    if (blt.ownerSlot < tilesDelta.size()) {
+                        tilesDelta[blt.ownerSlot] += 1;
                     }
                 } else {
                     grid_->hp[grid_->indexOf(cx, cy)] =
@@ -81,9 +82,10 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
             }
         }
 
-        // Second pass: walk ship chunks; credit any score deltas
-        // accumulated above to the matching LocalPlayer slot. Cheap
-        // (≤4 ships), and keeps the bullet loop clear of ship lookups.
+        // Second pass: walk ship chunks; credit any tilesDestroyed
+        // deltas accumulated above to the matching LocalPlayer slot.
+        // Cheap (≤4 ships), and keeps the bullet loop clear of ship
+        // lookups. Saturates at uint16 max.
         if (idsShip.valid()) {
             for (const auto* chunkPtr : view.chunks()) {
                 if (!chunkPtr) continue;
@@ -97,10 +99,15 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
                 const auto entities = chunk.entities;
                 for (std::size_t row = 0, m = entities.size(); row < m; ++row) {
                     const std::uint8_t slot = lpSpan[row].slot;
-                    if (slot >= scoreDelta.size())   continue;
-                    if (scoreDelta[slot] == 0)       continue;
+                    if (slot >= tilesDelta.size())   continue;
+                    if (tilesDelta[slot] == 0)       continue;
                     Ship ship = shipSpan[row];
-                    ship.score += scoreDelta[slot];
+                    const std::uint32_t sum =
+                        static_cast<std::uint32_t>(ship.tilesDestroyed) +
+                        tilesDelta[slot];
+                    ship.tilesDestroyed =
+                        sum > 0xFFFFu ? std::uint16_t{0xFFFFu}
+                                      : static_cast<std::uint16_t>(sum);
                     threadmaxx::addUserComponent(cb, idsShip, entities[row], ship);
                 }
             }
