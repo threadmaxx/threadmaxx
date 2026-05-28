@@ -162,12 +162,21 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                 // pending. Without this, a ship that died mid-reload
                 // would respawn with whatever ammo/reload counters it
                 // had at death tick — uncomfortable inconsistency.
+                //
+                // M5.6 — preserve the ship's chosen specialKind across
+                // the respawn reset; only the counters reset.
                 if (idsLd.valid()) {
+                    const auto ldSpan =
+                        threadmaxx::user::chunkSpan<WeaponLoadout>(chunk, idsLd);
+                    const std::uint8_t keepKind =
+                        row < ldSpan.size() ? ldSpan[row].specialKind
+                                            : std::uint8_t{0};
                     WeaponLoadout fresh{};
                     fresh.dumbfireAmmo     = kDumbfireMagazine;
                     fresh.dumbfireReloadIn = 0;
-                    fresh.spreadAmmo       = kSpreadMagazine;
-                    fresh.spreadReloadIn   = 0;
+                    fresh.specialKind      = keepKind;
+                    fresh.specialAmmo      = specialSpecAt(keepKind).magazine;
+                    fresh.specialReloadIn  = 0;
                     threadmaxx::addUserComponent(cb, idsLd, entities[row], fresh);
                 }
 

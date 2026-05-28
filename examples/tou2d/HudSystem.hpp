@@ -70,8 +70,10 @@ private:
         std::uint32_t kills         = 0;
         std::uint16_t dumbfireAmmo  = 0;     ///< current magazine
         std::uint16_t dumbfireReload= 0;     ///< 0 = ready
-        std::uint16_t spreadAmmo    = 0;
-        std::uint16_t spreadReload  = 0;
+        std::uint16_t specialAmmo   = 0;     ///< M5.6 — was spreadAmmo
+        std::uint16_t specialReload = 0;     ///< M5.6 — was spreadReload
+        std::uint8_t  specialKind   = 0;     ///< M5.6 — SpecialKind enum value
+        std::uint8_t  _pad          = 0;
     };
 
     UserComponentIds              ids_;

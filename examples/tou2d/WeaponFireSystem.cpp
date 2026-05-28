@@ -30,24 +30,16 @@ constexpr float         kBulletScale       = 2.4f;
 // sustained tracking, not single-trigger taps.
 constexpr std::uint8_t  kDumbfireDamage    = 8;
 
-// M3.3 Spread tunables — 3 bullets at ±kSpreadAngle around forward.
-constexpr float         kSpreadAngleRad      = 0.30f;  // ~17°
-constexpr float         kSpreadSpeed         = 520.0f; // slightly slower than Dumbfire
-constexpr float         kSpreadTtlSeconds    = 0.9f;
-// M4.5 — 3 × 5 = 15 per full-pellet burst vs Basic 150 HP → ≈ 10
-// bursts to kill at the new ~370 ms burst cadence ≈ 3.7 s.
-constexpr std::uint8_t  kSpreadDamage        = 5;
+// M5.6 — special-weapon tunables now live in `kSpecialWeaponSpecs` in
+// DemoTypes.hpp. Per-kind values (magazine / reload / cooldown / fan
+// step / bullet count / damage / speed / ttl) are looked up at fire
+// time via `specialSpecAt(loadout.specialKind)`. The
+// `kSpreadAngleRad / kSpreadSpeed / kSpreadTtlSeconds / kSpreadDamage`
+// constants are gone — Spread is just entry 0 in the spec table now.
 
-// 2026-05-28 — per-shot loader cooldown. Reworked per M5.2 design:
-//   * Dumbfire fires forever (no reload, no magazine) on a 30-tick
-//     cooldown = 0.5 s — the user's "interval of maybe half second by
-//     default" for the always-on basic weapon.
-//   * Spread has a single-shot magazine and a generous post-burst
-//     reload (kSpreadReloadTicks ≈ 1.25 s in DemoTypes.hpp). The
-//     per-burst cooldown also stays in place but is short — the reload
-//     dominates the gap.
+// 2026-05-28 — per-shot loader cooldown for the basic weapon. Dumbfire
+// fires forever (no reload, no magazine) on a 30-tick cooldown = 0.5 s.
 constexpr std::uint16_t kDumbfireCooldownTicks = 30;   // 0.5 s
-constexpr std::uint16_t kSpreadCooldownTicks   = 22;
 
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
@@ -169,12 +161,13 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
 
                 // ---- Tick reloads + loader cooldowns down first -----
                 // 2026-05-28 — dumbfire never reloads (infinite ammo
-                // on the basic weapon per M5.2). Only the spread
+                // on the basic weapon per M5.2). Only the special
                 // reload chain ticks here.
-                if (ld.spreadReloadIn > 0) {
-                    ld.spreadReloadIn = static_cast<std::uint16_t>(ld.spreadReloadIn - 1);
-                    if (ld.spreadReloadIn == 0) {
-                        ld.spreadAmmo = kSpreadMagazine;
+                const SpecialWeaponSpec& spec = specialSpecAt(ld.specialKind);
+                if (ld.specialReloadIn > 0) {
+                    ld.specialReloadIn = static_cast<std::uint16_t>(ld.specialReloadIn - 1);
+                    if (ld.specialReloadIn == 0) {
+                        ld.specialAmmo = spec.magazine;
                     }
                 }
                 // M4.5 — independent per-shot loader cooldown. Ticks
@@ -183,8 +176,8 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                 if (ld.dumbfireCooldown > 0) {
                     ld.dumbfireCooldown = static_cast<std::uint16_t>(ld.dumbfireCooldown - 1);
                 }
-                if (ld.spreadCooldown > 0) {
-                    ld.spreadCooldown = static_cast<std::uint16_t>(ld.spreadCooldown - 1);
+                if (ld.specialCooldown > 0) {
+                    ld.specialCooldown = static_cast<std::uint16_t>(ld.specialCooldown - 1);
                 }
 
                 // ---- Dumbfire (fireBasic) ---------------------------
@@ -206,27 +199,48 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                     }
                 }
 
-                // ---- Spread (fireSpecial) ---------------------------
-                const bool canSpread =
-                    ld.spreadReloadIn == 0 &&
-                    ld.spreadCooldown == 0 &&
-                    ld.spreadAmmo > 0;
-                if (in.fireSpecial && canSpread) {
-                    for (int i = -1; i <= 1; ++i) {
+                // ---- Special (fireSpecial) --------------------------
+                // M5.6 — dispatches on `specialKind` to the per-kind
+                // spec table. Single-bullet kinds (Rapid/Sniper) fall
+                // out of the fan loop with bulletsPerShot = 1 and
+                // spreadStepRad = 0 → one straight shot. Multi-bullet
+                // kinds (Spread/Quintet) center the fan around the
+                // ship's forward.
+                const bool canSpecial =
+                    ld.specialReloadIn == 0 &&
+                    ld.specialCooldown == 0 &&
+                    ld.specialAmmo > 0;
+                if (in.fireSpecial && canSpecial) {
+                    const int n      = static_cast<int>(spec.bulletsPerShot);
+                    const int half   = (n - 1) / 2;
+                    const bool even  = (n % 2) == 0;
+                    for (int i = 0; i < n; ++i) {
+                        // Center the fan: odd-N puts bullet 0 dead-
+                        // ahead and pairs flank it (±step, ±2*step…);
+                        // even-N stamps ±step/2, ±3*step/2… so the
+                        // pattern stays symmetric about the forward.
+                        const int   midOffset = n / 2;
+                        const float lane = even
+                            ? (static_cast<float>(i - midOffset) + 0.5f)
+                            : static_cast<float>(i - half);
                         spawnBullet(ctx, cb, idsBl, shipT, shipV,
-                                    angle + static_cast<float>(i) * kSpreadAngleRad,
-                                    kSpreadSpeed,
-                                    kSpreadTtlSeconds,
-                                    kSpreadDamage,
-                                    /*weaponKind*/ 1,
+                                    angle + lane * spec.spreadStepRad,
+                                    spec.muzzleSpeed,
+                                    spec.ttlSeconds,
+                                    spec.damagePerBullet,
+                                    spec.weaponKind,
                                     ownerSlot);
                     }
-                    ld.spreadAmmo     = static_cast<std::uint16_t>(ld.spreadAmmo - 1);
-                    ld.spreadCooldown = kSpreadCooldownTicks;
-                    if (ld.spreadAmmo == 0) {
-                        ld.spreadReloadIn = kSpreadReloadTicks;
+                    ld.specialAmmo     = static_cast<std::uint16_t>(ld.specialAmmo - 1);
+                    ld.specialCooldown = spec.cooldownTicks;
+                    if (ld.specialAmmo == 0) {
+                        ld.specialReloadIn = spec.reloadTicks;
                     }
                     if (engine_) {
+                        // M5.6 — every special routes through the same
+                        // audio cue for now (one bank slot). A per-
+                        // kind audio table can land later — out of
+                        // scope for this batch.
                         engine_->events<AudioPlay>().emit(
                             AudioPlay{audio::kSoundSpread, 0, 0});
                     }

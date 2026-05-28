@@ -95,8 +95,9 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
                     const WeaponLoadout& ld = ldSpan[row];
                     slots_[slot].dumbfireAmmo   = ld.dumbfireAmmo;
                     slots_[slot].dumbfireReload = ld.dumbfireReloadIn;
-                    slots_[slot].spreadAmmo     = ld.spreadAmmo;
-                    slots_[slot].spreadReload   = ld.spreadReloadIn;
+                    slots_[slot].specialAmmo    = ld.specialAmmo;
+                    slots_[slot].specialReload  = ld.specialReloadIn;
+                    slots_[slot].specialKind    = ld.specialKind;
                 }
             }
         }
@@ -303,12 +304,14 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             }
         };
 
-        const float dumbY  = barY    - kAmmoRowGapWU;
-        const float spreadY = dumbY  - kAmmoRowGapWU;
+        const float dumbY    = barY    - kAmmoRowGapWU;
+        const float specialY = dumbY  - kAmmoRowGapWU;
         drawAmmoRow(dumbY,  /*weaponKind=*/0, kDumbfireMagazine,
                     state.dumbfireAmmo, state.dumbfireReload);
-        drawAmmoRow(spreadY, /*weaponKind=*/1, kSpreadMagazine,
-                    state.spreadAmmo, state.spreadReload);
+        // M5.6 — per-kind mag size + bullet color from the spec table.
+        const SpecialWeaponSpec& sspec = specialSpecAt(state.specialKind);
+        drawAmmoRow(specialY, sspec.weaponKind, sspec.magazine,
+                    state.specialAmmo, state.specialReload);
     }
 
     // ---- M4.2 winner banner -------------------------------------------

@@ -140,6 +140,10 @@ int main(int argc, char** argv) {
     // / --gen-perim tune the canvas. Mutex with --level.
     bool               useGen     = false;
     tou2d::ProceduralLevelConfig genCfg{};
+    // M5.6 — default special-weapon kind for every spawned ship.
+    // Selects an entry in `kSpecialWeaponSpecs`. `--special=<name>`
+    // chooses by token; default `spread` keeps pre-M5.6 behaviour.
+    std::uint8_t       specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Spread);
 
     // Lightweight arg parse — supports any order of:
     //   <N>                  : bounded run for N ticks
@@ -154,6 +158,8 @@ int main(int argc, char** argv) {
     //   --gen-level=N        : 0..4 size class (default 2)
     //   --gen-density=N      : 0..100 stuff density (default 50)
     //   --gen-perim=<0|1>    : 1 cell of bedrock around the canvas (default 1)
+    //   --special=<token>    : starting special weapon. Tokens (M5.6):
+    //                          spread (default), rapid, sniper, quintet
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--level" && i + 1 < argc) {
@@ -199,6 +205,18 @@ int main(int argc, char** argv) {
                 return 2;
             }
             genCfg.perimeterBedrock = static_cast<std::uint8_t>(v);
+        } else if (a.rfind("--special=", 0) == 0) {
+            const std::string val = a.substr(10);
+            if      (val == "spread")  specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Spread);
+            else if (val == "rapid")   specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Rapid);
+            else if (val == "sniper")  specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Sniper);
+            else if (val == "quintet") specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Quintet);
+            else {
+                std::fprintf(stderr,
+                    "[tou2d] --special=%s — expected spread|rapid|sniper|quintet\n",
+                    val.c_str());
+                return 2;
+            }
         } else if (a.rfind("--mode=", 0) == 0) {
             const std::string val = a.substr(7);
             if (val == "dm" || val == "deathmatch") {
@@ -298,6 +316,10 @@ int main(int argc, char** argv) {
                     unsigned(numHumans), unsigned(numBots),
                     unsigned(replayPlayer.matchMode()),
                     levelDir.c_str());
+        // M5.6 — the recorded specialKind trumps any cli --special.
+        specialKind = replayPlayer.specialKind();
+        std::printf("[tou2d] --play %s: header specialKind=%u\n",
+                    playPath.c_str(), unsigned(specialKind));
     }
 
     if (!glfwInit()) {
@@ -348,12 +370,24 @@ int main(int argc, char** argv) {
     game.setSpriteCompositor(&compositor);
     game.setMatchMode(matchMode);
     game.setPlayerCounts(numHumans, numBots);
+    game.setDefaultSpecialKind(static_cast<tou2d::SpecialKind>(specialKind));
     std::printf("[tou2d] match mode: %s\n",
                 matchMode == tou2d::MatchMode::LastShipStanding
                     ? "last-ship-standing"
                     : "deathmatch");
     std::printf("[tou2d] players: %u human + %u bots\n",
                 unsigned(numHumans), unsigned(numBots));
+    {
+        // M5.6 — log the resolved special weapon by token.
+        const char* tok = "spread";
+        switch (static_cast<tou2d::SpecialKind>(specialKind)) {
+            case tou2d::SpecialKind::Spread:  tok = "spread";  break;
+            case tou2d::SpecialKind::Rapid:   tok = "rapid";   break;
+            case tou2d::SpecialKind::Sniper:  tok = "sniper";  break;
+            case tou2d::SpecialKind::Quintet: tok = "quintet"; break;
+        }
+        std::printf("[tou2d] special weapon: %s\n", tok);
+    }
 
     threadmaxx_vk::VulkanRenderer::Config vrcfg;
     vrcfg.width          = kInitialWidth;
@@ -398,7 +432,7 @@ int main(int argc, char** argv) {
             useGen ? std::optional<tou2d::ProceduralLevelConfig>{genCfg}
                    : std::nullopt;
         if (!replayRecorder.open(recordPath, numHumans, numBots, mode,
-                                 levelDir, genForHeader)) {
+                                 levelDir, genForHeader, specialKind)) {
             std::fprintf(stderr,
                 "[tou2d] --record %s: open failed\n", recordPath.c_str());
             engine.shutdown();

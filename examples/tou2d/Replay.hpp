@@ -14,7 +14,7 @@
 //   genLevel           uint8  (0..4)           (1  byte) ── M5.5
 //   genDensity         uint8  (0..100)         (1  byte) ── M5.5
 //   genPerim           uint8  (0/1)            (1  byte) ── M5.5
-//   _pad               uint8                   (1  byte)
+//   specialKind        uint8  (SpecialKind)    (1  byte) ── M5.6
 //   engineHashBasis    uint64 (FNV-1a basis)   (8  bytes — sanity check)
 //   levelDirLen        uint16                  (2  bytes)
 //   _pad2              uint16                  (2  bytes)
@@ -77,7 +77,7 @@ struct ReplayHeader {
     std::uint8_t  genLevel;     ///< M5.5 — ProceduralLevelConfig::ggLevel
     std::uint8_t  genDensity;   ///< M5.5 — ProceduralLevelConfig::stuffDensity
     std::uint8_t  genPerim;     ///< M5.5 — ProceduralLevelConfig::perimeterBedrock
-    std::uint8_t  _pad;
+    std::uint8_t  specialKind;  ///< M5.6 — SpecialKind enum value (pre-M5.6 recs had 0 here)
     std::uint64_t engineHashBasis;
     std::uint16_t levelDirLen;
     std::uint16_t _pad2;
@@ -96,10 +96,15 @@ public:
     ///        generator — `levelDir` is ignored and the four gen fields
     ///        are written into the header so playback can rebuild the
     ///        same level deterministically.
+    /// @param specialKind M5.6 — `SpecialKind` enum value baked into
+    ///        every ship's WeaponLoadout. Captured so playback fires
+    ///        the same weapons (different specials produce different
+    ///        bullet streams → different post-tick commit hashes).
     bool open(const std::filesystem::path& path,
               std::uint8_t numHumans, std::uint8_t numBots,
               std::uint8_t matchMode, const std::string& levelDir,
-              const std::optional<ProceduralLevelConfig>& genConfig = std::nullopt);
+              const std::optional<ProceduralLevelConfig>& genConfig = std::nullopt,
+              std::uint8_t specialKind = 0);
 
     /// @param keyboardInputs span of exactly `kReplayKeyboardSlots` (=4)
     ///        `PlayerInput` values — one per keyboard row regardless of
@@ -140,6 +145,10 @@ public:
     const std::optional<ProceduralLevelConfig>& genConfig() const noexcept {
         return genConfig_;
     }
+    /// M5.6 — SpecialKind enum value carried in the header. Pre-M5.6
+    /// recordings had a zero byte here → resolves to `Spread` which
+    /// matches their actual behaviour.
+    std::uint8_t specialKind() const noexcept { return specialKind_; }
 
     /// Read next tick record. Returns true on success, false at clean
     /// EOF or on read error. After a successful read, `commitHash()`
@@ -164,6 +173,7 @@ private:
     std::uint8_t             matchMode_      = 0;
     std::string              levelDir_;
     std::optional<ProceduralLevelConfig> genConfig_;
+    std::uint8_t             specialKind_    = 0;  // M5.6
     std::uint64_t            ticksRead_      = 0;
     std::uint64_t            curCommitHash_  = 0;
     std::vector<PlayerInput> curInputs_;  // size = kReplayKeyboardSlots

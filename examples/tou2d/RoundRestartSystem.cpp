@@ -98,12 +98,21 @@ void RoundRestartSystem::preStep(threadmaxx::SystemContext& ctx) {
                 threadmaxx::addUserComponent(cb, idsShip, entities[row], s);
 
                 // Loadout: full mags, no reload pending.
-                if (idsLd.valid()) {
+                // M5.6 — preserve specialKind from the ship's
+                // pre-restart loadout so a player who picked Sniper
+                // doesn't get bounced back to Spread on round reset.
+                if (idsLd.valid() && chunk.mask.has(idsLd.componentBit())) {
+                    const auto ldSpan =
+                        threadmaxx::user::chunkSpan<WeaponLoadout>(chunk, idsLd);
+                    const std::uint8_t keepKind =
+                        row < ldSpan.size() ? ldSpan[row].specialKind
+                                            : std::uint8_t{0};
                     WeaponLoadout fresh{};
                     fresh.dumbfireAmmo     = kDumbfireMagazine;
                     fresh.dumbfireReloadIn = 0;
-                    fresh.spreadAmmo       = kSpreadMagazine;
-                    fresh.spreadReloadIn   = 0;
+                    fresh.specialKind      = keepKind;
+                    fresh.specialAmmo      = specialSpecAt(keepKind).magazine;
+                    fresh.specialReloadIn  = 0;
                     threadmaxx::addUserComponent(cb, idsLd, entities[row], fresh);
                 }
 

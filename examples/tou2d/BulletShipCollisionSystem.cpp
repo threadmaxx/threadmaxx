@@ -27,9 +27,28 @@ constexpr float kShipHitRadiusFactor = 0.45f;
 constexpr std::uint8_t kNoShooter = 0xFFu;
 
 // M5.3 — per-weapon spark color (low 24 bits; alpha derived from ttl
-// inside ParticleSystem). Dumbfire = warm yellow, spread = orange.
+// inside ParticleSystem). M5.6 extended the table with the three new
+// specials so each weapon kind reads distinct on hit.
+//   * Dumbfire (0) — warm yellow
+//   * Spread   (1) — orange
+//   * Rapid    (2) — cyan
+//   * Sniper   (3) — magenta
+//   * Quintet  (4) — lime green
 constexpr std::uint32_t kSparkColorDumbfire = 0x00FFCC44u;
 constexpr std::uint32_t kSparkColorSpread   = 0x00FF8030u;
+constexpr std::uint32_t kSparkColorRapid    = 0x0040D0FFu;
+constexpr std::uint32_t kSparkColorSniper   = 0x00FF40C0u;
+constexpr std::uint32_t kSparkColorQuintet  = 0x0080FF40u;
+
+inline std::uint32_t sparkColorFor(std::uint8_t weaponKind) noexcept {
+    switch (weaponKind) {
+        case 1: return kSparkColorSpread;
+        case 2: return kSparkColorRapid;
+        case 3: return kSparkColorSniper;
+        case 4: return kSparkColorQuintet;
+        default: return kSparkColorDumbfire;
+    }
+}
 
 struct ShipSlot {
     float          x       = 0.0f;
@@ -136,14 +155,10 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                         }
                     }
                     // M5.3 — impact spark at the bullet's hit point.
-                    // Color from the bullet's weapon kind so dumbfire
-                    // and spread look different on contact.
+                    // M5.6 — per-kind palette via sparkColorFor.
                     if (particles_) {
-                        const std::uint32_t sparkRGB =
-                            blt.weaponKind == 1
-                                ? kSparkColorSpread
-                                : kSparkColorDumbfire;
-                        particles_->emitImpactSpark(bx, by, sparkRGB);
+                        particles_->emitImpactSpark(
+                            bx, by, sparkColorFor(blt.weaponKind));
                     }
                     cb.destroy(entities[row]);
                     break;   // one bullet hits at most one ship per tick

@@ -193,10 +193,14 @@ enum class Attribute : std::uint8_t {
     Damage = 2,
 };
 
-/// In-flight projectile. `weaponKind == 0` is Dumbfire (M3.1);
-/// `weaponKind == 1` is Spread (M3.3). `ownerSlot` mirrors the firing
-/// ship's `LocalPlayer::slot` so kill credit can route to the right
-/// player score on impact.
+/// In-flight projectile. `weaponKind` values:
+///   * 0 = Dumbfire (M3.1)
+///   * 1 = Spread   (M3.3)
+///   * 2 = Rapid    (M5.6)
+///   * 3 = Sniper   (M5.6)
+///   * 4 = Quintet  (M5.6)
+/// `ownerSlot` mirrors the firing ship's `LocalPlayer::slot` so kill
+/// credit can route to the right player score on impact.
 struct Bullet {
     float         ttlSeconds = 0.0f;
     std::uint8_t  damage     = 0;
@@ -246,7 +250,7 @@ inline constexpr std::uint16_t kSoundCount      = 5;
 ///     gated on `cooldown == 0`. M4.5 — this is the "few hundred ms
 ///     between bursts" the user asked for, and matches the chambered-
 ///     round mental model. Dumbfire cooldown is short (~100 ms);
-///     Spread cooldown is the burst-to-burst gap (~370 ms).
+///     special cooldown is per-kind.
 ///   * **Magazine reload** (`*Ammo` + `*ReloadIn`) — runs out of ammo
 ///     → `reloadIn = kReload*Ticks`, ticks down each step, on zero the
 ///     magazine refills.
@@ -257,17 +261,20 @@ inline constexpr std::uint16_t kSoundCount      = 5;
 /// mag has reloaded ALSO requires the loader to be clear (it always
 /// is right after a refill — refill never sets a cooldown).
 ///
-/// Bumped from 8 → 16 bytes in M4.5. Still cheap (≤4 ships × 16 B);
-/// the two trailing pad uint16s keep the layout stable if a third
-/// weapon ever lands.
+/// M5.6 — the second weapon is now generic "special" (no longer
+/// hard-coded as spread). `specialKind` selects one of the
+/// `kSpecialWeaponSpecs` table entries; the runtime reads the per-kind
+/// tunables (cooldown / magazine / reload / spawn pattern). Layout
+/// stays 16 bytes — `specialKind` replaces the old `_pad0` slot.
 struct WeaponLoadout {
     std::uint16_t dumbfireAmmo     = 0;   ///< rounds remaining in magazine
     std::uint16_t dumbfireReloadIn = 0;   ///< ticks until mag refill; 0 = ready
     std::uint16_t dumbfireCooldown = 0;   ///< ticks until next shot loader-ready
-    std::uint16_t _pad0            = 0;
-    std::uint16_t spreadAmmo       = 0;
-    std::uint16_t spreadReloadIn   = 0;
-    std::uint16_t spreadCooldown   = 0;   ///< burst-to-burst gap
+    std::uint8_t  specialKind      = 0;   ///< M5.6 — index into kSpecialWeaponSpecs
+    std::uint8_t  _pad0            = 0;
+    std::uint16_t specialAmmo      = 0;
+    std::uint16_t specialReloadIn  = 0;
+    std::uint16_t specialCooldown  = 0;   ///< burst-to-burst gap
     std::uint16_t _pad1            = 0;
 };
 static_assert(sizeof(WeaponLoadout) == 16, "WeaponLoadout must stay 16 bytes");
@@ -280,16 +287,81 @@ static_assert(sizeof(WeaponLoadout) == 16, "WeaponLoadout must stay 16 bytes");
 /// dumbfire ammo field is still part of `WeaponLoadout` for layout
 /// stability but the runtime never decrements it — a huge magazine
 /// guards against any stale reload code in the wild that still checks
-/// `ammo > 0`. Spread mag = 1 so every press of fireSpecial drains the
-/// mag and triggers reload.
+/// `ammo > 0`.
 inline constexpr std::uint16_t kDumbfireMagazine = 1;  // visual "ready" pip; ammo never decrements
-inline constexpr std::uint16_t kSpreadMagazine   = 1;  // single burst per mag
 
-/// Reload durations — only the special weapon ever reloads. Basic is
-/// kept at the legacy constant for back-compat with the loadout POD
-/// but the WeaponFireSystem skips the dumbfire reload branch.
-inline constexpr std::uint16_t kDumbfireReloadTicks = 0;    // never reloads
-inline constexpr std::uint16_t kSpreadReloadTicks   = 75;   // 60 Hz → 1.25 s
+/// Dumbfire never reloads — basic is infinite-fire on a fixed cooldown.
+inline constexpr std::uint16_t kDumbfireReloadTicks = 0;
+
+/// M5.6 — special-weapon catalogue.
+///
+/// Adds three new weapons beyond the original Spread:
+///
+///   * **Spread**  (kind 0) — 3-bullet ±17° fan; single-burst mag, 1.25 s
+///                            reload. Unchanged from the M3.3 design.
+///   * **Rapid**   (kind 1) — high-fire-rate single bullets like a
+///                            machine gun. Small per-bullet damage,
+///                            short loader cooldown, large magazine.
+///   * **Sniper**  (kind 2) — single very fast bullet, long-range, high
+///                            damage, slow cadence, small magazine.
+///   * **Quintet** (kind 3) — 5-bullet ±10°/±20° narrow fan; tighter
+///                            than Spread but more lanes.
+///
+/// `weaponKind` is the byte stamped into spawned `Bullet`s so impact
+/// effects (sparks, audio) can route per-weapon. The values 0 (Dumbfire)
+/// and 1 (Spread) are stable from pre-M5.6 — the new specials extend
+/// the namespace at 2/3/4.
+enum class SpecialKind : std::uint8_t {
+    Spread  = 0,
+    Rapid   = 1,
+    Sniper  = 2,
+    Quintet = 3,
+};
+inline constexpr std::uint8_t kSpecialKindCount = 4;
+
+struct SpecialWeaponSpec {
+    std::uint16_t magazine;          ///< rounds per mag (1 = one-shot per reload)
+    std::uint16_t reloadTicks;       ///< post-empty reload duration
+    std::uint16_t cooldownTicks;     ///< between-shot loader cooldown
+    std::uint8_t  bulletsPerShot;    ///< how many bullets `spawnBullet` is called for
+    std::uint8_t  weaponKind;        ///< stamped into Bullet.weaponKind
+    std::uint8_t  damagePerBullet;   ///< Bullet.damage
+    std::uint8_t  _pad0;
+    float         muzzleSpeed;       ///< world units / s
+    float         ttlSeconds;        ///< per-bullet lifetime
+    float         spreadStepRad;     ///< angle between adjacent bullets in the fan
+};
+static_assert(sizeof(SpecialWeaponSpec) == 24, "SpecialWeaponSpec must stay 24 bytes");
+
+inline constexpr SpecialWeaponSpec kSpecialWeaponSpecs[kSpecialKindCount] = {
+    // {mag, reload, cool, n, kind, dmg, _, speed,  ttl,  step}
+    // ── Spread (legacy) ── 3 bullets, ±17°, 1.25 s reload.
+    {  1,   75,    22,    3, 1,    5,  0, 520.0f, 0.9f, 0.30f },
+    // ── Rapid ── 12-round mag, 8-tick loader, 80-tick reload. Long
+    //   burst window per mag so the player can sustain pressure;
+    //   per-bullet damage is below dumbfire to keep TTK competitive
+    //   with the rest of the catalogue.
+    {  12,  80,    8,     1, 2,    5,  0, 600.0f, 1.0f, 0.0f  },
+    // ── Sniper ── 3-shot mag, 60-tick loader, 120-tick reload. Single
+    //   very fast bullet with a long lifetime → covers the level
+    //   diagonal at speed.
+    {  3,   120,   60,    1, 3,    24, 0, 1100.0f, 1.6f, 0.0f },
+    // ── Quintet ── 5-bullet fan at ±10°/±20°, 30-tick loader,
+    //   90-tick reload. Tighter than Spread, harder to track but
+    //   covers more lanes when it lands.
+    {  1,   90,    30,    5, 4,    4,  0, 560.0f, 0.95f, 0.175f },
+};
+
+inline const SpecialWeaponSpec& specialSpecAt(std::uint8_t kind) noexcept {
+    return kSpecialWeaponSpecs[kind < kSpecialKindCount ? kind : 0];
+}
+
+/// M5.6 — back-compat alias. Pre-M5.6 callers wrote
+/// `kSpreadMagazine` / `kSpreadReloadTicks`; both still resolve to the
+/// Spread spec's values so legacy log and audit traces don't need
+/// rewriting.
+inline constexpr std::uint16_t kSpreadMagazine    = 1;
+inline constexpr std::uint16_t kSpreadReloadTicks = 75;
 
 /// Number of source attribute / visual-JPG pixels that map to one
 /// runtime tile along each axis. After M3.3's flat-grid terrain the

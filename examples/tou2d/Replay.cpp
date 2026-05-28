@@ -15,7 +15,8 @@ constexpr std::uint64_t kEngineHashBasis = 0xcbf29ce484222325ull;
 bool ReplayRecorder::open(const std::filesystem::path& path,
                           std::uint8_t numHumans, std::uint8_t numBots,
                           std::uint8_t matchMode, const std::string& levelDir,
-                          const std::optional<ProceduralLevelConfig>& genConfig) {
+                          const std::optional<ProceduralLevelConfig>& genConfig,
+                          std::uint8_t specialKind) {
     close();
     file_ = std::fopen(path.string().c_str(), "wb");
     if (!file_) return false;
@@ -26,6 +27,7 @@ bool ReplayRecorder::open(const std::filesystem::path& path,
     hdr.numHumans        = numHumans;
     hdr.numBots          = numBots;
     hdr.matchMode        = matchMode;
+    hdr.specialKind      = specialKind;  // M5.6
     hdr.engineHashBasis  = kEngineHashBasis;
     // M5.5 — if a generation config is set, levelDir is irrelevant for
     // playback; record an empty string regardless of what the host
@@ -110,6 +112,7 @@ bool ReplayPlayer::open(const std::filesystem::path& path) {
     numHumans_     = hdr.numHumans;
     numBots_       = hdr.numBots;
     matchMode_     = hdr.matchMode;
+    specialKind_   = hdr.specialKind;  // M5.6 (zero in pre-M5.6 v2 recs → Spread)
     if (hdr.useGen != 0) {
         ProceduralLevelConfig g{};
         g.seed             = hdr.genSeed;
@@ -134,6 +137,7 @@ void ReplayPlayer::close() {
     numHumans_     = 0;
     numBots_       = 0;
     matchMode_     = 0;
+    specialKind_   = 0;
     ticksRead_     = 0;
     curCommitHash_ = 0;
     curInputs_.clear();

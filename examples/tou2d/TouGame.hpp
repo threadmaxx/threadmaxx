@@ -90,6 +90,17 @@ public:
     std::uint8_t numHumans() const noexcept { return numHumans_; }
     std::uint8_t numBots()   const noexcept { return numBots_;   }
 
+    /// M5.6 — default special-weapon kind every freshly spawned ship
+    /// receives. Must be a valid `SpecialKind` value (parser-validated
+    /// at the CLI). Setting it BEFORE `engine.initialize(game)` is what
+    /// takes effect — onSetup latches it into every initial spawn and
+    /// `ShipLifecycleSystem` / `RoundRestartSystem` preserve per-ship
+    /// kinds across respawn / restart.
+    void setDefaultSpecialKind(SpecialKind k) noexcept {
+        defaultSpecial_ = static_cast<std::uint8_t>(k);
+    }
+    std::uint8_t defaultSpecialKind() const noexcept { return defaultSpecial_; }
+
     void onSetup(threadmaxx::Engine& engine,
                  threadmaxx::World&  world,
                  threadmaxx::CommandBuffer& seed) override;
@@ -148,6 +159,9 @@ private:
     std::vector<threadmaxx::EntityHandle> playerShips_;
     std::uint8_t             numHumans_      = 1;
     std::uint8_t             numBots_        = 3;
+    /// M5.6 — index into `kSpecialWeaponSpecs`. Default Spread (0)
+    /// keeps pre-M5.6 behaviour.
+    std::uint8_t             defaultSpecial_ = 0;
     std::filesystem::path    levelDir_;
     std::filesystem::path    assetDir_;
     SpriteCompositor*        compositor_     = nullptr;   // borrowed

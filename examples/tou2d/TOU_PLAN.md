@@ -1263,6 +1263,96 @@ Pre-M5.5 `ctest` had 131 tests; M5.5 adds the proc-gen unit test
 for a new total of 132 — all green. Release build with
 `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean.
 
+#### M5.6 — New special weapon types (LANDED ✅, 2026-05-29)
+
+Pre-M5.6 the second-weapon slot was hard-coded to the M3.3 Spread.
+M5.6 generalises it: `WeaponLoadout::specialKind` selects one of four
+catalogue entries; each carries its own (magazine, reload, cooldown,
+bullets-per-shot, fan step, muzzle speed, ttl, per-bullet damage)
+tuple via `kSpecialWeaponSpecs[]` in `DemoTypes.hpp`. The
+`WeaponFireSystem` reads the spec at fire time instead of dispatching
+on hard-coded constants — adding a 5th kind is now one row in the
+table.
+
+The four kinds:
+
+| Kind     | weaponKind | mag | reload | cooldown | bullets | dmg/bullet | speed | ttl  | step    |
+|----------|------------|-----|--------|----------|---------|------------|-------|------|---------|
+| Spread   | 1          | 1   | 75     | 22       | 3       | 5          | 520   | 0.90 | 0.30 rad|
+| Rapid    | 2          | 12  | 80     | 8        | 1       | 5          | 600   | 1.00 | 0       |
+| Sniper   | 3          | 3   | 120    | 60       | 1       | 24         | 1100  | 1.60 | 0       |
+| Quintet  | 4          | 1   | 90     | 30       | 5       | 4          | 560   | 0.95 | 0.175 rad|
+
+Spread (kind 0) remains the default — pre-M5.6 saves and recordings
+parse cleanly because the old `_pad` byte in the replay header and
+the old `_pad0` in `WeaponLoadout` were both zero, which is exactly
+`SpecialKind::Spread`.
+
+**WeaponLoadout schema change.** Rename `spread* → special*` and
+re-purpose `_pad0` as `specialKind`. POD stays 16 bytes:
+
+```cpp
+struct WeaponLoadout {
+    std::uint16_t dumbfireAmmo, dumbfireReloadIn, dumbfireCooldown;
+    std::uint8_t  specialKind;   // M5.6 — was _pad0
+    std::uint8_t  _pad0;
+    std::uint16_t specialAmmo, specialReloadIn, specialCooldown;
+    std::uint16_t _pad1;
+};
+```
+
+Same pattern in the v2 replay header — the `_pad` byte at offset 9
+became `specialKind` (header still 32 B; v2 recordings made before
+M5.6 read back as Spread, which matches their actual behaviour, so
+the format version doesn't bump).
+
+**CLI surface** (additions to main.cpp):
+
+| Flag                        | Effect                                                                  |
+|-----------------------------|-------------------------------------------------------------------------|
+| `--special=spread`          | Default — pre-M5.6 behaviour, single-burst spread fan                  |
+| `--special=rapid`           | High-fire-rate machine gun (12-round mag, 8-tick loader)                |
+| `--special=sniper`          | Long-range high-damage straight bullet (3-round mag, 60-tick loader)    |
+| `--special=quintet`         | 5-bullet narrow fan (single-burst mag, 90-tick reload)                  |
+| `--special=<other>`         | Rejected at parse with exit 2                                           |
+
+Other systems touched (rename pass + dispatch):
+
+- `WeaponFireSystem::update` — dispatches on `ld.specialKind` via
+  `specialSpecAt(...)`; one symmetric fan loop replaces the
+  hard-coded 3-bullet spread block.
+- `ShipLifecycleSystem` + `RoundRestartSystem` — preserve a ship's
+  `specialKind` across respawn / round reset; only the counters
+  reset.
+- `HudSystem` — slot fields renamed `spread* → special*`; ammo row
+  pulls mag size + glyph color from the spec table.
+- `BulletShipCollisionSystem` — `sparkColorFor(weaponKind)` gives
+  each kind a distinct impact-spark palette (yellow / orange / cyan /
+  magenta / lime).
+- `TouGame::setDefaultSpecialKind` — new setter; latched into every
+  initial spawn.
+- `ReplayPlayer::specialKind()` — accessor exposed so `--play` can
+  override the cli `--special` from the recorded header.
+
+**Determinism contract.** Same `(seed, gen config, specialKind)` →
+byte-identical commit hash stream across record / replay. Verified
+across all four kinds.
+
+**Smoke matrix** (2026-05-29):
+
+| Cmdline                                                   | ticks | verified | mismatches |
+|-----------------------------------------------------------|-------|----------|------------|
+| `--gen --gen-seed=42 --gen-level=1 --special=spread`       | 150   | 150      | 0          |
+| `--gen --gen-seed=42 --gen-level=1 --special=rapid`        | 150   | 150      | 0          |
+| `--gen --gen-seed=42 --gen-level=1 --special=sniper`       | 250   | 250      | 0          |
+| `--gen --gen-seed=42 --gen-level=1 --special=quintet`      | 150   | 150      | 0          |
+| `--special=plasma` (unknown token)                         | n/a   | n/a      | exit 2     |
+
+Pre-M5.6 `ctest` had 132 tests; M5.6 adds `tou2d_specials_test`
+pinning the enum order + spec-table non-degeneracy for a new total
+of 133 — all green. Release build with
+`-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean.
+
 ### Out of scope for v1
 - Split-screen (deferred per § 1).
 - Level editor (the source-asset workflow IS the editor).

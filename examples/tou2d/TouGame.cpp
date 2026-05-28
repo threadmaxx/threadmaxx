@@ -63,7 +63,8 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
                                    float x, float y,
                                    std::uint8_t isBot,
                                    std::uint16_t shipKindIdx,
-                                   std::int32_t  spriteAtlasIdx) {
+                                   std::int32_t  spriteAtlasIdx,
+                                   std::uint8_t  specialKind) {
     const auto h = engine.reserveEntityHandle();
 
     threadmaxx::Bundle b = {};
@@ -113,11 +114,15 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     // are zero (ready to fire). ShipLifecycleSystem rewrites this to the
     // same default on respawn, so a player who dies mid-reload comes
     // back with a fresh full magazine instead of a partial-reload limbo.
+    // M5.6 — `specialKind` selects which entry in the special-weapon
+    // catalogue this ship spawns with. Mag size comes from the same
+    // spec so a Rapid ship spawns with its big mag, a Sniper with 3.
     WeaponLoadout loadout{};
     loadout.dumbfireAmmo     = kDumbfireMagazine;
     loadout.dumbfireReloadIn = 0;
-    loadout.spreadAmmo       = kSpreadMagazine;
-    loadout.spreadReloadIn   = 0;
+    loadout.specialKind      = specialKind;
+    loadout.specialAmmo      = specialSpecAt(specialKind).magazine;
+    loadout.specialReloadIn  = 0;
     threadmaxx::addUserComponent(seed, ids.loadout, h, loadout);
 
     if (useSprite && ids.sprite.valid()) {
@@ -355,7 +360,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
             engine, seed, ids_,
             static_cast<std::uint8_t>(slot), x, y,
             isBot ? std::uint8_t{1} : std::uint8_t{0},
-            kindIdx, atlasIdx);
+            kindIdx, atlasIdx, defaultSpecial_);
     }
 }
 
