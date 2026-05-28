@@ -11,6 +11,17 @@ struct GLFWwindow;
 
 namespace tou2d {
 
+class ReplayPlayer;
+
+/// M5.4 — sample the keyboard state for slot `slot ∈ [0, 4)`. Returns
+/// a zero-initialized PlayerInput for any out-of-range slot. Public so
+/// main.cpp can capture inputs for the replay recorder using the SAME
+/// reader the system uses — guarantees the recorded stream matches
+/// what `InputSystem::preStep` reads on the very next step (both
+/// happen between `glfwPollEvents()` calls, so the GLFW key state is
+/// frozen). `window` may be null; result is zero in that case.
+PlayerInput readKeyboardSlot(GLFWwindow* window, std::uint8_t slot) noexcept;
+
 /// preStep system that polls the borrowed GLFW window's key state on
 /// the sim thread and writes the resulting PlayerInput value to every
 /// LocalPlayer-tagged entity. M1 only wires P1 (arrows + RShift +
@@ -47,10 +58,18 @@ public:
         roundEnded_ = std::move(f);
     }
 
+    /// M5.4 — when set, GLFW polling is bypassed and per-human inputs
+    /// are pulled from the player instead. main.cpp is responsible for
+    /// calling `replayPlayer->advance()` once per tick (BEFORE
+    /// engine.step()) so the player's `inputs(slot)` reflects the
+    /// current tick. The borrowed pointer must outlive the engine.
+    void setReplayPlayer(ReplayPlayer* p) noexcept { replay_ = p; }
+
 private:
     GLFWwindow*                          window_      = nullptr;
     UserComponentIds                     ids_;
     std::shared_ptr<std::atomic<bool>>   roundEnded_;
+    ReplayPlayer*                        replay_      = nullptr;
 };
 
 } // namespace tou2d

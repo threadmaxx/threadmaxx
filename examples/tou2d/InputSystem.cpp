@@ -1,5 +1,7 @@
 #include "InputSystem.hpp"
 
+#include "Replay.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Query.hpp>
 #include <threadmaxx/World.hpp>
@@ -38,7 +40,8 @@ constexpr KeyRow kRows[4] = {
 
 PlayerInput readKeys(GLFWwindow* w, std::uint8_t slot) noexcept {
     PlayerInput in;
-    if (slot >= 4) return in;
+    if (!w)         return in;
+    if (slot >= 4)  return in;
     const KeyRow& r = kRows[slot];
     in.thrust      = (glfwGetKey(w, r.thrust)      == GLFW_PRESS) ? 1u : 0u;
     in.back        = (glfwGetKey(w, r.back)        == GLFW_PRESS) ? 1u : 0u;
@@ -52,11 +55,22 @@ PlayerInput readKeys(GLFWwindow* w, std::uint8_t slot) noexcept {
 
 } // namespace
 
+PlayerInput readKeyboardSlot(GLFWwindow* window, std::uint8_t slot) noexcept {
+    return readKeys(window, slot);
+}
+
 InputSystem::InputSystem(GLFWwindow* window, UserComponentIds ids) noexcept
     : window_(window), ids_(ids) {}
 
 void InputSystem::preStep(threadmaxx::SystemContext& ctx) {
-    if (!window_ || !ids_.playerInput.valid() || !ids_.localPlayer.valid()) {
+    if (!ids_.playerInput.valid() || !ids_.localPlayer.valid()) {
+        return;
+    }
+    // M5.4 — replay-driven mode bypasses GLFW entirely. The host
+    // (main.cpp) must have already called `replay_->advance()` BEFORE
+    // this step. window_ may be null in replay mode.
+    const bool replayDriven = (replay_ != nullptr);
+    if (!replayDriven && !window_) {
         return;
     }
     // M4.2 — round over, freeze keyboard input. BotControlSystem also
@@ -81,7 +95,14 @@ void InputSystem::preStep(threadmaxx::SystemContext& ctx) {
             const auto entities = chunk->entities;
             for (std::size_t row = 0; row < entities.size(); ++row) {
                 const std::uint8_t slot = lpSpan[row].slot;
-                const PlayerInput in = readKeys(window_, slot);
+                // Bot slots: keyboard path returns empty PlayerInput
+                // (slot >= 4) which BotControlSystem overwrites later
+                // in preStep. Replay path mirrors that — `inputs()`
+                // returns the default PlayerInput when `slot` exceeds
+                // the recorded human count.
+                const PlayerInput in = replayDriven
+                    ? replay_->inputs(slot)
+                    : readKeys(window_, slot);
                 threadmaxx::addUserComponent(cb, idsPi, entities[row], in);
             }
         }

@@ -7,6 +7,8 @@
 
 #include "CameraSystem.hpp"
 #include "DemoTypes.hpp"
+#include "InputSystem.hpp"
+#include "Replay.hpp"
 #include "SpriteCompositor.hpp"
 #include "TouGame.hpp"
 
@@ -23,6 +25,7 @@
 #include <stb/stb_image.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -30,6 +33,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -124,6 +128,9 @@ int main(int argc, char** argv) {
     // 1 human / 3 bots posture so smoke tests keep their shape.
     std::uint8_t       numHumans = 1;
     std::uint8_t       numBots   = 3;
+    // M5.4 — replay capture + playback. At most one of these may be set.
+    std::string        recordPath;
+    std::string        playPath;
 
     // Lightweight arg parse — supports any order of:
     //   <N>             : bounded run for N ticks (otherwise headless / Ctrl-C)
@@ -131,10 +138,18 @@ int main(int argc, char** argv) {
     //   --mode=<dm|lss> : deathmatch (default) or last-ship-standing
     //   --humans=N      : number of local-keyboard players (1..4; default 1)
     //   --bots=N        : number of AI ships (0..63; default 3)
+    //   --record <path> : capture inputs + commitHash stream to <path>
+    //   --play <path>   : replay from <path>; overrides match-config
+    //                     flags from the file's header and verifies the
+    //                     commitHash stream matches frame-for-frame
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--level" && i + 1 < argc) {
             levelDir = argv[++i];
+        } else if (a == "--record" && i + 1 < argc) {
+            recordPath = argv[++i];
+        } else if (a == "--play" && i + 1 < argc) {
+            playPath = argv[++i];
         } else if (a.rfind("--mode=", 0) == 0) {
             const std::string val = a.substr(7);
             if (val == "dm" || val == "deathmatch") {
@@ -178,6 +193,37 @@ int main(int argc, char** argv) {
             "[tou2d] need at least 2 entities total (got %u humans + %u bots)\n",
             unsigned(numHumans), unsigned(numBots));
         return 2;
+    }
+
+    // M5.4 — `--record` and `--play` are mutually exclusive. In play
+    // mode the replay file's header overrides --humans / --bots /
+    // --mode / --level so the playback ALWAYS matches the recording's
+    // setup byte-for-byte.
+    if (!recordPath.empty() && !playPath.empty()) {
+        std::fprintf(stderr,
+            "[tou2d] --record and --play are mutually exclusive\n");
+        return 2;
+    }
+    tou2d::ReplayPlayer replayPlayer;
+    if (!playPath.empty()) {
+        if (!replayPlayer.open(playPath)) {
+            std::fprintf(stderr,
+                "[tou2d] --play %s: open failed\n", playPath.c_str());
+            return 1;
+        }
+        numHumans = replayPlayer.numHumans();
+        numBots   = replayPlayer.numBots();
+        matchMode = replayPlayer.matchMode() == 0
+            ? tou2d::MatchMode::Deathmatch
+            : tou2d::MatchMode::LastShipStanding;
+        if (!replayPlayer.levelDir().empty()) {
+            levelDir = replayPlayer.levelDir();
+        }
+        std::printf("[tou2d] --play %s: header %u humans + %u bots, mode=%u, level=%s\n",
+                    playPath.c_str(),
+                    unsigned(numHumans), unsigned(numBots),
+                    unsigned(replayPlayer.matchMode()),
+                    levelDir.c_str());
     }
 
     if (!glfwInit()) {
@@ -250,6 +296,29 @@ int main(int argc, char** argv) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    // M5.4 — wire the replay player into the input system once onSetup
+    // has run. Recorder opens here too so the file's header lands
+    // before any tick is captured.
+    tou2d::ReplayRecorder replayRecorder;
+    if (!playPath.empty() && game.inputSystem()) {
+        game.inputSystem()->setReplayPlayer(&replayPlayer);
+    }
+    if (!recordPath.empty()) {
+        const std::uint8_t mode =
+            (matchMode == tou2d::MatchMode::LastShipStanding) ? 1u : 0u;
+        if (!replayRecorder.open(recordPath, numHumans, numBots, mode, levelDir)) {
+            std::fprintf(stderr,
+                "[tou2d] --record %s: open failed\n", recordPath.c_str());
+            engine.shutdown();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        std::printf("[tou2d] --record %s: header %u humans + %u bots, mode=%u\n",
+                    recordPath.c_str(),
+                    unsigned(numHumans), unsigned(numBots), unsigned(mode));
     }
 
     // Upload the default cube mesh AFTER engine.initialize — at this
@@ -530,10 +599,52 @@ int main(int argc, char** argv) {
     auto nextFrame = clock::now() + kFrameInterval;
 
     std::uint64_t tick = 0;
+    std::uint64_t hashMismatches = 0;
     std::vector<std::uint8_t> spriteUploadScratch;
+    std::array<tou2d::PlayerInput, tou2d::kReplayKeyboardSlots> sampledInputs{};
     while (!glfwWindowShouldClose(window) && !engine.quitRequested()) {
         glfwPollEvents();
+        // M5.4 — playback advances the recorded stream BEFORE step so
+        // InputSystem reads the current tick's inputs from the player.
+        // EOF ends the run cleanly.
+        if (replayPlayer.valid()) {
+            if (!replayPlayer.advance()) {
+                std::printf("[tou2d] --play EOF at tick=%llu (read=%llu)\n",
+                            static_cast<unsigned long long>(tick),
+                            static_cast<unsigned long long>(replayPlayer.ticksRead() - 1));
+                break;
+            }
+        }
+        // M5.4 — recording samples the SAME keyboard state InputSystem
+        // is about to read (glfwGetKey returns state frozen since
+        // pollEvents). Capture before step; write after, paired with
+        // the post-step commitHash.
+        if (replayRecorder.valid()) {
+            for (std::uint8_t s = 0; s < tou2d::kReplayKeyboardSlots; ++s) {
+                sampledInputs[s] = tou2d::readKeyboardSlot(window, s);
+            }
+        }
         engine.step();
+        if (replayRecorder.valid()) {
+            replayRecorder.recordTick(
+                std::span<const tou2d::PlayerInput>(sampledInputs.data(),
+                                                    sampledInputs.size()),
+                engine.stats().commitHash);
+        }
+        if (replayPlayer.valid()) {
+            const std::uint64_t got = engine.stats().commitHash;
+            const std::uint64_t want = replayPlayer.commitHash();
+            if (got != want) {
+                if (hashMismatches < 4) {
+                    std::fprintf(stderr,
+                        "[tou2d] --play hash mismatch tick=%llu got=0x%016llx want=0x%016llx\n",
+                        static_cast<unsigned long long>(tick),
+                        static_cast<unsigned long long>(got),
+                        static_cast<unsigned long long>(want));
+                }
+                ++hashMismatches;
+            }
+        }
         // Flush any per-tick background dirty rect once after the
         // tick's commits — the painter accumulated paint events from
         // BulletTerrain + Collision destroy callbacks; one
@@ -583,9 +694,30 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long long>(tick));
     }
 
+    // M5.4 — flush recorder / report playback verdict before teardown.
+    if (replayRecorder.valid()) {
+        std::printf("[tou2d] --record wrote %llu ticks to %s\n",
+                    static_cast<unsigned long long>(replayRecorder.ticksWritten()),
+                    recordPath.c_str());
+        replayRecorder.close();
+    }
+    if (replayPlayer.valid()) {
+        std::printf("[tou2d] --play %s — %llu ticks verified, %llu hash mismatches\n",
+                    playPath.c_str(),
+                    static_cast<unsigned long long>(replayPlayer.ticksRead()),
+                    static_cast<unsigned long long>(hashMismatches));
+        replayPlayer.close();
+    }
+
+    // M5.4 — drop replay pointer before shutdown so onTeardown's input_
+    // nulling doesn't leave a dangling borrowed pointer in the system.
+    if (!playPath.empty() && game.inputSystem()) {
+        game.inputSystem()->setReplayPlayer(nullptr);
+    }
+
     engine.shutdown();
 
     glfwDestroyWindow(window);
     glfwTerminate();
-    return 0;
+    return hashMismatches == 0 ? 0 : 3;
 }

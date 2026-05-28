@@ -19,6 +19,7 @@ namespace tou2d {
 
 class BulletTerrainSystem;
 class CameraSystem;
+class InputSystem;
 class TerrainCollisionSystem;
 
 /// IGame implementation for the tou2d demo.
@@ -83,6 +84,11 @@ public:
 
     CameraSystem* cameraSystem() noexcept { return camera_; }
 
+    /// M5.4 — borrowed pointer to the input system. Valid only between
+    /// `onSetup` and `onTeardown`. The host (main.cpp) uses it to wire
+    /// a `ReplayPlayer*` for `--play` mode; null after teardown.
+    InputSystem*  inputSystem()  noexcept { return input_; }
+
     /// Handle of P1's ship — host-side smoke tests use this to verify
     /// final position. Valid only between onSetup and onTeardown.
     threadmaxx::EntityHandle playerShip() const noexcept {
@@ -121,6 +127,7 @@ private:
     CameraSystem*            camera_         = nullptr;   // borrowed
     BulletTerrainSystem*     bulletTerrain_  = nullptr;   // borrowed
     TerrainCollisionSystem*  collision_      = nullptr;   // borrowed
+    InputSystem*             input_          = nullptr;   // borrowed
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for
     // playerShip() (smoke-test position log) and onTeardown bookkeeping.

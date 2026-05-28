@@ -192,6 +192,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // ---- Systems ------------------------------------------------------------
     auto input         = std::make_unique<InputSystem>(window_, ids_);
     input->setRoundEndedFlag(roundEnded_);
+    input_             = input.get();   // borrowed; M5.4 replay hook reaches it via TouGame::inputSystem()
     auto botControl    = std::make_unique<BotControlSystem>(ids_);
     botControl->setRoundEndedFlag(roundEnded_);
     botControl->setTerrainGrid(&grid_);
@@ -347,6 +348,7 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     camera_        = nullptr;
     bulletTerrain_ = nullptr;
     collision_     = nullptr;
+    input_         = nullptr;
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {

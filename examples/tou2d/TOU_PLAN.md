@@ -1128,6 +1128,72 @@ field — null is safe for host-side tests that don't wire it.
 1+3 (default), 2+2, 1+63 all complete bounded ticks cleanly; full
 `ctest` (131 tests) green.
 
+#### M5.4 — Replay capture + playback (LANDED ✅, 2026-05-28)
+
+New files `examples/tou2d/Replay.{hpp,cpp}` define a tiny on-disk
+format (`.tou2drec`, magic `'TOUR'`, version 1, 32-byte header +
+`levelDirLen` bytes + per-tick `[PlayerInput × 4][commitHash u64]`)
+and two classes: `ReplayRecorder` (open + appendTick + close) and
+`ReplayPlayer` (open + advance + inputs/commitHash accessors). 40
+bytes per tick → 2.4 KB/s at 60 Hz; a 5-min match weighs ~720 KB.
+
+**CLI surface** (added to `main.cpp`):
+
+| Flag | Effect |
+|---|---|
+| `--record <path>` | After each step writes the four keyboard rows + `engine.stats().commitHash` to `<path>`. Header captures `--humans` / `--bots` / `--mode` / `--level` for self-describing playback. |
+| `--play <path>` | OVERRIDES `--humans` / `--bots` / `--mode` / `--level` from the file's header, wires the player into `InputSystem`, and after each step compares `engine.stats().commitHash` against the recorded value. Exit code 3 on any mismatch (first 4 mismatches are logged); 0 otherwise. |
+| `--record + --play` | Rejected at parse time (mutex). |
+
+**Why all 4 keyboard rows are recorded, not just `numHumans`.** The
+pre-M5.4 `InputSystem::preStep` calls `readKeys(window, slot)` for
+every `LocalPlayer` entity, including bot ships with `slot < 4`.
+For `--humans=1 --bots=3`, slot 1's bot transiently receives a
+nonzero `PlayerInput` command (whatever WASD reads at that instant)
+before `BotControlSystem` overwrites it — the bot's final state is
+unaffected but the keyboard read DOES land in `commitHash`. Replay's
+`inputs(slot)` mirrors the same shape: returns the recorded value
+for slot 0..3, default-zero for slot ≥ 4 (matches keyboard mode's
+out-of-range guard). The fixed 32-byte per-tick footprint kills the
+edge case with zero behaviour change vs the pre-M5.4 system.
+
+**Why bots aren't captured.** `BotControlSystem` is fully
+deterministic: per-slot `mt19937` seeded from a constant in its
+ctor, no wall-clock reads. Same match config + same input stream
+→ same bot decisions. The per-slot RNG state is implicit (engine
+init replays it identically on both runs).
+
+**Determinism guarantee.** The replay format pins the engine's
+FNV-1a basis (`0xcbf29ce484222325`) into the header — a future
+engine knob that shifted commitHash would refuse to open old
+recordings rather than silently mis-replaying them.
+
+**Capture timing.** `glfwPollEvents()` snapshots the OS key state
+into GLFW's internal buffer; subsequent `glfwGetKey` reads from
+that buffer until the next `pollEvents`. The main loop's order is
+`pollEvents → [sample → record] → step → [record commitHash]`, so
+the sampled inputs are byte-identical to what `InputSystem` reads
+inside the step. The free function `tou2d::readKeyboardSlot()` is
+the SAME reader InputSystem uses internally; main.cpp imports it
+from `InputSystem.hpp` to guarantee they can't drift.
+
+**Round-trip smoke matrix** (record N ticks → play N ticks under
+the same binary):
+
+| Config | Ticks | Verified | Mismatches |
+|---|---|---|---|
+| 1h+3b DM (default) | 120 | 120 | 0 |
+| 2h+2b LSS          | 200 | 200 | 0 |
+| 1h+63b DM          |  60 |  60 | 0 |
+
+Round-trip also confirmed under `-Werror` build (`1h+3b DM 120t`).
+Full `ctest` (131 tests) green. Final ship position matches
+recording vs playback bit-for-bit in all three cases.
+
+**Acceptance**: M5's stated acceptance criterion — "replay
+round-trips bit-identical (`commitHash` stream matches
+frame-for-frame)" — lands here.
+
 ### Out of scope for v1
 - Split-screen (deferred per § 1).
 - Level editor (the source-asset workflow IS the editor).
