@@ -8,6 +8,7 @@
 #include "CameraSystem.hpp"
 #include "DemoTypes.hpp"
 #include "InputSystem.hpp"
+#include "ProceduralLevel.hpp"
 #include "Replay.hpp"
 #include "SpriteCompositor.hpp"
 #include "TouGame.hpp"
@@ -33,6 +34,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -131,17 +133,27 @@ int main(int argc, char** argv) {
     // M5.4 — replay capture + playback. At most one of these may be set.
     std::string        recordPath;
     std::string        playPath;
+    // M5.5 — procedural level generator. When `useGen` is true the
+    // generator runs in `TouGame::onSetup` instead of loading levelDir.
+    // `--gen` enables the generator with default config; `--gen=<seed>`
+    // or `--gen-seed=N` overrides the seed; --gen-level / --gen-density
+    // / --gen-perim tune the canvas. Mutex with --level.
+    bool               useGen     = false;
+    tou2d::ProceduralLevelConfig genCfg{};
 
     // Lightweight arg parse — supports any order of:
-    //   <N>             : bounded run for N ticks (otherwise headless / Ctrl-C)
-    //   --level <path>  : load imported level dir produced by tou2d_import_lev
-    //   --mode=<dm|lss> : deathmatch (default) or last-ship-standing
-    //   --humans=N      : number of local-keyboard players (1..4; default 1)
-    //   --bots=N        : number of AI ships (0..63; default 3)
-    //   --record <path> : capture inputs + commitHash stream to <path>
-    //   --play <path>   : replay from <path>; overrides match-config
-    //                     flags from the file's header and verifies the
-    //                     commitHash stream matches frame-for-frame
+    //   <N>                  : bounded run for N ticks
+    //   --level <path>       : load imported level dir
+    //   --mode=<dm|lss>      : deathmatch (default) or last-ship-standing
+    //   --humans=N           : 1..4
+    //   --bots=N             : 0..63
+    //   --record <path>      : capture inputs + commitHash to <path>
+    //   --play <path>        : replay from <path>
+    //   --gen[=seed]         : enable procedural generator (M5.5)
+    //   --gen-seed=N         : explicit RNG seed (default 0)
+    //   --gen-level=N        : 0..4 size class (default 2)
+    //   --gen-density=N      : 0..100 stuff density (default 50)
+    //   --gen-perim=<0|1>    : 1 cell of bedrock around the canvas (default 1)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--level" && i + 1 < argc) {
@@ -150,6 +162,43 @@ int main(int argc, char** argv) {
             recordPath = argv[++i];
         } else if (a == "--play" && i + 1 < argc) {
             playPath = argv[++i];
+        } else if (a == "--gen") {
+            useGen = true;
+        } else if (a.rfind("--gen=", 0) == 0) {
+            useGen = true;
+            const unsigned long v = std::strtoul(a.c_str() + 6, nullptr, 0);
+            genCfg.seed = static_cast<std::uint32_t>(v);
+        } else if (a.rfind("--gen-seed=", 0) == 0) {
+            useGen = true;
+            const unsigned long v = std::strtoul(a.c_str() + 11, nullptr, 0);
+            genCfg.seed = static_cast<std::uint32_t>(v);
+        } else if (a.rfind("--gen-level=", 0) == 0) {
+            useGen = true;
+            const long v = std::strtol(a.c_str() + 12, nullptr, 10);
+            if (v < 0 || v > 4) {
+                std::fprintf(stderr,
+                    "[tou2d] --gen-level=%ld — expected 0..4\n", v);
+                return 2;
+            }
+            genCfg.ggLevel = static_cast<std::uint8_t>(v);
+        } else if (a.rfind("--gen-density=", 0) == 0) {
+            useGen = true;
+            const long v = std::strtol(a.c_str() + 14, nullptr, 10);
+            if (v < 0 || v > 100) {
+                std::fprintf(stderr,
+                    "[tou2d] --gen-density=%ld — expected 0..100\n", v);
+                return 2;
+            }
+            genCfg.stuffDensity = static_cast<std::uint8_t>(v);
+        } else if (a.rfind("--gen-perim=", 0) == 0) {
+            useGen = true;
+            const long v = std::strtol(a.c_str() + 12, nullptr, 10);
+            if (v < 0 || v > 1) {
+                std::fprintf(stderr,
+                    "[tou2d] --gen-perim=%ld — expected 0 or 1\n", v);
+                return 2;
+            }
+            genCfg.perimeterBedrock = static_cast<std::uint8_t>(v);
         } else if (a.rfind("--mode=", 0) == 0) {
             const std::string val = a.substr(7);
             if (val == "dm" || val == "deathmatch") {
@@ -204,6 +253,14 @@ int main(int argc, char** argv) {
             "[tou2d] --record and --play are mutually exclusive\n");
         return 2;
     }
+    // M5.5 — `--gen` and `--level` are mutually exclusive. Either the
+    // generator picks the canvas or the importer loads one from disk;
+    // there is no overlay path.
+    if (useGen && !levelDir.empty()) {
+        std::fprintf(stderr,
+            "[tou2d] --gen and --level are mutually exclusive\n");
+        return 2;
+    }
     tou2d::ReplayPlayer replayPlayer;
     if (!playPath.empty()) {
         if (!replayPlayer.open(playPath)) {
@@ -216,8 +273,25 @@ int main(int argc, char** argv) {
         matchMode = replayPlayer.matchMode() == 0
             ? tou2d::MatchMode::Deathmatch
             : tou2d::MatchMode::LastShipStanding;
-        if (!replayPlayer.levelDir().empty()) {
-            levelDir = replayPlayer.levelDir();
+        // M5.5 — header tells us which level path to use. Gen config in
+        // the header trumps any --level / --gen flags on the cli, since
+        // playback must match the recording byte-for-byte.
+        if (replayPlayer.genConfig().has_value()) {
+            useGen = true;
+            genCfg = *replayPlayer.genConfig();
+            levelDir.clear();
+            std::printf("[tou2d] --play %s: header genSeed=0x%08x ggLevel=%u "
+                        "stuffD=%u perim=%u\n",
+                        playPath.c_str(),
+                        genCfg.seed,
+                        unsigned(genCfg.ggLevel),
+                        unsigned(genCfg.stuffDensity),
+                        unsigned(genCfg.perimeterBedrock));
+        } else {
+            useGen = false;
+            if (!replayPlayer.levelDir().empty()) {
+                levelDir = replayPlayer.levelDir();
+            }
         }
         std::printf("[tou2d] --play %s: header %u humans + %u bots, mode=%u, level=%s\n",
                     playPath.c_str(),
@@ -250,7 +324,15 @@ int main(int argc, char** argv) {
     threadmaxx::Engine engine(cfg);
 
     tou2d::TouGame game(window);
-    if (!levelDir.empty()) {
+    if (useGen) {
+        game.setGenerationConfig(genCfg);
+        std::printf("[tou2d] proc-gen level: seed=0x%08x ggLevel=%u "
+                    "stuffD=%u perim=%u\n",
+                    genCfg.seed,
+                    unsigned(genCfg.ggLevel),
+                    unsigned(genCfg.stuffDensity),
+                    unsigned(genCfg.perimeterBedrock));
+    } else if (!levelDir.empty()) {
         game.setLevelDir(levelDir);
         std::printf("[tou2d] loading level from %s\n", levelDir.c_str());
     }
@@ -308,7 +390,15 @@ int main(int argc, char** argv) {
     if (!recordPath.empty()) {
         const std::uint8_t mode =
             (matchMode == tou2d::MatchMode::LastShipStanding) ? 1u : 0u;
-        if (!replayRecorder.open(recordPath, numHumans, numBots, mode, levelDir)) {
+        // M5.5 — pass the gen config (if active) into the recorder so
+        // the v2 header captures (seed, level, density, perim). When
+        // gen is off the optional stays empty and recorder writes
+        // useGen=0 with the levelDir string.
+        const std::optional<tou2d::ProceduralLevelConfig> genForHeader =
+            useGen ? std::optional<tou2d::ProceduralLevelConfig>{genCfg}
+                   : std::nullopt;
+        if (!replayRecorder.open(recordPath, numHumans, numBots, mode,
+                                 levelDir, genForHeader)) {
             std::fprintf(stderr,
                 "[tou2d] --record %s: open failed\n", recordPath.c_str());
             engine.shutdown();
@@ -316,9 +406,10 @@ int main(int argc, char** argv) {
             glfwTerminate();
             return 1;
         }
-        std::printf("[tou2d] --record %s: header %u humans + %u bots, mode=%u\n",
+        std::printf("[tou2d] --record %s: header %u humans + %u bots, mode=%u, useGen=%u\n",
                     recordPath.c_str(),
-                    unsigned(numHumans), unsigned(numBots), unsigned(mode));
+                    unsigned(numHumans), unsigned(numBots), unsigned(mode),
+                    unsigned(useGen));
     }
 
     // Upload the default cube mesh AFTER engine.initialize — at this

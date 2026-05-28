@@ -14,7 +14,8 @@ constexpr std::uint64_t kEngineHashBasis = 0xcbf29ce484222325ull;
 
 bool ReplayRecorder::open(const std::filesystem::path& path,
                           std::uint8_t numHumans, std::uint8_t numBots,
-                          std::uint8_t matchMode, const std::string& levelDir) {
+                          std::uint8_t matchMode, const std::string& levelDir,
+                          const std::optional<ProceduralLevelConfig>& genConfig) {
     close();
     file_ = std::fopen(path.string().c_str(), "wb");
     if (!file_) return false;
@@ -26,8 +27,18 @@ bool ReplayRecorder::open(const std::filesystem::path& path,
     hdr.numBots          = numBots;
     hdr.matchMode        = matchMode;
     hdr.engineHashBasis  = kEngineHashBasis;
-    hdr.levelDirLen      = static_cast<std::uint16_t>(
-        std::min<std::size_t>(levelDir.size(), 0xFFFFu));
+    // M5.5 — if a generation config is set, levelDir is irrelevant for
+    // playback; record an empty string regardless of what the host
+    // passed in. Keeps the two playback paths unambiguous.
+    const bool gen = genConfig.has_value();
+    hdr.useGen     = gen ? 1u : 0u;
+    hdr.genLevel   = gen ? genConfig->ggLevel          : 0u;
+    hdr.genDensity = gen ? genConfig->stuffDensity     : 0u;
+    hdr.genPerim   = gen ? genConfig->perimeterBedrock : 0u;
+    hdr.genSeed    = gen ? genConfig->seed             : 0u;
+    hdr.levelDirLen = gen ? std::uint16_t{0}
+                          : static_cast<std::uint16_t>(
+                                std::min<std::size_t>(levelDir.size(), 0xFFFFu));
 
     if (std::fwrite(&hdr, sizeof(hdr), 1, file_) != 1) {
         close();
@@ -39,7 +50,6 @@ bool ReplayRecorder::open(const std::filesystem::path& path,
         return false;
     }
 
-    (void)numHumans;  // captured in header; format always writes 4 rows
     ticksWritten_ = 0;
     return true;
 }
@@ -100,6 +110,16 @@ bool ReplayPlayer::open(const std::filesystem::path& path) {
     numHumans_     = hdr.numHumans;
     numBots_       = hdr.numBots;
     matchMode_     = hdr.matchMode;
+    if (hdr.useGen != 0) {
+        ProceduralLevelConfig g{};
+        g.seed             = hdr.genSeed;
+        g.ggLevel          = hdr.genLevel;
+        g.stuffDensity     = hdr.genDensity;
+        g.perimeterBedrock = hdr.genPerim;
+        genConfig_         = g;
+    } else {
+        genConfig_.reset();
+    }
     ticksRead_     = 0;
     curCommitHash_ = 0;
     curInputs_.assign(kReplayKeyboardSlots, PlayerInput{});
@@ -118,6 +138,7 @@ void ReplayPlayer::close() {
     curCommitHash_ = 0;
     curInputs_.clear();
     levelDir_.clear();
+    genConfig_.reset();
 }
 
 bool ReplayPlayer::advance() {

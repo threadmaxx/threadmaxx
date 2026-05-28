@@ -1194,6 +1194,75 @@ recording vs playback bit-for-bit in all three cases.
 round-trips bit-identical (`commitHash` stream matches
 frame-for-frame)" — lands here.
 
+#### M5.5 — Procedural-level generator (LANDED ✅, 2026-05-28)
+
+New file `examples/tou2d/ProceduralLevel.hpp` (header-only) +
+`tests/tou2d_proc_gen_test.cpp` exercise the generator. Algorithm,
+deterministic from a single `std::mt19937(cfg.seed)`:
+
+1. `cellsX/Y` from `kGgLevelCells[ggLevel]` — 48 / 80 / 112 / 160 /
+   208 for levels 0..4.
+2. `grid.reset(...)`.
+3. Bottom 1/8 of canvas filled solid (ground floor).
+4. `nBlobs ≈ stuffDensity × area / 5000`, clamped to `[1, 256]`.
+   For each blob: random center in the upper canvas, random
+   `rX ∈ [3, 9]` / `rY ∈ [2, 6]`, elliptical solid stamp.
+5. Optional 1-cell bedrock perimeter ring (`hp = 0xFF`).
+
+**CLI surface** (added to `main.cpp`):
+
+| Flag | Effect |
+|---|---|
+| `--gen` | Enable generator with default config (seed 0, ggLevel 2, density 50, perim on). |
+| `--gen=<N>` / `--gen-seed=<N>` | Set `genCfg.seed`. Strtoul-parsed, so `0x…` works. |
+| `--gen-level=<0..4>` | Sets `genCfg.ggLevel`. |
+| `--gen-density=<0..100>` | Sets `genCfg.stuffDensity`. |
+| `--gen-perim=<0\|1>` | Sets `genCfg.perimeterBedrock`. |
+| `--gen + --level` | Rejected at parse time (mutex). |
+
+**Why a fresh algorithm instead of the original's GG filler stamps.**
+The original's path takes per-theme `s1.tga..sN.tga` filler shapes
+(black = empty, non-black = solid) and stamps them randomly onto the
+canvas. We don't ship the theme TGA assets, so a faithful port has
+nothing to stamp. The elliptical-blob generator produces a playable
+attribute map (Air for ships to fly, Solid to hide behind, ground
+floor for gravity) with no theme dependency. When theme TGAs land
+later they paint the JPG visual layer on top; the cell shape is
+what this header generates.
+
+**Replay format bumped v1 → v2.** `ReplayHeader` re-purposes the 11
+spare padding bytes from M5.4 for `(useGen u8, genLevel u8,
+genDensity u8, genPerim u8, genSeed u32)`. v1 recordings cannot
+play under the v2 reader (`hdr.version != 2` short-circuits the
+open). When `useGen=1`, `levelDirLen` is forced to zero and the
+header carries the generator config instead — playback rebuilds
+the same level deterministically via the same generator path.
+
+**Determinism contract**, pinned by `tou2d_proc_gen_test`:
+- Same `(seed, ggLevel, stuffDensity, perimeterBedrock)` →
+  byte-identical `attr[]` and `hp[]`.
+- Distinct seeds → distinct outputs.
+- Every `ggLevel ∈ {0..4}` yields both Air and Solid cells (no
+  degenerate full-canvas fill in either direction).
+- Pre-existing junk in the grid is wiped — generator always resets
+  before fill.
+- `density=0` produces strictly fewer solid cells than `density=100`.
+- `perim=0` leaves the canvas corners as Air; `perim=1` writes
+  `0xFF` bedrock there.
+- Out-of-range bytes (`ggLevel=99`, `density=200`) are clamped, no
+  UB.
+
+**Smoke matrix** (record → play under `--gen`, all `--humans=1
+--bots=3` deathmatch):
+
+| Config                                  | Ticks | Verified | Mismatches |
+|---|---|---|---|
+| `--gen --gen-seed=42 --gen-level=1 --gen-density=80` | 300 | 300 | 0 |
+
+Pre-M5.5 `ctest` had 131 tests; M5.5 adds the proc-gen unit test
+for a new total of 132 — all green. Release build with
+`-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean.
+
 ### Out of scope for v1
 - Split-screen (deferred per § 1).
 - Level editor (the source-asset workflow IS the editor).

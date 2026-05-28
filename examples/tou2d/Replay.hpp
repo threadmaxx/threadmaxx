@@ -1,22 +1,39 @@
 #pragma once
 
 // tou2d M5.4 — replay capture + playback.
+// tou2d M5.5 — bumped to v2 to carry a procedural-generation config.
 //
-// On-disk `.tou2drec` format (host-endian, like WorldSnapshot):
+// On-disk `.tou2drec` format v2 (host-endian, like WorldSnapshot):
 //
 //   ['T','O','U','R']                          (4  bytes — magic)
-//   version            uint32                  (4  bytes — = 1)
+//   version            uint32                  (4  bytes — = 2)
 //   numHumans          uint8                   (1  byte)
 //   numBots            uint8                   (1  byte)
 //   matchMode          uint8  (0=DM, 1=LSS)    (1  byte)
-//   _pad               uint8  x 5              (5  bytes — keep 16-byte align)
+//   useGen             uint8  (0/1)            (1  byte) ── M5.5
+//   genLevel           uint8  (0..4)           (1  byte) ── M5.5
+//   genDensity         uint8  (0..100)         (1  byte) ── M5.5
+//   genPerim           uint8  (0/1)            (1  byte) ── M5.5
+//   _pad               uint8                   (1  byte)
 //   engineHashBasis    uint64 (FNV-1a basis)   (8  bytes — sanity check)
 //   levelDirLen        uint16                  (2  bytes)
-//   _pad2              uint16 + uint32         (6  bytes — pad to 32-byte header)
-//   levelDir           char[levelDirLen]       (variable)
+//   _pad2              uint16                  (2  bytes)
+//   genSeed            uint32                  (4  bytes) ── M5.5
+//   ──────────────────                         (32 bytes total)
+//   levelDir           char[levelDirLen]       (variable, can be 0)
 //   ── per tick ──
 //   PlayerInput        x kReplayKeyboardSlots  (8 bytes each, = 4 → 32 B)
 //   commitHash         uint64                  (8 bytes)
+//
+// useGen=1 means the recording used the M5.5 procedural generator —
+// `levelDir` is empty in that case and playback reconstructs the level
+// from (genSeed, genLevel, genDensity, genPerim). useGen=0 retains the
+// pre-M5.5 levelDir-or-arena posture.
+//
+// v1 recordings produced before M5.5 cannot be read by the v2 player
+// (version mismatch refuses the open). That's the intended break: the
+// header now carries extra fields whose absence in v1 made playback
+// ambiguous (was it gen or load?).
 //
 // The tick index is implicit by record position. Bots are NOT captured:
 // their state is re-derivable from the registered match config + their
@@ -32,17 +49,19 @@
 // capture needed there.
 
 #include "DemoTypes.hpp"
+#include "ProceduralLevel.hpp"
 
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace tou2d {
 
-inline constexpr std::uint32_t kReplayFormatVersion  = 1;
+inline constexpr std::uint32_t kReplayFormatVersion  = 2;  // M5.5 — bumped from 1
 inline constexpr char          kReplayMagic[4]       = {'T','O','U','R'};
 inline constexpr std::uint8_t  kReplayKeyboardSlots  = 4;  // P1..P4 rows
 
@@ -54,10 +73,15 @@ struct ReplayHeader {
     std::uint8_t  numHumans;
     std::uint8_t  numBots;
     std::uint8_t  matchMode;
-    std::uint8_t  _pad[5];
+    std::uint8_t  useGen;       ///< M5.5 — 0=load levelDir, 1=use genConfig
+    std::uint8_t  genLevel;     ///< M5.5 — ProceduralLevelConfig::ggLevel
+    std::uint8_t  genDensity;   ///< M5.5 — ProceduralLevelConfig::stuffDensity
+    std::uint8_t  genPerim;     ///< M5.5 — ProceduralLevelConfig::perimeterBedrock
+    std::uint8_t  _pad;
     std::uint64_t engineHashBasis;
     std::uint16_t levelDirLen;
-    std::uint8_t  _pad2[6];
+    std::uint16_t _pad2;
+    std::uint32_t genSeed;      ///< M5.5 — ProceduralLevelConfig::seed
 };
 static_assert(sizeof(ReplayHeader) == 32, "ReplayHeader must be 32 bytes");
 
@@ -68,9 +92,14 @@ class ReplayRecorder {
 public:
     ~ReplayRecorder() { close(); }
 
+    /// @param genConfig if set, the recording used the M5.5 procedural
+    ///        generator — `levelDir` is ignored and the four gen fields
+    ///        are written into the header so playback can rebuild the
+    ///        same level deterministically.
     bool open(const std::filesystem::path& path,
               std::uint8_t numHumans, std::uint8_t numBots,
-              std::uint8_t matchMode, const std::string& levelDir);
+              std::uint8_t matchMode, const std::string& levelDir,
+              const std::optional<ProceduralLevelConfig>& genConfig = std::nullopt);
 
     /// @param keyboardInputs span of exactly `kReplayKeyboardSlots` (=4)
     ///        `PlayerInput` values — one per keyboard row regardless of
@@ -105,6 +134,13 @@ public:
     std::uint8_t        matchMode() const noexcept { return matchMode_;       }
     const std::string&  levelDir()  const noexcept { return levelDir_;        }
 
+    /// M5.5 — set iff the recording used the procedural generator. Host
+    /// should call `TouGame::setGenerationConfig(*genConfig())` BEFORE
+    /// `engine.initialize(game)` so onSetup rebuilds the same level.
+    const std::optional<ProceduralLevelConfig>& genConfig() const noexcept {
+        return genConfig_;
+    }
+
     /// Read next tick record. Returns true on success, false at clean
     /// EOF or on read error. After a successful read, `commitHash()`
     /// returns the recorded post-step hash for that tick.
@@ -127,6 +163,7 @@ private:
     std::uint8_t             numBots_        = 0;
     std::uint8_t             matchMode_      = 0;
     std::string              levelDir_;
+    std::optional<ProceduralLevelConfig> genConfig_;
     std::uint64_t            ticksRead_      = 0;
     std::uint64_t            curCommitHash_  = 0;
     std::vector<PlayerInput> curInputs_;  // size = kReplayKeyboardSlots

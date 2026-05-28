@@ -159,8 +159,24 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // ---- Seed terrain grid --------------------------------------------------
     // Populate BEFORE constructing systems so the system constructors
     // can take a borrowed pointer to a grid that's already sized.
+    // M5.5 — three-way branch: gen wins over levelDir (parser-side
+    // mutex), levelDir wins over synthetic arena fallback.
     bool loaded = false;
-    if (!levelDir_.empty()) {
+    if (genConfig_.has_value()) {
+        const auto info = generateProceduralLevel(grid_, *genConfig_);
+        loaded = info.loaded;
+        if (loaded) {
+            cellsX_ = info.cellsX;
+            cellsY_ = info.cellsY;
+            std::printf("[gen] seed=0x%08x ggLevel=%u stuffD=%u perim=%u "
+                        "→ %dx%d, %d solid\n",
+                        info.seedUsed,
+                        unsigned(genConfig_->ggLevel),
+                        unsigned(genConfig_->stuffDensity),
+                        unsigned(genConfig_->perimeterBedrock),
+                        info.cellsX, info.cellsY, info.solidCount);
+        }
+    } else if (!levelDir_.empty()) {
         const auto info = loadImportedLevel(grid_, levelDir_);
         loaded = info.loaded;
         if (loaded) {

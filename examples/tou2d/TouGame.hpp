@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DemoTypes.hpp"
+#include "ProceduralLevel.hpp"
 #include "SpriteCompositor.hpp"
 
 #include <threadmaxx/Game.hpp>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 struct GLFWwindow;
@@ -40,6 +42,18 @@ public:
     explicit TouGame(GLFWwindow* window) noexcept;
 
     void setLevelDir(std::filesystem::path p) noexcept { levelDir_ = std::move(p); }
+    /// M5.5 — enable procedural level generation. When set, onSetup runs
+    /// the generator instead of loading `levelDir_` or falling back to the
+    /// synthetic arena. Mutually exclusive with `setLevelDir` (gen wins if
+    /// both are set — main.cpp rejects the combination at parse time).
+    void setGenerationConfig(ProceduralLevelConfig cfg) noexcept {
+        genConfig_ = cfg;
+    }
+    /// M5.5 — returns the resolved generation config when generation was
+    /// used (so the host can write it into the replay header).
+    const std::optional<ProceduralLevelConfig>& generationConfig() const noexcept {
+        return genConfig_;
+    }
     /// M4.8 — runtime path that hosts `ships/*.SHP` and `sfx/*.WAV`.
     /// Defaults to the install's `assets/` if not overridden. Set
     /// BEFORE `engine.initialize(game)` so onSetup can load atlases
@@ -140,6 +154,9 @@ private:
     std::int32_t             cellsX_         = 0;
     std::int32_t             cellsY_         = 0;
     TerrainGrid              grid_;
+    /// M5.5 — when set, onSetup runs the procedural generator with this
+    /// config instead of loading `levelDir_`. Unset = legacy path.
+    std::optional<ProceduralLevelConfig> genConfig_;
     /// Round-end shared latch. Always-allocated; default-false.
     /// M4.3 — collision now writes this directly (via shared_ptr
     /// setter), and RoundRestartSystem clears it on reset. The
