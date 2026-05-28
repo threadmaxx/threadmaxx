@@ -6,12 +6,12 @@
 #include <threadmaxx/Game.hpp>
 #include <threadmaxx/Handles.hpp>
 
-#include <array>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -63,6 +63,18 @@ public:
     void setMatchMode(MatchMode m) noexcept { matchMode_ = m; }
     MatchMode matchMode() const noexcept { return matchMode_; }
 
+    /// M5.1 — configure how many local-keyboard players and how many
+    /// AI bots to spawn. Humans land in slots `[0, humans)`; bots in
+    /// `[humans, humans + bots)`. Caller must pre-validate the ranges
+    /// (humans in [1, kMaxHumans], bots in [0, kMaxPlayerSlots - kMaxHumans],
+    /// humans + bots >= 2). Must be called BEFORE `engine.initialize(game)`.
+    void setPlayerCounts(std::uint8_t humans, std::uint8_t bots) noexcept {
+        numHumans_ = humans;
+        numBots_   = bots;
+    }
+    std::uint8_t numHumans() const noexcept { return numHumans_; }
+    std::uint8_t numBots()   const noexcept { return numBots_;   }
+
     void onSetup(threadmaxx::Engine& engine,
                  threadmaxx::World&  world,
                  threadmaxx::CommandBuffer& seed) override;
@@ -73,7 +85,10 @@ public:
 
     /// Handle of P1's ship — host-side smoke tests use this to verify
     /// final position. Valid only between onSetup and onTeardown.
-    threadmaxx::EntityHandle playerShip() const noexcept { return playerShips_[0]; }
+    threadmaxx::EntityHandle playerShip() const noexcept {
+        return playerShips_.empty() ? threadmaxx::EntityHandle{}
+                                    : playerShips_.front();
+    }
 
     std::int32_t levelCellsX() const noexcept { return cellsX_; }
     std::int32_t levelCellsY() const noexcept { return cellsY_; }
@@ -106,7 +121,12 @@ private:
     CameraSystem*            camera_         = nullptr;   // borrowed
     BulletTerrainSystem*     bulletTerrain_  = nullptr;   // borrowed
     TerrainCollisionSystem*  collision_      = nullptr;   // borrowed
-    std::array<threadmaxx::EntityHandle, 4> playerShips_{};
+    // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
+    // kMaxPlayerSlots). Slot index = vector index. Stored solely for
+    // playerShip() (smoke-test position log) and onTeardown bookkeeping.
+    std::vector<threadmaxx::EntityHandle> playerShips_;
+    std::uint8_t             numHumans_      = 1;
+    std::uint8_t             numBots_        = 3;
     std::filesystem::path    levelDir_;
     std::filesystem::path    assetDir_;
     SpriteCompositor*        compositor_     = nullptr;   // borrowed

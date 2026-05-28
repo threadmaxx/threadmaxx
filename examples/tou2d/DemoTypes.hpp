@@ -95,29 +95,42 @@ struct ShipKind {
 };
 static_assert(sizeof(ShipKind) == 24, "ShipKind must stay 24 bytes");
 
-/// HP per `strength` unit. Picked so Basic-ship strength 3 lands on
-/// 150 HP — near M4.4's flat 200 baseline, so combat feels close to
-/// the previous calibration while the kinds spread HP across 50..300.
+/// HP per `strength` unit. Picked so the Basic-ship strength 2.5
+/// lands on 125 HP at the rebalanced defaults.
 inline constexpr float kShipHpPerStrength = 50.0f;
 
 /// Reference strength/thrust/turn around which per-ship scalars are
-/// computed. Basic ship sits exactly here; every other kind is a
-/// signed ratio (Bee thrust 10/3 = 3.33×, Destroyer 1.5/3 = 0.5×).
-inline constexpr float kShipKindStatReference = 3.0f;
+/// computed. 2026-05-28 — dropped from 3.0 to 2.5 to give every ship
+/// a slightly lowered baseline; per-kind bonuses then accent ONE
+/// stat by ~25% (kBalancedKindBonus). Result: ships feel closer in
+/// raw capability, with each kind's character coming from which stat
+/// is its strong suit rather than a 6× spread between Bee and
+/// Destroyer.
+inline constexpr float kShipKindStatReference = 2.5f;
 
-/// 9 ship designs from the manual table (Strength / Thrusters / Turning).
-/// Slot indices are stable — DON'T reorder; `Ship.shipKindIdx` is a
-/// direct index into this array AND is round-tripped via WorldSnapshot.
+/// 2026-05-28 — coefficient applied to each kind's PRIMARY stat over
+/// the default baseline. 1.25 = 25% bonus; small enough that all
+/// ships stay competitive, large enough to give each one a
+/// recognizable feel. The other two stats stay flat at the baseline.
+inline constexpr float kBalancedKindBonus = 1.25f;
+
+/// 9 ship designs (Strength / Thrusters / Turning). 2026-05-28 —
+/// rebalanced per M5.2: every kind starts from the (2.5, 2.5, 2.5)
+/// baseline and one stat (the "primary") is boosted by
+/// kBalancedKindBonus. Slot indices are stable — DON'T reorder;
+/// `Ship.shipKindIdx` is a direct index into this array AND is
+/// round-tripped via WorldSnapshot.
 inline constexpr ShipKind kShipKinds[] = {
-    {{'B','a','s','i','c',' ','s','h','i','p',0,0}, 3.0f, 3.0f,  3.0f}, // 0
-    {{'B','a','t','m','a','n',0,0,0,0,0,0},          2.5f, 4.0f,  3.5f}, // 1
-    {{'B','2',' ','S','t','e','a','l','t','h',0,0},  2.0f, 5.0f,  4.0f}, // 2
-    {{'S','p','e','e','d','i','e',0,0,0,0,0},        1.5f, 7.0f,  3.0f}, // 3
-    {{'X',' ','W','i','n','g',0,0,0,0,0,0},          2.5f, 4.5f,  4.0f}, // 4
-    {{'T','i','e',' ','F','i','g','h','t','e','r',0},2.5f, 5.0f,  4.5f}, // 5
-    {{'B','e','e',0,0,0,0,0,0,0,0,0},                1.0f, 10.0f, 6.5f}, // 6
-    {{'F','l','y',0,0,0,0,0,0,0,0,0},                4.0f, 3.0f,  2.0f}, // 7
-    {{'D','e','s','t','r','o','y','e','r',0,0,0},    6.0f, 1.5f,  1.0f}, // 8
+    //                                                  STR    THRUST TURN
+    {{'B','a','s','i','c',' ','s','h','i','p',0,0},     2.5f,  2.5f,  2.5f}, // 0 — well-rounded baseline
+    {{'B','a','t','m','a','n',0,0,0,0,0,0},             2.5f,  2.5f,  3.125f}, // 1 — turn-bonus
+    {{'B','2',' ','S','t','e','a','l','t','h',0,0},     2.5f,  2.5f,  3.125f}, // 2 — turn-bonus
+    {{'S','p','e','e','d','i','e',0,0,0,0,0},           2.5f,  3.125f, 2.5f}, // 3 — thrust-bonus
+    {{'X',' ','W','i','n','g',0,0,0,0,0,0},             2.5f,  2.5f,  3.125f}, // 4 — turn-bonus
+    {{'T','i','e',' ','F','i','g','h','t','e','r',0},   2.5f,  2.5f,  3.125f}, // 5 — turn-bonus
+    {{'B','e','e',0,0,0,0,0,0,0,0,0},                   2.5f,  3.125f, 2.5f}, // 6 — thrust-bonus
+    {{'F','l','y',0,0,0,0,0,0,0,0,0},                   3.125f, 2.5f, 2.5f}, // 7 — strength-bonus
+    {{'D','e','s','t','r','o','y','e','r',0,0,0},       3.125f, 2.5f, 2.5f}, // 8 — strength-bonus
 };
 inline constexpr std::size_t kShipKindCount =
     sizeof(kShipKinds) / sizeof(kShipKinds[0]);
@@ -259,17 +272,24 @@ struct WeaponLoadout {
 };
 static_assert(sizeof(WeaponLoadout) == 16, "WeaponLoadout must stay 16 bytes");
 
-/// Magazine sizes — chosen so a sustained burst lands a satisfying
-/// volley before the forced reload. Dumbfire fires every 8 ticks
-/// (M3.1's `kFireCooldownTicks`) so a 12-round mag = 96 ticks = 1.6 s
-/// of continuous fire. Spread's 4-burst mag = 4 × 18 = 72 ticks ≈ 1.2 s.
-inline constexpr std::uint16_t kDumbfireMagazine = 12;
-inline constexpr std::uint16_t kSpreadMagazine   =  4;
+/// Magazine + reload tuning.
+///
+/// 2026-05-28 — reworked per the M5.2 design: the BASIC weapon is now
+/// infinite-fire on a fixed cooldown (no reload, no magazine) and the
+/// SPECIAL (spread) weapon reloads after every single burst. The
+/// dumbfire ammo field is still part of `WeaponLoadout` for layout
+/// stability but the runtime never decrements it — a huge magazine
+/// guards against any stale reload code in the wild that still checks
+/// `ammo > 0`. Spread mag = 1 so every press of fireSpecial drains the
+/// mag and triggers reload.
+inline constexpr std::uint16_t kDumbfireMagazine = 1;  // visual "ready" pip; ammo never decrements
+inline constexpr std::uint16_t kSpreadMagazine   = 1;  // single burst per mag
 
-/// Reload durations — wall-clock-comparable to original TOU's reload
-/// feel (≈ 1.25 s for the basic weapon, ≈ 1.5 s for the burst).
-inline constexpr std::uint16_t kDumbfireReloadTicks = 75;   // 60 Hz → 1.25 s
-inline constexpr std::uint16_t kSpreadReloadTicks   = 90;   // 60 Hz → 1.50 s
+/// Reload durations — only the special weapon ever reloads. Basic is
+/// kept at the legacy constant for back-compat with the loadout POD
+/// but the WeaponFireSystem skips the dumbfire reload branch.
+inline constexpr std::uint16_t kDumbfireReloadTicks = 0;    // never reloads
+inline constexpr std::uint16_t kSpreadReloadTicks   = 75;   // 60 Hz → 1.25 s
 
 /// Number of source attribute / visual-JPG pixels that map to one
 /// runtime tile along each axis. After M3.3's flat-grid terrain the
@@ -277,7 +297,13 @@ inline constexpr std::uint16_t kSpreadReloadTicks   = 90;   // 60 Hz → 1.50 s
 /// resolution — there is no longer a per-tile entity, so reducing this
 /// is bounded by RAM for the grid (cellsX * cellsY bytes ×2) and the
 /// JPG paint cost, not by ECS allocation pressure.
-inline constexpr std::int32_t kImportedPxPerTile = 8;
+///
+/// 2026-05-28 — dropped from 8 to 4 per M5.2 — denser terrain reads as
+/// finer detail in the destructible JPG and finer destruction-rect
+/// granularity. 4× the cell count (4 → 16 px² per tile) and ~4× the
+/// per-paint cost; still well under the per-frame budget at 60 Hz on
+/// the audit box.
+inline constexpr std::int32_t kImportedPxPerTile = 4;
 
 /// World units per source image pixel — held INDEPENDENT of
 /// `kImportedPxPerTile` so changing the tile granularity does NOT
@@ -290,6 +316,24 @@ inline constexpr float kTileWorldUnits =
     static_cast<float>(kImportedPxPerTile) * kWorldUnitsPerImagePixel;
 
 inline constexpr int   kArenaHalfCells   = 16;   // synthetic arena is 33×33 cells
+
+/// M5.1 — maximum humans (slots 0..kMaxHumans-1 are reserved for
+/// keyboard players). The 4 hand-rolled key-binding rows in
+/// `InputSystem` set this ceiling; bots take the next slot range
+/// `[kMaxHumans .. kMaxHumans + numBots)`.
+inline constexpr std::uint8_t kMaxHumans = 4;
+
+/// M5.1 — maximum AI bots. Matches the original TOU's stated 63-bot
+/// cap. The slot field is `uint8_t`, so the hard ceiling is 255 minus
+/// `kMaxHumans` even if this constant grows.
+inline constexpr std::uint8_t kMaxBots = 63;
+
+/// M5.1 — maximum total player count (humans + bots). Per-slot
+/// bookkeeping arrays in BulletShipCollisionSystem / BulletTerrainSystem
+/// / BotControlSystem / etc. size to this constant.
+inline constexpr std::size_t kMaxPlayerSlots =
+    static_cast<std::size_t>(kMaxHumans) +
+    static_cast<std::size_t>(kMaxBots);
 
 /// Ids handed back by `Engine::registerUserComponent`.
 struct UserComponentIds {

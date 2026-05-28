@@ -3,16 +3,27 @@
 #include "DemoTypes.hpp"
 
 #include <threadmaxx/System.hpp>
+#include <threadmaxx/render/Camera.hpp>
+
+#include <array>
+#include <cstdint>
 
 namespace tou2d {
 
-/// Emits a single orthographic camera each frame via the
-/// `buildRenderFrame` hook. The camera follows the first
-/// LocalPlayer-tagged ship; in M1 there is only one. Multi-camera
-/// (shared dynamic frame-all or split-screen) lands in M3.
+/// Emits one orthographic camera per LOCAL HUMAN ship via
+/// `buildRenderFrame`. Bots never get a camera — only keyboard players
+/// land in the split layout (M5.1).
+///
+/// Layout (chosen by `numHumans()`):
+///   1 human  → full-screen `{0, 0, 1, 1}`
+///   2 humans → left/right halves
+///   3-4 humans → 2×2 grid (top-left, top-right, bot-left, bot-right);
+///               the missing 4th quadrant in 3-player mode renders as
+///               the framebuffer's clear color (black) since no camera
+///               covers it.
 ///
 /// `setViewport(w, h)` is wired to GLFW's framebuffer-resize callback
-/// from main.cpp so the aspect ratio stays correct.
+/// from main.cpp so per-camera aspect ratios stay correct.
 class CameraSystem : public threadmaxx::ISystem {
 public:
     explicit CameraSystem(UserComponentIds ids) noexcept;
@@ -35,19 +46,36 @@ public:
     /// so the projection matrix uses the right aspect next frame.
     void setViewport(std::uint32_t width, std::uint32_t height) noexcept;
 
-    /// Latched at the end of `update()` (i.e. each tick) — readable by
-    /// HudSystem's buildRenderFrame so the HUD anchors to the camera's
-    /// current view extents without recomputing.
-    threadmaxx::Vec3 followCenter() const noexcept { return followTarget_; }
-    float            orthoHalfH()   const noexcept { return orthoHalfH_; }
-    float            aspect()       const noexcept {
-        return static_cast<float>(viewportW_) /
-               static_cast<float>(viewportH_ > 0 ? viewportH_ : 1);
+    /// M5.1 — how many of the slots `[0, numHumans)` are real cameras.
+    /// Set by TouGame::onSetup BEFORE the first tick. Defaults to 1.
+    void setNumHumans(std::uint8_t n) noexcept {
+        numHumans_ = n > kMaxHumans ? kMaxHumans : n;
     }
+    std::uint8_t numHumans() const noexcept { return numHumans_; }
+
+    /// Latched at the end of `update()`. Readable by HudSystem so the
+    /// HUD anchors to each human's view-corner without recomputing.
+    threadmaxx::Vec3 followCenter(std::uint8_t humanSlot) const noexcept {
+        return humanSlot < followTargets_.size()
+                   ? followTargets_[humanSlot]
+                   : threadmaxx::Vec3{0.0f, 0.0f, 0.0f};
+    }
+    float orthoHalfH() const noexcept { return orthoHalfH_; }
+
+    /// Aspect ratio of the per-camera viewport (NOT the framebuffer).
+    /// Computed from the layout for `numHumans_`: 1 → full; 2 → half-
+    /// width; 3-4 → half-width × half-height.
+    float viewportAspect() const noexcept;
+
+    /// Normalized viewport rect for one human slot in the current
+    /// layout (4-tuple x, y, w, h ∈ [0, 1]). Slots outside `[0, numHumans_)`
+    /// return `{0, 0, 0, 0}` (zero-area, never rendered).
+    threadmaxx::Viewport viewportFor(std::uint8_t humanSlot) const noexcept;
 
 private:
     UserComponentIds ids_;
-    threadmaxx::Vec3 followTarget_ = {0.0f, 0.0f, 0.0f};
+    std::array<threadmaxx::Vec3, kMaxHumans> followTargets_{};
+    std::uint8_t     numHumans_    = 1;
     std::uint32_t    viewportW_    = 1280;
     std::uint32_t    viewportH_    = 720;
     /// Half-height of the visible region in world units. Picked so a

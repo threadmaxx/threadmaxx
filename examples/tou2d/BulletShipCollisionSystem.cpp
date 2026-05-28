@@ -1,5 +1,7 @@
 #include "BulletShipCollisionSystem.hpp"
 
+#include "ParticleSystem.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Engine.hpp>
 #include <threadmaxx/EventChannel.hpp>
@@ -23,6 +25,11 @@ constexpr float kShipHitRadiusFactor = 0.45f;
 
 /// Sentinel for "no shooter recorded yet" in the per-victim arrays.
 constexpr std::uint8_t kNoShooter = 0xFFu;
+
+// M5.3 — per-weapon spark color (low 24 bits; alpha derived from ttl
+// inside ParticleSystem). Dumbfire = warm yellow, spread = orange.
+constexpr std::uint32_t kSparkColorDumbfire = 0x00FFCC44u;
+constexpr std::uint32_t kSparkColorSpread   = 0x00FF8030u;
 
 struct ShipSlot {
     float          x       = 0.0f;
@@ -53,8 +60,8 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
 
-        // ---- Pass 1: gather live ships (≤ 4) ----------------------------
-        std::array<ShipSlot, 16> ships{};
+        // ---- Pass 1: gather live ships (capped at kMaxPlayerSlots) ----
+        std::array<ShipSlot, kMaxPlayerSlots> ships{};
         std::size_t              nShips = 0;
         for (const auto* chunkPtr : view.chunks()) {
             if (!chunkPtr) continue;
@@ -90,8 +97,8 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
         // a teammate's softening shots gets the cleanup; the alternate
         // ("largest-damage hit wins") needs per-bullet bookkeeping and
         // doesn't change the outcome for 4P local play.
-        std::array<std::uint16_t, 16> dmgBySlot{};
-        std::array<std::uint8_t,  16> firstShooterBySlot{};
+        std::array<std::uint16_t, kMaxPlayerSlots> dmgBySlot{};
+        std::array<std::uint8_t,  kMaxPlayerSlots> firstShooterBySlot{};
         for (auto& s : firstShooterBySlot) s = kNoShooter;
 
         for (const auto* chunkPtr : view.chunks()) {
@@ -128,6 +135,16 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                                 static_cast<std::uint8_t>(blt.ownerSlot & 0xFFu);
                         }
                     }
+                    // M5.3 — impact spark at the bullet's hit point.
+                    // Color from the bullet's weapon kind so dumbfire
+                    // and spread look different on contact.
+                    if (particles_) {
+                        const std::uint32_t sparkRGB =
+                            blt.weaponKind == 1
+                                ? kSparkColorSpread
+                                : kSparkColorDumbfire;
+                        particles_->emitImpactSpark(bx, by, sparkRGB);
+                    }
                     cb.destroy(entities[row]);
                     break;   // one bullet hits at most one ship per tick
                 }
@@ -135,7 +152,7 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
         }
 
         // ---- Pass 3: apply damage; record killing blow per victim -------
-        std::array<std::uint8_t, 16> killerByVictim{};
+        std::array<std::uint8_t, kMaxPlayerSlots> killerByVictim{};
         for (auto& v : killerByVictim) v = kNoShooter;
 
         for (const auto* chunkPtr : view.chunks()) {
@@ -186,7 +203,7 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
         // post-tick kill totals reflect any +1 we apply this pass; for
         // a slot that didn't score this tick, the chunk's existing
         // value is reused.
-        std::array<std::uint16_t, 4> killsBySlotPostTick{};
+        std::array<std::uint16_t, kMaxPlayerSlots> killsBySlotPostTick{};
         bool                         dmRoundEnded = false;
         std::uint8_t                 dmWinnerSlot = 0;
         std::uint16_t                dmWinnerKills = 0;

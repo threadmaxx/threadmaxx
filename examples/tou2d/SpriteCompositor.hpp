@@ -228,9 +228,40 @@ inline void SpriteCompositor::tick(const threadmaxx::World& world,
         threadmaxx::Component::Transform,
     };
 
-    // Visit every chunk with Transform + ShipSpriteRef + !DisabledTag.
-    // `forEachChunkOf` filters by mask required-only; we add the user-bit
-    // and disabled checks inline.
+    // 2026-05-28 — three-pass redesign per M5.2 fixes:
+    //   * Pass A: clear EVERY entity's prev-blit rect, mark each cache
+    //     entry "not seen this tick" so we can detect dead/destroyed
+    //     ships at the end and drop them. Clearing first means the
+    //     blits in Pass B overwrite freshly-cleared pixels — no
+    //     overlap-leaves-a-black-patch artifact when two ship
+    //     bounding boxes cross.
+    //   * Pass B: blit every visible ship; mark its cache entry
+    //     "seen." Visible = has ShipSpriteRef AND not disabled.
+    //   * Pass C: any cache entry still unseen (ship died, was
+    //     destroyed, or migrated out of the sprite archetype) is
+    //     erased — its prev-blit rect was already cleared in Pass A
+    //     so the sprite vanishes the same tick the ship dies.
+    //
+    // Cost: one extra walk of cache_ each tick (~67 entries max).
+
+    // Pass A — clear every cached prev rect.
+    for (auto& [key, prev] : cache_) {
+        if (!prev.present) continue;
+        if (prev.atlasIdx < 0 ||
+            prev.atlasIdx >= static_cast<std::int32_t>(atlases_.size())) {
+            continue;
+        }
+        const SpriteAtlas& atlas = atlases_[static_cast<std::size_t>(prev.atlasIdx)];
+        const std::int32_t w = atlas.frameWidth;
+        const std::int32_t h = atlas.frameHeight;
+        const std::int32_t lx0 = prev.px - w / 2;
+        const std::int32_t ly0 = prev.py - h / 2;
+        clearRect(lx0, ly0, lx0 + w, ly0 + h);
+        unionDirty(lx0, ly0, lx0 + w, ly0 + h);
+        prev.present = false;  // re-set true in Pass B for surviving ships
+    }
+
+    // Pass B — blit every still-alive ship.
     world.forEachChunkOf(required, [&](const threadmaxx::internal::ArchetypeChunk& chunk) {
         if (!chunk.mask.has(ids.sprite.componentBit()))         return;
         if (chunk.mask.has(threadmaxx::Component::DisabledTag)) return;
@@ -259,24 +290,27 @@ inline void SpriteCompositor::tick(const threadmaxx::World& world,
             const std::int32_t h = atlas.frameHeight;
             const std::uint32_t key = entities[row].index;
 
-            PrevBlit& prev = cache_[key];
-            if (prev.present) {
-                const std::int32_t lx0 = prev.px - w / 2;
-                const std::int32_t ly0 = prev.py - h / 2;
-                clearRect(lx0, ly0, lx0 + w, ly0 + h);
-                unionDirty(lx0, ly0, lx0 + w, ly0 + h);
-            }
             blitFrame(atlas, frameIdx, px, py);
             const std::int32_t nx0 = px - w / 2;
             const std::int32_t ny0 = py - h / 2;
             unionDirty(nx0, ny0, nx0 + w, ny0 + h);
-            prev.px = px;
-            prev.py = py;
+
+            PrevBlit& prev = cache_[key];
+            prev.px       = px;
+            prev.py       = py;
             prev.atlasIdx = ref.atlasIdx;
-            prev.frame = static_cast<std::uint8_t>(frameIdx);
-            prev.present = true;
+            prev.frame    = static_cast<std::uint8_t>(frameIdx);
+            prev.present  = true;
         }
     });
+
+    // Pass C — drop cache entries we didn't see this tick. The prev
+    // rect was already cleared in Pass A, so simply forgetting the
+    // key is enough.
+    for (auto it = cache_.begin(); it != cache_.end();) {
+        if (!it->second.present) it = cache_.erase(it);
+        else                     ++it;
+    }
 }
 
 } // namespace tou2d

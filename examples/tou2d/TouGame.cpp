@@ -4,6 +4,7 @@
 #include "BotControlSystem.hpp"
 #include "BulletShipCollisionSystem.hpp"
 #include "BulletTerrainSystem.hpp"
+#include "ParticleSystem.hpp"
 #include "CameraSystem.hpp"
 #include "HudSystem.hpp"
 #include "InputSystem.hpp"
@@ -20,6 +21,8 @@
 #include <threadmaxx/Engine.hpp>
 #include <threadmaxx/EventChannel.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace tou2d {
@@ -191,6 +194,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     input->setRoundEndedFlag(roundEnded_);
     auto botControl    = std::make_unique<BotControlSystem>(ids_);
     botControl->setRoundEndedFlag(roundEnded_);
+    botControl->setTerrainGrid(&grid_);
     auto roundRestart  = std::make_unique<RoundRestartSystem>(window_, ids_);
     roundRestart->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
     roundRestart->setTerrainGrid(&grid_);
@@ -210,7 +214,19 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto shipLife          = std::make_unique<ShipLifecycleSystem>(ids_);
     shipLife->setMatchMode(&matchMode_);
     shipLife->setTerrainGrid(&grid_);
+    // M5.3 — particle FX system. Owns its own state; ParticleSystem*
+    // is shared (borrowed) with the three emitters below. Registered
+    // FIRST in the wave list (see below) so its `update()` integrates
+    // existing particles BEFORE any emitter spawns this tick's fresh
+    // ones — newly-spawned particles render at their spawn position
+    // this tick, integrate next tick.
+    auto particles         = std::make_unique<ParticleSystem>();
+    auto* particlesPtr     = particles.get();
+    bulletShip   ->setParticleSystem(particlesPtr);
+    bulletTerrain->setParticleSystem(particlesPtr);
+    shipLife     ->setParticleSystem(particlesPtr);
     auto camera            = std::make_unique<CameraSystem>(ids_);
+    camera->setNumHumans(numHumans_);
     camera_         = camera.get();
     bulletTerrain_  = bulletTerrainPtr;
     collision_      = collisionPtr;
@@ -223,6 +239,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(input));
     engine.registerSystem(std::move(botControl));   // overrides PlayerInput for bot slots
     engine.registerSystem(std::move(roundRestart)); // preStep; resets everything when human presses fire post-round
+    engine.registerSystem(std::move(particles));    // M5.3 — integrate existing particles BEFORE any emitter spawns fresh ones this tick
     engine.registerSystem(std::move(movement));
     engine.registerSystem(std::move(collision));
     engine.registerSystem(std::move(weaponFire));
@@ -239,58 +256,89 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
         engine.registerSystem(std::make_unique<AudioSystem>(&engine, assetDir_));
     }
 
-    // ---- Seed 4 ships ------------------------------------------------------
-    // P1 stays at (0, 0) so the headless smoke test continues to find
-    // it. P2-P4 are placed at small offsets — close enough that they
-    // remain inside the synthetic arena's interior, far enough that
-    // they don't visually overlap on spawn. P1 is human; P2-P4 are
-    // bots by default (BotControlSystem drives PlayerInput for them).
-    //
-    // M4.5 — distinct ship kinds per slot show off the stat-spread:
-    //   P1 = Basic ship   (150 HP, 1.0× thrust, 1.0× turn) — neutral
-    //   P2 = Bee          ( 50 HP, 3.3× thrust, 2.2× turn) — fast/fragile
-    //   P3 = X Wing       (125 HP, 1.5× thrust, 1.3× turn) — balanced
-    //   P4 = Destroyer    (300 HP, 0.5× thrust, 0.3× turn) — tank/slow
-    constexpr float kOffset = 40.0f;
-    struct ShipSeed {
-        float x, y;
-        std::uint16_t kindIdx;
-        const char*   shpStem;   ///< basename in TOU/ships (no extension)
-    };
-    const std::array<ShipSeed, 4> seeds = {{
-        { 0.0f,        0.0f,     0, "TIEF" },   // P1 — Basic kind, TIE Fighter sprite
-        { +kOffset,    0.0f,     6, "BEE2" },   // P2 — Bee kind, B2 Stealth sprite
-        { -kOffset,    0.0f,     4, "XWIN" },   // P3 — X Wing kind + sprite
-        { 0.0f,        +kOffset, 8, "DEST" },   // P4 — Destroyer kind + sprite
-    }};
+    // ---- Seed ships --------------------------------------------------------
+    // M5.1 — humans land in slots [0, numHumans_); bots fill out
+    // [numHumans_, numHumans_ + numBots_). Both humans and bots spawn
+    // at random Air cells in the terrain (M5.2 follow-up — the M5.1
+    // ring spawn put bots in predictable arcs around the origin, but
+    // the user asked for random spawn placement to match the random
+    // respawn behaviour). Falls back to a ring around the origin when
+    // there's no terrain grid to sample (synthetic arena is a thin
+    // perimeter; sampleRandomRespawn still works there because the
+    // interior IS Air).
+    const std::uint32_t totalShips =
+        static_cast<std::uint32_t>(numHumans_) +
+        static_cast<std::uint32_t>(numBots_);
 
-    // M4.8 — try to load each ship's SHP from <assetDir>/ships/<STEM>.SHP
-    // with that slot's per-team `ShipColors`. Ships whose SHP is
-    // missing fall back to cube rendering (spawnShip's useSprite path
-    // gates on `atlasIdx >= 0`).
-    std::array<std::int32_t, 4> atlasIdx{ -1, -1, -1, -1 };
+    // M5.1 — load the canonical 4 SHP atlases once; humans 0..3 each
+    // get their own (matches the M4.8 yellow/blue/red/green palette).
+    // Bots cycle through them via `(slot % 4)` so colors repeat in the
+    // expected order without per-bot atlas duplication.
+    struct AtlasSeed {
+        std::uint16_t kindIdx;
+        const char*   shpStem;
+    };
+    constexpr std::array<AtlasSeed, 4> kAtlasSeeds = {{
+        { 0, "TIEF" },   // slot 0 / Basic kind / TIE Fighter sprite (yellow)
+        { 6, "BEE2" },   // slot 1 / Bee kind / B2 Stealth (blue)
+        { 4, "XWIN" },   // slot 2 / X Wing kind + sprite (red)
+        { 8, "DEST" },   // slot 3 / Destroyer kind + sprite (green)
+    }};
+    std::array<std::int32_t, 4> atlasIdxByPalette{ -1, -1, -1, -1 };
     if (compositor_ && !assetDir_.empty()) {
         const std::filesystem::path shipsDir = assetDir_ / "ships";
-        for (std::uint8_t slot = 0; slot < 4; ++slot) {
+        for (std::uint8_t pi = 0; pi < kAtlasSeeds.size(); ++pi) {
             const std::filesystem::path p =
-                shipsDir / (std::string(seeds[slot].shpStem) + ".SHP");
+                shipsDir / (std::string(kAtlasSeeds[pi].shpStem) + ".SHP");
             SpriteAtlas atlas;
-            if (loadSpriteAtlas(p, kSlotColors[slot], atlas)) {
-                atlasIdx[slot] = compositor_->addAtlas(std::move(atlas));
+            if (loadSpriteAtlas(p, kSlotColors[pi], atlas)) {
+                atlasIdxByPalette[pi] = compositor_->addAtlas(std::move(atlas));
             } else {
                 std::fprintf(stderr,
-                    "[tou2d] sprite atlas missing for slot %u (%s)\n",
-                    unsigned(slot), p.string().c_str());
+                    "[tou2d] sprite atlas missing for palette %u (%s)\n",
+                    unsigned(pi), p.string().c_str());
             }
         }
     }
 
-    for (std::uint8_t slot = 0; slot < 4; ++slot) {
-        const auto& sp = seeds[slot];
-        const std::uint8_t isBot = (slot == 0) ? std::uint8_t{0} : std::uint8_t{1};
-        playerShips_[slot] = spawnShip(engine, seed, ids_,
-                                       slot, sp.x, sp.y, isBot, sp.kindIdx,
-                                       atlasIdx[slot]);
+    playerShips_.assign(totalShips, threadmaxx::EntityHandle{});
+
+    // Fallback ring — radius scales with N so 64 ships don't all stack
+    // at the origin if random sampling fails (e.g. degenerate grid).
+    constexpr float kBaseRingRadius = 40.0f;
+    constexpr float kPerShipPad     = 18.0f;
+    const float ringR = std::max(
+        kBaseRingRadius,
+        kPerShipPad * std::sqrt(static_cast<float>(totalShips)));
+    constexpr float kTwoPi = 6.28318530718f;
+
+    // Deterministic per-session RNG — different runs produce different
+    // openings, but each run's spawn ordering is reproducible if the
+    // engine ever exposes a seed. Use a single shared rng so all slots
+    // pull from the same sequence (avoids two slots landing at the
+    // same cell by xorshift coincidence).
+    std::mt19937 spawnRng(0xC0FFEE5Eu);
+
+    for (std::uint32_t slot = 0; slot < totalShips; ++slot) {
+        // Ring fallback in case sampleRandomRespawn fails (synthetic
+        // arena with no interior Air, malformed grid).
+        const float t     = static_cast<float>(slot) /
+                            static_cast<float>(totalShips);
+        const float theta = t * kTwoPi;
+        float x = std::cos(theta) * ringR;
+        float y = std::sin(theta) * ringR;
+        sampleRandomRespawn(grid_, spawnRng, x, y);
+
+        const bool isBot = slot >= numHumans_;
+        const std::uint16_t kindIdx =
+            kAtlasSeeds[slot % kAtlasSeeds.size()].kindIdx;
+        const std::int32_t atlasIdx =
+            atlasIdxByPalette[slot % atlasIdxByPalette.size()];
+        playerShips_[slot] = spawnShip(
+            engine, seed, ids_,
+            static_cast<std::uint8_t>(slot), x, y,
+            isBot ? std::uint8_t{1} : std::uint8_t{0},
+            kindIdx, atlasIdx);
     }
 }
 

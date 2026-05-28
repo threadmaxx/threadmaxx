@@ -1,5 +1,7 @@
 #include "ShipLifecycleSystem.hpp"
 
+#include "ParticleSystem.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Query.hpp>
 #include <threadmaxx/World.hpp>
@@ -105,6 +107,14 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                     sp.ticksLeft = kSparkTicks;
                     nextSpark_   = (nextSpark_ + 1u) %
                                    static_cast<std::uint32_t>(sparks_.size());
+
+                    // M5.3 — layer a particle burst over the line
+                    // starburst. The line burst is the bright initial
+                    // flash; the particle debris + smoke is the
+                    // lingering aftermath.
+                    if (particles_) {
+                        particles_->emitDeathExplosion(sp.x, sp.y, col);
+                    }
                     continue;
                 }
 

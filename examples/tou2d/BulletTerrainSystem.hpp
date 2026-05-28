@@ -12,6 +12,8 @@ namespace threadmaxx { class Engine; }
 
 namespace tou2d {
 
+class ParticleSystem;
+
 /// Bullet vs static terrain. Runs in its own wave AFTER
 /// ProjectileSystem so it sees integrated bullet positions.
 ///
@@ -47,11 +49,17 @@ public:
     using DestroyCallback = std::function<void(std::int32_t cellX, std::int32_t cellY)>;
     void setDestroyCallback(DestroyCallback cb) noexcept { destroyCb_ = std::move(cb); }
 
+    /// M5.3 — borrowed pointer to the demo's ParticleSystem. When set,
+    /// every cell destruction emits a dust burst at the cell's world
+    /// center. Null is fine.
+    void setParticleSystem(ParticleSystem* p) noexcept { particles_ = p; }
+
 private:
     UserComponentIds    ids_;
     TerrainGrid*        grid_   = nullptr;   // borrowed; owned by TouGame
     threadmaxx::Engine* engine_ = nullptr;   // borrowed; AudioPlay only
     DestroyCallback     destroyCb_;
+    ParticleSystem*     particles_ = nullptr;
 };
 
 } // namespace tou2d

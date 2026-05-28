@@ -49,24 +49,6 @@ constexpr float kBannerHalfHeightWU   = 22.0f;
 constexpr float kBannerBadgeSize      = 14.0f;
 constexpr float kBannerKillsPipSize   = 5.0f;
 
-/// Pick the (xMul, yMul, growRight) for a slot — each slot gets a
-/// distinct corner. xMul ∈ {-1, +1}, yMul ∈ {-1, +1}.
-///   slot 0 (P1) → top-left  (-1, +1, growRight=true)
-///   slot 1 (P2) → top-right (+1, +1, growRight=false)
-///   slot 2 (P3) → bot-left  (-1, -1, growRight=true)
-///   slot 3 (P4) → bot-right (+1, -1, growRight=false)
-struct CornerAnchor {
-    float xMul;
-    float yMul;
-    bool  growRight;
-};
-constexpr std::array<CornerAnchor, 4> kCorners = {{
-    {-1.0f, +1.0f, true },
-    {+1.0f, +1.0f, false},
-    {-1.0f, -1.0f, true },
-    {+1.0f, -1.0f, false},
-}};
-
 } // namespace
 
 HudSystem::HudSystem(UserComponentIds ids, const CameraSystem* camera) noexcept
@@ -124,22 +106,33 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
 void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     if (!camera_) return;
 
-    const threadmaxx::Vec3 center = camera_->followCenter();
-    const float halfH = camera_->orthoHalfH();
-    const float halfW = halfH * camera_->aspect();
+    const float halfH  = camera_->orthoHalfH();
+    const float halfW  = halfH * camera_->viewportAspect();
+    const std::uint8_t numHumans = camera_->numHumans();
 
-    for (std::size_t s = 0; s < slots_.size(); ++s) {
+    // M5.1 — per-viewport HUD: each human renders only their own
+    // badge/HP/ammo, anchored to the TOP-LEFT corner of THAT human's
+    // viewport (in world space, relative to their own camera's follow
+    // center). Bots are never iterated. The HUD lives in world-space
+    // debug geometry, so it appears in every camera whose frustum
+    // contains the anchor point — in practice each human's anchor is
+    // beyond the other humans' view rect except in heavy close combat
+    // (acceptable v1 limitation; documented in TOU_PLAN.md M5.1).
+    for (std::uint8_t s = 0; s < numHumans; ++s) {
         if (!slots_[s].present) continue;
         const auto&    state = slots_[s];
-        const auto&    anchor = kCorners[s];
         const std::uint32_t color =
             state.alive ? kSlotColors[s]
                         : (kSlotColors[s] & 0x00FFFFFFu) | 0x40000000u;  // dim when dead
 
-        // Anchor corner of the viewport in world space.
-        const float cornerX = center.x + anchor.xMul * (halfW - kInsetWU);
-        const float cornerY = center.y + anchor.yMul * (halfH - kInsetWU);
-        const float dir     = anchor.growRight ? +1.0f : -1.0f;
+        const threadmaxx::Vec3 center = camera_->followCenter(s);
+
+        // Pin every human's HUD to the TOP-LEFT of their own viewport.
+        // Each viewport is centered on its ship; (-halfW + inset, +halfH - inset)
+        // is the top-left corner in world units; pips grow to the right.
+        const float cornerX = center.x - (halfW - kInsetWU);
+        const float cornerY = center.y + (halfH - kInsetWU);
+        const float dir     = +1.0f;
 
         // ---- Badge point (slot indicator) ------------------------------
         {
@@ -168,7 +161,7 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         // ---- HP bar (one debug line, length scales with hpFrac) --------
         // Drawn just below the badge row. Background line in dim gray,
         // foreground in slot color (full hp = full kHpBarLengthWU).
-        const float barY     = cornerY - kRowVerticalWU * anchor.yMul;
+        const float barY     = cornerY - kRowVerticalWU;
         const float barStart = cornerX;
         const float barEnd   = cornerX + dir * kHpBarLengthWU;
 
@@ -310,8 +303,8 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             }
         };
 
-        const float dumbY  = barY    - kAmmoRowGapWU * anchor.yMul;
-        const float spreadY = dumbY  - kAmmoRowGapWU * anchor.yMul;
+        const float dumbY  = barY    - kAmmoRowGapWU;
+        const float spreadY = dumbY  - kAmmoRowGapWU;
         drawAmmoRow(dumbY,  /*weaponKind=*/0, kDumbfireMagazine,
                     state.dumbfireAmmo, state.dumbfireReload);
         drawAmmoRow(spreadY, /*weaponKind=*/1, kSpreadMagazine,
@@ -331,11 +324,15 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         const std::uint32_t wcolor =
             slot < kSlotColors.size() ? kSlotColors[slot] : kBannerWhite;
 
-        // Outline (4 line segments).
-        const float minX = center.x - kBannerHalfWidthWU;
-        const float maxX = center.x + kBannerHalfWidthWU;
-        const float minY = center.y - kBannerHalfHeightWU;
-        const float maxY = center.y + kBannerHalfHeightWU;
+        // M5.1 — banner anchors to the first human's viewport center.
+        // With split-screen, P1's view shows the banner; other humans
+        // see it through their own viewport if it crosses their world
+        // rect (close-by humans during the round will share visibility).
+        const threadmaxx::Vec3 bannerCenter = camera_->followCenter(0);
+        const float minX = bannerCenter.x - kBannerHalfWidthWU;
+        const float maxX = bannerCenter.x + kBannerHalfWidthWU;
+        const float minY = bannerCenter.y - kBannerHalfHeightWU;
+        const float maxY = bannerCenter.y + kBannerHalfHeightWU;
         const auto outlineSegment = [&](float ax, float ay, float bx, float by) {
             threadmaxx::DebugLine ln{};
             ln.a         = {ax, ay, 0.0f};
@@ -351,7 +348,10 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         // Winner badge (large slot-colored point) left-of-center.
         {
             threadmaxx::DebugPoint dp{};
-            dp.position  = {center.x - kBannerHalfWidthWU * 0.55f, center.y, 0.0f};
+            dp.position  = {
+                bannerCenter.x - kBannerHalfWidthWU * 0.55f,
+                bannerCenter.y, 0.0f,
+            };
             dp.colorRGBA = wcolor;
             dp.pixelSize = kBannerBadgeSize;
             b.addDebugPoint(dp);
@@ -363,9 +363,9 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         for (std::uint32_t i = 0; i < pipKills; ++i) {
             threadmaxx::DebugPoint dp{};
             dp.position  = {
-                center.x - kBannerHalfWidthWU * 0.30f +
+                bannerCenter.x - kBannerHalfWidthWU * 0.30f +
                     static_cast<float>(i) * (kBannerKillsPipSize * 1.6f),
-                center.y, 0.0f,
+                bannerCenter.y, 0.0f,
             };
             dp.colorRGBA = wcolor;
             dp.pixelSize = kBannerKillsPipSize;

@@ -50,15 +50,26 @@ constexpr float kWanderFacingThrust = 1.05f;    // ~60° — looser than engage
                                                  // momentum through turns
 
 // M4.5 — aim wobble: in engage mode, the bot's perceived target angle
-// is perturbed by `sin(phase) * kAimWobbleAmp + xorshiftChaos`. The
-// sine drives the steady left-right oscillation; the xorshift adds
-// unpredictability so two bots wobble out of phase. Amplitudes are
-// small fractions of a radian (~5-6°) — large enough to spoil
-// pixel-perfect aim, small enough that the bot still lands hits in
-// the fire arc.
+// is perturbed by `sin(phase) * kAimWobbleAmp`. 2026-05-28 — the
+// per-tick xorshift chaos that previously rode on top of the sine
+// produced visibly jittery turn flickering at all engagement
+// distances; now removed. The slow sine wobble alone is enough to
+// keep aim imperfect without making the bot look palsied.
 constexpr float kAimWobbleAmp        = 0.10f;   // ~5.7°
-constexpr float kAimWobbleFreqPerTick = 0.18f;  // rad / tick; period ≈ 35 ticks (~580 ms)
-constexpr float kAimChaosAmp         = 0.06f;   // ~3.4°
+constexpr float kAimWobbleFreqPerTick = 0.08f;  // rad / tick; period ≈ 80 ticks (~1.3 s)
+
+// 2026-05-28 — terrain avoidance tunables.
+//
+// The bot casts a single forward ray of `kAvoidLookahead` world units
+// and a pair of left/right diagonal "feelers" at ±kAvoidFeelerAngle.
+// Whichever (forward, left, right) the cheapest hit lies on picks the
+// turn-away sign; the choice is then latched for `kAvoidCommitTicks`
+// ticks so the bot commits to one steering direction instead of
+// stuttering as the ray geometry crosses cell boundaries.
+constexpr float kAvoidLookahead       = 60.0f;   // world units (~2 ships)
+constexpr float kAvoidFeelerAngle     = 0.55f;   // ~32°
+constexpr int   kAvoidSamples         = 6;       // sample count along each ray
+constexpr std::uint16_t kAvoidCommitTicks = 18;  // 300 ms — long enough to clear an edge
 
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
@@ -88,9 +99,50 @@ struct ShipPos {
     float                    vx = 0, vy = 0;   ///< for aim-lead
 };
 
+/// Cast a ray of length `kAvoidLookahead` along `angle` from `(ox, oy)`
+/// and return the world-distance to the first solid cell, or +∞ when
+/// the ray clears `kAvoidSamples` points without finding terrain. The
+/// sampler also reports a "hit" when the ray exits the grid (treats
+/// off-grid as a wall) so bots don't fly off into the void.
+inline float castTerrainRay(const TerrainGrid& grid,
+                            float ox, float oy,
+                            float angle,
+                            float maxDist) noexcept {
+    if (grid.cellsX <= 0 || grid.cellsY <= 0) return maxDist;
+    const float sa = std::sin(angle);
+    const float ca = std::cos(angle);
+    // Ship-forward direction matches WeaponFireSystem's bullet forward
+    // (-sin θ, cos θ) so the ray casts in the same direction the ship
+    // would fire / thrust.
+    const float fx = -sa;
+    const float fy =  ca;
+    for (int i = 1; i <= kAvoidSamples; ++i) {
+        const float t = (static_cast<float>(i) / static_cast<float>(kAvoidSamples)) * maxDist;
+        const float wx = ox + fx * t;
+        const float wy = oy + fy * t;
+        const std::int32_t cx = static_cast<std::int32_t>(
+            std::floor(wx / kTileWorldUnits + 0.5f));
+        const std::int32_t cy = static_cast<std::int32_t>(
+            std::floor(wy / kTileWorldUnits + 0.5f));
+        if (!grid.inBounds(cx, cy)) return t;   // off-grid = wall
+        if (grid.attrAt(cx, cy) == Attribute::Solid) return t;
+    }
+    return maxDist;
+}
+
 } // namespace
 
-BotControlSystem::BotControlSystem(UserComponentIds ids) noexcept : ids_(ids) {}
+BotControlSystem::BotControlSystem(UserComponentIds ids) noexcept : ids_(ids) {
+    // M5.1 — seed every per-slot xorshift32 stream deterministically.
+    // Matches the M4.1 four-slot scheme (golden-ratio constant XOR'd
+    // with a per-slot dither), generalized so the up-to-63 bot slots
+    // each get an independent stream without aliasing the 4 humans.
+    for (std::size_t s = 0; s < rngBySlot_.size(); ++s) {
+        rngBySlot_[s] =
+            0x9E3779B9u ^ (0x85EBCA6Bu *
+                static_cast<std::uint32_t>(s + 1) + 1u);
+    }
+}
 
 void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
     const auto idsPi = ids_.playerInput;
@@ -244,13 +296,6 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                                                kAimWobbleFreqPerTick;
                         tgtAngle += std::sin(phaseRad) * kAimWobbleAmp;
                     }
-                    if (slot < rngBySlot_.size()) {
-                        // Map [0, 1) → [-1, 1) then scale to chaos amp.
-                        const float r = static_cast<float>(
-                            xorshift32(rngBySlot_[slot]) >> 8) /
-                            static_cast<float>(1u << 24);
-                        tgtAngle += (r * 2.0f - 1.0f) * kAimChaosAmp;
-                    }
 
                     const float curAngle  = orientationAngleZ(selfT.orientation);
                     const float angDelta  = wrapPi(tgtAngle - curAngle);
@@ -311,6 +356,43 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     if (angDelta >  kAngEpsilon) in.turnLeft  = 1;
                     if (angDelta < -kAngEpsilon) in.turnRight = 1;
                     if (std::fabs(angDelta) < kWanderFacingThrust) in.thrust = 1;
+                }
+
+                // ---- TERRAIN AVOIDANCE (overrides above) -----------
+                // Forward + ±feeler ray casts. If the central ray hits
+                // close terrain, override turn direction to the side
+                // whose feeler has more room. Latched for a few hundred
+                // ms so the bot commits to one steering side instead of
+                // ping-ponging across the same wall edge.
+                if (grid_ && slot < avoidSign_.size()) {
+                    if (avoidCommit_[slot] > 0) {
+                        avoidCommit_[slot] = static_cast<std::uint16_t>(avoidCommit_[slot] - 1);
+                    } else {
+                        avoidSign_[slot] = 0;
+                    }
+                    const float curA = orientationAngleZ(selfT.orientation);
+                    const float dC   = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
+                                                       curA, kAvoidLookahead);
+                    if (dC < kAvoidLookahead * 0.85f) {
+                        if (avoidSign_[slot] == 0) {
+                            const float dL = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
+                                                            curA + kAvoidFeelerAngle, kAvoidLookahead);
+                            const float dR = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
+                                                            curA - kAvoidFeelerAngle, kAvoidLookahead);
+                            avoidSign_[slot]   = (dL >= dR) ? std::int8_t{+1} : std::int8_t{-1};
+                            avoidCommit_[slot] = kAvoidCommitTicks;
+                        }
+                        // turnLeft = nose rotates CCW (positive Z). Sign
+                        // convention chosen so +1 turns toward the side
+                        // with more open space.
+                        in.turnLeft  = avoidSign_[slot] > 0 ? 1u : 0u;
+                        in.turnRight = avoidSign_[slot] < 0 ? 1u : 0u;
+                        // Don't thrust into a near wall — coast until the
+                        // ray clears.
+                        if (dC < kAvoidLookahead * 0.45f) {
+                            in.thrust = 0;
+                        }
+                    }
                 }
 
                 threadmaxx::addUserComponent(cb, idsPi, entities[row], in);

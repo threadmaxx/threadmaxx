@@ -10,6 +10,8 @@
 
 namespace tou2d {
 
+class ParticleSystem;
+
 /// M3.3 — runs after movement / collision / weaponFire. Owns the
 /// transition between alive ↔ dead ↔ respawning for every LocalPlayer
 /// ship.
@@ -65,6 +67,12 @@ public:
     /// empty world).
     void setTerrainGrid(const TerrainGrid* g) noexcept { grid_ = g; }
 
+    /// M5.3 — borrowed pointer to the demo's ParticleSystem. When set,
+    /// the alive→dead transition emits a death-explosion burst at the
+    /// ship's centroid in addition to the 8-ray debug-line starburst.
+    /// Null is fine (host-side tests with no particles wired up).
+    void setParticleSystem(ParticleSystem* p) noexcept { particles_ = p; }
+
     /// 3 s @ 60 Hz fixed step.
     static constexpr std::uint16_t kRespawnTicks = 180;
 
@@ -87,6 +95,7 @@ private:
     UserComponentIds                ids_;
     const MatchMode*                matchMode_ = nullptr;
     const TerrainGrid*              grid_      = nullptr;
+    ParticleSystem*                 particles_ = nullptr;
     /// Per-system RNG for random respawn picks. Seeded with a fixed
     /// constant in the ctor so replays / smoke tests are reproducible.
     std::mt19937                    rng_{0xBA51CF11u};

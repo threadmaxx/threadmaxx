@@ -13,10 +13,17 @@ namespace tou2d {
 namespace {
 
 // M3.1 Dumbfire tunables.
+//
+// 2026-05-28 — bullet visuals tightened per M5.2:
+//   * `kMuzzleOffset` dropped from 18 → 10 wu (ship sprite is 28 wu
+//     wide, half = 14 — so a 10 wu offset lands the bullet right at
+//     the nose tip instead of floating 4 wu ahead of it).
+//   * `kBulletScale` dropped from 4 → 2.4 wu — smaller bullet sprite
+//     so a sustained burst doesn't visually obscure the target.
 constexpr float         kMuzzleSpeed       = 600.0f;   // world units / s
 constexpr float         kBulletTtlSeconds  = 1.2f;
-constexpr float         kMuzzleOffset      = 18.0f;
-constexpr float         kBulletScale       = 4.0f;
+constexpr float         kMuzzleOffset      = 10.0f;
+constexpr float         kBulletScale       = 2.4f;
 // M4.5 — second nerf pass. 8 dmg vs Basic-ship 150 HP → TTK ≈ 19
 // hits at the new 6-tick cadence ≈ 1.9 s of held fire; vs Bee 50 HP
 // → ≈ 700 ms, vs Destroyer 300 HP → ≈ 3.8 s. Engagements now hinge on
@@ -31,18 +38,15 @@ constexpr float         kSpreadTtlSeconds    = 0.9f;
 // bursts to kill at the new ~370 ms burst cadence ≈ 3.7 s.
 constexpr std::uint8_t  kSpreadDamage        = 5;
 
-// M4.5 — per-shot / per-burst "loader" cooldown. Fire ALWAYS sets the
-// cooldown; the next trigger pull is gated on it returning to 0. This
-// is the "few hundred millis between bursts" the user asked for —
-// the chambered-round model where the gun has to re-feed between
-// shots regardless of how many rounds are left in the mag.
-//
-// Dumbfire: 6 ticks @ 60 Hz ≈ 100 ms — fast but not instant; full
-//   12-round magazine empties in 12 × 6 = 72 ticks ≈ 1.2 s.
-// Spread:   22 ticks @ 60 Hz ≈ 367 ms — clearly a "few hundred ms"
-//   gap between successive bursts; full 4-burst mag = 4 × 22 = 88
-//   ticks ≈ 1.5 s.
-constexpr std::uint16_t kDumbfireCooldownTicks =  6;
+// 2026-05-28 — per-shot loader cooldown. Reworked per M5.2 design:
+//   * Dumbfire fires forever (no reload, no magazine) on a 30-tick
+//     cooldown = 0.5 s — the user's "interval of maybe half second by
+//     default" for the always-on basic weapon.
+//   * Spread has a single-shot magazine and a generous post-burst
+//     reload (kSpreadReloadTicks ≈ 1.25 s in DemoTypes.hpp). The
+//     per-burst cooldown also stays in place but is short — the reload
+//     dominates the gap.
+constexpr std::uint16_t kDumbfireCooldownTicks = 30;   // 0.5 s
 constexpr std::uint16_t kSpreadCooldownTicks   = 22;
 
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
@@ -164,20 +168,9 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                 const auto& shipV = velocities[row];
 
                 // ---- Tick reloads + loader cooldowns down first -----
-                // A reload that LANDS this tick (reloadIn == 1 → 0)
-                // refills ammo but is NOT yet eligible to fire this
-                // step — fire below uses `reloadIn == 0` AFTER the
-                // refill, so the player gets one tick of "ready but
-                // not used" delay between reload end and the next
-                // shot. Tiny, but deliberate: it prevents an exploit
-                // where holding fire across the reload window snaps
-                // off the next mag with zero gap.
-                if (ld.dumbfireReloadIn > 0) {
-                    ld.dumbfireReloadIn = static_cast<std::uint16_t>(ld.dumbfireReloadIn - 1);
-                    if (ld.dumbfireReloadIn == 0) {
-                        ld.dumbfireAmmo = kDumbfireMagazine;
-                    }
-                }
+                // 2026-05-28 — dumbfire never reloads (infinite ammo
+                // on the basic weapon per M5.2). Only the spread
+                // reload chain ticks here.
                 if (ld.spreadReloadIn > 0) {
                     ld.spreadReloadIn = static_cast<std::uint16_t>(ld.spreadReloadIn - 1);
                     if (ld.spreadReloadIn == 0) {
@@ -195,15 +188,10 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                 }
 
                 // ---- Dumbfire (fireBasic) ---------------------------
-                // Gate: input held AND ammo available AND not reloading
-                // AND the per-shot loader is ready. Loader is set on
-                // EVERY fire so holding the trigger fires at the
-                // cooldown cadence rather than every tick.
-                const bool canDumbfire =
-                    ld.dumbfireReloadIn == 0 &&
-                    ld.dumbfireCooldown == 0 &&
-                    ld.dumbfireAmmo > 0;
-                if (in.fireBasic && canDumbfire) {
+                // 2026-05-28 — infinite ammo, no reload. Gate is just
+                // "input held AND per-shot cooldown ready". `ld.dumbfireAmmo`
+                // stays pinned at the magazine size for HUD compat.
+                if (in.fireBasic && ld.dumbfireCooldown == 0) {
                     spawnBullet(ctx, cb, idsBl, shipT, shipV,
                                 angle,
                                 kMuzzleSpeed,
@@ -211,11 +199,7 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                                 kDumbfireDamage,
                                 /*weaponKind*/ 0,
                                 ownerSlot);
-                    ld.dumbfireAmmo     = static_cast<std::uint16_t>(ld.dumbfireAmmo - 1);
                     ld.dumbfireCooldown = kDumbfireCooldownTicks;
-                    if (ld.dumbfireAmmo == 0) {
-                        ld.dumbfireReloadIn = kDumbfireReloadTicks;
-                    }
                     if (engine_) {
                         engine_->events<AudioPlay>().emit(
                             AudioPlay{audio::kSoundDumbfire, 0, 0});

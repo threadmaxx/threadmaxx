@@ -30,6 +30,7 @@ add_library(tou2d_core STATIC
     BulletTerrainSystem.cpp
     BulletShipCollisionSystem.cpp
     ShipLifecycleSystem.cpp
+    ParticleSystem.cpp
     BotControlSystem.cpp
     HudSystem.cpp
     RoundRestartSystem.cpp

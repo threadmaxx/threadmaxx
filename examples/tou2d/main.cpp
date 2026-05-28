@@ -120,11 +120,17 @@ int main(int argc, char** argv) {
     std::uint64_t      maxTicks  = 0;
     std::string        levelDir;
     tou2d::MatchMode   matchMode = tou2d::MatchMode::Deathmatch;
+    // M5.1 — humans + bots configurable. Defaults match the prior
+    // 1 human / 3 bots posture so smoke tests keep their shape.
+    std::uint8_t       numHumans = 1;
+    std::uint8_t       numBots   = 3;
 
     // Lightweight arg parse — supports any order of:
-    //   <N>            : bounded run for N ticks (otherwise headless / Ctrl-C)
-    //   --level <path> : load imported level dir produced by tou2d_import_lev
-    //   --mode=<dm|lss>: deathmatch (default) or last-ship-standing
+    //   <N>             : bounded run for N ticks (otherwise headless / Ctrl-C)
+    //   --level <path>  : load imported level dir produced by tou2d_import_lev
+    //   --mode=<dm|lss> : deathmatch (default) or last-ship-standing
+    //   --humans=N      : number of local-keyboard players (1..4; default 1)
+    //   --bots=N        : number of AI ships (0..63; default 3)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--level" && i + 1 < argc) {
@@ -140,12 +146,38 @@ int main(int argc, char** argv) {
                     "[tou2d] --mode=%s — expected dm|lss\n", val.c_str());
                 return 2;
             }
+        } else if (a.rfind("--humans=", 0) == 0) {
+            const long v = std::strtol(a.c_str() + 9, nullptr, 10);
+            if (v < 1 || v > static_cast<long>(tou2d::kMaxHumans)) {
+                std::fprintf(stderr,
+                    "[tou2d] --humans=%ld — expected 1..%u\n",
+                    v, unsigned(tou2d::kMaxHumans));
+                return 2;
+            }
+            numHumans = static_cast<std::uint8_t>(v);
+        } else if (a.rfind("--bots=", 0) == 0) {
+            const long v = std::strtol(a.c_str() + 7, nullptr, 10);
+            if (v < 0 || v > static_cast<long>(tou2d::kMaxBots)) {
+                std::fprintf(stderr,
+                    "[tou2d] --bots=%ld — expected 0..%u\n",
+                    v, unsigned(tou2d::kMaxBots));
+                return 2;
+            }
+            numBots = static_cast<std::uint8_t>(v);
         } else if (!a.empty() && std::isdigit(static_cast<unsigned char>(a[0]))) {
             maxTicks = std::strtoull(a.c_str(), nullptr, 10);
         } else {
             std::fprintf(stderr, "[tou2d] unknown arg '%s'\n", a.c_str());
             return 2;
         }
+    }
+
+    // Minimum 2 ships total so deathmatch / LSS has someone to shoot at.
+    if (numHumans + numBots < 2) {
+        std::fprintf(stderr,
+            "[tou2d] need at least 2 entities total (got %u humans + %u bots)\n",
+            unsigned(numHumans), unsigned(numBots));
+        return 2;
     }
 
     if (!glfwInit()) {
@@ -187,10 +219,13 @@ int main(int argc, char** argv) {
     tou2d::SpriteCompositor compositor;
     game.setSpriteCompositor(&compositor);
     game.setMatchMode(matchMode);
+    game.setPlayerCounts(numHumans, numBots);
     std::printf("[tou2d] match mode: %s\n",
                 matchMode == tou2d::MatchMode::LastShipStanding
                     ? "last-ship-standing"
                     : "deathmatch");
+    std::printf("[tou2d] players: %u human + %u bots\n",
+                unsigned(numHumans), unsigned(numBots));
 
     threadmaxx_vk::VulkanRenderer::Config vrcfg;
     vrcfg.width          = kInitialWidth;
@@ -275,25 +310,33 @@ int main(int argc, char** argv) {
             const int px0 = imgCx * tilePx;
             const int py0 = imgCy * tilePx;
 
-            const int clampedX0 = std::max(0, px0);
-            const int clampedY0 = std::max(0, py0);
-            const int clampedX1 = std::min(width,  px0 + tilePx);
-            const int clampedY1 = std::min(height, py0 + tilePx);
+            // 2026-05-28 (rev 2) — narrow the bleed from +2 → +1 px and
+            // restore the legacy M3.4 edge-fade. The wider +2 bleed felt
+            // too aggressive on the now-denser 4 px grid (overwrote the
+            // outline of neighbouring still-alive tiles); a single
+            // pixel of overlap is enough to cover the seam residue, and
+            // the soft fade reads more like rocky scarring than a hard
+            // void rectangle.
+            constexpr int kDestructionBleed = 1;
+            const int rawX0 = px0 - kDestructionBleed;
+            const int rawY0 = py0 - kDestructionBleed;
+            const int rawX1 = px0 + tilePx + kDestructionBleed;
+            const int rawY1 = py0 + tilePx + kDestructionBleed;
+            const int clampedX0 = std::max(0, rawX0);
+            const int clampedY0 = std::max(0, rawY0);
+            const int clampedX1 = std::min(width,  rawX1);
+            const int clampedY1 = std::min(height, rawY1);
             if (clampedX1 <= clampedX0 || clampedY1 <= clampedY0) return;
 
-            // M3.4 — anti-chunkiness paint. Solid black fill makes the
-            // pxPerTile grid visible after destruction; instead darken
-            // each pixel by an envelope that:
-            //   * fades from ~75% of original at the rect's edge to ~0%
-            //     at the rect's interior (chebyshev distance from edge)
-            //   * adds a per-pixel hash-jitter (±10%) so the dark zone
-            //     reads as rocky texture rather than a flat fill
-            // When two adjacent tiles fall, each keeps its own edge
-            // falloff and the seam reads as a damage-crack instead of a
-            // straight grid line.
-            const int   rectW = clampedX1 - clampedX0;
-            const int   rectH = clampedY1 - clampedY0;
-            const float half  = static_cast<float>(std::min(rectW, rectH)) * 0.5f;
+            // Anti-chunkiness paint (re-landed). Per-pixel darkening
+            // envelope: chebyshev distance from rect edge → fade
+            // strength (edges keep ~25% of source; centers go near
+            // pure void). xor-hash jitter (±10%) breaks up the flat
+            // fill so the patch reads as rough rock instead of a clean
+            // black rectangle.
+            const int   rectW   = clampedX1 - clampedX0;
+            const int   rectH   = clampedY1 - clampedY0;
+            const float half    = static_cast<float>(std::min(rectW, rectH)) * 0.5f;
             const float invHalf = half > 0.0f ? 1.0f / half : 1.0f;
             for (int y = clampedY0; y < clampedY1; ++y) {
                 const int dyEdge = std::min(y - clampedY0, clampedY1 - 1 - y);
@@ -302,15 +345,11 @@ int main(int argc, char** argv) {
                     const int edge   = std::min(dxEdge, dyEdge);
                     const float t    = std::min(1.0f, static_cast<float>(edge) * invHalf);
 
-                    // Cheap xor-mix hash on (x, y). Top byte gives a
-                    // uniform [-1, +1] when normalized; scale to ±0.1.
                     const std::uint32_t h =
                         (static_cast<std::uint32_t>(x) * 0x9E3779B1u) ^
                         (static_cast<std::uint32_t>(y) * 0x85EBCA77u);
                     const float jitter =
                         (static_cast<float>(h >> 24) / 255.0f - 0.5f) * 0.2f;
-
-                    // 0.25 at edge → 1.10 at center (clamped to 1.0).
                     const float darken =
                         std::clamp(0.25f + 0.85f * t + jitter, 0.0f, 1.0f);
                     const float keep   = 1.0f - darken;

@@ -12,6 +12,8 @@ namespace threadmaxx { class Engine; }
 
 namespace tou2d {
 
+class ParticleSystem;
+
 /// M3.5 — bullet-vs-ship hit detection + damage + frag credit.
 ///
 /// Runs BEFORE `BulletTerrainSystem` in registration order so a bullet
@@ -90,6 +92,12 @@ public:
     /// takes effect on the next tick without restarting the engine.
     void setMatchMode(const MatchMode* mode) noexcept { matchMode_ = mode; }
 
+    /// M5.3 — borrowed pointer to the demo's ParticleSystem. When set,
+    /// every bullet-ship intersection emits a 5-particle spark burst
+    /// at the bullet's centroid (its `(bx, by)` at the moment of
+    /// detection). Null is fine.
+    void setParticleSystem(ParticleSystem* p) noexcept { particles_ = p; }
+
 private:
     UserComponentIds                   ids_;
     threadmaxx::Engine*                engine_      = nullptr;
@@ -97,6 +105,7 @@ private:
     std::uint8_t*                      winnerSlot_  = nullptr;
     std::uint16_t*                     winnerKills_ = nullptr;
     const MatchMode*                   matchMode_   = nullptr;
+    ParticleSystem*                    particles_   = nullptr;
 };
 
 } // namespace tou2d

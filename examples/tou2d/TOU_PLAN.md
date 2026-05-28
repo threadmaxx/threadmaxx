@@ -862,12 +862,271 @@ Mirrors the ChatGPT notes' suggested milestone order, refined with TOU-import wo
 - **Acceptance**: 1 human + 3 bots deathmatch on jungle with original sounds and original ship sprites runs at fixed 60 Hz for ≥ 5 minutes with no crashes / OOMs. — bounded `300 ticks` smoke run lands the sprite layer + audio bank with no errors; full 5-minute interactive run is for the user's machine to verify.
 
 ### Milestone 5 — Polish + replay (stretch)
-- Shared dynamic camera framing all live ships.
+- M5.1 — configurable humans/bots + split-screen cameras (**LANDED ✅**).
+- Shared dynamic camera framing all live ships (now superseded by M5.1's
+  per-human split — bot ships do not get cameras, see § M5.1 below).
 - Particle fidelity polish (explosions, debris, smoke).
 - Replay capture (input log + commit-hash stream) + playback.
 - Procedural-level generation pass (Tier 0 GG themes already imported, just need the generator).
 - More weapons toward the original's 50+.
 - **Acceptance**: replay round-trips bit-identical (`commitHash` stream matches frame-for-frame).
+
+#### M5.1 — Configurable humans/bots + split-screen (LANDED ✅)
+
+**Player counts.** `--humans=N` (1..4) and `--bots=M` (0..63) flags
+select the match composition. Defaults `1 + 3` so prior smoke tests
+keep their shape. The two flags compose freely with `--mode=` and
+`--level <path>`; a combined minimum of `humans + bots >= 2` is
+enforced at parse time so a match always has at least two ships.
+Hard ceilings come from `examples/tou2d/DemoTypes.hpp`:
+
+```cpp
+inline constexpr std::uint8_t kMaxHumans = 4;          // 4 keyboard rows
+inline constexpr std::uint8_t kMaxBots   = 63;         // matches original TOU
+inline constexpr std::size_t  kMaxPlayerSlots =        // = 67
+    static_cast<std::size_t>(kMaxHumans) +
+    static_cast<std::size_t>(kMaxBots);
+```
+
+Per-slot bookkeeping arrays in `BulletShipCollisionSystem` (dmg /
+firstShooter / killerByVictim / killsBySlotPostTick / ships gather),
+`BulletTerrainSystem` (tilesDelta), and `BotControlSystem`
+(rngBySlot / retreating / wanderTicksLeft / wanderAngle /
+aimWobblePhase) all size to `kMaxPlayerSlots`. `LocalPlayer::slot` is
+`uint8_t` so the hard ceiling stays at 255 ship slots even if the
+constants grow.
+
+**Spawn layout.** Slot 0 stays at the world origin (P1) so the
+existing headless smoke test still finds it. Slots 1..N are placed on
+a ring of radius `max(40, 18 * sqrt(N))` world units — empirical pick
+that keeps spacing roughly constant as N grows from 4 to 67. Sprite
+atlases are loaded once for the 4 canonical palettes (yellow / blue /
+red / green); bots beyond slot 3 cycle their atlas via `slot % 4` so
+team colors repeat in the expected order without per-bot atlas
+duplication. Ship kinds (Basic / Bee / X Wing / Destroyer) cycle the
+same way.
+
+**Split-screen camera layout.** `CameraSystem` is now multi-camera:
+it latches every HUMAN ship's position (`isBot == 0`) and emits one
+camera per human via `RenderFrameBuilder::addCamera`, each carrying a
+normalized `Camera::viewport` rect:
+
+```
+numHumans = 1 → { 0.0, 0.0, 1.0, 1.0 }                 full screen
+numHumans = 2 → slot 0 { 0.0, 0.0, 0.5, 1.0 } (left)
+                slot 1 { 0.5, 0.0, 0.5, 1.0 } (right)
+numHumans = 3 → slot 0 { 0.0, 0.0, 0.5, 0.5 } TL
+                slot 1 { 0.5, 0.0, 0.5, 0.5 } TR
+                slot 2 { 0.0, 0.5, 0.5, 0.5 } BL
+                — quadrant BR has no camera; the framebuffer's
+                  default clear color (renderpass-time) leaves it
+                  black, satisfying the user's "one section is black"
+                  requirement without any special-case rendering.
+numHumans = 4 → 2×2 grid (slot 0 TL, 1 TR, 2 BL, 3 BR)
+```
+
+Bots **never** get a camera. The renderer already supported per-
+camera viewports via `Camera::viewport` (§3.11.2 batch D2; landed
+2026-05-20), so no renderer changes were required — the camera
+system just sets the field. Each camera independently computes its
+view/proj matrix using the per-viewport aspect ratio
+(`viewportAspect()`), so a half-width or quarter-screen quadrant
+still has square pixels.
+
+**Per-viewport HUD.** `HudSystem` rewrote its anchor model: every
+human's badge / score-pip row / HP bar / ammo strips pin to the
+TOP-LEFT corner of THAT human's viewport in world units (relative to
+their own camera follow center). The old "4 corners of a single
+camera" layout is gone. Bots never see a HUD (the loop iterates only
+slots `[0, numHumans)`). The winner banner anchors to slot 0's
+follow center.
+
+**Known limitation.** Debug geometry is world-space; if two humans
+fight in close enough quarters that one camera's view rect overlaps
+another's, the HUD elements drawn at each player's view-corner will
+appear in both viewports. In typical play (players move apart to
+shoot at each other) this never happens; in pile-on close combat,
+each player's HUD pips can briefly leak into a neighbor's quadrant.
+A future M5.x batch could plumb camera-id-scoped debug-geom through
+the renderer; for v1 the leak is documented and accepted.
+
+**Code landed:**
+- `examples/tou2d/DemoTypes.hpp` — `kMaxHumans` / `kMaxBots` /
+  `kMaxPlayerSlots` constants.
+- `examples/tou2d/main.cpp` — `--humans=N` / `--bots=M` arg parsing +
+  total-≥-2 validation + propagation via `game.setPlayerCounts`.
+- `examples/tou2d/TouGame.{hpp,cpp}` — `setPlayerCounts(numHumans,
+  numBots)`; `playerShips_` is now `std::vector<EntityHandle>`; spawn
+  loop iterates `[0, numHumans+numBots)` placing ships on a radius-
+  scaled ring; `numHumans_` propagated to `CameraSystem` via
+  `setNumHumans`.
+- `examples/tou2d/CameraSystem.{hpp,cpp}` — per-human follow array;
+  `viewportFor(humanSlot)` returns the normalized rect for the
+  current layout; `buildRenderFrame` emits one camera per human;
+  helper accessors `numHumans()`, `viewportAspect()`,
+  `followCenter(slot)`.
+- `examples/tou2d/HudSystem.cpp` — replaced 4-corner single-camera
+  HUD with per-viewport top-left HUD; winner banner anchors to slot 0.
+- `examples/tou2d/BulletShipCollisionSystem.cpp` /
+  `BulletTerrainSystem.cpp` — per-slot arrays grew 16 → 67.
+- `examples/tou2d/BotControlSystem.{hpp,cpp}` — per-slot RNG /
+  retreat / wander / aim-wobble arrays grew 4 → 67; ctor seeds every
+  slot deterministically.
+
+**Smoke matrix.** Bounded runs at `--level <jungle>`:
+
+| Args                          | Result |
+|-------------------------------|--------|
+| (defaults — 1h+3b)            | exits 60-tick smoke cleanly with `[tou2d] players: 1 human + 3 bots` |
+| `--humans=2 --bots=2`         | exits 60-tick smoke cleanly |
+| `--humans=3 --bots=0`         | exits 60-tick smoke cleanly |
+| `--humans=4 --bots=10`        | exits 60-tick smoke cleanly |
+| `--humans=1 --bots=63`        | exits 120-tick smoke cleanly (67 ships total) |
+| `--humans=0`                  | rejects: `expected 1..4` |
+| `--humans=1 --bots=0`         | rejects: `need at least 2 entities total` |
+| `--bots=64`                   | rejects: `expected 0..63` |
+
+`ctest -R tou2d` continues to pass all 3 tests (shp_import, pal_col,
+shp_body). Clean build under `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON`.
+
+**Still TBD** (not blockers — explicitly out of M5.1 scope):
+- The "shared dynamic camera that scales zoom to fit" mode from § 1
+  is superseded by per-human split; if a "frame all live ships"
+  spectator camera is wanted later, it lands as a new system reading
+  every Transform.
+- HUD leak in close combat (see "Known limitation" above).
+- Interactive (non-headless) verification that split-screen quadrants
+  composite correctly — bounded smoke confirms wiring but not pixel
+  correctness; the user runs the unbounded binary on their machine to
+  see the actual layout.
+
+#### M5.2 — Polish round 1 (LANDED ✅, 2026-05-28)
+
+Follow-up fixes after the user ran M5.1 on their box and reported a
+batch of issues. Touches no engine internals — all edits land under
+`examples/tou2d/` and `examples/vulkan_renderer/`.
+
+**Split-screen background + foreground per camera (renderer):**
+`VulkanRenderer::Impl::recordCamera` now issues both the world-
+anchored background draw AND the foreground sprite-layer draw
+INSIDE the camera loop, using each camera's own `viewProj`. The
+previous code drew background once pre-loop and foreground once
+post-loop using `cam[0]` — visually correct in single-camera mode
+but obviously wrong in split-screen (non-primary viewports showed
+no background at all and the foreground sprite layer was placed by
+P1's viewProj across the whole framebuffer, so the other viewports
+showed P1's sprite arrangement at the wrong world position).
+
+**Random spawn for all ships (TouGame):** dropped the slot-0-at-origin
+ring spawn; every ship now samples a random Air cell via
+`sampleRandomRespawn`, falling back to the ring on grid failure.
+Headless smoke test still finds P1 via `playerShip()` (handle, not
+position).
+
+**Bot AI calmer + terrain-aware (BotControlSystem):** removed the
+per-tick xorshift chaos that previously perturbed the engaged-aim
+heading by ±3.4° every tick (visible as jittery turn flickering
+near the fire arc edge). Sine wobble period slowed from ~580 ms to
+~1.3 s. Added a 3-ray terrain ray-caster (forward + ±32° feelers
+@ 60 wu lookahead): on a forward hit the bot picks the side with
+more open feeler space, latches the turn direction for 300 ms,
+and stops thrusting if the forward hit is <45% of the lookahead.
+Wired by `TouGame::onSetup` via `botControl->setTerrainGrid(&grid_)`.
+
+**Reload rework (DemoTypes + WeaponFireSystem):** basic weapon is
+now infinite-fire on a 0.5 s (30-tick) cooldown — no magazine, no
+reload. Special (spread) has a 1-shot magazine and reloads 1.25 s
+after each burst. `kDumbfireReloadTicks = 0`, magazine pinned at 1
+for visual "ready" pip; WeaponFireSystem skips the dumbfire
+ammo-decrement + reload-start branch.
+
+**Death sprite + overlap fix (SpriteCompositor):** rebuilt
+`tick()` as a three-pass routine — (A) clear EVERY cached prev
+rect, (B) blit every visible ship and re-record its prev rect,
+(C) drop cache entries we didn't see this tick. Solves two bugs:
+dead ships now vanish the same tick they go into DisabledTag
+(Pass A clears the rect; Pass C drops the cache entry), AND
+overlapping sprites no longer produce a black-patch artifact when
+their bounding rects cross (all prev clears happen before any
+blit).
+
+**Denser terrain + wider destruction (DemoTypes + main):**
+`kImportedPxPerTile` dropped from 8 → 4 (4× denser destruction
+grid). The `BackgroundPainter::paintTile` overpaints a +1-px
+bleed past each cell's edge to cover seam residue between adjacent
+wrecked cells (rev 2 narrowed from the original +2 — 2 px was too
+aggressive on the denser 4 px grid and overwrote outlines of
+neighbouring still-alive tiles). The legacy M3.4 edge-fade
+(chebyshev-distance darken envelope + ±10% xor-hash jitter) is
+preserved, so destroyed patches read as rocky scarring rather
+than a flat black rectangle, while the +1-px overlap still kills
+the inter-tile seam.
+
+**Bullet visuals tightened (WeaponFireSystem):** `kMuzzleOffset`
+18 → 10 wu (bullet spawns at the ship's nose tip, not 4 wu ahead
+of it); `kBulletScale` 4 → 2.4 (smaller visual footprint, less
+target obscuration on sustained fire).
+
+**Ship stat rebalance (DemoTypes):** all 9 kinds rebased on a
+(strength=2.5, thrust=2.5, turn=2.5) baseline with a single
+25%-bonus stat (`kBalancedKindBonus = 1.25`) marking each kind's
+primary character. Replaces the prior 6× spread (Bee 10× thrust,
+Destroyer 6× strength) with subtle differentiation. Basic = pure
+baseline.
+
+**Smoke matrix passes** under both Release and `-Werror`:
+1+3 (default), 2+2, 3+0, 1+63 all complete bounded ticks; full
+`ctest` (131 tests) green; tou2d unit tests still pass.
+
+#### M5.3 — Particle FX polish (LANDED ✅, 2026-05-28)
+
+Layered on top of M5.2's just-cleaned death-sprite path. New file
+`examples/tou2d/ParticleSystem.{hpp,cpp}` owns a fixed-size pool
+(`kMaxParticles = 256`) of pure-POD `Particle` records and emits
+world-space `DebugPoint` instances each frame via the existing
+debug-geom path — no new renderer pipeline, no new public engine
+surface. Three FX families, each tuned to a different motion model:
+
+| Effect | Trigger | Count | Color | Lifetime | Gravity |
+|---|---|---|---|---|---|
+| Death debris | `ShipLifecycleSystem` alive→dead | 16 | slot RGB | 35-55 ticks | +220 wu/s² (falls) |
+| Death smoke | same | 10 | dark gray | 60-90 ticks | -45 wu/s² (rises) + drag |
+| Impact spark | `BulletShipCollisionSystem` on hit | 5 | dumbfire=yellow, spread=orange | 8-16 ticks | 0 |
+| Tile-break dust | `BulletTerrainSystem` on cell HP=0 | 6 | dirt brown | 18-28 ticks | +220 wu/s² (falls) |
+
+`ParticleSystem` registers as its own no-conflict wave (`reads = {}`,
+`writes = {}`) placed FIRST in registration order. Its `update()`
+integrates existing particles BEFORE any emitter runs, so freshly
+spawned particles render at their spawn position this tick and start
+integrating next tick — clean spawn frame, no half-tick drift.
+
+`buildRenderFrame()` walks the pool and emits one `DebugPoint` per
+active particle, with alpha = `(ttl/maxTtl)^exponent` (exponent per
+kind: debris=1.4 "stays bright then crashes", smoke=0.85 "smooth
+fade", spark=2.0 "bright flash") and `pixelSize` linearly interpolated
+toward `kPxShrinkMin = 0.6` as ttl runs out.
+
+Pool overwrite is round-robin via a `head_` index — past 256
+simultaneous particles the oldest get clobbered first. At 26
+particles per ship death + 5 per bullet hit + 6 per tile break, 256
+gives ~10 deaths worth of headroom; in practice the pool clears out
+inside ~90 ticks (worst-case smoke lifetime).
+
+Determinism: `std::mt19937{0xFEEDBEEFu}` seed, fixed across runs.
+Same emission stream → same render stream tick-for-tick. The 8-ray
+debug-line starburst in `ShipLifecycleSystem::buildRenderFrame` is
+PRESERVED — particles layer on top as the lingering aftermath; the
+line burst still serves as the bright initial flash.
+
+CMake gating: `ParticleSystem.cpp` added to `tou2d_core`'s source
+list; no new dependencies. ShipLifecycleSystem /
+BulletShipCollisionSystem / BulletTerrainSystem each gained a
+`setParticleSystem(ParticleSystem*)` setter and a borrowed pointer
+field — null is safe for host-side tests that don't wire it.
+
+**Build matrix passes** under both Release and `-Werror`:
+1+3 (default), 2+2, 1+63 all complete bounded ticks cleanly; full
+`ctest` (131 tests) green.
 
 ### Out of scope for v1
 - Split-screen (deferred per § 1).

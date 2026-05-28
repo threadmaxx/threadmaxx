@@ -1,5 +1,7 @@
 #include "BulletTerrainSystem.hpp"
 
+#include "ParticleSystem.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Engine.hpp>
 #include <threadmaxx/EventChannel.hpp>
@@ -15,6 +17,10 @@ namespace {
 inline std::int32_t worldToCell(float wx) noexcept {
     return static_cast<std::int32_t>(
         std::floor((wx + kTileWorldUnits * 0.5f) / kTileWorldUnits));
+}
+
+inline float cellCenterWorld(std::int32_t cell) noexcept {
+    return static_cast<float>(cell) * kTileWorldUnits;
 }
 
 } // namespace
@@ -38,7 +44,7 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
         // different chunks. Kills (deathmatch score) are handled by
         // BulletShipCollisionSystem; this only tracks the secondary
         // `tilesDestroyed` wreckage counter.
-        std::array<std::uint32_t, 16> tilesDelta{};
+        std::array<std::uint32_t, kMaxPlayerSlots> tilesDelta{};
 
         for (const auto* chunkPtr : view.chunks()) {
             if (!chunkPtr) continue;
@@ -79,6 +85,15 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
                     if (engine_) {
                         engine_->events<AudioPlay>().emit(
                             AudioPlay{audio::kSoundTileBreak, 0, 0});
+                    }
+                    // M5.3 — dust burst at the broken cell's world
+                    // center. Visually anchors the destruction to the
+                    // affected tile rather than wherever the bullet
+                    // happened to be when it triggered the break.
+                    if (particles_) {
+                        particles_->emitTileBreakDust(
+                            cellCenterWorld(cx),
+                            cellCenterWorld(cy));
                     }
                 } else {
                     grid_->hp[grid_->indexOf(cx, cy)] =

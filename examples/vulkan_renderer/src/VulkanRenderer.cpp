@@ -1102,55 +1102,13 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
     VkRect2D sc = {{0, 0}, ext};
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    // ---- Background (M2.8 → M3.2 world-space) -----------------------------
-    //
-    // World-space textured quad spanning ± `backgroundWorldHalfW/H`,
-    // sampled via `camera 0`'s viewProj. As the camera moves, the
-    // JPG appears anchored to the world — the same image position
-    // tracks the same world position. Depth test/write OFF so it
-    // never occludes anything; opaque draws overpaint freely.
-    //
-    // Skipped when there's no backdrop installed OR no camera (smoke
-    // frames before the first user `addCamera` call).
-    if (backgroundDescriptorSet != VK_NULL_HANDLE &&
-        pipes.backgroundPipe()  != VK_NULL_HANDLE &&
-        !frame.cameras.empty()) {
-        const auto& cam = frame.cameras[0];
-
-        // viewProj = projection * view, column-major. worldRect packs
-        // (centerX, centerY, halfW, halfH) so the vertex shader can
-        // place a non-origin-centered quad without changing layout.
-        struct BackgroundPush {
-            float viewProj[16];
-            float worldRect[4];   // centerX, centerY, halfW, halfH
-        } push = {};
-        for (int col = 0; col < 4; ++col) {
-            for (int row = 0; row < 4; ++row) {
-                float s = 0.0f;
-                for (int k = 0; k < 4; ++k) {
-                    s += cam.projection[static_cast<std::size_t>(k * 4 + row)] *
-                         cam.view[static_cast<std::size_t>(col * 4 + k)];
-                }
-                push.viewProj[col * 4 + row] = s;
-            }
-        }
-        push.worldRect[0] = backgroundWorldCenterX;
-        push.worldRect[1] = backgroundWorldCenterY;
-        push.worldRect[2] = backgroundWorldHalfW;
-        push.worldRect[3] = backgroundWorldHalfH;
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipes.backgroundPipe());
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipes.backgroundLayout(), /*firstSet=*/0,
-                                1, &backgroundDescriptorSet, 0, nullptr);
-        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(push), &push);
-        vkCmdDraw(cmd, 6, 1, 0, 0);
-    }
-
     // ---- Multi-camera pass --------------------------------------------------
+    // 2026-05-28 — background + foreground draws are NOW issued
+    // inside recordCamera so each split-screen viewport gets its own
+    // world-anchored sampling. Previously this region pre-loop drew
+    // the background once using cam[0] and the post-loop drew the
+    // foreground once using cam[0] — both visually wrong in any
+    // non-primary viewport.
     auto tPackStart = profileEnabled ? std::chrono::steady_clock::now()
                                      : std::chrono::steady_clock::time_point{};
     std::uint64_t totalInstancesThisFrame = 0;
@@ -1408,47 +1366,9 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
         }
     }
 
-    // ---- M4.8 — Foreground sprite layer (single draw, last) ---------------
-    //
-    // Shares the background pipeline; the sole differences are the
-    // bound descriptor set and the push-constant `worldRect`. Drawn
-    // AFTER every camera pass so opaque cubes / debug overlays show
-    // through the sprite's transparent pixels and ship sprites sit on
-    // top of in-flight bullets. Camera 0 supplies the viewProj — for
-    // tou2d's single-camera setup that's the entire game view.
-    if (foregroundDescriptorSet != VK_NULL_HANDLE &&
-        pipes.backgroundPipe()  != VK_NULL_HANDLE &&
-        !frame.cameras.empty()) {
-        const auto& cam = frame.cameras[0];
-        struct ForegroundPush {
-            float viewProj[16];
-            float worldRect[4];
-        } push = {};
-        for (int col = 0; col < 4; ++col) {
-            for (int row = 0; row < 4; ++row) {
-                float s = 0.0f;
-                for (int k = 0; k < 4; ++k) {
-                    s += cam.projection[static_cast<std::size_t>(k * 4 + row)] *
-                         cam.view[static_cast<std::size_t>(col * 4 + k)];
-                }
-                push.viewProj[col * 4 + row] = s;
-            }
-        }
-        push.worldRect[0] = foregroundWorldCenterX;
-        push.worldRect[1] = foregroundWorldCenterY;
-        push.worldRect[2] = foregroundWorldHalfW;
-        push.worldRect[3] = foregroundWorldHalfH;
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipes.backgroundPipe());
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipes.backgroundLayout(), /*firstSet=*/0,
-                                1, &foregroundDescriptorSet, 0, nullptr);
-        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(push), &push);
-        vkCmdDraw(cmd, 6, 1, 0, 0);
-    }
+    // 2026-05-28 — foreground sprite layer is now drawn inside
+    // recordCamera (after debug points), so each split-screen
+    // viewport rasterizes the foreground through its own viewProj.
 
     vkCmdEndRendering(cmd);
 
@@ -1546,6 +1466,34 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
 
     (void)cameraIndex;
 
+    // ---- Background quad (per-camera) ---------------------------------------
+    // 2026-05-28 — moved INTO recordCamera so split-screen viewports
+    // each get the world-anchored background sampled through their own
+    // viewProj (pre-this-batch the background was drawn once before the
+    // camera loop using cam[0], so non-first viewports showed nothing
+    // behind the foreground sprites + opaque cubes).
+    if (backgroundDescriptorSet != VK_NULL_HANDLE &&
+        pipes.backgroundPipe()  != VK_NULL_HANDLE) {
+        struct BackgroundPush {
+            float viewProj[16];
+            float worldRect[4];
+        } push = {};
+        std::memcpy(push.viewProj, vp, sizeof(vp));
+        push.worldRect[0] = backgroundWorldCenterX;
+        push.worldRect[1] = backgroundWorldCenterY;
+        push.worldRect[2] = backgroundWorldHalfW;
+        push.worldRect[3] = backgroundWorldHalfH;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipes.backgroundPipe());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipes.backgroundLayout(), /*firstSet=*/0,
+                                1, &backgroundDescriptorSet, 0, nullptr);
+        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
+                           VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
+    }
+
     // ---- Opaque pass --------------------------------------------------------
     // §3.11.2 batch D2 — instances were pre-packed in recordFrame;
     // §3.11 batch 9b.2b — each camera's slice is now a list of
@@ -1635,6 +1583,34 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
         VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &pf.debugPointBuffer, &off);
         vkCmdDraw(cmd, pf.debugPointCount, 1, 0, 0);
+    }
+
+    // ---- Foreground sprite layer (per-camera) -------------------------------
+    // 2026-05-28 — moved INTO recordCamera so split-screen viewports
+    // each rasterize the foreground sprite atlas through their OWN
+    // viewProj. Before this batch the foreground was drawn once after
+    // the camera loop using cam[0], which produced visually wrong
+    // sprite placement in any non-primary viewport.
+    if (foregroundDescriptorSet != VK_NULL_HANDLE &&
+        pipes.backgroundPipe()  != VK_NULL_HANDLE) {
+        struct ForegroundPush {
+            float viewProj[16];
+            float worldRect[4];
+        } push = {};
+        std::memcpy(push.viewProj, vp, sizeof(vp));
+        push.worldRect[0] = foregroundWorldCenterX;
+        push.worldRect[1] = foregroundWorldCenterY;
+        push.worldRect[2] = foregroundWorldHalfW;
+        push.worldRect[3] = foregroundWorldHalfH;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipes.backgroundPipe());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipes.backgroundLayout(), /*firstSet=*/0,
+                                1, &foregroundDescriptorSet, 0, nullptr);
+        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
+                           VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
     }
 }
 
