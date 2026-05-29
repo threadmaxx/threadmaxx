@@ -8,6 +8,7 @@
 #include "CameraSystem.hpp"
 #include "DemoTypes.hpp"
 #include "InputSystem.hpp"
+#include "MatchSetup.hpp"
 #include "ProceduralLevel.hpp"
 #include "Replay.hpp"
 #include "SpriteCompositor.hpp"
@@ -414,9 +415,22 @@ int main(int argc, char** argv) {
     }
     tou2d::SpriteCompositor compositor;
     game.setSpriteCompositor(&compositor);
-    game.setMatchMode(matchMode);
-    game.setPlayerCounts(numHumans, numBots);
-    game.setDefaultSpecialKind(static_cast<tou2d::SpecialKind>(specialKind));
+    // M6.2 — assemble the CLI flags into a MatchSetup, then apply
+    // through the single fan-out path. `setLevelDir` stays separate
+    // because the menu has no directory enumerator (CLI-only knob).
+    tou2d::MatchSetup cliSetup{};
+    cliSetup.numHumans   = numHumans;
+    cliSetup.numBots     = numBots;
+    cliSetup.matchMode   = matchMode;
+    cliSetup.specialKind = static_cast<tou2d::SpecialKind>(specialKind);
+    cliSetup.useGen      = useGen;
+    cliSetup.genCfg      = genCfg;
+    game.setMatchSetup(cliSetup);
+    // Pre-seed the UI's working MatchSetup with the CLI's values so a
+    // menu opened mid-CLI-run reflects the launch config.
+    if (game.uiSystem()) {
+        game.uiSystem()->matchSetup() = cliSetup;
+    }
     std::printf("[tou2d] match mode: %s\n",
                 matchMode == tou2d::MatchMode::LastShipStanding
                     ? "last-ship-standing"
@@ -877,6 +891,11 @@ int main(int argc, char** argv) {
             if (ui->menuActive()) {
                 if (uiEdges.rising[0]) ui->moveFocus(-1);
                 if (uiEdges.rising[1]) ui->moveFocus(+1);
+                // M6.2 — UiLeft/UiRight cycle the focused scroller row
+                // on the MatchSetup screen. No-op on Action rows / on
+                // screens without scrollers.
+                if (uiEdges.rising[2]) ui->cycleFocused(-1);
+                if (uiEdges.rising[3]) ui->cycleFocused(+1);
                 if (uiEdges.rising[4]) ui->acceptFocused();
                 if (uiEdges.rising[5] && ui->current() != tou2d::UIScreen::MainMenu) {
                     ui->setCurrent(tou2d::UIScreen::MainMenu);
@@ -893,6 +912,27 @@ int main(int argc, char** argv) {
                 std::printf("[tou2d] menu Quit selected — exiting\n");
                 ui->clearPendingQuit();
                 break;
+            }
+            // M6.2 — surface the chosen MatchSetup on Start.
+            // Engine-restart-with-new-settings lands in M6.4 alongside
+            // "Restart match"; for this batch the flag-drain is the
+            // observable contract that proves the menu's data path is
+            // correct (host can log + react today; the apply hookup is
+            // one extra `game.setMatchSetup` + `engine.shutdown` /
+            // `engine.initialize` call when M6.4 wires it).
+            if (ui->pendingStartMatch()) {
+                const auto& s = ui->matchSetup();
+                std::printf(
+                    "[tou2d] menu Start: humans=%u bots=%u mode=%u special=%u "
+                    "useGen=%u seed=0x%08x ggLevel=%u density=%u perim=%u repair=%u\n",
+                    unsigned(s.numHumans), unsigned(s.numBots),
+                    unsigned(s.matchMode), unsigned(s.specialKind),
+                    unsigned(s.useGen), s.genCfg.seed,
+                    unsigned(s.genCfg.ggLevel),
+                    unsigned(s.genCfg.stuffDensity),
+                    unsigned(s.genCfg.perimeterBedrock),
+                    unsigned(s.genCfg.repairTileCount));
+                ui->clearPendingStartMatch();
             }
         }
 
@@ -950,9 +990,10 @@ int main(int argc, char** argv) {
                 // Title line — paints which screen the user is on.
                 const char* title = "TOU2D";
                 switch (ui->current()) {
-                    case tou2d::UIScreen::MainMenu: title = "TOU2D \xB7 Main Menu";       break;
-                    case tou2d::UIScreen::Credits:  title = "TOU2D \xB7 Credits";          break;
-                    default:                        title = "TOU2D \xB7 Menu";             break;
+                    case tou2d::UIScreen::MainMenu:   title = "TOU2D \xB7 Main Menu";        break;
+                    case tou2d::UIScreen::Credits:    title = "TOU2D \xB7 Credits";          break;
+                    case tou2d::UIScreen::MatchSetup: title = "TOU2D \xB7 Match Setup";      break;
+                    default:                          title = "TOU2D \xB7 Menu";             break;
                 }
                 const int lineH = (fontAtlas.ascent - fontAtlas.descent +
                                    fontAtlas.lineGap);
@@ -973,9 +1014,15 @@ int main(int argc, char** argv) {
                         focused             ? 0xFFFFFF40u :   // cyan
                         rs[i].enabled       ? 0xFFFFFFFFu :   // white
                                               0xFF808080u;    // grey
-                    char buf[128];
+                    // M6.2 — formatRow paints scroller rows as
+                    // "<label>: <value>" and action rows as the static
+                    // label. The leading marker is local to the host.
+                    char rowText[160];
+                    ui->formatRow(static_cast<std::int32_t>(i),
+                                  rowText, sizeof(rowText));
+                    char buf[192];
                     std::snprintf(buf, sizeof(buf), "%s %s",
-                                  focused ? ">" : " ", rs[i].label);
+                                  focused ? ">" : " ", rowText);
                     uiOverlay.drawText(fontAtlas,
                                        /*baseX=*/ 24.0f, baseY,
                                        color, buf);

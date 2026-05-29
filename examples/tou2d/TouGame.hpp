@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DemoTypes.hpp"
+#include "MatchSetup.hpp"
 #include "ProceduralLevel.hpp"
 #include "SpriteCompositor.hpp"
 
@@ -102,6 +103,25 @@ public:
         defaultSpecial_ = static_cast<std::uint8_t>(k);
     }
     std::uint8_t defaultSpecialKind() const noexcept { return defaultSpecial_; }
+
+    /// M6.2 — apply a `MatchSetup` POD by fanning its fields out to the
+    /// existing per-knob setters. Mirrors what `main.cpp`'s CLI parse
+    /// path does inline; both paths flow through this single call so
+    /// the determinism contract (same MatchSetup → same commitHash
+    /// stream) stays unambiguous. Must be called BEFORE
+    /// `engine.initialize(game)` — `onSetup` latches the values into
+    /// the world. Leaves `levelDir_` untouched (the menu has no
+    /// directory enumerator; CLI's `--level` path stays CLI-only).
+    void setMatchSetup(const MatchSetup& setup) noexcept {
+        setPlayerCounts(setup.numHumans, setup.numBots);
+        setMatchMode(setup.matchMode);
+        setDefaultSpecialKind(setup.specialKind);
+        if (setup.useGen) {
+            setGenerationConfig(setup.genCfg);
+        } else {
+            genConfig_.reset();
+        }
+    }
 
     void onSetup(threadmaxx::Engine& engine,
                  threadmaxx::World&  world,

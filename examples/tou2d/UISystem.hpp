@@ -1,9 +1,11 @@
 #pragma once
 
 #include "DemoTypes.hpp"
+#include "MatchSetup.hpp"
 
 #include <threadmaxx/System.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -21,21 +23,58 @@ enum class MenuAction : std::uint8_t {
     None         = 0,
     Continue     = 1,   ///< Resume an in-flight match (greyed in v1).
     SingleMatch  = 2,   ///< Start a default 1H+3B match (dismisses menu).
-    LevelSetup   = 3,   ///< M6.2 stub.
+    LevelSetup   = 3,   ///< M6.2 — jumps to UIScreen::MatchSetup.
     Options      = 4,   ///< M6.5 stub.
     Benchmark    = 5,   ///< M6.5 stress-preset stub.
     Credits      = 6,   ///< Transition to UIScreen::Credits.
     Quit         = 7,   ///< Set pendingQuit() — host exits frame loop.
-    BackToMain   = 8,   ///< Pop back to MainMenu (used by Credits screen).
+    BackToMain   = 8,   ///< Pop back to MainMenu (used by Credits / MatchSetup).
+    StartMatch   = 9,   ///< M6.2 — set pendingStartMatch_, dismiss menu.
+};
+
+/// M6.2 — distinguishes a plain "fire on accept" row from a horizontal
+/// scroller row (left/right cycles a value on `matchSetup()`). The host
+/// dispatches `cycleFocused(±1)` on UiLeft/UiRight; scroller rows then
+/// mutate their bound knob. Accept on a scroller row falls through to
+/// `action` (typically `MenuAction::None` so accept doesn't double-fire).
+enum class MenuRowKind : std::uint8_t {
+    Action   = 0,
+    Scroller = 1,
+};
+
+/// M6.2 — scroller knob identifier. One per editable field on the
+/// MatchSetup screen. Order matches `kMatchSetupRows` so a row's
+/// `scrollerKnob` field doubles as its row index when needed.
+/// Adding a knob is one new enum value + one new row entry + one new
+/// switch arm in `cycleKnob_` / `formatKnobValue_`.
+enum class MatchSetupKnob : std::uint8_t {
+    Humans      = 0,
+    Bots        = 1,
+    Mode        = 2,
+    Special     = 3,
+    UseGen      = 4,
+    GenSeed     = 5,
+    GenLevel    = 6,
+    GenDensity  = 7,
+    GenPerim    = 8,
+    RepairTiles = 9,
+    Count       = 10,   ///< Sentinel (== number of scroller knobs).
 };
 
 /// M6.1 — single menu row descriptor. `enabled == false` paints greyed
 /// and is skipped by `moveFocus`. The `label` pointer is borrowed; v1
 /// rows are constexpr string literals owned by UISystem itself.
+///
+/// M6.2 — `kind` distinguishes Action (accept fires `action`) from
+/// Scroller (left/right cycles the bound `scrollerKnob`; accept is a
+/// no-op via `action == None`). For Action rows `scrollerKnob` is
+/// ignored.
 struct MenuRow {
-    const char* label;
-    MenuAction  action;
-    bool        enabled;
+    const char*     label;
+    MenuAction      action;
+    bool            enabled;
+    MenuRowKind     kind         = MenuRowKind::Action;
+    MatchSetupKnob  scrollerKnob = MatchSetupKnob::Count;
 };
 
 /// M6.0b — top-level UI state machine. Owns `UIScreen current`; the
@@ -125,13 +164,55 @@ public:
     bool pendingQuit() const noexcept { return pendingQuit_; }
     void clearPendingQuit() noexcept { pendingQuit_ = false; }
 
+    /// ---- M6.2 MatchSetup screen --------------------------------------
+
+    /// Working `MatchSetup` the MatchSetup screen edits in-place.
+    /// Defaults match the CLI defaults so an unedited menu run produces
+    /// the same gameplay as no-CLI-args today. The host reads this on
+    /// `pendingStartMatch()` to know what to apply.
+    MatchSetup&       matchSetup() noexcept       { return matchSetup_; }
+    const MatchSetup& matchSetup() const noexcept { return matchSetup_; }
+
+    /// Cycle the focused row's bound scroller knob by `delta` (typically
+    /// +1 or -1; magnitudes step that many wraps). No-op when:
+    ///   * the focused row is `MenuRowKind::Action`, OR
+    ///   * there's no focused row, OR
+    ///   * `delta == 0`.
+    /// Wraps at both ends of each knob's domain so the UI never lands
+    /// on a no-op state.
+    void cycleFocused(std::int32_t delta) noexcept;
+
+    /// Render-time format for a row at index `rowIdx` into `currentRows()`.
+    /// For Action rows writes the static label verbatim. For Scroller
+    /// rows writes "<label>: <value>" with the value resolved from
+    /// `matchSetup_`. Returns the number of chars written (excluding
+    /// the trailing NUL). `bufN` must be >= 1; output is always
+    /// NUL-terminated.
+    std::size_t formatRow(std::int32_t rowIdx,
+                          char*        buf,
+                          std::size_t  bufN) const noexcept;
+
+    /// True after a `MenuAction::StartMatch` accept fired. Sticky until
+    /// the host calls `clearPendingStartMatch()`. The host should apply
+    /// `matchSetup()` to the game world (typically via
+    /// `TouGame::setMatchSetup` + an engine restart) before clearing
+    /// the flag.
+    bool pendingStartMatch() const noexcept { return pendingStartMatch_; }
+    void clearPendingStartMatch() noexcept   { pendingStartMatch_ = false; }
+
 private:
     void resetFocusToFirstEnabled_() noexcept;
+    void cycleKnob_(MatchSetupKnob knob, std::int32_t delta) noexcept;
+    std::size_t formatKnobValue_(MatchSetupKnob knob,
+                                 char*          buf,
+                                 std::size_t    bufN) const noexcept;
 
     threadmaxx::Engine* engine_;
     UIScreen            current_;
-    std::int32_t        focusIndex_ = -1;
-    bool                pendingQuit_ = false;
+    std::int32_t        focusIndex_       = -1;
+    bool                pendingQuit_      = false;
+    bool                pendingStartMatch_ = false;
+    MatchSetup          matchSetup_{};
 };
 
 } // namespace tou2d

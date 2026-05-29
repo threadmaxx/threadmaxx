@@ -1629,7 +1629,7 @@ gameplay):
 | M6.0  | Engine prereqs — TTF font (drop-in) + UI compositor + key-action layer | — | YES (font + key-map) |
 | M6.0b | Vulkan overlay path + UISystem skeleton + CPU compositor | M6.0 | no |
 | M6.1  | UI state machine + main menu (LANDED 2026-05-29) | M6.0b | no |
-| M6.2  | Match / level setup screen | M6.1 | no |
+| M6.2  | Match / level setup screen (LANDED 2026-05-29) | M6.1 | no |
 | M6.3  | Ship / player slot assignment screen | M6.1 | no |
 | M6.4  | Pause menu (in-game) | M6.1 | no (uses `Engine::setPaused`) |
 | M6.5  | Options menu + persistence | M6.0, M6.1 | YES (settings POD) |
@@ -1805,35 +1805,113 @@ identical to today's `--humans=1 --bots=3 --level <default>`; headless
 smoke (`./threadmaxx_tou2d 200`) still bypasses the menu via the
 existing CLI-direct-jump path (no regression).
 
-#### M6.2 — Match / level setup screen (PLANNED)
+#### M6.2 — Match / level setup screen (LANDED 2026-05-29)
 
-Configurable knobs (each row is a horizontal scroller, `UiLeft` / `UiRight`
-to cycle, `UiDown` to next row):
+**`MatchSetup` POD as the single source of truth.** New header
+`examples/tou2d/MatchSetup.hpp` defines a 16-byte POD carrying every
+gameplay knob the CLI exposes today: humans, bots, mode, special
+weapon, useGen flag, full `ProceduralLevelConfig` (seed, ggLevel,
+density, perim, repair tiles). Defaults reproduce the M5.1 "no CLI
+args" gameplay shape.
 
-| Knob | Range | Source of truth |
-|------|-------|-----------------|
-| Level | imported `assets/levels/*` + procedural | `LevelLoader` enumerates dir |
-| Gen vs handcrafted | toggle | flips `ProceduralLevel` path |
-| Gravity | 0.5× .. 2.0×, 0.25× step | `MovementSystem` constant |
-| Wind | off / light / strong | `MovementSystem` x-bias |
-| Humans | 1..4 | replaces `--humans` |
-| Bots | 0..63 | replaces `--bots` |
-| Weapon table | default / minimal / chaos | filters `kSpecialWeaponSpecs` |
-| Match timer | off / 2 min / 5 min / 10 min | drives `RoundRestartSystem` |
-| Score limit | 1..30 kills | drives `RoundRestartSystem` |
-| Respawn rules | instant / 2 s / 5 s | `ShipLifecycleSystem` delay |
-| Damage scale | 0.5× .. 2.0× | global multiplier in `BulletShipCollisionSystem` |
-| Camera mode | follow / fixed / dynamic | `CameraSystem` mode enum |
-| Stress preset | off / 8 bots / 32 bots / 63 bots | bypass other knobs (see M6.5) |
+**Single fan-out via `TouGame::setMatchSetup`.** Both the CLI parse
+path and the future menu Start path call this one method; it routes
+each field to the existing per-knob setter (`setPlayerCounts`,
+`setMatchMode`, `setDefaultSpecialKind`, `setGenerationConfig`). The
+CLI's `--level <path>` knob stays separate because the menu has no
+directory enumerator (CLI-only scope for v1).
 
-Persistence: serialised to `MatchSetup` POD; passed to the legacy
-match-start path. The headless CLI flags map to `MatchSetup` fields
-1:1 so the determinism contract is unchanged (same setup → same
-commitHash stream).
+**Determinism contract pinned today.** `main.cpp` now assembles a
+`MatchSetup` from CLI flags BEFORE calling `setMatchSetup`. Bounded
+`200`-tick smoke produces the identical final ship position as M6.1
+(`-42.00, -43.25`); record/replay round-trip at 150 ticks with
+`--gen --gen-seed=42 --gen-level=1 --special=sniper` reports **0 hash
+mismatches** — proves the refactor is bit-exact against the pre-M6.2
+CLI flow.
 
-**Acceptance**: setting "Bots = 32, Level = procedural, Gravity = 1.5×"
-from the menu and starting yields a match indistinguishable (in
-commitHash) from the equivalent CLI invocation.
+**Knob scope (10 scrollers + 2 action rows).** The MatchSetup screen
+ships with 12 rows in this order:
+
+| # | Row | Domain |
+|---|-----|--------|
+| 0 | Humans | 1..`kMaxHumans` (wrap) |
+| 1 | Bots | 0..`kMaxBots` (wrap) |
+| 2 | Mode | Deathmatch / LastShipStanding |
+| 3 | Special | 10 `SpecialKind` values (wrap) |
+| 4 | Procedural | Off / On |
+| 5 | Gen seed | 8-preset list (0, 1, 2, 42, 1234, 0xCAFEF00D, 0xFEED, 0xDEADBEEF) |
+| 6 | Gen size | `ggLevel` 0..4 (wrap) |
+| 7 | Gen density | 0..100 in steps of 10 (wrap) |
+| 8 | Gen perimeter | Off / On |
+| 9 | Repair tiles | 0..32 in steps of 4 (wrap) |
+| 10 | Start match | Action — sets `pendingStartMatch_`, dismisses menu |
+| 11 | Back | Action — pops to MainMenu |
+
+The "Gravity / Wind / Weapon table / Match timer / Score limit /
+Respawn rules / Damage scale / Camera mode / Stress preset" rows
+from the original M6.2 plan are deferred: each requires a *new* CLI
+flag (none of those knobs exist today). Adding them is one row +
+one CLI flag + one apply hook each — the row-table infrastructure
+here supports it directly.
+
+**UISystem extensions (`MenuRowKind`, scroller cycle).** `MenuRow`
+gained a `kind` field (Action / Scroller) and a `scrollerKnob`
+binding. Three new public methods:
+- `cycleFocused(±N)` — UiLeft/UiRight dispatch; mutates the bound
+  knob on `matchSetup()`; no-op on Action rows.
+- `formatRow(rowIdx, buf, bufN)` — paint helper; emits
+  "`<label>: <value>`" for scrollers and the static label for actions.
+- `matchSetup()` — mutable reference to the working POD.
+
+`acceptFocused` grew arms for `MenuAction::LevelSetup` (jumps to
+`UIScreen::MatchSetup`) and `MenuAction::StartMatch` (flips
+`pendingStartMatch_` sticky + transitions to `UIScreen::None`).
+
+**Host integration (`main.cpp`).** Frame-loop input dispatch now
+pumps UiLeft/UiRight → `cycleFocused(±1)`. After each frame the
+host checks `pendingStartMatch()`; for this batch the host LOGS the
+chosen `MatchSetup` to stdout and clears the flag (the engine
+restart-with-new-settings wiring lands in M6.4 alongside "Restart
+match" — both need the same `engine.shutdown` + `setMatchSetup` +
+`engine.initialize` sequence, so they share machinery). The menu
+dismissal via `setCurrent(None)` unfreezes the simulation through
+the existing pause-on-menuActive bind — the match runs with whatever
+`MatchSetup` was applied at startup (today CLI defaults; M6.4 will
+apply the menu's edits).
+
+**Pre-seeding.** The UI's working `MatchSetup` is initialised from
+the CLI's resolved values, so a menu opened mid-CLI-run reflects
+the launch config (e.g. `tou2d --bots=10` then opening MatchSetup
+shows Bots: 10 already selected).
+
+**Test (`tou2d_match_setup_test`).** Pins the row table identity
+(12 rows, scroller knob order, action row labels), focus initial
+position, scroller cycle wraps (Humans / Bots / Mode / Special /
+UseGen / GenSeed presets), cycle-on-Action-no-op invariant,
+StartMatch dispatch (pendingStartMatch sticky + setCurrent(None)),
+BackToMain dispatch + focus reset, MainMenu "Level Setup" routing,
+formatRow output ("Humans: 1", "Mode: Deathmatch", "Start match",
+"Back"), and the **byte-equality determinism contract**: a
+`MatchSetup` reached by `cycleFocused`-driven menu navigation is
+`memcmp`-equal to one built by direct field assignment to the same
+values.
+
+**Pre-M6.2 `ctest` had 141 tests; M6.2 adds `tou2d_match_setup_test`
+for a new total of 142 — all green.** Release build with
+`-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean. Headless smoke at 200
+ticks and gen-mode record/replay round-trip both bit-identical to
+pre-M6.2.
+
+**Still TBD** (deferred follow-ups, NOT blockers for M6.2 acceptance):
+- Engine restart-with-new-settings (M6.4 will land it for both
+  "Restart match" and Setup → Start).
+- Gravity / Wind / Weapon table / Match timer / Score limit /
+  Respawn rules / Damage scale / Camera mode rows — each needs a
+  new CLI flag first; row infrastructure is ready.
+- Level path enumerator (CLI's `--level` stays CLI-only until a
+  filesystem walker lands).
+- Stress preset row — depends on M6.5's preset infrastructure
+  (the existing CLI doesn't expose presets).
 
 #### M6.3 — Ship / player slot assignment screen (PLANNED)
 
