@@ -50,13 +50,12 @@ constexpr float kWanderFacingThrust = 1.05f;    // ~60° — looser than engage
                                                  // momentum through turns
 
 // M4.5 — aim wobble: in engage mode, the bot's perceived target angle
-// is perturbed by `sin(phase) * kAimWobbleAmp`. 2026-05-28 — the
-// per-tick xorshift chaos that previously rode on top of the sine
-// produced visibly jittery turn flickering at all engagement
-// distances; now removed. The slow sine wobble alone is enough to
-// keep aim imperfect without making the bot look palsied.
-constexpr float kAimWobbleAmp        = 0.10f;   // ~5.7°
-constexpr float kAimWobbleFreqPerTick = 0.08f;  // rad / tick; period ≈ 80 ticks (~1.3 s)
+// is perturbed by `sin(phase) * kAimWobbleAmp`. 2026-05-29 — bumped
+// from 0.10 to 0.25 rad and slowed from 0.08 to 0.05 rad/tick so the
+// bot visibly weaves left-right while shooting instead of stalling on
+// a perfect bearing.
+constexpr float kAimWobbleAmp        = 0.25f;   // ~14°
+constexpr float kAimWobbleFreqPerTick = 0.05f;  // rad / tick; period ≈ 125 ticks (~2.1 s)
 
 // 2026-05-28 — terrain avoidance tunables.
 //
@@ -66,10 +65,16 @@ constexpr float kAimWobbleFreqPerTick = 0.08f;  // rad / tick; period ≈ 80 tic
 // turn-away sign; the choice is then latched for `kAvoidCommitTicks`
 // ticks so the bot commits to one steering direction instead of
 // stuttering as the ray geometry crosses cell boundaries.
-constexpr float kAvoidLookahead       = 60.0f;   // world units (~2 ships)
+//
+// 2026-05-29 — bumped lookahead 60→90 wu so the bot sees walls earlier
+// and has more turn-budget before getting wedged; latch 18→30 ticks so
+// commits hold across longer obstacles; added per-tick feeler re-check
+// so a wrong-side commit can flip when it discovers the latched side
+// is worse than the other.
+constexpr float kAvoidLookahead       = 90.0f;   // world units (~3 ships)
 constexpr float kAvoidFeelerAngle     = 0.55f;   // ~32°
 constexpr int   kAvoidSamples         = 6;       // sample count along each ray
-constexpr std::uint16_t kAvoidCommitTicks = 18;  // 300 ms — long enough to clear an edge
+constexpr std::uint16_t kAvoidCommitTicks = 30;  // 500 ms
 
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
@@ -308,7 +313,15 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                         // facing the escape vector (don't burn fuel backward).
                         if (std::fabs(angDelta) < kFacingThrust) in.thrust = 1;
                     } else {
-                        if (std::fabs(angDelta) < kFacingThrust && range > kThrustHoldDist) {
+                        // 2026-05-29 — keep thrust on whenever we're in
+                        // engage mode and facing-ish. The old gate
+                        // killed thrust below kThrustHoldDist so a
+                        // close-range bot would stall and just shoot,
+                        // which combined with the small aim wobble
+                        // looked frozen. The wobble-induced angDelta
+                        // now drives the bot to weave around the target.
+                        const float minThrustDist = kThrustHoldDist * 0.5f;
+                        if (std::fabs(angDelta) < kFacingThrust && range > minThrustDist) {
                             in.thrust = 1;
                         }
                         if (std::fabs(angDelta) < kFacingFire && range < kFireRange) {
@@ -364,6 +377,17 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                 // whose feeler has more room. Latched for a few hundred
                 // ms so the bot commits to one steering side instead of
                 // ping-ponging across the same wall edge.
+                //
+                // 2026-05-29 — three refinements over the 2026-05-28
+                // landing: (a) re-check feelers every tick while the
+                // latch is active, flipping sign if the un-latched side
+                // has noticeably more room; this rescues bots that
+                // commit into a corner pocket. (b) only suppress thrust
+                // when the forward ray is REALLY close (< 0.25 of
+                // lookahead) AND both feelers are blocked; otherwise
+                // keep thrust on so the turning rotates the thrust
+                // vector and the bot slides along the wall. (c) raised
+                // lookahead 60→90 wu so this whole branch fires earlier.
                 if (grid_ && slot < avoidSign_.size()) {
                     if (avoidCommit_[slot] > 0) {
                         avoidCommit_[slot] = static_cast<std::uint16_t>(avoidCommit_[slot] - 1);
@@ -374,22 +398,41 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     const float dC   = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
                                                        curA, kAvoidLookahead);
                     if (dC < kAvoidLookahead * 0.85f) {
+                        const float dL = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
+                                                        curA + kAvoidFeelerAngle, kAvoidLookahead);
+                        const float dR = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
+                                                        curA - kAvoidFeelerAngle, kAvoidLookahead);
                         if (avoidSign_[slot] == 0) {
-                            const float dL = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
-                                                            curA + kAvoidFeelerAngle, kAvoidLookahead);
-                            const float dR = castTerrainRay(*grid_, selfT.position.x, selfT.position.y,
-                                                            curA - kAvoidFeelerAngle, kAvoidLookahead);
                             avoidSign_[slot]   = (dL >= dR) ? std::int8_t{+1} : std::int8_t{-1};
                             avoidCommit_[slot] = kAvoidCommitTicks;
+                        } else {
+                            // Re-evaluate the commit: if the side we
+                            // latched is clearly worse than the other
+                            // (≥ 1.5× the room), flip and refresh the
+                            // commit so we don't keep turning into a
+                            // tightening pocket.
+                            const float latched   = avoidSign_[slot] > 0 ? dL : dR;
+                            const float opposite  = avoidSign_[slot] > 0 ? dR : dL;
+                            if (opposite > latched * 1.5f) {
+                                avoidSign_[slot]   = static_cast<std::int8_t>(-avoidSign_[slot]);
+                                avoidCommit_[slot] = kAvoidCommitTicks;
+                            }
                         }
                         // turnLeft = nose rotates CCW (positive Z). Sign
                         // convention chosen so +1 turns toward the side
                         // with more open space.
                         in.turnLeft  = avoidSign_[slot] > 0 ? 1u : 0u;
                         in.turnRight = avoidSign_[slot] < 0 ? 1u : 0u;
-                        // Don't thrust into a near wall — coast until the
-                        // ray clears.
-                        if (dC < kAvoidLookahead * 0.45f) {
+                        // Only kill thrust when we're really nose-up to
+                        // a wall AND both feelers are blocked too — the
+                        // textbook wedged-in-corner case. Anywhere else,
+                        // keep thrust so the turn produces forward
+                        // motion along the obstacle.
+                        const bool fullyBoxed =
+                            dC < kAvoidLookahead * 0.25f &&
+                            dL < kAvoidLookahead * 0.40f &&
+                            dR < kAvoidLookahead * 0.40f;
+                        if (fullyBoxed) {
                             in.thrust = 0;
                         }
                     }

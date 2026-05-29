@@ -426,11 +426,11 @@ int main(int argc, char** argv) {
     cliSetup.useGen      = useGen;
     cliSetup.genCfg      = genCfg;
     game.setMatchSetup(cliSetup);
-    // Pre-seed the UI's working MatchSetup with the CLI's values so a
-    // menu opened mid-CLI-run reflects the launch config.
-    if (game.uiSystem()) {
-        game.uiSystem()->matchSetup() = cliSetup;
-    }
+    // 2026-05-29 — the UI-seed line that used to live here ran BEFORE
+    // `engine.initialize(game)`, so `game.uiSystem()` was always
+    // nullptr and the assignment never fired. Moved to immediately
+    // after `engine.initialize(game)` below where the UISystem is
+    // freshly constructed and reachable.
     std::printf("[tou2d] match mode: %s\n",
                 matchMode == tou2d::MatchMode::LastShipStanding
                     ? "last-ship-standing"
@@ -478,6 +478,15 @@ int main(int argc, char** argv) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    // 2026-05-29 — pre-seed the UI's working MatchSetup with the CLI's
+    // values so a menu opened mid-CLI-run reflects the launch config.
+    // Runs AFTER engine.initialize so `game.uiSystem()` is non-null;
+    // the previous landing called it before initialize and silently
+    // no-op'd.
+    if (game.uiSystem()) {
+        game.uiSystem()->matchSetup() = cliSetup;
     }
 
     // M6.0b — bake the bundled UI font at startup. The asset lives at
@@ -766,7 +775,12 @@ int main(int argc, char** argv) {
     // visual.jpg (when a level dir is set AND the file decoded) or
     // synthesize a placeholder background by attribute-coloring each
     // grid cell.
-    {
+    //
+    // 2026-05-29 (2nd landing) — wrapped in a lambda so the
+    // menu-driven engine restart path (Single Match / Start match /
+    // Restart match) can rebuild bg+fg+compositor against the new
+    // post-onSetup grid without duplicating the body.
+    auto setupLevelGraphics = [&]() {
         const int cellsX  = game.levelCellsX() > 0 ? game.levelCellsX() : 1;
         const int cellsY  = game.levelCellsY() > 0 ? game.levelCellsY() : 1;
         const int tilePx  = tou2d::kImportedPxPerTile;
@@ -921,7 +935,55 @@ int main(int argc, char** argv) {
         std::printf("[tou2d] background installed=%d (jpg=%d) "
                     "foreground installed=%d\n",
                     int(ok), int(bgFromJpg), int(fgOk));
-    }
+    };
+    setupLevelGraphics();
+
+    // 2026-05-29 — match-restart helper. The menu's Single Match /
+    // Start match / Restart match flag drain calls this with the
+    // selected MatchSetup; it tears down the engine, re-fans the new
+    // settings onto TouGame, re-initializes (which re-runs onSetup →
+    // fresh world + ships + grid), and rebuilds the renderer-side
+    // resources that engine.shutdown() dropped (default cube mesh,
+    // bg/fg textures, sprite compositor sizing, camera viewport). The
+    // host's `engine.paused()` bind unfreezes the new engine on the
+    // next iteration because the freshly-constructed UISystem parks on
+    // UIScreen::None. levelDir is cleared because the menu has no
+    // directory enumerator — a menu-initiated restart always falls
+    // through to either the procedural generator (when setup.useGen)
+    // or the synthetic arena fallback.
+    auto restartMatch = [&](const tou2d::MatchSetup& setup) {
+        std::printf("[tou2d] restartMatch: humans=%u bots=%u mode=%u special=%u "
+                    "useGen=%u\n",
+                    unsigned(setup.numHumans), unsigned(setup.numBots),
+                    unsigned(setup.matchMode), unsigned(setup.specialKind),
+                    unsigned(setup.useGen));
+        engine.shutdown();
+        game.setLevelDir({});
+        game.setMatchSetup(setup);
+        levelDir.clear();
+        if (!engine.initialize(game)) {
+            std::fprintf(stderr,
+                "[tou2d] engine.initialize failed during restart\n");
+            engine.requestQuit();
+            return;
+        }
+        const bool meshOk = renderer->setDefaultMeshFromData(
+            cubeVertices(), cubeIndices());
+        std::printf("[tou2d] (restart) default cube mesh installed=%d\n",
+                    int(meshOk));
+        if (game.cameraSystem()) {
+            int fbW = 0, fbH = 0;
+            glfwGetFramebufferSize(window, &fbW, &fbH);
+            if (fbW <= 0 || fbH <= 0) {
+                fbW = static_cast<int>(kInitialWidth);
+                fbH = static_cast<int>(kInitialHeight);
+            }
+            game.cameraSystem()->setViewport(
+                static_cast<std::uint32_t>(fbW),
+                static_cast<std::uint32_t>(fbH));
+        }
+        setupLevelGraphics();
+    };
 
     std::printf("[tou2d] running %s — Ctrl-C / window close to exit\n",
                 maxTicks ? "bounded" : "unbounded");
@@ -992,15 +1054,19 @@ int main(int argc, char** argv) {
                 ui->clearPendingQuit();
                 break;
             }
-            // M6.2 — surface the chosen MatchSetup on Start.
-            // Engine-restart-with-new-settings lands in M6.4 alongside
-            // "Restart match"; for this batch the flag-drain is the
-            // observable contract that proves the menu's data path is
-            // correct (host can log + react today; the apply hookup is
-            // one extra `game.setMatchSetup` + `engine.shutdown` /
-            // `engine.initialize` call when M6.4 wires it).
+            // 2026-05-29 — Start / Restart drains now actually rebuild
+            // the engine against the menu-selected MatchSetup. Pre-this
+            // landing both drains just logged + cleared the flag, so
+            // any settings the user picked were silently dropped (1H+3B
+            // synthetic arena no matter what was chosen). The capture +
+            // clear-before-restart pattern matters because restartMatch
+            // tears down the engine — `ui` is borrowed from the
+            // freshly-recreated UISystem, so the old pointer is dangling
+            // immediately after the call. Re-fetch via game.uiSystem()
+            // for any subsequent uses in this iteration.
             if (ui->pendingStartMatch()) {
-                const auto& s = ui->matchSetup();
+                const tou2d::MatchSetup s = ui->matchSetup();
+                ui->clearPendingStartMatch();
                 std::printf(
                     "[tou2d] menu Start: humans=%u bots=%u mode=%u special=%u "
                     "useGen=%u seed=0x%08x ggLevel=%u density=%u perim=%u repair=%u\n",
@@ -1011,19 +1077,19 @@ int main(int argc, char** argv) {
                     unsigned(s.genCfg.stuffDensity),
                     unsigned(s.genCfg.perimeterBedrock),
                     unsigned(s.genCfg.repairTileCount));
-                ui->clearPendingStartMatch();
+                restartMatch(s);
+                ui = game.uiSystem();
+                if (!ui) break;
             }
-            // M6.4 — Restart match flag drain. Same posture as
-            // pendingStartMatch above: the engine-restart-with-MatchSetup
-            // wiring lands in a focused follow-up; for this batch the
-            // drain proves the menu's path is observable and the menu
-            // dismisses cleanly via the acceptFocused side-effect.
             if (ui->pendingRestartMatch()) {
-                std::printf(
-                    "[tou2d] menu Restart match (engine-restart wiring "
-                    "pending — flag drained at tick=%llu)\n",
-                    static_cast<unsigned long long>(tick));
+                const tou2d::MatchSetup s = ui->matchSetup();
                 ui->clearPendingRestartMatch();
+                std::printf(
+                    "[tou2d] menu Restart match at tick=%llu\n",
+                    static_cast<unsigned long long>(tick));
+                restartMatch(s);
+                ui = game.uiSystem();
+                if (!ui) break;
             }
             // M6.4 — Return-to-main-menu flag drain. The setCurrent
             // already happened inside acceptFocused (UIScreen::MainMenu),

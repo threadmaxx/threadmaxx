@@ -231,7 +231,17 @@ MenuAction UISystem::acceptFocused() noexcept {
 
     switch (row.action) {
         case MenuAction::SingleMatch:
-            // Dismiss menu; host unpauses on the next frame.
+            // 2026-05-29 — also set `pendingStartMatch_` so the host
+            // applies `matchSetup_` via the same engine-restart path
+            // StartMatch uses. Without this, "Single Match" picked from
+            // the MainMenu silently kept whatever pre-restart world was
+            // initialised at launch (1H+3B synthetic arena for no-CLI
+            // launches), ignoring any settings the user had since cycled
+            // via `Level Setup` -> Back. matchSetup_ always reflects the
+            // most recently edited values, so applying it here is the
+            // correct posture for both "just hit Single Match" and "edit
+            // then back-out to MainMenu then Single Match".
+            pendingStartMatch_ = true;
             setCurrent(UIScreen::None);
             break;
         case MenuAction::Credits:

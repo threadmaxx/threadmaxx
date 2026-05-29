@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <random>
+#include <utility>
+#include <vector>
 
 namespace tou2d {
 
@@ -181,6 +183,85 @@ inline ProceduralLevelInfo generateProceduralLevel(
             const std::int32_t rY = distRY(rng);
             detail::stampEllipse(grid, cx, cy, rX, rY,
                                  kProcBlobHp, info.solidCount);
+        }
+    }
+
+    // 2026-05-29 — guarantee navigability with cross corridors + a
+    // flood-fill safeguard. Pre-this-pass, dense-blob runs left the
+    // canvas littered with sealed Air pockets — ships spawn-stuck and
+    // the cross-canvas chase path looked solid even when it wasn't.
+    //
+    // Step 1: carve a 3-cell-tall horizontal corridor across the blob
+    // band's middle row, and a 3-cell-wide vertical corridor at x≈0.
+    // The cross intersects at the canvas origin and gives ships a
+    // navigable backbone all the way out to the pre-bedrock margin.
+    // We carve BEFORE the perimeter bedrock pass so the bedrock ring
+    // overrides any corridor cells that would have punched through.
+    {
+        const std::int32_t corrYMin = blobYMin;
+        const std::int32_t corrYMax = blobYMax;
+        const std::int32_t corrXMin = blobXMin;
+        const std::int32_t corrXMax = blobXMax;
+        if (corrYMax > corrYMin && corrXMax > corrXMin) {
+            const std::int32_t hMidY = (corrYMin + corrYMax) / 2;
+            for (std::int32_t cx = corrXMin; cx <= corrXMax; ++cx) {
+                for (std::int32_t dy = -1; dy <= 1; ++dy) {
+                    grid.clear(cx, hMidY + dy);
+                }
+            }
+            for (std::int32_t cy = corrYMin; cy <= corrYMax; ++cy) {
+                for (std::int32_t dx = -1; dx <= 1; ++dx) {
+                    grid.clear(dx, cy);
+                }
+            }
+        }
+    }
+
+    // Step 2: flood-fill from the canvas origin (always Air after the
+    // cross carve). Any Air cell NOT reached is in a sealed pocket; we
+    // re-fill it with destructible solid so the spawn sampler never
+    // lands inside an island the ship can't escape. Cheap (one
+    // BFS pass over ≤ 208² = 43 264 cells).
+    {
+        const std::int64_t areaCells =
+            static_cast<std::int64_t>(cells) * static_cast<std::int64_t>(cells);
+        std::vector<std::uint8_t> reached(
+            static_cast<std::size_t>(areaCells), 0);
+        std::vector<std::pair<std::int32_t, std::int32_t>> stack;
+        stack.reserve(256);
+        if (grid.attrAt(0, 0) == Attribute::Air) {
+            reached[grid.indexOf(0, 0)] = 1;
+            stack.emplace_back(0, 0);
+        }
+        constexpr std::int32_t kDx[4] = {  1, -1,  0,  0 };
+        constexpr std::int32_t kDy[4] = {  0,  0,  1, -1 };
+        while (!stack.empty()) {
+            const auto [cx, cy] = stack.back();
+            stack.pop_back();
+            for (int d = 0; d < 4; ++d) {
+                const std::int32_t nx = cx + kDx[d];
+                const std::int32_t ny = cy + kDy[d];
+                if (!grid.inBounds(nx, ny)) continue;
+                if (grid.attrAt(nx, ny) != Attribute::Air) continue;
+                const std::size_t i = grid.indexOf(nx, ny);
+                if (reached[i]) continue;
+                reached[i] = 1;
+                stack.emplace_back(nx, ny);
+            }
+        }
+        const std::int32_t fxMin = -halfX;
+        const std::int32_t fxMax = cells - halfX - 1;
+        const std::int32_t fyMin = -(cells - halfY - 1);
+        const std::int32_t fyMax = halfY;
+        for (std::int32_t cy = fyMin; cy <= fyMax; ++cy) {
+            for (std::int32_t cx = fxMin; cx <= fxMax; ++cx) {
+                if (!grid.inBounds(cx, cy)) continue;
+                if (grid.attrAt(cx, cy) != Attribute::Air) continue;
+                if (!reached[grid.indexOf(cx, cy)]) {
+                    grid.setSolid(cx, cy, kProcBlobHp, Attribute::Solid);
+                    ++info.solidCount;
+                }
+            }
         }
     }
 
