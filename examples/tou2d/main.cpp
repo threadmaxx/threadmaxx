@@ -12,6 +12,8 @@
 #include "Replay.hpp"
 #include "SpriteCompositor.hpp"
 #include "TouGame.hpp"
+#include "ui/Font.hpp"
+#include "ui/UiOverlayBitmap.hpp"
 
 #include <threadmaxx_vk/VulkanRenderer.hpp>
 
@@ -454,6 +456,47 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // M6.0b — bake the bundled UI font at startup. The asset lives at
+    // `<assets>/ui/font.ttf` (DejaVu Sans Mono by default — see
+    // `assets/ui/README.md` for drop-in instructions). The atlas is
+    // baked once at the v1 pixel size and reused for every UI text
+    // emit; M6.5's UI-scale slider will additionally cache atlases at
+    // 75/100/125/150% tiers. Failure (missing file, bad TTF, oversize
+    // codepoint range) leaves `fontAtlas.valid()` false and the UI
+    // compositor draws nothing — no crash, no abort.
+    tou2d::ui::FontAtlas fontAtlas;
+    {
+        const std::filesystem::path ttfPath =
+            std::filesystem::path(
+                std::getenv("TOU2D_ASSETS") ? std::getenv("TOU2D_ASSETS")
+                                            : "assets") /
+            "ui" / "font.ttf";
+        tou2d::ui::FontConfig cfg{};
+        cfg.pixelSize = 16;
+        fontAtlas = tou2d::ui::bakeFontFromFile(ttfPath.string(), cfg);
+        if (fontAtlas.valid()) {
+            std::printf("[tou2d] UI font baked from %s: %dx%d atlas, "
+                        "%zu glyphs, pixelSize=%d\n",
+                        ttfPath.string().c_str(),
+                        fontAtlas.atlasW, fontAtlas.atlasH,
+                        fontAtlas.glyphs.size(), fontAtlas.pixelSize);
+        } else {
+            std::fprintf(stderr,
+                "[tou2d] UI font bake FAILED (%s) — overlay disabled\n",
+                ttfPath.string().c_str());
+        }
+    }
+
+    // M6.0b — CPU-side RGBA8 framebuffer the per-tick UI emits paint
+    // into. Sized to the swapchain extent; resize is rare (only on
+    // window resize). One full-frame upload on first tick, partial
+    // dirty-bbox uploads thereafter. v1 UI content is the
+    // "TOU2D · M6.0b" marker; M6.1+ fills in real menu content.
+    tou2d::ui::UiOverlayBitmap uiOverlay;
+    uiOverlay.resize(kInitialWidth, kInitialHeight);
+    std::vector<std::uint8_t> uiUploadScratch;
+    bool uiOverlayInstalled = false;
+
     // M5.4 — wire the replay player into the input system once onSetup
     // has run. Recorder opens here too so the file's header lands
     // before any tick is captured.
@@ -808,6 +851,50 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(want));
                 }
                 ++hashMismatches;
+            }
+        }
+        // M6.0b — repaint the UI overlay bitmap for this tick. The
+        // overlay is a single CPU-side RGBA8 framebuffer; we clear,
+        // emit text (and eventually rects, sprites, etc.), then
+        // upload only the dirty bbox. v1 content: a marker proving
+        // the renderer path is live. M6.1+ replaces this body with
+        // per-UIScreen handlers.
+        if (fontAtlas.valid()) {
+            uiOverlay.clear(0u);  // transparent
+            // Top-left HUD marker. y = ascent so the baseline sits
+            // one full font height below the screen top — keeps the
+            // glyphs entirely on-screen even at the smallest atlas.
+            uiOverlay.drawText(fontAtlas,
+                               /*baseX=*/ 8.0f,
+                               /*baseY=*/ static_cast<float>(fontAtlas.ascent + 4),
+                               /*color=*/ 0xFFFFFFFFu,
+                               "TOU2D \xB7 M6.0b READY");
+            if (!uiOverlayInstalled) {
+                const bool ok = renderer->setUiOverlayFromRgba(
+                    uiOverlay.bytes(), uiOverlay.width(), uiOverlay.height());
+                uiOverlayInstalled = ok;
+                (void)uiOverlay.consumeDirty();  // first frame went via setFrom*
+                if (!ok) {
+                    std::fprintf(stderr,
+                        "[tou2d] setUiOverlayFromRgba FAILED — overlay disabled\n");
+                }
+            } else {
+                const auto rect = uiOverlay.consumeDirty();
+                if (!rect.empty()) {
+                    const std::size_t need = static_cast<std::size_t>(rect.w) *
+                                             static_cast<std::size_t>(rect.h) * 4u;
+                    if (uiUploadScratch.size() < need) {
+                        uiUploadScratch.assign(need, 0);
+                    }
+                    if (uiOverlay.extractRegion(
+                            rect,
+                            std::span<std::uint8_t>(uiUploadScratch.data(), need))) {
+                        renderer->updateUiOverlayRegion(
+                            rect.x, rect.y, rect.w, rect.h,
+                            std::span<const std::uint8_t>(uiUploadScratch.data(),
+                                                          need));
+                    }
+                }
             }
         }
         // Flush any per-tick background dirty rect once after the

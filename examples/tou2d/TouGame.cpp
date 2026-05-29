@@ -9,6 +9,7 @@
 #include "CameraSystem.hpp"
 #include "HudSystem.hpp"
 #include "InputSystem.hpp"
+#include "UISystem.hpp"
 #include "LevelLoader.hpp"
 #include "MovementSystem.hpp"
 #include "ProjectileSystem.hpp"
@@ -230,6 +231,14 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     computeRect(cellsX_, cellsY_, minX, minY, maxX, maxY);
 
     // ---- Systems ------------------------------------------------------------
+    // M6.0b — UISystem is registered FIRST so its eventual menu
+    // handlers (M6.1+) see input before any gameplay system. Today the
+    // skeleton parks on `UIScreen::None` and `update` is a no-op,
+    // preserving the CLI-direct-jump bit-for-bit (replay determinism
+    // is unaffected by registration-order alone since None-state
+    // doesn't read or write any component).
+    auto ui            = std::make_unique<UISystem>(&engine, UIScreen::None);
+    ui_                = ui.get();
     auto input         = std::make_unique<InputSystem>(window_, ids_);
     input->setRoundEndedFlag(roundEnded_);
     input_             = input.get();   // borrowed; M5.4 replay hook reaches it via TouGame::inputSystem()
@@ -282,6 +291,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     movementPtr  ->setLevelRect(minX, minY, maxX, maxY);
     projectilePtr->setLevelRect(minX, minY, maxX, maxY);
 
+    engine.registerSystem(std::move(ui));           // M6.0b — empty body while current()==None; M6.1 fills handlers
     engine.registerSystem(std::move(input));
     engine.registerSystem(std::move(botControl));   // overrides PlayerInput for bot slots
     engine.registerSystem(std::move(roundRestart)); // preStep; resets everything when human presses fire post-round

@@ -139,6 +139,19 @@ struct VulkanRenderer::Impl {
     float                               foregroundWorldCenterX  = 0.0f;
     float                               foregroundWorldCenterY  = 0.0f;
 
+    // M6.0b — UI overlay texture. Drawn ONCE per frame at screen-space
+    // NDC after every per-camera pass, reusing the background pipeline
+    // with an identity-flipY viewProj + worldRect=(0,0,1,1) so the quad
+    // spans [-1, +1]² in clip space. Independent of background /
+    // foreground (which are world-anchored): the UI layer's pixels are
+    // in screen coordinates and never participate in any per-camera
+    // viewProj. `uiOverlayEnabled` is the runtime toggle so a UISystem
+    // can flip the overlay off without releasing the GPU texture.
+    VkDescriptorPool                    uiOverlayDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet                     uiOverlayDescriptorSet  = VK_NULL_HANDLE;
+    threadmaxx::ResourceHandle<Texture> uiOverlayTexture;
+    bool                                uiOverlayEnabled        = false;
+
     // §3.11.2 batch D2 — per-camera slice into the pre-packed
     // instance buffer. §3.11 batch 9b.2b — the single
     // (offset, count) pair is now a list of per-meshId sub-slices.
@@ -428,6 +441,15 @@ void VulkanRenderer::shutdown() {
         impl_->foregroundDescriptorPool = VK_NULL_HANDLE;
         impl_->foregroundDescriptorSet  = VK_NULL_HANDLE;
     }
+    // M6.0b — twin teardown for the screen-space UI overlay.
+    impl_->uiOverlayTexture.reset();
+    impl_->uiOverlayEnabled = false;
+    if (impl_->uiOverlayDescriptorPool) {
+        vkDestroyDescriptorPool(impl_->ctx.device(),
+                                impl_->uiOverlayDescriptorPool, nullptr);
+        impl_->uiOverlayDescriptorPool = VK_NULL_HANDLE;
+        impl_->uiOverlayDescriptorSet  = VK_NULL_HANDLE;
+    }
 
     impl_->cubeHandle.reset();
     impl_->destroyPerFrame();
@@ -712,6 +734,102 @@ bool VulkanRenderer::updateForegroundRegion(std::uint32_t                 x,
     Texture* tex = const_cast<Texture*>(impl_->foregroundTexture.get());
     if (!tex || tex->image == VK_NULL_HANDLE) return false;
     return impl_->textureLoader->updateRgbaRegion(tex, x, y, w, h, rgba);
+}
+
+// ---------------------------------------------------------------------------
+// M6.0b — Screen-space UI overlay
+// ---------------------------------------------------------------------------
+// Mirrors the foreground path's plumbing (descriptor pool + set per
+// installed texture, blocking upload at install time, partial-rect
+// updates after) but with two differences:
+//  (1) The draw is recorded ONCE per frame at the end of `recordFrame`
+//      (not inside `recordCamera`), so split-screen viewports see ONE
+//      shared UI layer rather than one per camera.
+//  (2) The push constant carries an identity-flipY viewProj +
+//      worldRect=(0,0,1,1). Combined, those make the background.vert's
+//      world-space math degenerate to a fullscreen NDC quad with v=0
+//      at the top of the image (matching stb_image's row-0-at-top
+//      decode convention).
+// No new shaders, no new pipeline — reuses `pipes.backgroundPipe()`
+// (alpha-blended, depth-off, cull-none — same state UI needs).
+
+bool VulkanRenderer::setUiOverlayFromRgba(std::span<const std::uint8_t> rgba,
+                                          std::uint32_t                 width,
+                                          std::uint32_t                 height) {
+    if (!impl_->textureLoader || !impl_->engine) return false;
+
+    if (rgba.empty() || width == 0 || height == 0) {
+        if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+        impl_->uiOverlayTexture.reset();
+        impl_->uiOverlayDescriptorSet = VK_NULL_HANDLE;
+        impl_->uiOverlayEnabled       = false;
+        return true;
+    }
+
+    auto handle = impl_->textureLoader->createFromRgba(*impl_->engine,
+                                                       width, height, rgba);
+    if (!handle.valid()) return false;
+
+    if (impl_->uiOverlayDescriptorPool == VK_NULL_HANDLE) {
+        VkDescriptorPoolSize poolSize = {};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pci = {};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets       = 1;
+        pci.poolSizeCount = 1;
+        pci.pPoolSizes    = &poolSize;
+        VK_CHECK(vkCreateDescriptorPool(impl_->ctx.device(), &pci, nullptr,
+                                        &impl_->uiOverlayDescriptorPool));
+    }
+
+    if (impl_->uiOverlayDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetLayout layout = impl_->pipes.backgroundSetLayout();
+        VkDescriptorSetAllocateInfo ai = {};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool     = impl_->uiOverlayDescriptorPool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts        = &layout;
+        VK_CHECK(vkAllocateDescriptorSets(impl_->ctx.device(), &ai,
+                                          &impl_->uiOverlayDescriptorSet));
+    }
+
+    if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+
+    const Texture* tex = handle.get();
+    VkDescriptorImageInfo ii = {};
+    ii.sampler     = tex->sampler;
+    ii.imageView   = tex->view;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet w = {};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = impl_->uiOverlayDescriptorSet;
+    w.dstBinding      = 0;
+    w.descriptorCount = 1;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo      = &ii;
+    vkUpdateDescriptorSets(impl_->ctx.device(), 1, &w, 0, nullptr);
+
+    impl_->uiOverlayTexture = std::move(handle);
+    impl_->uiOverlayEnabled = true;
+    return true;
+}
+
+bool VulkanRenderer::updateUiOverlayRegion(std::uint32_t                 x,
+                                           std::uint32_t                 y,
+                                           std::uint32_t                 w,
+                                           std::uint32_t                 h,
+                                           std::span<const std::uint8_t> rgba) {
+    if (!impl_->textureLoader)            return false;
+    if (!impl_->uiOverlayTexture.valid()) return false;
+
+    Texture* tex = const_cast<Texture*>(impl_->uiOverlayTexture.get());
+    if (!tex || tex->image == VK_NULL_HANDLE) return false;
+    return impl_->textureLoader->updateRgbaRegion(tex, x, y, w, h, rgba);
+}
+
+void VulkanRenderer::setUiOverlayEnabled(bool enabled) noexcept {
+    impl_->uiOverlayEnabled = enabled;
 }
 
 void VulkanRenderer::reloadShaders() {
@@ -1369,6 +1487,68 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
     // 2026-05-28 — foreground sprite layer is now drawn inside
     // recordCamera (after debug points), so each split-screen
     // viewport rasterizes the foreground through its own viewProj.
+
+    // ---- M6.0b: screen-space UI overlay ---------------------------
+    // Drawn ONCE per frame at full-swapchain extent in NDC space.
+    // Reuses the background pipeline by pushing an identity-flipY
+    // viewProj + worldRect=(0,0,1,1). The vert shader emits a 6-vert
+    // quad spanning [-1,+1]² in clip; with the flipY mapping the
+    // texture row 0 lands at the TOP of the screen (matching
+    // stb_image's decode convention and the CPU compositor's row
+    // 0 = top contract). Independent of any per-camera viewport
+    // because UI lives in screen pixels by definition.
+    if (uiOverlayEnabled &&
+        uiOverlayDescriptorSet != VK_NULL_HANDLE &&
+        pipes.backgroundPipe() != VK_NULL_HANDLE) {
+        // Restore full-swapchain viewport + scissor (the per-camera
+        // loop may have left a sub-extent state behind).
+        const VkExtent2D ext = swapchain.extent();
+        VkViewport vp_ui = {};
+        vp_ui.x = 0.0f;
+        vp_ui.y = static_cast<float>(ext.height);
+        vp_ui.width  =  static_cast<float>(ext.width);
+        vp_ui.height = -static_cast<float>(ext.height);
+        vp_ui.minDepth = 0.0f;
+        vp_ui.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd, 0, 1, &vp_ui);
+        VkRect2D sc_ui = {};
+        sc_ui.offset.x = 0;
+        sc_ui.offset.y = 0;
+        sc_ui.extent = ext;
+        vkCmdSetScissor(cmd, 0, 1, &sc_ui);
+
+        // Identity-flipY viewProj: maps world (x, y, -1) -> NDC
+        // (x, -y, 0.5). Column-major (Vulkan std140). y-flip cancels
+        // the viewport's negative-height y-flip, so an "up-positive"
+        // background.vert vUv formula leaves row 0 at NDC y = -1
+        // (top of screen).
+        struct UiOverlayPush {
+            float viewProj[16];
+            float worldRect[4];
+        } push = {};
+        // col 0: [1, 0, 0, 0]
+        push.viewProj[ 0] = 1.0f;
+        // col 1: [0, -1, 0, 0]
+        push.viewProj[ 5] = -1.0f;
+        // col 2: [0, 0, 0, 0]  — collapses world z to NDC 0.5 via col 3 below
+        // col 3: [0, 0, 0.5, 1]
+        push.viewProj[14] = 0.5f;
+        push.viewProj[15] = 1.0f;
+        push.worldRect[0] = 0.0f;   // centerX
+        push.worldRect[1] = 0.0f;   // centerY
+        push.worldRect[2] = 1.0f;   // halfW (spans [-1, +1] in clip)
+        push.worldRect[3] = 1.0f;   // halfH
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipes.backgroundPipe());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipes.backgroundLayout(), /*firstSet=*/0,
+                                1, &uiOverlayDescriptorSet, 0, nullptr);
+        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
+                           VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
+    }
 
     vkCmdEndRendering(cmd);
 

@@ -22,6 +22,7 @@ namespace tou2d {
 class BulletTerrainSystem;
 class CameraSystem;
 class InputSystem;
+class UISystem;
 class RepairPickupSystem;
 class TerrainCollisionSystem;
 
@@ -155,6 +156,7 @@ private:
     TerrainCollisionSystem*  collision_      = nullptr;   // borrowed
     RepairPickupSystem*      repairPickup_   = nullptr;   // borrowed
     InputSystem*             input_          = nullptr;   // borrowed
+    UISystem*                ui_             = nullptr;   // M6.0b — borrowed; engine owns
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for
     // playerShip() (smoke-test position log) and onTeardown bookkeeping.

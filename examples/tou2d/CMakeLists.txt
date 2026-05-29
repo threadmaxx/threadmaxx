@@ -45,6 +45,13 @@ add_library(tou2d_core STATIC
     # runtime per the existing M4.8 convention.
     ui/Font.cpp
     ui/TextPrintf.cpp
+    # M6.0b — UI overlay CPU compositor + UISystem screen-state-machine
+    # skeleton. UiOverlayBitmap is the CPU-side RGBA8 framebuffer
+    # consumed by VulkanRenderer's new setUiOverlayFromRgba /
+    # updateUiOverlayRegion (one upload per tick); UISystem owns
+    # `UIScreen current` and emits UIScreenChanged on transition.
+    ui/UiOverlayBitmap.cpp
+    UISystem.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

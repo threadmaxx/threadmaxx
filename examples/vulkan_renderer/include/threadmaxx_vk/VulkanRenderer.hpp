@@ -194,6 +194,49 @@ public:
                                   float centerX = 0.0f,
                                   float centerY = 0.0f) noexcept;
 
+    /// M6.0b — install a transparent UI overlay texture rendered ONCE
+    /// per frame at screen-space NDC AFTER every per-camera pass (above
+    /// background, opaque, debug, and foreground). Unlike background /
+    /// foreground (which are world-anchored quads transformed by the
+    /// camera's viewProj), the UI overlay covers the full swapchain
+    /// extent and ignores any camera setup — UI pixels are in screen
+    /// coordinates by construction.
+    ///
+    /// `rgba` is tightly-packed RGBA8 (R,G,B,A; 4 bytes per pixel; row-
+    /// major; row 0 = top of the image). Blocks on a `vkDeviceWaitIdle`
+    /// + GPU upload + fence — same semantics as `setBackgroundFromRgba`.
+    /// Passing `rgba.empty()` (or zero extent) clears the overlay (the
+    /// renderer skips the draw entirely until a non-empty rgba is
+    /// installed). Returns true on success.
+    ///
+    /// Reuses the existing background pipeline (alpha-blended, depth-
+    /// off, cull-none). One extra draw call per frame; cost is the
+    /// texture sample over the swapchain extent plus the typical 6-vert
+    /// quad overhead.
+    bool setUiOverlayFromRgba(std::span<const std::uint8_t> rgba,
+                              std::uint32_t                 width,
+                              std::uint32_t                 height);
+
+    /// M6.0b — partial-rect update of the UI overlay texture. Same
+    /// contract as `updateBackgroundRegion` — `rgba` is `w*h*4` bytes
+    /// covering `[x, x+w) × [y, y+h)`. The hot path: a UI compositor
+    /// CPU-blits glyph quads into a CPU framebuffer, flushes the dirty
+    /// bbox here every tick. No `vkDeviceWaitIdle`; the graphics queue's
+    /// own barriers handle synchronization. Returns false if no overlay
+    /// is installed or the region falls outside the image.
+    bool updateUiOverlayRegion(std::uint32_t                 x,
+                               std::uint32_t                 y,
+                               std::uint32_t                 w,
+                               std::uint32_t                 h,
+                               std::span<const std::uint8_t> rgba);
+
+    /// M6.0b — toggle UI overlay rendering without releasing the
+    /// installed texture. Useful for `F3`-style debug-overlay toggles
+    /// where the bitmap stays GPU-resident across frames. Default is
+    /// `true` once a texture is installed (a fresh install also flips
+    /// the flag back on).
+    void setUiOverlayEnabled(bool enabled) noexcept;
+
     /// §3.11.7b.5 batch 9b.4.b — upload the per-frame bone matrices.
     /// `matrices` is a packed array of `mat4` values, column-major
     /// (Vulkan std140 convention). The renderer copies into the

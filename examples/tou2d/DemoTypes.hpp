@@ -570,6 +570,37 @@ static_assert(sizeof(KeyMap) ==
               "and uint16_t-sized. Adding an Action requires bumping "
               "the settings.dat version (M6.5).");
 
+/// M6.0b — top-level UI screen the player is currently on. `None` is
+/// the gameplay-only path (legacy / CLI-direct-jump); the rest are
+/// menu screens owned by `UISystem`.
+///
+/// Stable enum order — don't reorder. M6.5's settings persistence and
+/// future replay determinism depend on a stable wire shape for any
+/// UI transition stored in a save file. Add new screens at the end.
+enum class UIScreen : std::uint8_t {
+    None        = 0,   ///< gameplay-only; UISystem swallows nothing
+    MainMenu    = 1,
+    MatchSetup  = 2,
+    PlayerSetup = 3,
+    Options     = 4,
+    Pause       = 5,
+    Results     = 6,
+    Credits     = 7,
+};
+
+/// M6.0b — typed event emitted by `UISystem::setCurrent` on transition.
+/// Subscribers: AudioSystem (UI click SFX), Replay (skip emit while
+/// non-gameplay screen is active), HudSystem (suppress combat HUD on
+/// menu screens). The engine never produces this — it's example-side.
+struct UIScreenChanged {
+    UIScreen     from;
+    UIScreen     to;
+    std::uint8_t _pad[6] = {};
+};
+static_assert(sizeof(UIScreenChanged) == 8,
+              "UIScreenChanged stays 8 bytes — single cache line "
+              "shared with PlayerInput / LocalPlayer.");
+
 /// Ids handed back by `Engine::registerUserComponent`.
 struct UserComponentIds {
     threadmaxx::UserComponentId playerInput;
