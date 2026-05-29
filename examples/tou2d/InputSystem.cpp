@@ -13,50 +13,100 @@ namespace tou2d {
 
 namespace {
 
-struct KeyRow {
-    int thrust;
-    int back;
-    int turnLeft;
-    int turnRight;
-    int fireBasic;
-    int fireSpecial;
-    int menuButton;
-};
+// M6.0 — read one slot's PlayerInput from a KeyMap. Replaces the
+// hard-coded `kRows` table the v1 reader used. Defaults: every Action
+// indexes into `keymap.binding[slot][action]`; a binding value of
+// `kKeyUnbound` (0) means "no key" — glfwGetKey is skipped to avoid
+// querying GLFW_KEY_UNKNOWN's -1 path. The pre-M6.0 reader called
+// glfwGetKey unconditionally; results are equivalent because every
+// default action has a real key bound.
+PlayerInput readMapped(GLFWwindow* w,
+                       const KeyMap& km,
+                       std::uint8_t slot) noexcept {
+    PlayerInput in;
+    if (!w)                       return in;
+    if (slot >= kMaxHumans)       return in;
+    const auto& row = km.binding[slot];
+    auto bit = [w, &row](Action a) -> std::uint8_t {
+        const std::uint16_t key = row[static_cast<std::size_t>(a)];
+        if (key == kKeyUnbound) return 0u;
+        return (glfwGetKey(w, static_cast<int>(key)) == GLFW_PRESS) ? 1u : 0u;
+    };
+    in.thrust      = bit(Action::Thrust);
+    in.back        = bit(Action::Back);
+    in.turnLeft    = bit(Action::TurnLeft);
+    in.turnRight   = bit(Action::TurnRight);
+    in.fireBasic   = bit(Action::FireDumb);
+    in.fireSpecial = bit(Action::FireSpecial);
+    in.menuButton  = bit(Action::MenuButton);
+    return in;
+}
 
-// P1 ↑↓←→ + RShift + RCtrl + /
-// P2 W/S/A/D + LShift + LCtrl + Tab
-// P3 I/K/J/L + Y + H + U
-// P4 numpad 8/2/4/6 + KP_0 + KP_DECIMAL + KP_ENTER
-constexpr KeyRow kRows[4] = {
-    {GLFW_KEY_UP,    GLFW_KEY_DOWN,  GLFW_KEY_LEFT,  GLFW_KEY_RIGHT,
-     GLFW_KEY_RIGHT_SHIFT, GLFW_KEY_RIGHT_CONTROL, GLFW_KEY_SLASH},
-    {GLFW_KEY_W,     GLFW_KEY_S,     GLFW_KEY_A,     GLFW_KEY_D,
-     GLFW_KEY_LEFT_SHIFT,  GLFW_KEY_LEFT_CONTROL,  GLFW_KEY_TAB},
-    {GLFW_KEY_I,     GLFW_KEY_K,     GLFW_KEY_J,     GLFW_KEY_L,
-     GLFW_KEY_Y,           GLFW_KEY_H,             GLFW_KEY_U},
-    {GLFW_KEY_KP_8,  GLFW_KEY_KP_2,  GLFW_KEY_KP_4,  GLFW_KEY_KP_6,
-     GLFW_KEY_KP_0,        GLFW_KEY_KP_DECIMAL,    GLFW_KEY_KP_ENTER},
-};
+// The legacy `kRows` table is now reachable as the default KeyMap.
+// Kept here so all GLFW key constants live in this TU (DemoTypes.hpp
+// stays GLFW-free).
+KeyMap buildDefaultKeyMap() noexcept {
+    KeyMap km{};
+    // P1 ↑↓←→ + RShift + RCtrl + /
+    auto setRow = [&km](std::uint8_t slot,
+                        int thrust, int back, int tl, int tr,
+                        int fd, int fs, int menu) {
+        auto& row = km.binding[slot];
+        row[static_cast<std::size_t>(Action::Thrust)]      = static_cast<std::uint16_t>(thrust);
+        row[static_cast<std::size_t>(Action::Back)]        = static_cast<std::uint16_t>(back);
+        row[static_cast<std::size_t>(Action::TurnLeft)]    = static_cast<std::uint16_t>(tl);
+        row[static_cast<std::size_t>(Action::TurnRight)]   = static_cast<std::uint16_t>(tr);
+        row[static_cast<std::size_t>(Action::FireDumb)]    = static_cast<std::uint16_t>(fd);
+        row[static_cast<std::size_t>(Action::FireSpecial)] = static_cast<std::uint16_t>(fs);
+        row[static_cast<std::size_t>(Action::MenuButton)]  = static_cast<std::uint16_t>(menu);
+    };
+    setRow(0, GLFW_KEY_UP,    GLFW_KEY_DOWN,  GLFW_KEY_LEFT,  GLFW_KEY_RIGHT,
+              GLFW_KEY_RIGHT_SHIFT, GLFW_KEY_RIGHT_CONTROL, GLFW_KEY_SLASH);
+    setRow(1, GLFW_KEY_W,     GLFW_KEY_S,     GLFW_KEY_A,     GLFW_KEY_D,
+              GLFW_KEY_LEFT_SHIFT,  GLFW_KEY_LEFT_CONTROL,  GLFW_KEY_TAB);
+    setRow(2, GLFW_KEY_I,     GLFW_KEY_K,     GLFW_KEY_J,     GLFW_KEY_L,
+              GLFW_KEY_Y,           GLFW_KEY_H,             GLFW_KEY_U);
+    setRow(3, GLFW_KEY_KP_8,  GLFW_KEY_KP_2,  GLFW_KEY_KP_4,  GLFW_KEY_KP_6,
+              GLFW_KEY_KP_0,        GLFW_KEY_KP_DECIMAL,    GLFW_KEY_KP_ENTER);
+
+    // M6 UI navigation — global to slot 0 (only one menu cursor in v1).
+    // Slots 1..3 leave UI actions unbound; M6.1's UISystem reads slot 0
+    // for menu navigation regardless of which slot owns the menu.
+    auto& ui = km.binding[0];
+    ui[static_cast<std::size_t>(Action::Pause)]    = GLFW_KEY_ESCAPE;
+    ui[static_cast<std::size_t>(Action::UiUp)]     = GLFW_KEY_UP;
+    ui[static_cast<std::size_t>(Action::UiDown)]   = GLFW_KEY_DOWN;
+    ui[static_cast<std::size_t>(Action::UiLeft)]   = GLFW_KEY_LEFT;
+    ui[static_cast<std::size_t>(Action::UiRight)]  = GLFW_KEY_RIGHT;
+    ui[static_cast<std::size_t>(Action::UiAccept)] = GLFW_KEY_ENTER;
+    ui[static_cast<std::size_t>(Action::UiCancel)] = GLFW_KEY_ESCAPE;
+
+    return km;
+}
+
+const KeyMap& defaultKeyMap() noexcept {
+    static const KeyMap km = buildDefaultKeyMap();
+    return km;
+}
 
 PlayerInput readKeys(GLFWwindow* w, std::uint8_t slot) noexcept {
-    PlayerInput in;
-    if (!w)         return in;
-    if (slot >= 4)  return in;
-    const KeyRow& r = kRows[slot];
-    in.thrust      = (glfwGetKey(w, r.thrust)      == GLFW_PRESS) ? 1u : 0u;
-    in.back        = (glfwGetKey(w, r.back)        == GLFW_PRESS) ? 1u : 0u;
-    in.turnLeft    = (glfwGetKey(w, r.turnLeft)    == GLFW_PRESS) ? 1u : 0u;
-    in.turnRight   = (glfwGetKey(w, r.turnRight)   == GLFW_PRESS) ? 1u : 0u;
-    in.fireBasic   = (glfwGetKey(w, r.fireBasic)   == GLFW_PRESS) ? 1u : 0u;
-    in.fireSpecial = (glfwGetKey(w, r.fireSpecial) == GLFW_PRESS) ? 1u : 0u;
-    in.menuButton  = (glfwGetKey(w, r.menuButton)  == GLFW_PRESS) ? 1u : 0u;
-    return in;
+    return readMapped(w, defaultKeyMap(), slot);
 }
 
 } // namespace
 
 PlayerInput readKeyboardSlot(GLFWwindow* window, std::uint8_t slot) noexcept {
     return readKeys(window, slot);
+}
+
+KeyMap makeDefaultKeyMap() noexcept {
+    return buildDefaultKeyMap();
+}
+
+PlayerInput readKeyboardSlotMapped(GLFWwindow* window,
+                                   const KeyMap& keymap,
+                                   std::uint8_t slot) noexcept {
+    return readMapped(window, keymap, slot);
 }
 
 InputSystem::InputSystem(GLFWwindow* window, UserComponentIds ids) noexcept

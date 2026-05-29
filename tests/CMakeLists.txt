@@ -184,4 +184,47 @@ if (TARGET tou2d_core)
             -Wall -Wextra -Wpedantic -Wshadow)
     endif()
     add_test(NAME tou2d_camera_zoom_test COMMAND tou2d_camera_zoom_test)
+
+    # M6.0 — TTF font bake + text layout. Pins the FontAtlas / glyph
+    # metrics / textPrintf / measureText contract against the bundled
+    # `assets/ui/font.ttf`. Drop-in: swap the TTF, the test still passes.
+    add_executable(tou2d_font_atlas_test tou2d_font_atlas_test.cpp)
+    target_link_libraries(tou2d_font_atlas_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_font_atlas_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(tou2d_font_atlas_test PRIVATE
+        THREADMAXX_TOU2D_FONT_PATH="${CMAKE_SOURCE_DIR}/assets/ui/font.ttf")
+    set_target_properties(tou2d_font_atlas_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_font_atlas_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_font_atlas_test COMMAND tou2d_font_atlas_test)
+
+    # M6.0 — KeyMap default-binding pin. Asserts the Action enum
+    # ordering + per-slot key bindings haven't shifted (settings.dat
+    # wire-shape lives on this). Links tou2d_core + glfw for
+    # `makeDefaultKeyMap()` + GLFW key constants.
+    add_executable(tou2d_keymap_default_binding_test
+        tou2d_keymap_default_binding_test.cpp)
+    target_link_libraries(tou2d_keymap_default_binding_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core glfw)
+    target_include_directories(tou2d_keymap_default_binding_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_keymap_default_binding_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_keymap_default_binding_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_keymap_default_binding_test
+             COMMAND tou2d_keymap_default_binding_test)
 endif()

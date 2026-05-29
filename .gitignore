@@ -13,4 +13,11 @@ TOU
 # tou2d runtime asset dir — user copies SHP/WAV/OGG from their TOU
 # install into here (see examples/tou2d/TOU_PLAN.md § M4.8). The
 # original game's assets are NOT redistributable; not tracked in git.
-assets
+# `assets/*` (not `assets`) so per-subdir re-inclusion works for
+# the permissively-licensed M6.0 UI font (see exception below).
+assets/*
+# M6.0 — exception: the bundled UI font is permissively licensed
+# (DejaVu Sans Mono, Bitstream-Vera-derivative). Ships in-tree so a
+# fresh checkout has a default usable font without manual install.
+# Drop-in replaceable (see assets/ui/README.md).
+!assets/ui/

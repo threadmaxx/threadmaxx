@@ -517,6 +517,59 @@ inline constexpr std::size_t kMaxPlayerSlots =
     static_cast<std::size_t>(kMaxHumans) +
     static_cast<std::size_t>(kMaxBots);
 
+/// M6.0 — action enum that abstracts gameplay + UI inputs from raw
+/// key codes. `InputSystem` reads `KeyMap` (below) instead of
+/// hard-coded GLFW scancodes; `UISystem` (M6.1) routes the same
+/// actions to menu navigation.
+///
+/// Stable bit order — do NOT reorder. `KeyMap` indexes by
+/// `static_cast<std::size_t>(Action::Foo)`, and M6.5's
+/// `settings.dat` writes the binding table in this order. New
+/// actions append before `kActionCount`.
+enum class Action : std::uint8_t {
+    Thrust       = 0,
+    Back         = 1,   ///< reverse thrust (weaker)
+    TurnLeft     = 2,
+    TurnRight    = 3,
+    FireDumb     = 4,   ///< Dumbfire weapon
+    FireSpecial  = 5,   ///< Special slot (M3.3+)
+    MenuButton   = 6,   ///< original TOU's "launch all" / menu trigger
+    Pause        = 7,   ///< M6.4 — pause menu trigger
+    UiUp         = 8,
+    UiDown       = 9,
+    UiLeft       = 10,
+    UiRight      = 11,
+    UiAccept     = 12,
+    UiCancel     = 13,
+    kActionCount = 14,
+};
+
+/// M6.0 — convenience constant for the enum size as `std::size_t`.
+inline constexpr std::size_t kActionCount =
+    static_cast<std::size_t>(Action::kActionCount);
+
+/// M6.0 — sentinel for "no key bound." Real GLFW keys are positive.
+inline constexpr std::uint16_t kKeyUnbound = 0;
+
+/// M6.0 — per-slot per-action key binding table. `binding[slot][action]`
+/// is a GLFW key code (`uint16_t` covers GLFW's whole key range).
+/// `KeyMap` is intentionally a plain POD so it round-trips through
+/// `settings.dat` (M6.5) via memcpy.
+///
+/// The default population is `makeDefaultKeyMap()` declared in
+/// `InputSystem.hpp` — that's where the GLFW header is already
+/// included so DemoTypes.hpp can stay GLFW-free.
+struct KeyMap {
+    std::uint16_t binding[kMaxHumans][kActionCount] = {};
+};
+static_assert(sizeof(KeyMap) ==
+                  static_cast<std::size_t>(kMaxHumans) *
+                  kActionCount *
+                  sizeof(std::uint16_t),
+              "KeyMap layout is the settings.dat wire shape — keep flat "
+              "and uint16_t-sized. Adding an Action requires bumping "
+              "the settings.dat version (M6.5).");
+
 /// Ids handed back by `Engine::registerUserComponent`.
 struct UserComponentIds {
     threadmaxx::UserComponentId playerInput;

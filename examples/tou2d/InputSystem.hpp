@@ -22,6 +22,24 @@ class ReplayPlayer;
 /// frozen). `window` may be null; result is zero in that case.
 PlayerInput readKeyboardSlot(GLFWwindow* window, std::uint8_t slot) noexcept;
 
+/// M6.0 — build the default KeyMap. Returns the original-TOU per-slot
+/// bindings (P1=arrows + RShift/RCtrl + /, P2=WSAD + LShift/LCtrl + Tab,
+/// P3=IJKL + Y/H/U, P4=numpad 8/2/4/6 + KP_0/KP_DECIMAL/KP_ENTER), plus
+/// the UI-navigation set (UI is global per-binding; we still scope it
+/// to slot 0 only at v1 since menus are single-user).
+///
+/// The KeyMap returned is forward-compatible with M6.5's
+/// `settings.dat` (memcpy'd to disk; new fields would bump the
+/// settings.dat version).
+KeyMap makeDefaultKeyMap() noexcept;
+
+/// M6.0 — sample PlayerInput from a KeyMap. Replaces the hard-coded
+/// `kRows` table the v1 reader used internally. Public so the replay
+/// recorder + test can share the exact same path.
+PlayerInput readKeyboardSlotMapped(GLFWwindow* window,
+                                   const KeyMap& keymap,
+                                   std::uint8_t slot) noexcept;
+
 /// preStep system that polls the borrowed GLFW window's key state on
 /// the sim thread and writes the resulting PlayerInput value to every
 /// LocalPlayer-tagged entity. M1 only wires P1 (arrows + RShift +

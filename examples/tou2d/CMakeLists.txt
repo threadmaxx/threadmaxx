@@ -38,6 +38,13 @@ add_library(tou2d_core STATIC
     Replay.cpp
     RepairPickupSystem.cpp
     BulletHomingSystem.cpp
+    # M6.0 — UI prereqs (TTF font + text layout). The font asset lives
+    # at the repo's root-level `assets/ui/font.ttf` (mirroring the
+    # shared `assets/ships`, `assets/sfx`, `assets/music` layout). No
+    # CMake-side copy is needed — tou2d reads from `./assets/` at
+    # runtime per the existing M4.8 convention.
+    ui/Font.cpp
+    ui/TextPrintf.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
