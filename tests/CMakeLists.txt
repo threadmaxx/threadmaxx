@@ -358,4 +358,27 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_player_setup_test
              COMMAND tou2d_player_setup_test)
+
+    # M6.6 — Results screen contract: showResults transitions to Results
+    # with the snapshot captured; Display rows render winner banner +
+    # per-slot scoreboard; moveFocus skips Display rows so initial focus
+    # lands on the first action button; Rematch/ReturnToSetup/MainMenu
+    # action routing; pendingRematch sticky-flag flow.
+    add_executable(tou2d_results_screen_test
+        tou2d_results_screen_test.cpp)
+    target_link_libraries(tou2d_results_screen_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_results_screen_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_results_screen_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_results_screen_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_results_screen_test
+             COMMAND tou2d_results_screen_test)
 endif()

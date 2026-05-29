@@ -34,6 +34,8 @@ enum class MenuAction : std::uint8_t {
     RestartMatch      = 11,  ///< M6.4 — set pendingRestartMatch_, dismiss menu.
     ReturnToMainMenu  = 12,  ///< M6.4 — set pendingReturnToMainMenu_, jump to MainMenu.
     PlayerSetup       = 13,  ///< M6.3 — jumps to UIScreen::PlayerSetup.
+    Rematch           = 14,  ///< M6.6 — set pendingRematch_, dismiss menu (host re-applies setup).
+    ReturnToSetup     = 15,  ///< M6.6 — jump back to UIScreen::MatchSetup (carry over matchSetup_).
 };
 
 /// M6.2 — distinguishes a plain "fire on accept" row from a horizontal
@@ -44,7 +46,52 @@ enum class MenuAction : std::uint8_t {
 enum class MenuRowKind : std::uint8_t {
     Action   = 0,
     Scroller = 1,
+    /// M6.6 — read-only formatted row. `formatRow` consults the row's
+    /// `slotIdx` to render dynamic content from the active screen's
+    /// backing state (currently: the captured `MatchResults` for the
+    /// Results screen). Display rows MUST have `enabled = false` so
+    /// `moveFocus` skips them; `acceptFocused` ignores them anyway.
+    Display  = 2,
 };
+
+/// M6.6 — per-slot scoreboard row captured at round-end. Stable layout
+/// (engine-runtime state only; not persisted across sessions). Fields:
+///   * `tag`         — 3 ASCII chars resolved from `MatchSetup::playerSlots`
+///                     when the user set one; else a slot-derived "P0".."P3"
+///                     auto label.
+///   * `active`      — 1 if this slot held a live ship at any point in the
+///                     match; 0 if it was empty (slot > numHumans+numBots).
+///   * `kills`       — `Ship::kills` at round-end (frag count).
+///   * `isBot`       — 1 if the slot was AI-driven, 0 if a local human.
+///   * `shipKindIdx` — index into `kShipKinds` for ship-name lookup.
+struct MatchResultsSlot {
+    std::array<char, 3> tag         = {' ', ' ', ' '};
+    std::uint8_t        active      = 0;
+    std::uint16_t       kills       = 0;
+    std::uint8_t        isBot       = 0;
+    std::uint8_t        shipKindIdx = 0;
+};
+static_assert(sizeof(MatchResultsSlot) == 8,
+              "MatchResultsSlot stays 8 bytes — embedded in MatchResults as a "
+              "fixed-size array; layout change must update the Results "
+              "row formatter.");
+
+/// M6.6 — snapshot of a finished match. Captured by the host on the
+/// rising edge of `RoundEnded`; handed to `UISystem::showResults` which
+/// stores it for `formatRow` to render. Only the first
+/// `kMatchSetupSlotCount` slots are recorded — sufficient for the v1
+/// 4-row scoreboard. Larger bot rosters (kMaxPlayerSlots = 67) are
+/// summarised by the winner banner only.
+struct MatchResults {
+    std::uint8_t  winnerSlot  = 0;
+    std::uint8_t  _pad        = 0;
+    std::uint16_t winnerKills = 0;
+    std::uint8_t  _pad2[4]    = {};
+    std::array<MatchResultsSlot, kMatchSetupSlotCount> slots{};
+};
+static_assert(sizeof(MatchResults) == 8 + kMatchSetupSlotCount * 8,
+              "MatchResults layout must match the Results-screen row "
+              "formatter's expected slot count.");
 
 /// M6.2 — scroller knob identifier. One per editable field on the
 /// MatchSetup screen. Order matches `kMatchSetupRows` so a row's
@@ -217,6 +264,32 @@ public:
     bool pendingStartMatch() const noexcept { return pendingStartMatch_; }
     void clearPendingStartMatch() noexcept   { pendingStartMatch_ = false; }
 
+    /// ---- M6.6 Results screen -----------------------------------------
+
+    /// Capture a finished match's per-slot scoreboard + winner banner
+    /// and flip the screen to `UIScreen::Results`. Idempotent —
+    /// successive calls overwrite the captured snapshot (only the last
+    /// round's results are kept). The host invokes this from the
+    /// rising-edge of `roundEndedFlag()` after collecting stats from
+    /// `TouGame::collectMatchResults`.
+    void showResults(const MatchResults& r) noexcept;
+
+    /// Read-back of the last `showResults` snapshot. Used by
+    /// `formatRow` to render the Display rows, and by the host's
+    /// Rematch / ReturnToSetup drains to reseed the next match. Stays
+    /// valid across screen transitions (e.g. while the user briefly
+    /// navigates to MainMenu and back) — only `showResults` overwrites.
+    const MatchResults& matchResults() const noexcept { return matchResults_; }
+
+    /// True after a `MenuAction::Rematch` accept fired. Sticky until
+    /// the host calls `clearPendingRematch()`. Same posture as
+    /// `pendingRestartMatch` — the host re-applies `matchSetup()` and
+    /// restarts the engine; the matchSetup_ contents are unchanged so
+    /// the new match has the same humans/bots/mode/slots as the one
+    /// that just ended.
+    bool pendingRematch() const noexcept { return pendingRematch_; }
+    void clearPendingRematch() noexcept   { pendingRematch_ = false; }
+
     /// ---- M6.4 Pause screen --------------------------------------------
 
     /// True after a `MenuAction::RestartMatch` accept fired on the Pause
@@ -258,7 +331,9 @@ private:
     bool                pendingStartMatch_       = false;
     bool                pendingRestartMatch_     = false;
     bool                pendingReturnToMainMenu_ = false;
+    bool                pendingRematch_          = false;
     MatchSetup          matchSetup_{};
+    MatchResults        matchResults_{};
 };
 
 } // namespace tou2d

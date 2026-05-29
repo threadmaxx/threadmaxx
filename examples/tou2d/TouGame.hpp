@@ -4,6 +4,7 @@
 #include "MatchSetup.hpp"
 #include "ProceduralLevel.hpp"
 #include "SpriteCompositor.hpp"
+#include "UISystem.hpp"  // for MatchResults — collectMatchResults out-param
 
 #include <threadmaxx/Game.hpp>
 #include <threadmaxx/Handles.hpp>
@@ -184,6 +185,18 @@ public:
     /// to paint the winner banner in the correct slot color.
     std::uint8_t  winnerSlot()  const noexcept { return winnerSlot_;  }
     std::uint16_t winnerKills() const noexcept { return winnerKills_; }
+
+    /// M6.6 — fill @p out with a per-slot scoreboard snapshot captured
+    /// from the current World state. Reads `Ship.kills` / `Ship.shipKindIdx`
+    /// for each `playerShips_[slot]`, derives the slot's effective tag /
+    /// isBot from `playerSlots_` (or auto from slot index when unset),
+    /// and copies `winnerSlot_` / `winnerKills_` into the header. Only
+    /// the first `kMatchSetupSlotCount` slots are recorded; the host
+    /// uses this for the M6.6 Results screen.
+    ///
+    /// @pre Engine is initialized (called between onSetup and onTeardown).
+    void collectMatchResults(threadmaxx::Engine& engine,
+                             MatchResults& out) const noexcept;
 
 private:
     GLFWwindow*              window_         = nullptr;

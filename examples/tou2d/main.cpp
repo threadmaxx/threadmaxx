@@ -1022,6 +1022,12 @@ int main(int argc, char** argv) {
     std::uint64_t hashMismatches = 0;
     std::vector<std::uint8_t> spriteUploadScratch;
     std::array<tou2d::PlayerInput, tou2d::kReplayKeyboardSlots> sampledInputs{};
+    // M6.6 — rising-edge detector for `RoundEnded` so the host auto-
+    // opens UIScreen::Results when a round ends with no menu already
+    // showing. The flag itself is shared with RoundRestartSystem (which
+    // also resets it when the user pressed R); the Results screen takes
+    // precedence by suppressing R-restart through engine-pause.
+    bool prevRoundEnded = false;
     while (!glfwWindowShouldClose(window) && !engine.quitRequested()) {
         glfwPollEvents();
         // M6.1 — pump UI key edges + dispatch when a menu is up. Drives
@@ -1032,6 +1038,29 @@ int main(int argc, char** argv) {
         // no action — so cancelling out of a menu doesn't auto-fire
         // UiAccept on the first gameplay frame.
         auto* ui = game.uiSystem();
+        // M6.6 — auto-flip into UIScreen::Results on the rising edge of
+        // `roundEndedFlag`, but only when no other menu is up (so a Pause
+        // open during the very tick of round-end isn't yanked away).
+        // Snapshot the scoreboard FROM the engine (Ship.kills + per-slot
+        // tag/role from MatchSetup) BEFORE setCurrent so the engine pause
+        // below freezes the world in the state the user just saw.
+        if (ui) {
+            const auto roundEndedFlag = game.roundEndedFlag();
+            const bool roundEnded = roundEndedFlag &&
+                roundEndedFlag->load(std::memory_order_acquire);
+            if (roundEnded && !prevRoundEnded &&
+                ui->current() == tou2d::UIScreen::None) {
+                tou2d::MatchResults r;
+                game.collectMatchResults(engine, r);
+                ui->showResults(r);
+                std::printf(
+                    "[tou2d] menu Results: winner=P%u kills=%u "
+                    "(captured at tick=%llu)\n",
+                    unsigned(r.winnerSlot), unsigned(r.winnerKills),
+                    static_cast<unsigned long long>(tick));
+            }
+            prevRoundEnded = roundEnded;
+        }
         if (ui) {
             uiEdges.poll(window, uiKeyMap);
             // M6.4 — Pause keybind (default Esc) toggles between
@@ -1109,6 +1138,24 @@ int main(int argc, char** argv) {
                     "[tou2d] menu Restart match at tick=%llu\n",
                     static_cast<unsigned long long>(tick));
                 restartMatch(s);
+                ui = game.uiSystem();
+                if (!ui) break;
+            }
+            // M6.6 — Rematch drain. Same posture as RestartMatch — the
+            // user picked Results -> Rematch, host reapplies the same
+            // MatchSetup the round was played with and tears down +
+            // restarts the engine. The new engine starts fresh
+            // (`roundEnded_` is reallocated by TouGame's restart path)
+            // so prevRoundEnded must be reset to avoid spurious re-fires
+            // against the stale shared_ptr.
+            if (ui->pendingRematch()) {
+                const tou2d::MatchSetup s = ui->matchSetup();
+                ui->clearPendingRematch();
+                std::printf(
+                    "[tou2d] menu Rematch at tick=%llu\n",
+                    static_cast<unsigned long long>(tick));
+                restartMatch(s);
+                prevRoundEnded = false;
                 ui = game.uiSystem();
                 if (!ui) break;
             }
@@ -1208,6 +1255,7 @@ int main(int argc, char** argv) {
                     case tou2d::UIScreen::Credits:    title = "TOU2D \xB7 Credits";          break;
                     case tou2d::UIScreen::MatchSetup: title = "TOU2D \xB7 Match Setup";      break;
                     case tou2d::UIScreen::Pause:      title = "TOU2D \xB7 Paused";           break;
+                    case tou2d::UIScreen::Results:    title = "TOU2D \xB7 Match Results";    break;
                     default:                          title = "TOU2D \xB7 Menu";             break;
                 }
                 const int lineH = (fontAtlas.ascent - fontAtlas.descent +

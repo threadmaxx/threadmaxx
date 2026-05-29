@@ -161,6 +161,35 @@ static_assert(std::size(kPlayerSetupRows) ==
                   kMatchSetupSlotCount * 6 + 1,
               "PlayerSetup row table = 4 slots * 6 fields + 1 Back row");
 
+// M6.6 — Results screen rows. Layout (top-to-bottom):
+//   row 0  — winner banner (Display, slotIdx = 0xFF)
+//   row 1  — header  "Slot      Kills  Ship"      (Display, slotIdx = 0xFE)
+//   rows 2..2+N — one per-slot scoreboard line (Display, slotIdx in [0, N))
+//   row 6  — "Rematch"        (Action; Rematch)
+//   row 7  — "Return to setup" (Action; ReturnToSetup)
+//   row 8  — "Main menu"      (Action; ReturnToMainMenu)
+// Display rows are `enabled = false` so `moveFocus` skips them and
+// initial focus lands on the first action button.
+constexpr MenuRow kResultsRows[] = {
+    { "",                  MenuAction::None,             false,
+      MenuRowKind::Display, MatchSetupKnob::Count, 0xFFu },
+    { "",                  MenuAction::None,             false,
+      MenuRowKind::Display, MatchSetupKnob::Count, 0xFEu },
+    { "",                  MenuAction::None,             false,
+      MenuRowKind::Display, MatchSetupKnob::Count, 0 },
+    { "",                  MenuAction::None,             false,
+      MenuRowKind::Display, MatchSetupKnob::Count, 1 },
+    { "",                  MenuAction::None,             false,
+      MenuRowKind::Display, MatchSetupKnob::Count, 2 },
+    { "",                  MenuAction::None,             false,
+      MenuRowKind::Display, MatchSetupKnob::Count, 3 },
+    { "Rematch",           MenuAction::Rematch,          true  },
+    { "Return to setup",   MenuAction::ReturnToSetup,    true  },
+    { "Main menu",         MenuAction::ReturnToMainMenu, true  },
+};
+static_assert(std::size(kResultsRows) == 2 + kMatchSetupSlotCount + 3,
+              "Results row table = banner + header + 4 slot rows + 3 buttons");
+
 // Preset seed list — picked to be visibly distinct under playtest
 // while keeping the cycle short. CLI's `--gen-seed=N` can land any
 // uint32; the menu's domain is intentionally coarser.
@@ -186,7 +215,8 @@ bool screenHasRows_(UIScreen s) noexcept {
            s == UIScreen::Credits  ||
            s == UIScreen::MatchSetup ||
            s == UIScreen::PlayerSetup ||
-           s == UIScreen::Pause;
+           s == UIScreen::Pause ||
+           s == UIScreen::Results;
 }
 
 const char* matchModeLabel_(MatchMode m) noexcept {
@@ -235,6 +265,13 @@ bool UISystem::setCurrent(UIScreen newScreen) noexcept {
     return true;
 }
 
+void UISystem::showResults(const MatchResults& r) noexcept {
+    matchResults_ = r;
+    // setCurrent is a no-op if Results is already current — that's the
+    // right behaviour (the snapshot was overwritten above).
+    setCurrent(UIScreen::Results);
+}
+
 void UISystem::update(threadmaxx::SystemContext& ctx) {
     // The state machine is driven by the host (main.cpp) which polls
     // GLFW for UI key edges each frame. update() stays a no-op so the
@@ -251,6 +288,7 @@ std::span<const MenuRow> UISystem::rows(UIScreen screen) const noexcept {
         case UIScreen::MatchSetup:  return { kMatchSetupRows,  std::size(kMatchSetupRows)  };
         case UIScreen::PlayerSetup: return { kPlayerSetupRows, std::size(kPlayerSetupRows) };
         case UIScreen::Pause:       return { kPauseRows,       std::size(kPauseRows)       };
+        case UIScreen::Results:     return { kResultsRows,     std::size(kResultsRows)     };
         default:                    return {};
     }
 }
@@ -380,6 +418,25 @@ MenuAction UISystem::acceptFocused() noexcept {
             // up).
             pendingReturnToMainMenu_ = true;
             setCurrent(UIScreen::MainMenu);
+            break;
+        case MenuAction::Rematch:
+            // M6.6 — sticky flag the host drains by re-applying
+            // matchSetup() and restarting the engine (identical posture
+            // to RestartMatch + StartMatch). The captured `matchResults_`
+            // is left intact; the host's restart path tears down the old
+            // engine and rebuilds with the same MatchSetup, so the new
+            // match has the same humans/bots/mode/slots as the one that
+            // just ended.
+            pendingRematch_ = true;
+            setCurrent(UIScreen::None);
+            break;
+        case MenuAction::ReturnToSetup:
+            // M6.6 — jump back to MatchSetup so the user can tweak the
+            // setup before starting another match. `matchSetup_` is
+            // untouched — the user resumes editing from where they
+            // were (or from the CLI defaults if they never entered
+            // MatchSetup directly).
+            setCurrent(UIScreen::MatchSetup);
             break;
         case MenuAction::Quit:
             pendingQuit_ = true;
@@ -633,6 +690,56 @@ std::size_t UISystem::formatRow(std::int32_t rowIdx,
         std::memcpy(buf, row.label, copy);
         buf[copy] = '\0';
         return copy;
+    }
+    if (row.kind == MenuRowKind::Display) {
+        // M6.6 — Results-screen rows render from `matchResults_`. Three
+        // slot-encoded variants: 0xFF = winner banner, 0xFE = column
+        // header, [0, kMatchSetupSlotCount) = per-slot line. The static
+        // `row.label` is unused; everything is dynamic.
+        int written = 0;
+        if (current_ == UIScreen::Results) {
+            if (row.slotIdx == 0xFFu) {
+                const std::uint8_t  wsl = matchResults_.winnerSlot;
+                const std::uint16_t wk  = matchResults_.winnerKills;
+                const MatchResultsSlot& ws =
+                    (wsl < kMatchSetupSlotCount)
+                        ? matchResults_.slots[wsl]
+                        : MatchResultsSlot{};
+                char tagBuf[4] = { ws.tag[0] != '\0' ? ws.tag[0] : '?',
+                                   ws.tag[1] != '\0' ? ws.tag[1] : '?',
+                                   ws.tag[2] != '\0' ? ws.tag[2] : '?',
+                                   '\0' };
+                written = std::snprintf(buf, bufN,
+                                        "WINNER: P%u (%s) — %u kills",
+                                        unsigned(wsl), tagBuf, unsigned(wk));
+            } else if (row.slotIdx == 0xFEu) {
+                written = std::snprintf(buf, bufN,
+                                        "Slot  Tag  Kills  Ship");
+            } else if (row.slotIdx < kMatchSetupSlotCount) {
+                const MatchResultsSlot& s =
+                    matchResults_.slots[row.slotIdx];
+                char tagBuf[4] = { s.tag[0] != '\0' ? s.tag[0] : '?',
+                                   s.tag[1] != '\0' ? s.tag[1] : '?',
+                                   s.tag[2] != '\0' ? s.tag[2] : '?',
+                                   '\0' };
+                if (!s.active) {
+                    written = std::snprintf(buf, bufN,
+                                            "P%u    ---   ---   (empty)",
+                                            unsigned(row.slotIdx));
+                } else {
+                    const ShipKind& kind = shipKindAt(s.shipKindIdx);
+                    written = std::snprintf(buf, bufN,
+                                            "P%u    %s  %5u  %.12s%s",
+                                            unsigned(row.slotIdx), tagBuf,
+                                            unsigned(s.kills),
+                                            kind.displayName.data(),
+                                            s.isBot ? " [bot]" : "");
+                }
+            }
+        }
+        if (written < 0) { buf[0] = '\0'; return 0; }
+        const std::size_t w = static_cast<std::size_t>(written);
+        return (w < bufN) ? w : bufN - 1;
     }
     // Scroller — "<label>: <value>".
     char valBuf[40];

@@ -1633,7 +1633,7 @@ gameplay):
 | M6.3  | Ship / player slot assignment screen (LANDED 2026-05-30) | M6.1 | no |
 | M6.4  | Pause menu (in-game) (LANDED 2026-05-29) | M6.1 | no (uses `Engine::setPaused`) |
 | M6.5  | Options menu + persistence | M6.0, M6.1 | YES (settings POD) |
-| M6.6  | Results / scoreboard screen | M6.1 | no |
+| M6.6  | Results / scoreboard screen (LANDED 2026-05-30) | M6.1 | no |
 | M6.7  | HUD polish pass (readability, warnings) | M6.0 | no |
 | M6.8  | Notification / dialog layer | M6.0 | no |
 | M6.9  | Debug / benchmark overlay | M6.0 | no |
@@ -2132,25 +2132,103 @@ relaunch — the binding sticks; the settings.dat file is forward-compat
 (adding a new field bumps version; old files load with that field
 defaulted).
 
-#### M6.6 — Results / scoreboard screen (PLANNED)
+#### M6.6 — Results / scoreboard screen (LANDED 2026-05-30)
 
-Triggered by `RoundRestartSystem` when the round ends (already emits
-`MatchEnded` event today; M6.6 subscribes and flips `UIScreen::Results`).
+**Wired surface.**
 
-Rows shown:
-- Winner banner (top, prominent; "DRAW" if tie)
-- Per-slot scoreboard: tag, ship, kills, deaths, damage dealt, damage
-  taken (the per-slot stats `BulletShipCollisionSystem` already tracks)
-- Buttons: Rematch (re-runs M6.2's setup), Return to setup, Main menu
+- New `UIScreen::Results` row table — 9 rows: `winner banner (Display)`,
+  `column header (Display)`, `per-slot scoreboard × kMatchSetupSlotCount
+  (Display)`, then `Rematch / Return to setup / Main menu (Action)`.
+  Display rows are `enabled = false` so `moveFocus` skips them — initial
+  focus lands on Rematch.
+- New `MenuRowKind::Display = 2` for read-only rows whose `formatRow`
+  output is rendered from the active screen's backing state. `slotIdx`
+  reused as a tag: `0xFF` = winner banner, `0xFE` = column header,
+  `0..kMatchSetupSlotCount-1` = per-slot line.
+- New `MenuAction::Rematch = 14` and `MenuAction::ReturnToSetup = 15`.
+  `Rematch` mirrors `RestartMatch` (sets `pendingRematch_`, dismisses
+  menu, host reapplies `matchSetup_` and restarts the engine).
+  `ReturnToSetup` goes back to `UIScreen::MatchSetup` with the existing
+  `matchSetup_` carry-over (no sticky flag).
+- `UISystem::showResults(MatchResults)` captures the snapshot and
+  transitions to `Results`. Idempotent — successive calls overwrite the
+  snapshot in place. `matchResults()` is the read-back accessor.
 
-**Match stats POD** is gathered by `ResultsCollector` (new tiny
-system, postStep only, drains the round-end channel). No public
-engine surface change.
+**Data plumbing.**
 
-**Acceptance**: 1-human + 3-bot 60-second match ends → Results
-screen shows correct per-slot kills (cross-checked against
-`writeJsonLines` output for the same run); Rematch correctly
-re-seeds (deterministic seed-from-tick when in record mode).
+- New `MatchResults` POD in `UISystem.hpp`: `{winnerSlot, winnerKills,
+  slots[kMatchSetupSlotCount]}` — 40 bytes (header 8 + 4 × 8). Each
+  `MatchResultsSlot` carries `tag[3] + active + kills + isBot +
+  shipKindIdx` (8 bytes). Stable layout pinned by the Results-screen
+  formatter test.
+- `TouGame::collectMatchResults(Engine&, MatchResults&)` walks the
+  ship handles in `playerShips_[0..kMatchSetupSlotCount)`, reads
+  `Ship.kills / shipKindIdx` via `user::tryGet<Ship>`, and resolves
+  the effective tag / isBot from `playerSlots_` (same sentinel logic
+  as the M6.3 spawn loop) so the scoreboard renders the exact strings
+  the user saw in-game. Empty slots (handle stale or beyond
+  `numHumans + numBots`) get `active = 0` → "(empty)" in the row.
+- `main.cpp` adds a rising-edge tracker for `game.roundEndedFlag()`. On
+  the rising edge, when no menu is already up, it calls
+  `collectMatchResults` + `ui->showResults`. The engine-pause /
+  menu-active bind freezes the world behind the Results screen,
+  guaranteeing the captured snapshot stays consistent with what the
+  user is reading. A separate `pendingRematch` drain in the same
+  block as the existing `pendingRestartMatch` calls `restartMatch(s)`
+  and resets the edge tracker so the new engine's
+  `roundEndedFlag` (a fresh `shared_ptr`) doesn't auto-fire on the
+  first tick.
+
+**Determinism contract.**
+
+- `MatchResults` is runtime state only — never persisted in
+  `WorldSnapshot` or the replay header. Rematch reuses the existing
+  `matchSetup_` (which IS determinism-relevant); the snapshot is
+  read-only.
+- The auto-show path in `main.cpp` runs at the host layer, not inside
+  any engine system. CLI-direct-jump runs (no menu, no
+  `UISystem::current` movement) hit the rising-edge tracker but
+  `ui->current() == None` blocks `showResults` — recording / playback
+  proceed unchanged. The 200-tick `threadmaxx_minimal` smoke after
+  this batch matches the pre-batch hash stream byte-for-byte.
+
+**Test.**
+
+`tests/tou2d_results_screen_test.cpp` pins:
+- `MatchResults` / `MatchResultsSlot` POD sizes.
+- `showResults` transitions to `Results` and stores the snapshot.
+- Row layout (winner banner + header + 4 slot rows + 3 action buttons;
+  Display rows skip-focus; initial focus on Rematch; wraparound at
+  both ends).
+- `formatRow` renders the winner banner (slot + tag + kills), the
+  column header, per-slot lines (active + bot suffix + empty
+  variant), and Action-row labels verbatim.
+- `acceptFocused` arms: Rematch sets `pendingRematch_` + dismisses;
+  ReturnToSetup transitions to MatchSetup without a sticky flag;
+  ReturnToMainMenu keeps the existing M6.4 behaviour.
+- `matchResults()` persists across screen transitions; only a fresh
+  `showResults` overwrites.
+
+**Acceptance.**
+
+- Build clean under warnings-as-errors.
+- `ctest` 146/146 green (was 145; this batch adds
+  `tou2d_results_screen_test`).
+- `threadmaxx_minimal 200` final-tick output unchanged (engine path is
+  untouched; no system reads from `MatchResults`).
+
+**Still TBD (deferred).**
+
+- Deaths / damage-dealt / damage-taken — `BulletShipCollisionSystem`
+  does NOT track these per-slot today; adding them would expand
+  scope into the gameplay layer. v2 / a focused stats follow-up.
+- DRAW handling — current DM / LSS rules never produce a tie that's
+  surfaced in `RoundEnded` (DM stops on first to `kFragLimit`; LSS
+  picks the highest-kills survivor with deterministic tiebreak). The
+  banner can show "WINNER: Pn" — DRAW arrives when a future round
+  mode allows it.
+- `ChromeTracer` annotation of the rising-edge fire — useful for the
+  M6.9 debug overlay batch; not needed today.
 
 #### M6.7 — HUD polish pass (PLANNED)
 

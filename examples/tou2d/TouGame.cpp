@@ -440,4 +440,54 @@ void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {
     if (collision_)     collision_    ->setDestroyCallback(std::move(cb));
 }
 
+void TouGame::collectMatchResults(threadmaxx::Engine& engine,
+                                  MatchResults& out) const noexcept {
+    out = MatchResults{};
+    out.winnerSlot  = winnerSlot_;
+    out.winnerKills = winnerKills_;
+    const auto& world = engine.world();
+    for (std::size_t slot = 0; slot < kMatchSetupSlotCount; ++slot) {
+        MatchResultsSlot& s = out.slots[slot];
+        if (slot >= playerShips_.size()) {
+            s.active = 0;
+            continue;
+        }
+        const threadmaxx::EntityHandle h = playerShips_[slot];
+        if (!h.valid() || !world.alive(h)) {
+            s.active = 0;
+            continue;
+        }
+        const Ship* sh = threadmaxx::user::tryGet<Ship>(world, ids_.ship, h);
+        if (!sh) {
+            s.active = 0;
+            continue;
+        }
+        s.active      = 1;
+        s.kills       = sh->kills;
+        s.shipKindIdx = static_cast<std::uint8_t>(
+            sh->shipKindIdx < kShipKindCount ? sh->shipKindIdx : 0);
+
+        // Effective bot/human and tag come from playerSlots_ overrides
+        // (same resolution logic as onSetup's spawn loop) so the
+        // scoreboard reflects what the user actually saw in-game.
+        const PlayerSlotSetup& ov = playerSlots_[slot];
+        bool isBot = slot >= numHumans_;
+        if (ov.role == 1) isBot = false;
+        else if (ov.role == 2) isBot = true;
+        s.isBot = isBot ? 1 : 0;
+
+        const bool tagSet = ov.tag[0] != ' ' || ov.tag[1] != ' '
+                                              || ov.tag[2] != ' ';
+        if (tagSet) {
+            s.tag = ov.tag;
+        } else {
+            // Auto label: "P0".."P3" — single digit slot suffix is
+            // sufficient given kMatchSetupSlotCount = 4.
+            s.tag[0] = 'P';
+            s.tag[1] = static_cast<char>('0' + static_cast<char>(slot));
+            s.tag[2] = ' ';
+        }
+    }
+}
+
 } // namespace tou2d
