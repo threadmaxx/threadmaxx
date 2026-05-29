@@ -141,7 +141,7 @@ struct VulkanRenderer::Impl {
 
     // M6.0b — UI overlay texture. Drawn ONCE per frame at screen-space
     // NDC after every per-camera pass, reusing the background pipeline
-    // with an identity-flipY viewProj + worldRect=(0,0,1,1) so the quad
+    // with an identity viewProj + worldRect=(0,0,1,1) so the quad
     // spans [-1, +1]² in clip space. Independent of background /
     // foreground (which are world-anchored): the UI layer's pixels are
     // in screen coordinates and never participate in any per-camera
@@ -745,11 +745,12 @@ bool VulkanRenderer::updateForegroundRegion(std::uint32_t                 x,
 //  (1) The draw is recorded ONCE per frame at the end of `recordFrame`
 //      (not inside `recordCamera`), so split-screen viewports see ONE
 //      shared UI layer rather than one per camera.
-//  (2) The push constant carries an identity-flipY viewProj +
-//      worldRect=(0,0,1,1). Combined, those make the background.vert's
-//      world-space math degenerate to a fullscreen NDC quad with v=0
-//      at the top of the image (matching stb_image's row-0-at-top
-//      decode convention).
+//  (2) The push constant carries an identity viewProj +
+//      worldRect=(0,0,1,1). Combined with the negative-height
+//      viewport set at draw time, those make the background.vert's
+//      world-space math degenerate to a fullscreen NDC quad with
+//      v=0 at the top of the image (matching the CPU compositor's
+//      row-0-at-top contract).
 // No new shaders, no new pipeline — reuses `pipes.backgroundPipe()`
 // (alpha-blended, depth-off, cull-none — same state UI needs).
 
@@ -1490,7 +1491,7 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
 
     // ---- M6.0b: screen-space UI overlay ---------------------------
     // Drawn ONCE per frame at full-swapchain extent in NDC space.
-    // Reuses the background pipeline by pushing an identity-flipY
+    // Reuses the background pipeline by pushing an identity
     // viewProj + worldRect=(0,0,1,1). The vert shader emits a 6-vert
     // quad spanning [-1,+1]² in clip; with the flipY mapping the
     // texture row 0 lands at the TOP of the screen (matching
@@ -1517,19 +1518,31 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
         sc_ui.extent = ext;
         vkCmdSetScissor(cmd, 0, 1, &sc_ui);
 
-        // Identity-flipY viewProj: maps world (x, y, -1) -> NDC
-        // (x, -y, 0.5). Column-major (Vulkan std140). y-flip cancels
-        // the viewport's negative-height y-flip, so an "up-positive"
-        // background.vert vUv formula leaves row 0 at NDC y = -1
-        // (top of screen).
+        // Identity viewProj: maps world (x, y, -1) -> NDC
+        // (x, y, 0.5). Column-major (Vulkan std140).
+        //
+        // The negative-height viewport above already flips Vulkan's
+        // native y-down NDC to a y-up convention (NDC y=+1 -> screen
+        // top), so a single y-up identity transform plus the
+        // background.vert's "up-positive" vUv formula (c.y=+1 ->
+        // v=0) lands row 0 of the bitmap at screen top.
+        //
+        // (Original M6.0b had col[5] = -1 here, intended to "cancel"
+        // the viewport flip, but the cancellation reasoning was off
+        // by one: with the flipY in clip space AND the negative-
+        // height viewport, world (+1, +1) was mapped to screen
+        // BOTTOM-RIGHT while vUv stayed at (1, 0) = texture top —
+        // the whole overlay rendered upside-down, with each glyph
+        // and the menu row list both inverted. Fixed 2026-05-29
+        // after the tou2d pause menu surfaced the symptom.)
         struct UiOverlayPush {
             float viewProj[16];
             float worldRect[4];
         } push = {};
         // col 0: [1, 0, 0, 0]
         push.viewProj[ 0] = 1.0f;
-        // col 1: [0, -1, 0, 0]
-        push.viewProj[ 5] = -1.0f;
+        // col 1: [0, 1, 0, 0]
+        push.viewProj[ 5] = 1.0f;
         // col 2: [0, 0, 0, 0]  — collapses world z to NDC 0.5 via col 3 below
         // col 3: [0, 0, 0.5, 1]
         push.viewProj[14] = 0.5f;
