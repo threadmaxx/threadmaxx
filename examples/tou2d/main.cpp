@@ -967,6 +967,17 @@ int main(int argc, char** argv) {
             engine.requestQuit();
             return;
         }
+        // 2026-05-30 — engine.shutdown() destroyed the renderer's UI
+        // overlay texture; engine.initialize() rebuilt the device
+        // context but the overlay texture stays unset until the host
+        // re-uploads it. Without resetting `uiOverlayInstalled` here
+        // the next frame falls into the `updateUiOverlayRegion` branch
+        // against a destroyed texture handle — the menu is functional
+        // but invisible. The overlay paint block below treats
+        // `uiOverlayInstalled == false` as "first frame" and routes
+        // through `setUiOverlayFromRgba`, which re-installs the texture
+        // + descriptor set.
+        uiOverlayInstalled = false;
         const bool meshOk = renderer->setDefaultMeshFromData(
             cubeVertices(), cubeIndices());
         std::printf("[tou2d] (restart) default cube mesh installed=%d\n",
@@ -983,6 +994,16 @@ int main(int argc, char** argv) {
                 static_cast<std::uint32_t>(fbH));
         }
         setupLevelGraphics();
+        // 2026-05-30 — seed the freshly-recreated UISystem's working
+        // `matchSetup_` with the setup we just applied so a subsequent
+        // Pause -> Restart match restarts with the SAME config instead
+        // of the MatchSetup-defaults (1H+3B synthetic arena). Without
+        // this, the in-game UISystem's `matchSetup_` is a default-init
+        // POD that has no relation to the currently running match —
+        // capturing it for restart effectively wipes the user's choice.
+        if (game.uiSystem()) {
+            game.uiSystem()->matchSetup() = setup;
+        }
     };
 
     std::printf("[tou2d] running %s — Ctrl-C / window close to exit\n",

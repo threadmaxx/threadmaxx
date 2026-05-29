@@ -106,6 +106,16 @@ private:
     std::array<std::int8_t,   kMaxPlayerSlots> avoidSign_{};
     std::array<std::uint16_t, kMaxPlayerSlots> avoidCommit_{};
 
+    /// 2026-05-30 — orbit direction latch (±1; 0 = unset). When a bot
+    /// enters close-range engage (range < kOrbitRange) it rolls a
+    /// random ±1 once and re-uses it for the duration of the close
+    /// engagement so it keeps circling instead of jittering. Reset to
+    /// 0 when the bot leaves close range so the next close engagement
+    /// gets a fresh roll. The orbit bias makes the bot's desired
+    /// heading turn tangential to the line-to-target — instead of
+    /// flying straight onto the target and stalling, it circles.
+    std::array<std::int8_t, kMaxPlayerSlots> orbitSign_{};
+
     const TerrainGrid*                          grid_ = nullptr;
 };
 

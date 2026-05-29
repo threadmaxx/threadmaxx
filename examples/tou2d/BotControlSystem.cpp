@@ -76,6 +76,34 @@ constexpr float kAvoidFeelerAngle     = 0.55f;   // ~32°
 constexpr int   kAvoidSamples         = 6;       // sample count along each ray
 constexpr std::uint16_t kAvoidCommitTicks = 30;  // 500 ms
 
+// 2026-05-30 — terrain repulsion gradient + orbital dogfight tunables.
+//
+// REPULSION: in addition to the hard forward-ray override above, every
+// engage / wander tick samples 8 directions around the bot for solid
+// terrain. Each direction contributes an away-from-wall vector whose
+// magnitude grows quadratically as the wall gets closer. The sum
+// becomes a steering bias on the desired flight heading — the bot
+// drifts toward open space without needing a hard panic-turn signal.
+// This makes bots visibly "thread the needle" through corridors
+// instead of grinding against walls.
+//
+// ORBIT: at close range (< kOrbitRange) the desired flight heading
+// rotates tangential to the target line, so the bot circles instead
+// of slamming nose-first into the target. Combined with the
+// terrain-repulsion bias and an aim-vs-heading split (fire decision
+// uses the raw target angle, turn decision uses the bias-mixed
+// heading) the bot stays in motion while shooting — fixes the
+// "two bots stationary on top of each other firing into nothing"
+// stalemate.
+constexpr float kRepelLookahead     = 100.0f;  // world units
+constexpr int   kRepelDirCount      = 8;       // sample directions around the bot
+constexpr int   kRepelSamplesPerRay = 4;       // sample count along each ray
+constexpr float kRepelWeight        = 1.4f;    // contribution to desired-heading
+constexpr float kOrbitRange         = 100.0f;  // close-engage threshold
+constexpr float kOrbitMaxBlend      = 0.85f;   // 0..1 — tangential share at r=0
+constexpr float kOverlapRange       = 6.0f;    // below this, ships are basically on top
+constexpr float kTwoPi              = 6.28318530718f;
+
 inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
     return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
                       1.0f - 2.0f * (q.y * q.y + q.z * q.z));
@@ -133,6 +161,53 @@ inline float castTerrainRay(const TerrainGrid& grid,
         if (grid.attrAt(cx, cy) == Attribute::Solid) return t;
     }
     return maxDist;
+}
+
+/// 2026-05-30 — sample `kRepelDirCount` rays around the bot, accumulate
+/// inverse-distance away-from-wall vectors, and write the sum into
+/// `(outX, outY)`. The magnitude is unbounded but typically ≤ 2 in
+/// open corridors; callers scale by `kRepelWeight` when mixing into
+/// the desired heading vector. Uses a coarser per-ray sample count
+/// (kRepelSamplesPerRay = 4) than castTerrainRay because the gradient
+/// uses 8 rays and we don't want preStep to blow up.
+inline void sampleTerrainRepulsion(const TerrainGrid& grid,
+                                   float ox, float oy,
+                                   float& outX, float& outY) noexcept {
+    outX = 0.0f;
+    outY = 0.0f;
+    if (grid.cellsX <= 0 || grid.cellsY <= 0) return;
+    for (int i = 0; i < kRepelDirCount; ++i) {
+        const float angle = static_cast<float>(i) *
+                            (kTwoPi / static_cast<float>(kRepelDirCount));
+        const float sa = std::sin(angle);
+        const float ca = std::cos(angle);
+        const float fx = -sa;   // direction this ray points
+        const float fy =  ca;
+        float hitT = kRepelLookahead;
+        for (int s = 1; s <= kRepelSamplesPerRay; ++s) {
+            const float t = (static_cast<float>(s) /
+                             static_cast<float>(kRepelSamplesPerRay)) *
+                            kRepelLookahead;
+            const float wx = ox + fx * t;
+            const float wy = oy + fy * t;
+            const std::int32_t cx = static_cast<std::int32_t>(
+                std::floor(wx / kTileWorldUnits + 0.5f));
+            const std::int32_t cy = static_cast<std::int32_t>(
+                std::floor(wy / kTileWorldUnits + 0.5f));
+            if (!grid.inBounds(cx, cy)) { hitT = t; break; }
+            if (grid.attrAt(cx, cy) == Attribute::Solid) { hitT = t; break; }
+        }
+        if (hitT >= kRepelLookahead) continue;
+        // Wall in direction (fx, fy) at distance hitT; we want to push
+        // AWAY from it (i.e. -(fx,fy)) with strength that grows as
+        // hitT shrinks. Squared falloff makes the close walls dominate
+        // — nearby tile is much stronger than a wall at the lookahead
+        // edge.
+        const float closeness = 1.0f - hitT / kRepelLookahead;
+        const float w = closeness * closeness;
+        outX -= fx * w;
+        outY -= fy * w;
+    }
 }
 
 } // namespace
@@ -263,6 +338,17 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                 }
                 const bool engage = hasEngageTarget && engageRange < kWanderRange;
 
+                // 2026-05-30 — terrain-repulsion gradient used by BOTH
+                // engage and wander branches. Cheap (~8 short rays);
+                // computed once per bot per tick.
+                float repelX = 0.0f, repelY = 0.0f;
+                if (grid_) {
+                    sampleTerrainRepulsion(*grid_, selfT.position.x,
+                                           selfT.position.y, repelX, repelY);
+                }
+
+                const float curAngleZ = orientationAngleZ(selfT.orientation);
+
                 if (engage) {
                     // ---- ENGAGE ----------------------------------------
                     const float dx0   = tgt->x - selfT.position.x;
@@ -280,66 +366,104 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     const float dxL     = leadX - selfT.position.x;
                     const float dyL     = leadY - selfT.position.y;
 
-                    // Atan2 here returns the world-space angle to lead pos;
-                    // our Z-rotation forward maps to (-sin θ, cos θ), so
-                    // the target angle is atan2(-dx, dy). In retreat we
-                    // flip 180° — fly away from the nearest enemy.
-                    float tgtAngle = std::atan2(-dxL, dyL);
-                    if (retreat) {
-                        tgtAngle += 3.14159265359f;  // mirror
-                    }
-
-                    // M4.5 — aim wobble. Sine wave gives a smooth left/
-                    // right oscillation; xorshift chaos adds per-tick
-                    // randomness so two bots aren't in phase. Combined
-                    // amplitude is ~9° peak — enough to spoil precision
-                    // aim, small enough to still land hits in the ±10°
-                    // fire arc.
+                    // Aim angle drives the FIRE decision — uses lead +
+                    // wobble but ignores orbit/repulsion. Keeps the bot
+                    // shooting at the actual target while flying any
+                    // direction.
+                    float aimAngle = std::atan2(-dxL, dyL);
                     if (slot < aimWobblePhase_.size()) {
                         ++aimWobblePhase_[slot];
                         const float phaseRad = static_cast<float>(aimWobblePhase_[slot]) *
                                                kAimWobbleFreqPerTick;
-                        tgtAngle += std::sin(phaseRad) * kAimWobbleAmp;
+                        aimAngle += std::sin(phaseRad) * kAimWobbleAmp;
                     }
+                    const float aimDelta = wrapPi(aimAngle - curAngleZ);
 
-                    const float curAngle  = orientationAngleZ(selfT.orientation);
-                    const float angDelta  = wrapPi(tgtAngle - curAngle);
-
-                    if (angDelta >  kAngEpsilon) in.turnLeft  = 1;
-                    if (angDelta < -kAngEpsilon) in.turnRight = 1;
-
-                    if (retreat) {
-                        // Run, no shoot. Thrust as long as we're roughly
-                        // facing the escape vector (don't burn fuel backward).
-                        if (std::fabs(angDelta) < kFacingThrust) in.thrust = 1;
+                    // 2026-05-30 — build the desired FLIGHT heading
+                    // (separate from aim). Steps: (1) pursuit unit
+                    // vector toward target (or away if retreating); (2)
+                    // tangential orbit mix at close range so the bot
+                    // doesn't slam onto target; (3) terrain repulsion
+                    // gradient so it threads through the canvas.
+                    float desX, desY;
+                    if (range < kOverlapRange) {
+                        // Two ships practically on top of each other —
+                        // pursuit unit vector is unstable, force a
+                        // slot-deterministic kick so the bots separate.
+                        const float kickA =
+                            static_cast<float>(slot) * 1.2566370614f;  // 72° apart
+                        desX = -std::sin(kickA);
+                        desY =  std::cos(kickA);
                     } else {
-                        // 2026-05-29 — keep thrust on whenever we're in
-                        // engage mode and facing-ish. The old gate
-                        // killed thrust below kThrustHoldDist so a
-                        // close-range bot would stall and just shoot,
-                        // which combined with the small aim wobble
-                        // looked frozen. The wobble-induced angDelta
-                        // now drives the bot to weave around the target.
-                        const float minThrustDist = kThrustHoldDist * 0.5f;
-                        if (std::fabs(angDelta) < kFacingThrust && range > minThrustDist) {
-                            in.thrust = 1;
-                        }
-                        if (std::fabs(angDelta) < kFacingFire && range < kFireRange) {
-                            in.fireBasic = 1;
-
-                            // Range-tiered spread chance. Roll once per
-                            // in-arc tick from THIS bot's stream — two bots
-                            // in the same arc against the same target will
-                            // produce different rolls.
-                            float chance = 0.0f;
-                            if      (range < kSpreadRangeClose) chance = kSpreadChanceClose;
-                            else if (range < kSpreadRangeMid)   chance = kSpreadChanceMid;
-                            if (chance > 0.0f && slot < rngBySlot_.size()) {
-                                const float r = static_cast<float>(
-                                    xorshift32(rngBySlot_[slot]) >> 8) /
-                                    static_cast<float>(1u << 24);
-                                if (r < chance) in.fireSpecial = 1;
+                        desX = dx0 / range;
+                        desY = dy0 / range;
+                    }
+                    if (retreat) {
+                        desX = -desX;
+                        desY = -desY;
+                    } else {
+                        // Orbit bias: roll a ± sign on first close-range
+                        // entry, latch it until we leave close range.
+                        // Tangential component grows linearly as range
+                        // shrinks below kOrbitRange.
+                        if (range < kOrbitRange) {
+                            if (slot < orbitSign_.size() && orbitSign_[slot] == 0) {
+                                orbitSign_[slot] =
+                                    (xorshift32(rngBySlot_[slot]) & 1u)
+                                        ? std::int8_t{+1}
+                                        : std::int8_t{-1};
                             }
+                            const float sign = (slot < orbitSign_.size())
+                                ? static_cast<float>(orbitSign_[slot])
+                                : 1.0f;
+                            const float closeness =
+                                std::clamp(1.0f - range / kOrbitRange, 0.0f, 1.0f);
+                            const float blend = closeness * kOrbitMaxBlend;
+                            // perp = rotate(des, +90°) for sign=+1
+                            const float perpX = -desY * sign;
+                            const float perpY =  desX * sign;
+                            desX = desX * (1.0f - blend) + perpX * blend;
+                            desY = desY * (1.0f - blend) + perpY * blend;
+                        } else if (slot < orbitSign_.size()) {
+                            orbitSign_[slot] = 0;  // re-roll on next close approach
+                        }
+                    }
+                    // Mix in terrain repulsion — the gradient pushes the
+                    // bot toward open space so it visibly steers clear
+                    // of walls between engagement moves.
+                    desX += repelX * kRepelWeight;
+                    desY += repelY * kRepelWeight;
+
+                    const float desLen = std::sqrt(desX * desX + desY * desY);
+                    const float headingAngle = (desLen > 1e-4f)
+                        ? std::atan2(-desX, desY)
+                        : aimAngle;  // collapsed vector — fall back to aim
+                    const float headDelta = wrapPi(headingAngle - curAngleZ);
+
+                    if (headDelta >  kAngEpsilon) in.turnLeft  = 1;
+                    if (headDelta < -kAngEpsilon) in.turnRight = 1;
+
+                    // Thrust whenever roughly facing the desired heading
+                    // — no close-range cutoff. The orbit/repulsion biases
+                    // already steer the bot away from "stall on top of
+                    // target" so always-thrust produces continuous
+                    // dogfight motion.
+                    if (std::fabs(headDelta) < kFacingThrust) in.thrust = 1;
+
+                    // Fire decision uses the aim angle (lead + wobble),
+                    // not the orbit/repulsion-biased heading. Bot keeps
+                    // shooting at target through the orbital motion.
+                    if (!retreat && std::fabs(aimDelta) < kFacingFire &&
+                        range < kFireRange) {
+                        in.fireBasic = 1;
+                        float chance = 0.0f;
+                        if      (range < kSpreadRangeClose) chance = kSpreadChanceClose;
+                        else if (range < kSpreadRangeMid)   chance = kSpreadChanceMid;
+                        if (chance > 0.0f && slot < rngBySlot_.size()) {
+                            const float r = static_cast<float>(
+                                xorshift32(rngBySlot_[slot]) >> 8) /
+                                static_cast<float>(1u << 24);
+                            if (r < chance) in.fireSpecial = 1;
                         }
                     }
                 } else if (slot < wanderTicksLeft_.size()) {
@@ -352,7 +476,7 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                             const float a = static_cast<float>(
                                 xorshift32(rngBySlot_[slot]) >> 8) /
                                 static_cast<float>(1u << 24);
-                            wanderAngle_[slot]     = a * 6.28318530718f;
+                            wanderAngle_[slot]     = a * kTwoPi;
                             const std::uint32_t r2 = xorshift32(rngBySlot_[slot]);
                             const std::uint16_t span =
                                 static_cast<std::uint16_t>(kWanderTicksMax - kWanderTicksMin);
@@ -364,8 +488,19 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     }
                     wanderTicksLeft_[slot] = static_cast<std::uint16_t>(wanderTicksLeft_[slot] - 1);
 
-                    const float curAngle = orientationAngleZ(selfT.orientation);
-                    const float angDelta = wrapPi(wanderAngle_[slot] - curAngle);
+                    // 2026-05-30 — wander heading is built from the
+                    // rolled angle PLUS the terrain-repulsion gradient
+                    // so a wandering bot doesn't grind into a wall
+                    // along a randomly-picked vector.
+                    const float wsa = std::sin(wanderAngle_[slot]);
+                    const float wca = std::cos(wanderAngle_[slot]);
+                    float desX = -wsa + repelX * kRepelWeight;
+                    float desY =  wca + repelY * kRepelWeight;
+                    const float desLen = std::sqrt(desX * desX + desY * desY);
+                    const float headingAngle = (desLen > 1e-4f)
+                        ? std::atan2(-desX, desY)
+                        : wanderAngle_[slot];
+                    const float angDelta = wrapPi(headingAngle - curAngleZ);
                     if (angDelta >  kAngEpsilon) in.turnLeft  = 1;
                     if (angDelta < -kAngEpsilon) in.turnRight = 1;
                     if (std::fabs(angDelta) < kWanderFacingThrust) in.thrust = 1;
