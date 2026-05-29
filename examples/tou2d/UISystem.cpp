@@ -58,9 +58,13 @@ constexpr MenuRow kPauseRows[] = {
 };
 
 // M6.2 — MatchSetup screen. Scroller rows bind 1:1 to MatchSetupKnob
-// values; the trailing two Action rows (Start, Back) fire the standard
-// MenuAction transitions. Order is the on-screen vertical order so the
-// test pinning row indices is the source of truth.
+// values; the trailing Action rows (Players, Start, Back) fire the
+// standard MenuAction transitions. Order is the on-screen vertical
+// order so the test pinning row indices is the source of truth.
+//
+// M6.3 — "Players..." row added between RepairTiles and Start match;
+// jumps to UIScreen::PlayerSetup for per-slot tag/role/ship/palette
+// overrides.
 constexpr MenuRow kMatchSetupRows[] = {
     { "Humans",            MenuAction::None,       true,
       MenuRowKind::Scroller, MatchSetupKnob::Humans      },
@@ -82,9 +86,80 @@ constexpr MenuRow kMatchSetupRows[] = {
       MenuRowKind::Scroller, MatchSetupKnob::GenPerim    },
     { "Repair tiles",      MenuAction::None,       true,
       MenuRowKind::Scroller, MatchSetupKnob::RepairTiles },
+    { "Players...",        MenuAction::PlayerSetup, true },
     { "Start match",       MenuAction::StartMatch, true  },
     { "Back",              MenuAction::BackToMain, true  },
 };
+
+// M6.3 — PlayerSetup screen rows. One row block per slot (slot-major
+// order). Within a slot the order is `Tag c1 / Tag c2 / Tag c3 / Role
+// / Ship / Palette`. After all 4 slots a single "Back" action returns
+// to MatchSetup. Total = 4 × 6 + 1 = 25 rows.
+//
+// Each per-slot row carries the slotIdx so the knob handlers
+// (`cycleKnob_` / `formatKnobValue_`) can route to the right slot in
+// `matchSetup_.playerSlots`. Labels are constexpr literals; the per-
+// slot prefix ("Slot 1 / Slot 2 / ...") is baked into the label so
+// the static row table stays a POD.
+constexpr MenuRow kPlayerSetupRows[] = {
+    // ---- Slot 1 -------------------------------------------------
+    { "Slot 1 tag c1",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar0, 0 },
+    { "Slot 1 tag c2",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar1, 0 },
+    { "Slot 1 tag c3",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar2, 0 },
+    { "Slot 1 role",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotRole,     0 },
+    { "Slot 1 ship",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     0 },
+    { "Slot 1 palette",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  0 },
+    // ---- Slot 2 -------------------------------------------------
+    { "Slot 2 tag c1",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar0, 1 },
+    { "Slot 2 tag c2",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar1, 1 },
+    { "Slot 2 tag c3",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar2, 1 },
+    { "Slot 2 role",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotRole,     1 },
+    { "Slot 2 ship",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     1 },
+    { "Slot 2 palette",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  1 },
+    // ---- Slot 3 -------------------------------------------------
+    { "Slot 3 tag c1",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar0, 2 },
+    { "Slot 3 tag c2",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar1, 2 },
+    { "Slot 3 tag c3",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar2, 2 },
+    { "Slot 3 role",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotRole,     2 },
+    { "Slot 3 ship",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     2 },
+    { "Slot 3 palette",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  2 },
+    // ---- Slot 4 -------------------------------------------------
+    { "Slot 4 tag c1",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar0, 3 },
+    { "Slot 4 tag c2",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar1, 3 },
+    { "Slot 4 tag c3",     MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar2, 3 },
+    { "Slot 4 role",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotRole,     3 },
+    { "Slot 4 ship",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     3 },
+    { "Slot 4 palette",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  3 },
+    // ---- Trailer ------------------------------------------------
+    { "Back",              MenuAction::BackToMain, true },
+};
+static_assert(std::size(kPlayerSetupRows) ==
+                  kMatchSetupSlotCount * 6 + 1,
+              "PlayerSetup row table = 4 slots * 6 fields + 1 Back row");
 
 // Preset seed list — picked to be visibly distinct under playtest
 // while keeping the cycle short. CLI's `--gen-seed=N` can land any
@@ -110,6 +185,7 @@ bool screenHasRows_(UIScreen s) noexcept {
     return s == UIScreen::MainMenu ||
            s == UIScreen::Credits  ||
            s == UIScreen::MatchSetup ||
+           s == UIScreen::PlayerSetup ||
            s == UIScreen::Pause;
 }
 
@@ -170,11 +246,12 @@ void UISystem::update(threadmaxx::SystemContext& ctx) {
 
 std::span<const MenuRow> UISystem::rows(UIScreen screen) const noexcept {
     switch (screen) {
-        case UIScreen::MainMenu:   return { kMainMenuRows,   std::size(kMainMenuRows)   };
-        case UIScreen::Credits:    return { kCreditsRows,    std::size(kCreditsRows)    };
-        case UIScreen::MatchSetup: return { kMatchSetupRows, std::size(kMatchSetupRows) };
-        case UIScreen::Pause:      return { kPauseRows,      std::size(kPauseRows)      };
-        default:                   return {};
+        case UIScreen::MainMenu:    return { kMainMenuRows,    std::size(kMainMenuRows)    };
+        case UIScreen::Credits:     return { kCreditsRows,     std::size(kCreditsRows)     };
+        case UIScreen::MatchSetup:  return { kMatchSetupRows,  std::size(kMatchSetupRows)  };
+        case UIScreen::PlayerSetup: return { kPlayerSetupRows, std::size(kPlayerSetupRows) };
+        case UIScreen::Pause:       return { kPauseRows,       std::size(kPauseRows)       };
+        default:                    return {};
     }
 }
 
@@ -250,8 +327,20 @@ MenuAction UISystem::acceptFocused() noexcept {
         case MenuAction::LevelSetup:
             setCurrent(UIScreen::MatchSetup);
             break;
+        case MenuAction::PlayerSetup:
+            // M6.3 — jump from MatchSetup to PlayerSetup. The PlayerSetup
+            // screen's "Back" row uses BackToMain whose handler routes
+            // back here when current()==PlayerSetup.
+            setCurrent(UIScreen::PlayerSetup);
+            break;
         case MenuAction::BackToMain:
-            setCurrent(UIScreen::MainMenu);
+            // M6.3 — PlayerSetup → MatchSetup; all other screens →
+            // MainMenu. Keeps the back-row UX one-action-fits-all.
+            if (current_ == UIScreen::PlayerSetup) {
+                setCurrent(UIScreen::MatchSetup);
+            } else {
+                setCurrent(UIScreen::MainMenu);
+            }
             break;
         case MenuAction::StartMatch:
             // M6.2 — host observes the sticky flag on the next frame,
@@ -317,7 +406,7 @@ void UISystem::cycleFocused(std::int32_t delta) noexcept {
     }
     const MenuRow& row = rs[static_cast<std::size_t>(focusIndex_)];
     if (row.kind != MenuRowKind::Scroller || !row.enabled) return;
-    cycleKnob_(row.scrollerKnob, delta);
+    cycleKnob_(row.scrollerKnob, row.slotIdx, delta);
 }
 
 namespace {
@@ -336,7 +425,64 @@ std::int64_t wrapInRange_(std::int64_t value,
 
 } // namespace
 
-void UISystem::cycleKnob_(MatchSetupKnob knob, std::int32_t delta) noexcept {
+namespace {
+
+// M6.3 — tag-char alphabet shared by all three SlotTagChar* knobs.
+// Index 0 = ' ' (sentinel "blank"); indices 1..26 = 'A'..'Z'.
+// All-spaces across the 3 chars means "auto" → TouGame fills in a
+// slot-derived label at spawn time.
+constexpr std::size_t kTagAlphabetSize = 27;
+
+char tagCharFromIndex_(std::int64_t idx) noexcept {
+    if (idx <= 0) return ' ';
+    return static_cast<char>('A' + (idx - 1));
+}
+
+std::int64_t tagIndexFromChar_(char c) noexcept {
+    if (c >= 'A' && c <= 'Z') return 1 + (c - 'A');
+    if (c >= 'a' && c <= 'z') return 1 + (c - 'a');
+    return 0;  // space / NUL / anything else → blank
+}
+
+// Ship-kind cycle is Auto + 9 kinds = 10 positions. Auto = 0xFF
+// sentinel; indices 1..9 map onto kShipKinds[0..8].
+constexpr std::size_t kShipKindCycleSize = 1 + kShipKindCount;
+
+std::int64_t shipKindToIndex_(std::uint8_t v) noexcept {
+    if (v == 0xFFu) return 0;
+    if (v >= kShipKindCount) return 0;
+    return 1 + static_cast<std::int64_t>(v);
+}
+std::uint8_t shipKindFromIndex_(std::int64_t idx) noexcept {
+    if (idx <= 0) return 0xFFu;
+    return static_cast<std::uint8_t>(idx - 1);
+}
+
+// Palette cycle is Auto + 4 = 5 positions.
+constexpr std::size_t kPaletteCycleSize = 5;
+
+std::int64_t paletteToIndex_(std::uint8_t v) noexcept {
+    if (v == 0xFFu) return 0;
+    if (v >= kPaletteCycleSize - 1) return 0;
+    return 1 + static_cast<std::int64_t>(v);
+}
+std::uint8_t paletteFromIndex_(std::int64_t idx) noexcept {
+    if (idx <= 0) return 0xFFu;
+    return static_cast<std::uint8_t>(idx - 1);
+}
+
+// Role cycle is Auto / Human / Bot = 3 positions, encoded directly.
+constexpr std::size_t kRoleCycleSize = 3;
+
+} // namespace
+
+void UISystem::cycleKnob_(MatchSetupKnob knob,
+                          std::uint8_t   slotIdx,
+                          std::int32_t   delta) noexcept {
+    auto slotOrNull = [&]() -> PlayerSlotSetup* {
+        if (slotIdx >= kMatchSetupSlotCount) return nullptr;
+        return &matchSetup_.playerSlots[slotIdx];
+    };
     switch (knob) {
         case MatchSetupKnob::Humans: {
             // [1, kMaxHumans] — at least one human player.
@@ -427,6 +573,45 @@ void UISystem::cycleKnob_(MatchSetupKnob knob, std::int32_t delta) noexcept {
                 wrapInRange_(cur, delta, kSpan) * kStep);
             break;
         }
+        case MatchSetupKnob::SlotTagChar0:
+        case MatchSetupKnob::SlotTagChar1:
+        case MatchSetupKnob::SlotTagChar2: {
+            PlayerSlotSetup* s = slotOrNull();
+            if (!s) break;
+            const std::size_t ci =
+                static_cast<std::size_t>(knob) -
+                static_cast<std::size_t>(MatchSetupKnob::SlotTagChar0);
+            const std::int64_t cur = tagIndexFromChar_(s->tag[ci]);
+            const std::int64_t nxt = wrapInRange_(
+                cur, delta, static_cast<std::int64_t>(kTagAlphabetSize));
+            s->tag[ci] = tagCharFromIndex_(nxt);
+            break;
+        }
+        case MatchSetupKnob::SlotRole: {
+            PlayerSlotSetup* s = slotOrNull();
+            if (!s) break;
+            s->role = static_cast<std::uint8_t>(wrapInRange_(
+                s->role, delta, static_cast<std::int64_t>(kRoleCycleSize)));
+            break;
+        }
+        case MatchSetupKnob::SlotShip: {
+            PlayerSlotSetup* s = slotOrNull();
+            if (!s) break;
+            const std::int64_t cur = shipKindToIndex_(s->shipKindIdx);
+            const std::int64_t nxt = wrapInRange_(
+                cur, delta, static_cast<std::int64_t>(kShipKindCycleSize));
+            s->shipKindIdx = shipKindFromIndex_(nxt);
+            break;
+        }
+        case MatchSetupKnob::SlotPalette: {
+            PlayerSlotSetup* s = slotOrNull();
+            if (!s) break;
+            const std::int64_t cur = paletteToIndex_(s->paletteIdx);
+            const std::int64_t nxt = wrapInRange_(
+                cur, delta, static_cast<std::int64_t>(kPaletteCycleSize));
+            s->paletteIdx = paletteFromIndex_(nxt);
+            break;
+        }
         case MatchSetupKnob::Count:
             break;
     }
@@ -451,7 +636,7 @@ std::size_t UISystem::formatRow(std::int32_t rowIdx,
     }
     // Scroller — "<label>: <value>".
     char valBuf[40];
-    formatKnobValue_(row.scrollerKnob, valBuf, sizeof(valBuf));
+    formatKnobValue_(row.scrollerKnob, row.slotIdx, valBuf, sizeof(valBuf));
     const int written =
         std::snprintf(buf, bufN, "%s: %s", row.label, valBuf);
     if (written < 0) return 0;
@@ -460,6 +645,7 @@ std::size_t UISystem::formatRow(std::int32_t rowIdx,
 }
 
 std::size_t UISystem::formatKnobValue_(MatchSetupKnob knob,
+                                       std::uint8_t   slotIdx,
                                        char*          buf,
                                        std::size_t    bufN) const noexcept {
     if (bufN == 0) return 0;
@@ -505,6 +691,58 @@ std::size_t UISystem::formatKnobValue_(MatchSetupKnob knob,
             n = std::snprintf(buf, bufN, "%u",
                               unsigned(matchSetup_.genCfg.repairTileCount));
             break;
+        case MatchSetupKnob::SlotTagChar0:
+        case MatchSetupKnob::SlotTagChar1:
+        case MatchSetupKnob::SlotTagChar2: {
+            if (slotIdx >= kMatchSetupSlotCount) { buf[0] = '\0'; break; }
+            const std::size_t ci =
+                static_cast<std::size_t>(knob) -
+                static_cast<std::size_t>(MatchSetupKnob::SlotTagChar0);
+            const char c = matchSetup_.playerSlots[slotIdx].tag[ci];
+            // Render blank as a visible underscore so the focused row
+            // is unambiguous on screen (a literal space would look
+            // like the field was just unlabeled).
+            const char visible = (c == ' ' || c == '\0') ? '_' : c;
+            n = std::snprintf(buf, bufN, "%c", visible);
+            break;
+        }
+        case MatchSetupKnob::SlotRole: {
+            if (slotIdx >= kMatchSetupSlotCount) { buf[0] = '\0'; break; }
+            const std::uint8_t r = matchSetup_.playerSlots[slotIdx].role;
+            const char* label = (r == 1) ? "Human"
+                              : (r == 2) ? "Bot"
+                                         : "Auto";
+            n = std::snprintf(buf, bufN, "%s", label);
+            break;
+        }
+        case MatchSetupKnob::SlotShip: {
+            if (slotIdx >= kMatchSetupSlotCount) { buf[0] = '\0'; break; }
+            const std::uint8_t k = matchSetup_.playerSlots[slotIdx].shipKindIdx;
+            if (k == 0xFFu) {
+                n = std::snprintf(buf, bufN, "Auto");
+            } else {
+                // shipKindAt clamps so the label below is always valid.
+                const ShipKind& kind = shipKindAt(k);
+                n = std::snprintf(buf, bufN, "%.12s",
+                                  kind.displayName.data());
+            }
+            break;
+        }
+        case MatchSetupKnob::SlotPalette: {
+            if (slotIdx >= kMatchSetupSlotCount) { buf[0] = '\0'; break; }
+            const std::uint8_t p = matchSetup_.playerSlots[slotIdx].paletteIdx;
+            static const char* kPaletteLabels[] = {
+                "Yellow", "Blue", "Red", "Green",
+            };
+            if (p == 0xFFu) {
+                n = std::snprintf(buf, bufN, "Auto");
+            } else if (p < 4) {
+                n = std::snprintf(buf, bufN, "%s", kPaletteLabels[p]);
+            } else {
+                n = std::snprintf(buf, bufN, "?");
+            }
+            break;
+        }
         case MatchSetupKnob::Count:
             buf[0] = '\0';
             break;

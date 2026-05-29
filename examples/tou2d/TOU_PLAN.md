@@ -1630,7 +1630,7 @@ gameplay):
 | M6.0b | Vulkan overlay path + UISystem skeleton + CPU compositor | M6.0 | no |
 | M6.1  | UI state machine + main menu (LANDED 2026-05-29) | M6.0b | no |
 | M6.2  | Match / level setup screen (LANDED 2026-05-29) | M6.1 | no |
-| M6.3  | Ship / player slot assignment screen | M6.1 | no |
+| M6.3  | Ship / player slot assignment screen (LANDED 2026-05-30) | M6.1 | no |
 | M6.4  | Pause menu (in-game) (LANDED 2026-05-29) | M6.1 | no (uses `Engine::setPaused`) |
 | M6.5  | Options menu + persistence | M6.0, M6.1 | YES (settings POD) |
 | M6.6  | Results / scoreboard screen | M6.1 | no |
@@ -1916,23 +1916,78 @@ pre-M6.2.
 - Stress preset row — depends on M6.5's preset infrastructure
   (the existing CLI doesn't expose presets).
 
-#### M6.3 — Ship / player slot assignment screen (PLANNED)
+#### M6.3 — Ship / player slot assignment screen (LANDED 2026-05-30)
 
-For each slot (1..4):
-- Player tag (3-char nickname; entered with arrow-keys-cycle-A-Z to
-  avoid a full virtual keyboard in v1)
-- Input device — "Keyboard P1" / "Keyboard P2" / "Keyboard P3" / "Keyboard P4"
-  (controllers deferred, see § Out of scope below)
-- Ship kind — Basic / Bee / X Wing / Destroyer (already cycle-by-slot
-  today; M6.3 makes it explicit)
-- Color / team — 4 palette presets (yellow / blue / red / green —
-  already loaded as atlases)
-- "AI fill" toggle per empty slot
+**Wired surface.** New `UIScreen::PlayerSetup` with a slot-major row
+table: for each of slots 0..3, six scroller rows (Tag c1 / Tag c2 /
+Tag c3 / Role / Ship / Palette) followed by a trailing Back row. 25
+rows total. `MatchSetup` row 10 ("Players...") jumps to the new
+screen via `MenuAction::PlayerSetup`; the screen's `Back` row routes
+back to `UIScreen::MatchSetup` (not `MainMenu`) so the back-row UX
+returns the user to where they came from.
+
+**Data plumbing.**
+- New 8-byte `PlayerSlotSetup` POD (`MatchSetup.hpp`): `tag[3]`
+  (A-Z + space; all-spaces means "auto"), `role` (0=Auto, 1=Human,
+  2=Bot), `shipKindIdx` (0xFF=Auto = use `kAtlasSeeds[slot%4]`),
+  `paletteIdx` (0xFF=Auto = use `slot%4`).
+- `MatchSetup` extends with `std::array<PlayerSlotSetup, 4>
+  playerSlots`. Static-assert updated to `16 + 4*8 = 48` bytes.
+- `MenuRow` gains a `std::uint8_t slotIdx` field — meaningful only
+  for the new per-slot knobs (`SlotTagChar0..2` / `SlotRole` /
+  `SlotShip` / `SlotPalette`). Global knobs ignore it; Action rows
+  ignore it.
+- `cycleKnob_` / `formatKnobValue_` signatures refactored to take
+  `slotIdx` so per-slot scrollers route into the right
+  `playerSlots[slot]` cell.
+- `TouGame::setMatchSetup` copies `playerSlots` into a member array;
+  `onSetup`'s spawn loop resolves per-slot ship / palette / isBot
+  from the overrides, falling through to the pre-M6.3 auto-cycle
+  whenever an override holds its sentinel.
+
+**Determinism contract.** Defaults on every override field are the
+all-sentinel state (`tag=all-spaces`, `role=0`, `shipKindIdx=0xFF`,
+`paletteIdx=0xFF`). A default-init `MatchSetup` is therefore
+bytewise equal to the UISystem's working `MatchSetup` before any
+edits — pinned by `tou2d_player_setup_test`'s "default MatchSetup
+bytewise equal" block. The CLI path (which never touches
+`playerSlots`) is determinism-equivalent to a menu run with no slot
+edits. Verified empirically: 200-tick smoke (`./threadmaxx_tou2d
+200`) final ship pos `(-42.00, -43.25, 0.00)` — bit-identical to
+M6.4.
+
+**Test (`tou2d_player_setup_test`).** Pins: the MatchSetup
+"Players..." row routing to PlayerSetup; the 25-row PlayerSetup
+table in slot-major order with per-row `slotIdx`; the tag-char 27-
+position alphabet wrap; the role tristate (Auto/Human/Bot); the
+ship-kind (1 + N) cycle with Auto sentinel; the palette (1 + 4)
+cycle with Auto sentinel; per-slot write isolation (cycling slot 1
+leaves slots 0/2/3 alone); `formatRow` rendering ("Slot N <field>:
+<value>" with `_` standing in for a blank tag char); `BackToMain`
+on PlayerSetup routing to MatchSetup (not MainMenu); and the
+all-sentinel default-MatchSetup bytewise contract.
 
 **Acceptance**: 2-human + 2-bot setup with explicit ship picks works;
 the same setup via CLI flags (`--humans=2 --bots=2`) produces an
 identical match (the menu just exposes per-slot overrides; defaults
-match the auto-cycle).
+match the auto-cycle). Verified: pre-M6.3 ctest had 144 tests; M6.3
+adds `tou2d_player_setup_test` for a new total of 145 — all green.
+Warnings-as-errors build clean.
+
+**Still TBD** (deferred follow-ups, NOT blockers for M6.3 acceptance):
+- HUD wiring for the resolved per-slot `tag` string. M6.3 stores the
+  override on `MatchSetup`; `TouGame` consumes it for spawn-time
+  decisions but doesn't yet plumb it through to `HudSystem`'s score
+  display. Best landed as a focused HUD touch-up batch alongside the
+  M6.7 HUD polish pass.
+- Input device picker per slot is implicit today (slot index = key-
+  binding row). Will become meaningful only if M6.5 (or later)
+  adds remappable per-player keyboard layouts beyond the existing
+  hand-rolled P1/P2/P3/P4 rows.
+- "AI fill" toggle per empty slot is functionally subsumed by the
+  `numHumans` / `numBots` knobs on MatchSetup plus the per-slot
+  `role` override added in M6.3. A dedicated single-toggle row was
+  judged redundant for v1.
 
 #### M6.4 — Pause menu (LANDED 2026-05-29)
 

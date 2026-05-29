@@ -387,11 +387,35 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
         float y = std::sin(theta) * ringR;
         sampleRandomRespawn(grid_, spawnRng, x, y);
 
-        const bool isBot = slot >= numHumans_;
+        // M6.3 — per-slot overrides apply to the first kMatchSetupSlotCount
+        // slots (the keyboard-eligible positions). Beyond that bots fall
+        // back to the slot%4 auto-cycle. Defaults on each override field
+        // are the 0xFF / role=0 sentinels so an unedited MatchSetup
+        // reproduces the pre-M6.3 spawn shape exactly.
+        const PlayerSlotSetup* override =
+            (slot < kMatchSetupSlotCount) ? &playerSlots_[slot] : nullptr;
+
+        bool isBot = slot >= numHumans_;
+        if (override) {
+            if      (override->role == 1) isBot = false;  // force human
+            else if (override->role == 2) isBot = true;   // force bot
+        }
+
+        const std::size_t autoPalette = slot % kAtlasSeeds.size();
+        const std::size_t paletteIdx =
+            (override && override->paletteIdx != 0xFFu &&
+             override->paletteIdx < kAtlasSeeds.size())
+                ? static_cast<std::size_t>(override->paletteIdx)
+                : autoPalette;
+
         const std::uint16_t kindIdx =
-            kAtlasSeeds[slot % kAtlasSeeds.size()].kindIdx;
+            (override && override->shipKindIdx != 0xFFu)
+                ? static_cast<std::uint16_t>(override->shipKindIdx)
+                : kAtlasSeeds[autoPalette].kindIdx;
+
         const std::int32_t atlasIdx =
-            atlasIdxByPalette[slot % atlasIdxByPalette.size()];
+            atlasIdxByPalette[paletteIdx];
+
         playerShips_[slot] = spawnShip(
             engine, seed, ids_,
             static_cast<std::uint8_t>(slot), x, y,

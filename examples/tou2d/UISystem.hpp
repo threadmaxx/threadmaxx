@@ -33,6 +33,7 @@ enum class MenuAction : std::uint8_t {
     Resume            = 10,  ///< M6.4 — close Pause screen, unfreeze sim.
     RestartMatch      = 11,  ///< M6.4 — set pendingRestartMatch_, dismiss menu.
     ReturnToMainMenu  = 12,  ///< M6.4 — set pendingReturnToMainMenu_, jump to MainMenu.
+    PlayerSetup       = 13,  ///< M6.3 — jumps to UIScreen::PlayerSetup.
 };
 
 /// M6.2 — distinguishes a plain "fire on accept" row from a horizontal
@@ -51,17 +52,26 @@ enum class MenuRowKind : std::uint8_t {
 /// Adding a knob is one new enum value + one new row entry + one new
 /// switch arm in `cycleKnob_` / `formatKnobValue_`.
 enum class MatchSetupKnob : std::uint8_t {
-    Humans      = 0,
-    Bots        = 1,
-    Mode        = 2,
-    Special     = 3,
-    UseGen      = 4,
-    GenSeed     = 5,
-    GenLevel    = 6,
-    GenDensity  = 7,
-    GenPerim    = 8,
-    RepairTiles = 9,
-    Count       = 10,   ///< Sentinel (== number of scroller knobs).
+    Humans       = 0,
+    Bots         = 1,
+    Mode         = 2,
+    Special      = 3,
+    UseGen       = 4,
+    GenSeed      = 5,
+    GenLevel     = 6,
+    GenDensity   = 7,
+    GenPerim     = 8,
+    RepairTiles  = 9,
+    /// M6.3 — per-slot knobs. The MenuRow's `slotIdx` selects which
+    /// slot's PlayerSlotSetup field the cycler reads/writes. Order
+    /// inside a slot matches the on-screen vertical order.
+    SlotTagChar0 = 10,
+    SlotTagChar1 = 11,
+    SlotTagChar2 = 12,
+    SlotRole     = 13,
+    SlotShip     = 14,
+    SlotPalette  = 15,
+    Count        = 16,  ///< Sentinel (== number of scroller knob classes).
 };
 
 /// M6.1 — single menu row descriptor. `enabled == false` paints greyed
@@ -78,6 +88,10 @@ struct MenuRow {
     bool            enabled;
     MenuRowKind     kind         = MenuRowKind::Action;
     MatchSetupKnob  scrollerKnob = MatchSetupKnob::Count;
+    /// M6.3 — slot index for per-slot knobs (SlotTagChar* / SlotRole /
+    /// SlotShip / SlotPalette). Ignored for the global knobs and Action
+    /// rows; must be in [0, kMatchSetupSlotCount) for per-slot rows.
+    std::uint8_t    slotIdx      = 0;
 };
 
 /// M6.0b — top-level UI state machine. Owns `UIScreen current`; the
@@ -226,8 +240,14 @@ public:
 
 private:
     void resetFocusToFirstEnabled_() noexcept;
-    void cycleKnob_(MatchSetupKnob knob, std::int32_t delta) noexcept;
+    /// M6.3 — `slotIdx` is meaningful only for per-slot knobs
+    /// (SlotTagChar* / SlotRole / SlotShip / SlotPalette); ignored for
+    /// the global knobs. Caller pre-clamps to [0, kMatchSetupSlotCount).
+    void cycleKnob_(MatchSetupKnob knob,
+                    std::uint8_t   slotIdx,
+                    std::int32_t   delta) noexcept;
     std::size_t formatKnobValue_(MatchSetupKnob knob,
+                                 std::uint8_t   slotIdx,
                                  char*          buf,
                                  std::size_t    bufN) const noexcept;
 

@@ -121,6 +121,11 @@ public:
         } else {
             genConfig_.reset();
         }
+        // M6.3 — per-slot overrides. Defaults (all-sentinel) preserve
+        // the pre-M6.3 auto-cycle behaviour bit-for-bit; the CLI path
+        // (which never edits `playerSlots`) is therefore determinism-
+        // equivalent to a menu run with no slot edits.
+        playerSlots_ = setup.playerSlots;
     }
 
     void onSetup(threadmaxx::Engine& engine,
@@ -198,6 +203,11 @@ private:
     /// M5.6 — index into `kSpecialWeaponSpecs`. Default Spread (0)
     /// keeps pre-M5.6 behaviour.
     std::uint8_t             defaultSpecial_ = 0;
+    /// M6.3 — per-slot overrides from the PlayerSetup screen. Defaults
+    /// hold the all-sentinel state so unedited menu runs (and every
+    /// CLI run, which never touches this) reproduce the pre-M6.3
+    /// auto-cycle.
+    std::array<PlayerSlotSetup, kMatchSetupSlotCount> playerSlots_{};
     std::filesystem::path    levelDir_;
     std::filesystem::path    assetDir_;
     SpriteCompositor*        compositor_     = nullptr;   // borrowed

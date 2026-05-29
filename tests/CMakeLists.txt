@@ -335,4 +335,27 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_pause_test
              COMMAND tou2d_pause_test)
+
+    # M6.3 — PlayerSetup screen row table, per-slot scroller cycles
+    # (tag alphabet, role tristate, ship kind, palette), per-slot write
+    # isolation, formatRow rendering, BackToMain → MatchSetup routing,
+    # and the default-MatchSetup byte-equality contract underwriting
+    # "unedited menu run == CLI run".
+    add_executable(tou2d_player_setup_test
+        tou2d_player_setup_test.cpp)
+    target_link_libraries(tou2d_player_setup_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_player_setup_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_player_setup_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_player_setup_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_player_setup_test
+             COMMAND tou2d_player_setup_test)
 endif()

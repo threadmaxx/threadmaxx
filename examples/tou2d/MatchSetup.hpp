@@ -13,14 +13,57 @@
 #include "DemoTypes.hpp"
 #include "ProceduralLevel.hpp"
 
+#include <array>
 #include <cstdint>
 
 namespace tou2d {
+
+/// M6.3 — per-slot override for slots [0, kMatchSetupSlotCount).
+///
+/// Sentinels preserve the "menu defaults = CLI auto-cycle" determinism
+/// contract: when every field on every slot holds its sentinel, the
+/// effective spawn shape is bit-identical to the pre-M6.3 CLI path.
+///
+///   * `tag`         — 3 ASCII chars (A-Z + space). All-spaces means
+///                     "auto" → TouGame fills in a slot-derived label
+///                     (P0/P1/P2/P3) at spawn time.
+///   * `role`        — 0=Auto (use numHumans/numBots), 1=Human,
+///                     2=Bot. Overriding lets non-contiguous patterns
+///                     like H/B/H/B; total ship count stays
+///                     `numHumans + numBots`.
+///   * `shipKindIdx` — 0xFF=Auto (use TouGame's kAtlasSeeds[slot%4]
+///                     default). Any other value indexes `kShipKinds`
+///                     directly; out-of-range falls back to Basic.
+///   * `paletteIdx`  — 0xFF=Auto (use slot%4). 0..3 picks one of the
+///                     four canonical sprite atlases (yellow/blue/
+///                     red/green) regardless of slot.
+struct PlayerSlotSetup {
+    std::array<char, 3> tag         = {' ', ' ', ' '};
+    std::uint8_t        role        = 0;     ///< 0=Auto, 1=Human, 2=Bot
+    std::uint8_t        shipKindIdx = 0xFFu; ///< 0xFF = auto
+    std::uint8_t        paletteIdx  = 0xFFu; ///< 0xFF = auto
+    std::uint8_t        _pad[2]     = {};
+};
+static_assert(sizeof(PlayerSlotSetup) == 8,
+              "PlayerSlotSetup must stay 8 bytes — embedded in MatchSetup "
+              "as a fixed-size array; layout change must update the UI "
+              "scroller table.");
+
+/// M6.3 — number of per-slot overrides exposed by the PlayerSetup
+/// screen. Matches `kMaxHumans` (4); the menu lets the user override
+/// the first four slots specifically because those are the keyboard-
+/// eligible positions. Bots beyond slot 3 cycle automatically per the
+/// existing `slot % 4` pattern in TouGame.
+inline constexpr std::size_t kMatchSetupSlotCount = 4;
 
 /// All knobs needed to start a match. Field defaults match the M5.1
 /// CLI defaults so a default-constructed `MatchSetup` reproduces the
 /// "no CLI args" gameplay shape (1 human + 3 bots, deathmatch, spread
 /// weapon, synthetic arena fallback).
+///
+/// M6.3 — extends with a `playerSlots` array of per-slot overrides.
+/// Default-init holds the all-sentinel state so unedited menu runs
+/// remain bit-identical to the CLI path.
 ///
 /// Bit layout is **not** stable across versions — this struct is
 /// engine-runtime state, not on-disk format. The replay header has
@@ -39,9 +82,13 @@ struct MatchSetup {
     bool                  useGen = false;
     std::uint8_t          _pad[3] = {};
     ProceduralLevelConfig genCfg{};
+
+    /// M6.3 — per-slot overrides; default = all-sentinel = CLI auto-cycle.
+    std::array<PlayerSlotSetup, kMatchSetupSlotCount> playerSlots{};
 };
 
-static_assert(sizeof(MatchSetup) == 16,
+static_assert(sizeof(MatchSetup) ==
+                  16 + kMatchSetupSlotCount * sizeof(PlayerSlotSetup),
               "MatchSetup is engine-runtime state; layout change must "
               "be coordinated with the UI scroller table.");
 

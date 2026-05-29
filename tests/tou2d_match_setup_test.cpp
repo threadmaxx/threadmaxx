@@ -2,7 +2,7 @@
 //
 // Pins:
 //   * MatchSetup screen row table — 10 scroller rows in MatchSetupKnob
-//     order, then Start + Back.
+//     order, then Players (M6.3) + Start + Back.
 //   * Constructing UISystem with UIScreen::MatchSetup lands focus on
 //     row 0 (Humans scroller).
 //   * cycleFocused(+1) on each scroller advances the bound knob; the
@@ -51,7 +51,8 @@ int main() {
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
         const auto rs = ui.currentRows();
-        CHECK_EQ(rs.size(), std::size_t{12});
+        // M6.3 — row 10 inserted: "Players...".
+        CHECK_EQ(rs.size(), std::size_t{13});
 
         // First 10 rows are scrollers in MatchSetupKnob order.
         const MatchSetupKnob expected[] = {
@@ -74,12 +75,16 @@ int main() {
 
         // Trailing action rows.
         CHECK(rs[10].kind == MenuRowKind::Action);
-        CHECK(rs[10].action == MenuAction::StartMatch);
-        CHECK(std::strcmp(rs[10].label, "Start match") == 0);
+        CHECK(rs[10].action == MenuAction::PlayerSetup);
+        CHECK(std::strcmp(rs[10].label, "Players...") == 0);
 
         CHECK(rs[11].kind == MenuRowKind::Action);
-        CHECK(rs[11].action == MenuAction::BackToMain);
-        CHECK(std::strcmp(rs[11].label, "Back") == 0);
+        CHECK(rs[11].action == MenuAction::StartMatch);
+        CHECK(std::strcmp(rs[11].label, "Start match") == 0);
+
+        CHECK(rs[12].kind == MenuRowKind::Action);
+        CHECK(rs[12].action == MenuAction::BackToMain);
+        CHECK(std::strcmp(rs[12].label, "Back") == 0);
 
         // Focus starts on the Humans scroller (first enabled row).
         CHECK_EQ(ui.focusIndex(), std::int32_t{0});
@@ -146,9 +151,9 @@ int main() {
     // ---- cycleFocused on Action rows is no-op ----------------------
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
-        // Jump to Start row (index 10).
-        for (int i = 0; i < 10; ++i) ui.moveFocus(+1);
-        CHECK_EQ(ui.focusIndex(), std::int32_t{10});
+        // Jump to Start row (M6.3 — now index 11; Players took 10).
+        for (int i = 0; i < 11; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{11});
         const MatchSetup snap = ui.matchSetup();
         ui.cycleFocused(+1);
         CHECK(bytewiseEqual(snap, ui.matchSetup()));
@@ -159,7 +164,7 @@ int main() {
     // ---- Start accept: pendingStartMatch + dismiss menu ------------
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
-        for (int i = 0; i < 10; ++i) ui.moveFocus(+1);  // Start row
+        for (int i = 0; i < 11; ++i) ui.moveFocus(+1);  // Start row (M6.3 — index 11)
         CHECK(!ui.pendingStartMatch());
         const MenuAction got = ui.acceptFocused();
         CHECK(got == MenuAction::StartMatch);
@@ -174,9 +179,9 @@ int main() {
     // ---- Back accept jumps to MainMenu + resets focus --------------
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
-        // Navigate to Back (index 11).
-        for (int i = 0; i < 11; ++i) ui.moveFocus(+1);
-        CHECK_EQ(ui.focusIndex(), std::int32_t{11});
+        // Navigate to Back (M6.3 — now index 12).
+        for (int i = 0; i < 12; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{12});
         const MenuAction got = ui.acceptFocused();
         CHECK(got == MenuAction::BackToMain);
         CHECK(ui.current() == UIScreen::MainMenu);
@@ -208,11 +213,14 @@ int main() {
         // Row 2 = Mode scroller, default Deathmatch.
         ui.formatRow(2, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Mode: Deathmatch") == 0);
-        // Row 10 = Start (Action).
+        // Row 10 = Players... (Action; M6.3).
         ui.formatRow(10, buf, sizeof(buf));
-        CHECK(std::strcmp(buf, "Start match") == 0);
-        // Row 11 = Back (Action).
+        CHECK(std::strcmp(buf, "Players...") == 0);
+        // Row 11 = Start (Action).
         ui.formatRow(11, buf, sizeof(buf));
+        CHECK(std::strcmp(buf, "Start match") == 0);
+        // Row 12 = Back (Action).
+        ui.formatRow(12, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Back") == 0);
         // Out-of-range row index yields empty string.
         ui.formatRow(99, buf, sizeof(buf));
