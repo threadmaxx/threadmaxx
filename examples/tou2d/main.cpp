@@ -529,15 +529,18 @@ int main(int argc, char** argv) {
     // (declared once on startup) populate the UI bindings on slot 0.
     const tou2d::KeyMap uiKeyMap = tou2d::makeDefaultKeyMap();
     struct UiKeyEdges {
-        bool prev[6] = {};   // index: 0=UiUp 1=UiDown 2=UiLeft 3=UiRight 4=UiAccept 5=UiCancel
-        bool rising[6] = {};
+        // index: 0=UiUp 1=UiDown 2=UiLeft 3=UiRight 4=UiAccept 5=UiCancel
+        //        6=Pause (M6.4 — opens UIScreen::Pause from gameplay)
+        bool prev[7] = {};
+        bool rising[7] = {};
         void poll(GLFWwindow* w, const tou2d::KeyMap& km) {
             if (!w) return;
             const auto& row = km.binding[0];
-            constexpr std::array<tou2d::Action, 6> kSlots = {
+            constexpr std::array<tou2d::Action, 7> kSlots = {
                 tou2d::Action::UiUp, tou2d::Action::UiDown,
                 tou2d::Action::UiLeft, tou2d::Action::UiRight,
                 tou2d::Action::UiAccept, tou2d::Action::UiCancel,
+                tou2d::Action::Pause,
             };
             for (std::size_t i = 0; i < kSlots.size(); ++i) {
                 const std::uint16_t key =
@@ -888,7 +891,15 @@ int main(int argc, char** argv) {
         auto* ui = game.uiSystem();
         if (ui) {
             uiEdges.poll(window, uiKeyMap);
-            if (ui->menuActive()) {
+            // M6.4 — Pause keybind (default Esc) toggles between
+            // gameplay and the Pause screen. The Pause and UiCancel
+            // actions share the Escape key today, so both edges fire
+            // on every Escape press — the if/else-if structure routes
+            // gameplay->Pause via rising[6] and Pause->gameplay (and
+            // sub-screen->MainMenu) via rising[5] without double-firing.
+            if (uiEdges.rising[6] && !ui->menuActive()) {
+                ui->setCurrent(tou2d::UIScreen::Pause);
+            } else if (ui->menuActive()) {
                 if (uiEdges.rising[0]) ui->moveFocus(-1);
                 if (uiEdges.rising[1]) ui->moveFocus(+1);
                 // M6.2 — UiLeft/UiRight cycle the focused scroller row
@@ -897,8 +908,16 @@ int main(int argc, char** argv) {
                 if (uiEdges.rising[2]) ui->cycleFocused(-1);
                 if (uiEdges.rising[3]) ui->cycleFocused(+1);
                 if (uiEdges.rising[4]) ui->acceptFocused();
-                if (uiEdges.rising[5] && ui->current() != tou2d::UIScreen::MainMenu) {
-                    ui->setCurrent(tou2d::UIScreen::MainMenu);
+                if (uiEdges.rising[5]) {
+                    // M6.4 — UiCancel: from Pause resume gameplay;
+                    // from other sub-screens pop to MainMenu; on
+                    // MainMenu itself it's a no-op (Quit is the
+                    // explicit exit there).
+                    if (ui->current() == tou2d::UIScreen::Pause) {
+                        ui->setCurrent(tou2d::UIScreen::None);
+                    } else if (ui->current() != tou2d::UIScreen::MainMenu) {
+                        ui->setCurrent(tou2d::UIScreen::MainMenu);
+                    }
                 }
             }
             // Bind engine pause to menu-active. Cheap conditional set
@@ -934,12 +953,47 @@ int main(int argc, char** argv) {
                     unsigned(s.genCfg.repairTileCount));
                 ui->clearPendingStartMatch();
             }
+            // M6.4 — Restart match flag drain. Same posture as
+            // pendingStartMatch above: the engine-restart-with-MatchSetup
+            // wiring lands in a focused follow-up; for this batch the
+            // drain proves the menu's path is observable and the menu
+            // dismisses cleanly via the acceptFocused side-effect.
+            if (ui->pendingRestartMatch()) {
+                std::printf(
+                    "[tou2d] menu Restart match (engine-restart wiring "
+                    "pending — flag drained at tick=%llu)\n",
+                    static_cast<unsigned long long>(tick));
+                ui->clearPendingRestartMatch();
+            }
+            // M6.4 — Return-to-main-menu flag drain. The setCurrent
+            // already happened inside acceptFocused (UIScreen::MainMenu),
+            // so the engine stays paused via the menuActive bind. Host
+            // drains the sticky flag here for any per-event side-effects
+            // (logging today; M6.6 Results screen may key off this).
+            if (ui->pendingReturnToMainMenu()) {
+                std::printf(
+                    "[tou2d] menu Return to main menu (engine paused "
+                    "behind MainMenu at tick=%llu)\n",
+                    static_cast<unsigned long long>(tick));
+                ui->clearPendingReturnToMainMenu();
+            }
         }
 
+        // M6.4 — Replay record + play skip emitting / advancing on
+        // paused frames. `Engine::setPaused(true)` makes step() a no-op,
+        // so a paused frame produces no commitHash advance and consumes
+        // no input. Recording an empty tick into the file would desync
+        // playback (which would advance one too many entries to match
+        // the live recording); skipping on both sides keeps the recorded
+        // stream bit-identical to an unpaused match where the pause
+        // never happened. The host's `engine.setPaused(wantPaused)` call
+        // above already committed this frame's pause state, so reading
+        // `engine.paused()` here matches what step() will see.
+        const bool framePaused = engine.paused();
         // M5.4 — playback advances the recorded stream BEFORE step so
         // InputSystem reads the current tick's inputs from the player.
         // EOF ends the run cleanly.
-        if (replayPlayer.valid()) {
+        if (replayPlayer.valid() && !framePaused) {
             if (!replayPlayer.advance()) {
                 std::printf("[tou2d] --play EOF at tick=%llu (read=%llu)\n",
                             static_cast<unsigned long long>(tick),
@@ -951,19 +1005,19 @@ int main(int argc, char** argv) {
         // is about to read (glfwGetKey returns state frozen since
         // pollEvents). Capture before step; write after, paired with
         // the post-step commitHash.
-        if (replayRecorder.valid()) {
+        if (replayRecorder.valid() && !framePaused) {
             for (std::uint8_t s = 0; s < tou2d::kReplayKeyboardSlots; ++s) {
                 sampledInputs[s] = tou2d::readKeyboardSlot(window, s);
             }
         }
         engine.step();
-        if (replayRecorder.valid()) {
+        if (replayRecorder.valid() && !framePaused) {
             replayRecorder.recordTick(
                 std::span<const tou2d::PlayerInput>(sampledInputs.data(),
                                                     sampledInputs.size()),
                 engine.stats().commitHash);
         }
-        if (replayPlayer.valid()) {
+        if (replayPlayer.valid() && !framePaused) {
             const std::uint64_t got = engine.stats().commitHash;
             const std::uint64_t want = replayPlayer.commitHash();
             if (got != want) {
@@ -993,6 +1047,7 @@ int main(int argc, char** argv) {
                     case tou2d::UIScreen::MainMenu:   title = "TOU2D \xB7 Main Menu";        break;
                     case tou2d::UIScreen::Credits:    title = "TOU2D \xB7 Credits";          break;
                     case tou2d::UIScreen::MatchSetup: title = "TOU2D \xB7 Match Setup";      break;
+                    case tou2d::UIScreen::Pause:      title = "TOU2D \xB7 Paused";           break;
                     default:                          title = "TOU2D \xB7 Menu";             break;
                 }
                 const int lineH = (fontAtlas.ascent - fontAtlas.descent +

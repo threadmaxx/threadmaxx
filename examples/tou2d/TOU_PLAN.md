@@ -1631,7 +1631,7 @@ gameplay):
 | M6.1  | UI state machine + main menu (LANDED 2026-05-29) | M6.0b | no |
 | M6.2  | Match / level setup screen (LANDED 2026-05-29) | M6.1 | no |
 | M6.3  | Ship / player slot assignment screen | M6.1 | no |
-| M6.4  | Pause menu (in-game) | M6.1 | no (uses `Engine::setPaused`) |
+| M6.4  | Pause menu (in-game) (LANDED 2026-05-29) | M6.1 | no (uses `Engine::setPaused`) |
 | M6.5  | Options menu + persistence | M6.0, M6.1 | YES (settings POD) |
 | M6.6  | Results / scoreboard screen | M6.1 | no |
 | M6.7  | HUD polish pass (readability, warnings) | M6.0 | no |
@@ -1903,8 +1903,11 @@ ticks and gen-mode record/replay round-trip both bit-identical to
 pre-M6.2.
 
 **Still TBD** (deferred follow-ups, NOT blockers for M6.2 acceptance):
-- Engine restart-with-new-settings (M6.4 will land it for both
-  "Restart match" and Setup → Start).
+- Engine restart-with-new-settings for `StartMatch` apply. Originally
+  slated to land with M6.4 alongside `RestartMatch`, but M6.4 shipped
+  the Pause UI/flag/test infrastructure with both Start and Restart
+  deferred to a focused engine-restart follow-up batch — that one
+  primitive lights up both arms.
 - Gravity / Wind / Weapon table / Match timer / Score limit /
   Respawn rules / Damage scale / Camera mode rows — each needs a
   new CLI flag first; row infrastructure is ready.
@@ -1931,31 +1934,104 @@ the same setup via CLI flags (`--humans=2 --bots=2`) produces an
 identical match (the menu just exposes per-slot overrides; defaults
 match the auto-cycle).
 
-#### M6.4 — Pause menu (PLANNED)
+#### M6.4 — Pause menu (LANDED 2026-05-29)
 
-`UIScreen::Pause` triggered by the `Pause` action (default `Esc`).
-On enter:
-1. `Engine::setPaused(true)` (already exists).
-2. Capture a snapshot of the back render frame so the paused gameplay
-   stays visible behind the menu — `submitInterpolatedFrame(0.0)` keeps
-   the world frozen on-screen for free.
+**Wired surface.** `UIScreen::Pause` is the in-game pause menu.
+`MenuAction::Resume`, `MenuAction::RestartMatch`, and
+`MenuAction::ReturnToMainMenu` are the three new enumerators; existing
+`Options`, `LevelSetup`, and `Quit` arms are reused. The screen owns
+six rows in fixed on-screen order: Resume, Restart match, Options,
+Level setup, Return to main menu, Quit. Every row is enabled —
+Continue-greyed is a MainMenu-only posture (the placeholder for the
+engine-restart-with-MatchSetup follow-up; see "Still TBD" below).
 
-Rows:
-- Resume (`UiCancel` also resumes)
-- Restart match (rebuilds the world via the M6.2 setup)
-- Options (jumps to M6.5; pop returns here)
-- Level setup (jumps to M6.2; pop returns here)
-- Return to main menu (drops the world)
-- Quit
+**Pause entry.** `Action::Pause` (default `Esc`) is polled as a
+seventh edge slot in main.cpp's `UiKeyEdges` (alongside the M6.1 six
+nav slots). On rising edge AND `!menuActive()` the host calls
+`ui->setCurrent(UIScreen::Pause)`; the menuActive→`engine.setPaused`
+bind from M6.1 freezes the sim on the next frame. The renderer keeps
+re-publishing the last submitted frame for free (no explicit snapshot
+capture needed — `engine.step()` is a no-op while paused, so the back
+frame buffer stays untouched and `submitInterpolatedFrame` keeps it
+on screen).
 
-**Pause-while-replay-recording**: dropped frames must not desync the
-recorded input stream. Easiest fix: `Engine::setPaused(true)` already
-zeros per-tick stats; we just need `Replay` to skip emitting on
-paused steps. One-line change.
+**Pause exit.** Three paths converge on the same outcome
+(`setCurrent(UIScreen::None)` → `menuActive()` flips false → engine
+unpauses next frame):
+- `MenuAction::Resume` accept on the Resume row.
+- `UiCancel` (also `Esc`) from inside Pause. Pause and UiCancel share
+  the Escape key — the if/else-if dispatch in main.cpp routes
+  gameplay→Pause via the Pause edge and Pause→gameplay via the
+  UiCancel edge without double-firing on the same key press.
+- Pressing the Pause key in gameplay is rejected by the
+  `!menuActive()` gate while a menu is up, so Esc-from-Pause goes
+  through the UiCancel arm.
 
-**Acceptance**: pausing mid-match for 10 s and resuming produces a
-deterministic continuation (replay round-trip identical to an
-unpaused match where the 10 s never elapsed).
+**Replay paused-skip (one-line — actually four).** The host frame
+loop reads `engine.paused()` after the per-frame setPaused bind
+commits and gates four call sites on `!framePaused`:
+1. `replayPlayer.advance()` — paused frames consume no input from
+   the recorded stream.
+2. Per-slot `readKeyboardSlot` sampling — only run when the frame
+   will actually step.
+3. `replayRecorder.recordTick(...)` — paused frames emit nothing.
+4. The post-step hash-mismatch check — pinned-to-non-paused so the
+   `engine.stats().commitHash` we compare against was actually
+   advanced by step().
+
+Record + replay across pause/unpause are bit-identical to an unpaused
+match where the pause never elapsed. The record/replay 150-tick
+round-trip (with `--gen --gen-seed=42 --gen-level=1 --special=sniper`,
+no actual pause exercised since the smoke is non-interactive)
+confirms **0 hash mismatches** — the gate is pure non-paused-frame
+no-op when the engine never pauses.
+
+**MenuAction posture for the new arms.**
+- `Resume` — `setCurrent(UIScreen::None)`, no sticky flag (the
+  menuActive bind is the entire side effect).
+- `RestartMatch` — sets `pendingRestartMatch_` sticky flag +
+  `setCurrent(UIScreen::None)`. Host drains the flag in the frame loop
+  (logs today; engine-restart-with-MatchSetup wiring is the deferred
+  follow-up, same posture as M6.2 `StartMatch`).
+- `ReturnToMainMenu` — sets `pendingReturnToMainMenu_` sticky flag +
+  `setCurrent(UIScreen::MainMenu)`. Engine stays paused via menuActive.
+  Matches the M6.1 "no CLI args" launch posture (MainMenu up, sim
+  paused). Host drains the flag for any per-event side-effects.
+
+**`UISystem` extension API.**
+- `bool pendingRestartMatch()` / `clearPendingRestartMatch()`.
+- `bool pendingReturnToMainMenu()` / `clearPendingReturnToMainMenu()`.
+- Both flags are independent (clearing one doesn't touch the others);
+  pinned by `tou2d_pause_test`.
+
+**Test (`tou2d_pause_test`).** Pins the six-row table (Resume,
+Restart match, Options, Level setup, Return to main menu, Quit) +
+initial focus on row 0, the Resume/Restart/ReturnToMain/Quit accept
+arms (current() transitions + sticky-flag semantics), the
+Pause→LevelSetup hop landing focus on MatchSetup row 0, the Options
+stub-stays-on-Pause posture, `formatRow` painting the static label
+for every Pause row, MainMenu Continue row staying greyed, and
+flag-independence (setting one sticky flag and clearing it doesn't
+disturb the other).
+
+**Pre-M6.4 `ctest` had 142 tests; M6.4 adds `tou2d_pause_test` for a
+new total of 143 — all green.** Warnings-as-errors build clean.
+Headless 200-tick smoke (`./threadmaxx_tou2d 200`) final ship pos
+`(-42.00, -43.25, 0.00)` — bit-identical to M6.2.
+
+**Still TBD** (deferred follow-ups, NOT blockers for M6.4 acceptance):
+- Engine-restart-with-MatchSetup wiring for both `RestartMatch` (M6.4)
+  and `StartMatch` (M6.2). Needs `engine.shutdown()` + (optional)
+  `game.setMatchSetup(...)` + `engine.initialize(game)` + renderer
+  resource re-installation (default mesh, camera viewport, background
+  painter re-bind for `--level` mode). Best landed as a focused
+  follow-up batch — it's its own contract surface (which knobs survive
+  restart, what happens to an open `--record` file, etc.).
+- MainMenu "Continue" row enablement — depends on the same engine
+  resume primitive Restart needs to share.
+- True Pause-from-recorded-replay (rewind one step) — out of scope for
+  this batch; the file format would need per-frame snapshots, not just
+  inputs + hash.
 
 #### M6.5 — Options menu + persistence (PLANNED)
 

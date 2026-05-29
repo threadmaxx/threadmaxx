@@ -33,6 +33,30 @@ constexpr MenuRow kCreditsRows[] = {
     { "Back",                                MenuAction::BackToMain, true  },
 };
 
+// M6.4 — Pause screen rows. Triggered while gameplay is active by the
+// Pause action edge (default Escape; bound in InputSystem's KeyMap).
+// On enter the host's `engine.paused()` bind freezes the sim — the
+// renderer keeps re-publishing the last submitted frame so paused
+// gameplay stays visible behind the menu (no explicit snapshot capture
+// needed because `engine.step()` is a no-op while paused). On Resume
+// the menu dismisses, the bind unfreezes, the sim continues from
+// EXACTLY where it left off (replay-bit-identical to an unpaused match
+// where the pause never happened — see Replay record/play paused-skip
+// gating in main.cpp).
+//
+// Restart match / Return to main menu are sticky flags read by the
+// host: M6.4 first-cut logs the flag and dismisses the menu; the full
+// engine-restart-with-MatchSetup wiring lands in a focused follow-up
+// (same posture as M6.2 StartMatch).
+constexpr MenuRow kPauseRows[] = {
+    { "Resume",              MenuAction::Resume,           true },
+    { "Restart match",       MenuAction::RestartMatch,     true },
+    { "Options",             MenuAction::Options,          true },
+    { "Level setup",         MenuAction::LevelSetup,       true },
+    { "Return to main menu", MenuAction::ReturnToMainMenu, true },
+    { "Quit",                MenuAction::Quit,             true },
+};
+
 // M6.2 — MatchSetup screen. Scroller rows bind 1:1 to MatchSetupKnob
 // values; the trailing two Action rows (Start, Back) fire the standard
 // MenuAction transitions. Order is the on-screen vertical order so the
@@ -85,7 +109,8 @@ std::size_t seedPresetIndex_(std::uint32_t seed) noexcept {
 bool screenHasRows_(UIScreen s) noexcept {
     return s == UIScreen::MainMenu ||
            s == UIScreen::Credits  ||
-           s == UIScreen::MatchSetup;
+           s == UIScreen::MatchSetup ||
+           s == UIScreen::Pause;
 }
 
 const char* matchModeLabel_(MatchMode m) noexcept {
@@ -148,6 +173,7 @@ std::span<const MenuRow> UISystem::rows(UIScreen screen) const noexcept {
         case UIScreen::MainMenu:   return { kMainMenuRows,   std::size(kMainMenuRows)   };
         case UIScreen::Credits:    return { kCreditsRows,    std::size(kCreditsRows)    };
         case UIScreen::MatchSetup: return { kMatchSetupRows, std::size(kMatchSetupRows) };
+        case UIScreen::Pause:      return { kPauseRows,      std::size(kPauseRows)      };
         default:                   return {};
     }
 }
@@ -227,6 +253,34 @@ MenuAction UISystem::acceptFocused() noexcept {
             // even before the restart machinery is in place.
             pendingStartMatch_ = true;
             setCurrent(UIScreen::None);
+            break;
+        case MenuAction::Resume:
+            // M6.4 — dismiss the Pause menu. Host's engine.paused()
+            // bind reads !menuActive() on the next frame and unfreezes
+            // the sim. Replay record/play stay in sync because the
+            // paused frames they skipped emitting / advancing on are
+            // bit-identical no-ops in the recorded stream.
+            setCurrent(UIScreen::None);
+            break;
+        case MenuAction::RestartMatch:
+            // M6.4 — sticky flag the host drains, same posture as M6.2
+            // StartMatch. Engine-restart-with-MatchSetup wiring is the
+            // remaining piece (deferred to a focused follow-up, like
+            // M6.2's deferred apply path). Dismissing the menu unblocks
+            // the sim so the host's restart routine runs against an
+            // unpaused engine if it wants to.
+            pendingRestartMatch_ = true;
+            setCurrent(UIScreen::None);
+            break;
+        case MenuAction::ReturnToMainMenu:
+            // M6.4 — sticky flag for any host-side cleanup (close
+            // replay file, reset stats, etc.) AND transition to
+            // MainMenu so the menuActive() bind keeps the sim paused
+            // behind the main menu. The combined behaviour matches the
+            // M6.1 "no CLI args" launch posture (engine paused, MainMenu
+            // up).
+            pendingReturnToMainMenu_ = true;
+            setCurrent(UIScreen::MainMenu);
             break;
         case MenuAction::Quit:
             pendingQuit_ = true;

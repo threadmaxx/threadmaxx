@@ -20,16 +20,19 @@ namespace tou2d {
 /// no-op return when the focused row is disabled (greyed) or there's
 /// no focused row.
 enum class MenuAction : std::uint8_t {
-    None         = 0,
-    Continue     = 1,   ///< Resume an in-flight match (greyed in v1).
-    SingleMatch  = 2,   ///< Start a default 1H+3B match (dismisses menu).
-    LevelSetup   = 3,   ///< M6.2 — jumps to UIScreen::MatchSetup.
-    Options      = 4,   ///< M6.5 stub.
-    Benchmark    = 5,   ///< M6.5 stress-preset stub.
-    Credits      = 6,   ///< Transition to UIScreen::Credits.
-    Quit         = 7,   ///< Set pendingQuit() — host exits frame loop.
-    BackToMain   = 8,   ///< Pop back to MainMenu (used by Credits / MatchSetup).
-    StartMatch   = 9,   ///< M6.2 — set pendingStartMatch_, dismiss menu.
+    None              = 0,
+    Continue          = 1,   ///< Resume an in-flight match (greyed in v1).
+    SingleMatch       = 2,   ///< Start a default 1H+3B match (dismisses menu).
+    LevelSetup        = 3,   ///< M6.2 — jumps to UIScreen::MatchSetup.
+    Options           = 4,   ///< M6.5 stub.
+    Benchmark         = 5,   ///< M6.5 stress-preset stub.
+    Credits           = 6,   ///< Transition to UIScreen::Credits.
+    Quit              = 7,   ///< Set pendingQuit() — host exits frame loop.
+    BackToMain        = 8,   ///< Pop back to MainMenu (used by Credits / MatchSetup).
+    StartMatch        = 9,   ///< M6.2 — set pendingStartMatch_, dismiss menu.
+    Resume            = 10,  ///< M6.4 — close Pause screen, unfreeze sim.
+    RestartMatch      = 11,  ///< M6.4 — set pendingRestartMatch_, dismiss menu.
+    ReturnToMainMenu  = 12,  ///< M6.4 — set pendingReturnToMainMenu_, jump to MainMenu.
 };
 
 /// M6.2 — distinguishes a plain "fire on accept" row from a horizontal
@@ -200,6 +203,27 @@ public:
     bool pendingStartMatch() const noexcept { return pendingStartMatch_; }
     void clearPendingStartMatch() noexcept   { pendingStartMatch_ = false; }
 
+    /// ---- M6.4 Pause screen --------------------------------------------
+
+    /// True after a `MenuAction::RestartMatch` accept fired on the Pause
+    /// screen. Sticky until cleared. The host responds by rebuilding the
+    /// match world using `matchSetup()` (typically the same engine-restart
+    /// path StartMatch will use once wired). The menu is dismissed
+    /// (`setCurrent(UIScreen::None)`) at the accept site so the host's
+    /// `engine.paused()` bind cleanly unfreezes the sim even before any
+    /// restart code runs.
+    bool pendingRestartMatch() const noexcept { return pendingRestartMatch_; }
+    void clearPendingRestartMatch() noexcept   { pendingRestartMatch_ = false; }
+
+    /// True after a `MenuAction::ReturnToMainMenu` accept fired. Sticky
+    /// until cleared. The host typically drops any in-flight match state
+    /// (or — in the M6.4 first-cut — just leaves the sim paused on the
+    /// current world). The UI is transitioned to `UIScreen::MainMenu`
+    /// at the accept site so the sim stays paused via the `menuActive`
+    /// bind.
+    bool pendingReturnToMainMenu() const noexcept { return pendingReturnToMainMenu_; }
+    void clearPendingReturnToMainMenu() noexcept   { pendingReturnToMainMenu_ = false; }
+
 private:
     void resetFocusToFirstEnabled_() noexcept;
     void cycleKnob_(MatchSetupKnob knob, std::int32_t delta) noexcept;
@@ -209,9 +233,11 @@ private:
 
     threadmaxx::Engine* engine_;
     UIScreen            current_;
-    std::int32_t        focusIndex_       = -1;
-    bool                pendingQuit_      = false;
-    bool                pendingStartMatch_ = false;
+    std::int32_t        focusIndex_              = -1;
+    bool                pendingQuit_             = false;
+    bool                pendingStartMatch_       = false;
+    bool                pendingRestartMatch_     = false;
+    bool                pendingReturnToMainMenu_ = false;
     MatchSetup          matchSetup_{};
 };
 
