@@ -57,6 +57,9 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
             const auto& positions  = chunk.transforms;
             const std::size_t n    = entities.size();
 
+            const bool hasVel = chunk.mask.has(threadmaxx::Component::Velocity);
+            const auto* velPtr = hasVel ? &chunk.velocities : nullptr;
+
             for (std::size_t row = 0; row < n; ++row) {
                 const auto& bp = positions[row].position;
                 const std::int32_t cx = worldToCell(bp.x);
@@ -68,13 +71,59 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
 
                 if (grid_->attrAt(cx, cy) != Attribute::Solid) continue;
 
+                const Bullet& blt = blSpan[row];
+
+                // M5.8 — Bouncer: reflect off the surface instead of
+                // destroying. Bedrock and non-bouncer kinds still take
+                // the regular destroy path below. Reflection picks the
+                // surface-normal axis by probing the two cells the
+                // bullet would have crossed into to land here: whichever
+                // neighbor is air, the bullet came from that direction
+                // → reflect the matching velocity component. If BOTH
+                // neighbors are solid (corner hit) we reflect both axes,
+                // which kicks the bullet straight back.
+                if (blt.weaponKind == 9 && blt.bouncesLeft > 0 &&
+                    cellHp != 0xFF && hasVel) {
+                    const auto& v = (*velPtr)[row].linear;
+                    const std::int32_t backX = (v.x > 0.0f) ? cx - 1
+                                             : (v.x < 0.0f) ? cx + 1 : cx;
+                    const std::int32_t backY = (v.y > 0.0f) ? cy - 1
+                                             : (v.y < 0.0f) ? cy + 1 : cy;
+                    const bool xOpen = grid_->inBounds(backX, cy) &&
+                                       grid_->hpAt(backX, cy) == 0;
+                    const bool yOpen = grid_->inBounds(cx, backY) &&
+                                       grid_->hpAt(cx, backY) == 0;
+                    threadmaxx::Velocity newV = (*velPtr)[row];
+                    if (xOpen)      { newV.linear.x = -v.x * kBouncerDamping; }
+                    else if (yOpen) { newV.linear.y = -v.y * kBouncerDamping; }
+                    else {
+                        newV.linear.x = -v.x * kBouncerDamping;
+                        newV.linear.y = -v.y * kBouncerDamping;
+                    }
+                    // Nudge the bullet back into the previous air cell
+                    // so it doesn't re-collide next tick before
+                    // MovementSystem advances it.
+                    threadmaxx::Transform newT = positions[row];
+                    if (xOpen)      { newT.position.x = cellCenterWorld(backX); }
+                    else if (yOpen) { newT.position.y = cellCenterWorld(backY); }
+                    else {
+                        newT.position.x = cellCenterWorld(backX);
+                        newT.position.y = cellCenterWorld(backY);
+                    }
+                    cb.setTransform(entities[row], newT);
+                    cb.setVelocity(entities[row], newV);
+                    Bullet nb = blt;
+                    nb.bouncesLeft = static_cast<std::uint8_t>(nb.bouncesLeft - 1);
+                    threadmaxx::addUserComponent(cb, idsBl, entities[row], nb);
+                    continue;
+                }
+
                 // Bedrock — bullet stops, tile survives.
                 if (cellHp == 0xFF) {
                     cb.destroy(entities[row]);
                     continue;
                 }
 
-                const Bullet& blt = blSpan[row];
                 const std::uint8_t dmg = blt.damage;
                 if (cellHp <= dmg) {
                     grid_->clear(cx, cy);

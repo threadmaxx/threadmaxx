@@ -1,19 +1,24 @@
-// tou2d_specials_test — pins the M5.6 + M5.7 special-weapon catalogue.
+// tou2d_specials_test — pins the M5.6 + M5.7 + M5.8 special-weapon catalogue.
 //
 // Contract:
-//   * `SpecialKind` enum values 0..6 cover Spread / Rapid / Sniper /
-//     Quintet / Heavy / Quad / Shotgun, in stable order (must not be
-//     reordered — round-trips through `WeaponLoadout.specialKind` and
-//     would invalidate any persisted ship loadout).
+//   * `SpecialKind` enum values 0..9 cover Spread / Rapid / Sniper /
+//     Quintet / Heavy / Quad / Shotgun / Mine / Bouncer / Homer in
+//     stable order (must not be reordered — round-trips through
+//     `WeaponLoadout.specialKind` and would invalidate any persisted
+//     ship loadout).
 //   * `kSpecialWeaponSpecs` has exactly `kSpecialKindCount` entries
-//     and each is non-degenerate (positive magazine, positive speed,
-//     positive ttl, bulletsPerShot >= 1).
+//     and each is non-degenerate (positive magazine, positive ttl,
+//     bulletsPerShot >= 1). M5.8 exception: Mine's `muzzleSpeed` is
+//     0 by design (drop-in-place).
 //   * `weaponKind` bytes stamped into bullets are stable and unique
 //     across kinds (so impact-spark routing in
 //     BulletShipCollisionSystem stays distinct).
 //   * `specialSpecAt(out-of-range)` clamps to entry 0 (Spread) without
 //     UB, mirroring `shipKindAt` behaviour for forward-compat with
 //     persisted snapshots that may carry stale kinds.
+//   * Bouncer spec must carry a positive `bouncesLeft` budget.
+//   * Homer spec must carry a sub-Spread muzzle speed (so the angular
+//     step has time to actually steer).
 
 #include "Check.hpp"
 
@@ -36,7 +41,10 @@ int main() {
     CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Heavy),   std::uint8_t{4});
     CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Quad),    std::uint8_t{5});
     CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Shotgun), std::uint8_t{6});
-    CHECK_EQ(kSpecialKindCount, std::uint8_t{7});
+    CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Mine),    std::uint8_t{7});
+    CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Bouncer), std::uint8_t{8});
+    CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Homer),   std::uint8_t{9});
+    CHECK_EQ(kSpecialKindCount, std::uint8_t{10});
 
     // ---- Each spec is non-degenerate -----------------------------------------
     std::set<std::uint8_t> seenWeaponKinds;
@@ -46,7 +54,14 @@ int main() {
         CHECK(s.reloadTicks     > 0);
         CHECK(s.cooldownTicks   > 0);
         CHECK(s.bulletsPerShot >= 1);
-        CHECK(s.muzzleSpeed     > 0.0f);
+        // M5.8 — Mine is the one exception: muzzleSpeed = 0 is the
+        // drop-in-place signal for WeaponFireSystem. Every other kind
+        // must keep a positive speed.
+        if (i == static_cast<std::uint8_t>(tou2d::SpecialKind::Mine)) {
+            CHECK_EQ(s.muzzleSpeed, 0.0f);
+        } else {
+            CHECK(s.muzzleSpeed > 0.0f);
+        }
         CHECK(s.ttlSeconds      > 0.0f);
         CHECK(s.damagePerBullet > 0);
         seenWeaponKinds.insert(s.weaponKind);
@@ -57,7 +72,8 @@ int main() {
 
     // ---- weaponKind values stable from DemoTypes.hpp comment table ----------
     // Spread = 1 (pre-M5.6 legacy), Rapid = 2, Sniper = 3, Quintet = 4,
-    // Heavy = 5, Quad = 6, Shotgun = 7 (M5.7).
+    // Heavy = 5, Quad = 6, Shotgun = 7 (M5.7); Mine = 8, Bouncer = 9,
+    // Homer = 10 (M5.8).
     CHECK_EQ(kSpecialWeaponSpecs[0].weaponKind, std::uint8_t{1});
     CHECK_EQ(kSpecialWeaponSpecs[1].weaponKind, std::uint8_t{2});
     CHECK_EQ(kSpecialWeaponSpecs[2].weaponKind, std::uint8_t{3});
@@ -65,6 +81,9 @@ int main() {
     CHECK_EQ(kSpecialWeaponSpecs[4].weaponKind, std::uint8_t{5});
     CHECK_EQ(kSpecialWeaponSpecs[5].weaponKind, std::uint8_t{6});
     CHECK_EQ(kSpecialWeaponSpecs[6].weaponKind, std::uint8_t{7});
+    CHECK_EQ(kSpecialWeaponSpecs[7].weaponKind, std::uint8_t{8});
+    CHECK_EQ(kSpecialWeaponSpecs[8].weaponKind, std::uint8_t{9});
+    CHECK_EQ(kSpecialWeaponSpecs[9].weaponKind, std::uint8_t{10});
 
     // ---- Shape checks: per-kind fan width / cadence reads as designed -------
     // Spread: 3 bullets in a fan.
@@ -97,11 +116,36 @@ int main() {
     CHECK(kSpecialWeaponSpecs[6].spreadStepRad > 0.0f);
     CHECK(kSpecialWeaponSpecs[6].ttlSeconds    <  kSpecialWeaponSpecs[0].ttlSeconds);
     CHECK(kSpecialWeaponSpecs[6].damagePerBullet <  kSpecialWeaponSpecs[0].damagePerBullet);
+    // Mine: drop-in-place — speed 0, single bullet, high per-bullet
+    // damage (≥18), no bounces, long ttl so the mine persists.
+    CHECK_EQ(kSpecialWeaponSpecs[7].bulletsPerShot, std::uint8_t{1});
+    CHECK_EQ(kSpecialWeaponSpecs[7].muzzleSpeed,    0.0f);
+    CHECK(kSpecialWeaponSpecs[7].damagePerBullet >= 18);
+    CHECK_EQ(kSpecialWeaponSpecs[7].bouncesLeft,    std::uint8_t{0});
+    CHECK(kSpecialWeaponSpecs[7].ttlSeconds      >= 2.5f);
+    // Bouncer: single straight shot, positive bouncesLeft budget,
+    // moderate per-bullet damage. spreadStepRad = 0 — single muzzle.
+    CHECK_EQ(kSpecialWeaponSpecs[8].bulletsPerShot, std::uint8_t{1});
+    CHECK(kSpecialWeaponSpecs[8].bouncesLeft     >= 1);
+    CHECK(kSpecialWeaponSpecs[8].muzzleSpeed      > 0.0f);
+    CHECK_EQ(kSpecialWeaponSpecs[8].spreadStepRad, 0.0f);
+    // Homer: single slow steering bullet. muzzleSpeed below Spread so
+    // the angular-step ceiling actually bites; long ttl so it can
+    // chase. No bounces.
+    CHECK_EQ(kSpecialWeaponSpecs[9].bulletsPerShot, std::uint8_t{1});
+    CHECK(kSpecialWeaponSpecs[9].muzzleSpeed     <  kSpecialWeaponSpecs[0].muzzleSpeed);
+    CHECK(kSpecialWeaponSpecs[9].muzzleSpeed      > 0.0f);
+    CHECK_EQ(kSpecialWeaponSpecs[9].bouncesLeft,    std::uint8_t{0});
+    CHECK(kSpecialWeaponSpecs[9].ttlSeconds      >= 2.0f);
 
     // ---- Out-of-range clamp goes to Spread without UB ------------------------
     const auto& fallback = specialSpecAt(static_cast<std::uint8_t>(42));
     CHECK_EQ(fallback.weaponKind, kSpecialWeaponSpecs[0].weaponKind);
     CHECK_EQ(fallback.magazine,   kSpecialWeaponSpecs[0].magazine);
+
+    // ---- Bullet POD grew 8 → 12 bytes for M5.8 bouncesLeft ------------------
+    static_assert(sizeof(tou2d::Bullet) == 12,
+                  "Bullet must stay 12 bytes across M5.8 bouncesLeft addition");
 
     // ---- WeaponLoadout still 16 bytes; specialKind round-trip ---------------
     static_assert(sizeof(tou2d::WeaponLoadout) == 16,

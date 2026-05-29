@@ -163,9 +163,9 @@ int main(int argc, char** argv) {
     //   --gen-level=N        : 0..4 size class (default 2)
     //   --gen-density=N      : 0..100 stuff density (default 50)
     //   --gen-perim=<0|1>    : 1 cell of bedrock around the canvas (default 1)
-    //   --special=<token>    : starting special weapon. Tokens (M5.6+M5.7):
+    //   --special=<token>    : starting special weapon. Tokens (M5.6+M5.7+M5.8):
     //                          spread (default), rapid, sniper, quintet,
-    //                          heavy, quad, shotgun
+    //                          heavy, quad, shotgun, mine, bouncer, homer
     //   --repair-tiles=N     : sprinkle N Repair pickup tiles into the
     //                          procedural level (M5.7). 0..255, default
     //                          8 when --gen is active, 0 otherwise.
@@ -223,9 +223,12 @@ int main(int argc, char** argv) {
             else if (val == "heavy")   specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Heavy);
             else if (val == "quad")    specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Quad);
             else if (val == "shotgun") specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Shotgun);
+            else if (val == "mine")    specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Mine);
+            else if (val == "bouncer") specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Bouncer);
+            else if (val == "homer")   specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Homer);
             else {
                 std::fprintf(stderr,
-                    "[tou2d] --special=%s — expected spread|rapid|sniper|quintet|heavy|quad|shotgun\n",
+                    "[tou2d] --special=%s — expected spread|rapid|sniper|quintet|heavy|quad|shotgun|mine|bouncer|homer\n",
                     val.c_str());
                 return 2;
             }
@@ -419,6 +422,9 @@ int main(int argc, char** argv) {
             case tou2d::SpecialKind::Heavy:   tok = "heavy";   break;
             case tou2d::SpecialKind::Quad:    tok = "quad";    break;
             case tou2d::SpecialKind::Shotgun: tok = "shotgun"; break;
+            case tou2d::SpecialKind::Mine:    tok = "mine";    break;
+            case tou2d::SpecialKind::Bouncer: tok = "bouncer"; break;
+            case tou2d::SpecialKind::Homer:   tok = "homer";   break;
         }
         std::printf("[tou2d] special weapon: %s\n", tok);
     }

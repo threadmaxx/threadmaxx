@@ -108,6 +108,7 @@ set(THREADMAXX_TESTS
     tou2d_proc_gen_test
     tou2d_specials_test
     tou2d_repair_pickup_test
+    tou2d_weapon_mechanics_test
     # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
     # (batch D-audit) which exercises the actual SaveLoadSystem rather
     # than re-implementing the wire format.

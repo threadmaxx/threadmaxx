@@ -49,6 +49,11 @@ inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
 /// Spawn one bullet pointed at world-space angle `angle`, inheriting
 /// the ship's velocity. Shared between Dumbfire (1 call) and Spread
 /// (3 calls per fire).
+///
+/// M5.8 — when `speed == 0` (Mine drop) the bullet skips the muzzle-
+/// offset push AND velocity inheritance: it drops at the ship's
+/// position with zero forward velocity. `bouncesLeft` is forwarded
+/// for the Bouncer kind; non-bouncer kinds pass 0.
 void spawnBullet(threadmaxx::SystemContext& ctx,
                  threadmaxx::CommandBuffer& cb,
                  threadmaxx::UserComponentId idsBl,
@@ -59,17 +64,19 @@ void spawnBullet(threadmaxx::SystemContext& ctx,
                  float ttlSeconds,
                  std::uint8_t damage,
                  std::uint8_t weaponKind,
+                 std::uint8_t bouncesLeft,
                  std::uint16_t ownerSlot) {
     const float sa = std::sin(angle);
     const float ca = std::cos(angle);
     const threadmaxx::Vec3 forward = {-sa, ca, 0.0f};
+    const bool isDrop = (speed == 0.0f);
 
     threadmaxx::Bundle b = {};
-    b.transform.position = {
-        shipT.position.x + forward.x * kMuzzleOffset,
-        shipT.position.y + forward.y * kMuzzleOffset,
-        0.0f,
-    };
+    b.transform.position = isDrop
+        ? threadmaxx::Vec3{shipT.position.x, shipT.position.y, 0.0f}
+        : threadmaxx::Vec3{shipT.position.x + forward.x * kMuzzleOffset,
+                           shipT.position.y + forward.y * kMuzzleOffset,
+                           0.0f};
     // Orient the bullet around its travel direction so it visually
     // points where it's going (matters once we render textured sprites,
     // harmless for the cube preview).
@@ -78,11 +85,11 @@ void spawnBullet(threadmaxx::SystemContext& ctx,
         b.transform.orientation = {0.0f, 0.0f, std::sin(half), std::cos(half)};
     }
     b.transform.scale = {kBulletScale, kBulletScale, kBulletScale};
-    b.velocity.linear = {
-        shipV.linear.x + forward.x * speed,
-        shipV.linear.y + forward.y * speed,
-        0.0f,
-    };
+    b.velocity.linear = isDrop
+        ? threadmaxx::Vec3{0.0f, 0.0f, 0.0f}
+        : threadmaxx::Vec3{shipV.linear.x + forward.x * speed,
+                           shipV.linear.y + forward.y * speed,
+                           0.0f};
     b.renderTag   = threadmaxx::RenderTag{0, 2, 0u};
     b.initialMask = threadmaxx::ComponentSet{
         threadmaxx::Component::Transform,
@@ -94,10 +101,11 @@ void spawnBullet(threadmaxx::SystemContext& ctx,
     cb.spawnBundle(bulletH, b);
 
     Bullet blt{};
-    blt.ttlSeconds = ttlSeconds;
-    blt.damage     = damage;
-    blt.weaponKind = weaponKind;
-    blt.ownerSlot  = ownerSlot;
+    blt.ttlSeconds  = ttlSeconds;
+    blt.damage      = damage;
+    blt.weaponKind  = weaponKind;
+    blt.ownerSlot   = ownerSlot;
+    blt.bouncesLeft = bouncesLeft;
     threadmaxx::addUserComponent(cb, idsBl, bulletH, blt);
 }
 
@@ -191,6 +199,7 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                                 kBulletTtlSeconds,
                                 kDumbfireDamage,
                                 /*weaponKind*/ 0,
+                                /*bouncesLeft*/ 0,
                                 ownerSlot);
                     ld.dumbfireCooldown = kDumbfireCooldownTicks;
                     if (engine_) {
@@ -229,6 +238,7 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                                     spec.ttlSeconds,
                                     spec.damagePerBullet,
                                     spec.weaponKind,
+                                    spec.bouncesLeft,
                                     ownerSlot);
                     }
                     ld.specialAmmo     = static_cast<std::uint16_t>(ld.specialAmmo - 1);

@@ -37,6 +37,7 @@ add_library(tou2d_core STATIC
     AudioSystem.cpp
     Replay.cpp
     RepairPickupSystem.cpp
+    BulletHomingSystem.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

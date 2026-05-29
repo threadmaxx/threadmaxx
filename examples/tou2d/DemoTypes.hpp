@@ -211,15 +211,28 @@ enum class Attribute : std::uint8_t {
 ///   * 5 = Heavy    (M5.7)
 ///   * 6 = Quad     (M5.7)
 ///   * 7 = Shotgun  (M5.7)
+///   * 8 = Mine     (M5.8 — stationary drop, sits at ship for ttl)
+///   * 9 = Bouncer  (M5.8 — reflects off solid terrain `bouncesLeft` times
+///                  before despawning; ship hit / bedrock still destroy)
+///   *10 = Homer    (M5.8 — BulletHomingSystem steers it toward nearest
+///                  enemy ship each tick by a bounded angular step)
 /// `ownerSlot` mirrors the firing ship's `LocalPlayer::slot` so kill
 /// credit can route to the right player score on impact.
+///
+/// M5.8 — `bouncesLeft` grew the POD from 8 → 12 bytes. WeaponFireSystem
+/// initialises it from `SpecialWeaponSpec::bouncesLeft` so per-kind tuning
+/// stays catalogue-driven; non-Bouncer kinds default it to 0 and the
+/// terrain path's reflect branch only fires when both `weaponKind == 9`
+/// AND `bouncesLeft > 0`.
 struct Bullet {
-    float         ttlSeconds = 0.0f;
-    std::uint8_t  damage     = 0;
-    std::uint8_t  weaponKind = 0;
-    std::uint16_t ownerSlot  = 0;
+    float         ttlSeconds  = 0.0f;
+    std::uint8_t  damage      = 0;
+    std::uint8_t  weaponKind  = 0;
+    std::uint16_t ownerSlot   = 0;
+    std::uint8_t  bouncesLeft = 0;
+    std::uint8_t  _pad[3]     = {};
 };
-static_assert(sizeof(Bullet) == 8, "Bullet must stay 8 bytes");
+static_assert(sizeof(Bullet) == 12, "Bullet must stay 12 bytes");
 
 /// M4.8 — per-ship sprite reference. `atlasIdx` points into the
 /// SpriteCompositor's atlas table. The compositor maintains its own
@@ -306,7 +319,7 @@ inline constexpr std::uint16_t kDumbfireMagazine = 1;  // visual "ready" pip; am
 inline constexpr std::uint16_t kDumbfireReloadTicks = 0;
 
 /// M5.6 — special-weapon catalogue. M5.7 extends with Heavy / Quad /
-/// Shotgun.
+/// Shotgun. M5.8 extends with Mine / Bouncer / Homer.
 ///
 ///   * **Spread**  (kind 0) — 3-bullet ±17° fan; single-burst mag, 1.25 s
 ///                            reload. Unchanged from the M3.3 design.
@@ -325,11 +338,26 @@ inline constexpr std::uint16_t kDumbfireReloadTicks = 0;
 ///                            chaingun). Medium damage, fast cadence.
 ///   * **Shotgun** (kind 6) — 7-bullet wide fan at point-blank range,
 ///                            short TTL. The room-clearer.
+///   * **Mine**    (kind 7) — drop-in-place stationary bullet. `muzzleSpeed`
+///                            = 0 → WeaponFireSystem spawns at ship
+///                            position with zero forward velocity; long
+///                            ttl so the mine persists, normal damage on
+///                            contact via BulletShipCollisionSystem.
+///   * **Bouncer** (kind 8) — reflects off solid terrain `bouncesLeft`
+///                            times before despawning. Each bounce halves
+///                            the surface-normal velocity to keep
+///                            corner-grazing from accelerating; ship hit
+///                            and bedrock still destroy normally.
+///   * **Homer**   (kind 9) — BulletHomingSystem steers it toward the
+///                            nearest enemy ship each tick by a bounded
+///                            angular step (`kHomerTurnPerTickRad`).
+///                            Slow speed so steering matters; low damage
+///                            so it doesn't overshadow the catalogue.
 ///
 /// `weaponKind` is the byte stamped into spawned `Bullet`s so impact
 /// effects (sparks, audio) can route per-weapon. The values 0 (Dumbfire)
 /// and 1 (Spread) are stable from pre-M5.6; M5.6 added 2/3/4; M5.7
-/// extends with 5/6/7.
+/// extends with 5/6/7; M5.8 extends with 8/9/10.
 enum class SpecialKind : std::uint8_t {
     Spread  = 0,
     Rapid   = 1,
@@ -338,8 +366,21 @@ enum class SpecialKind : std::uint8_t {
     Heavy   = 4,
     Quad    = 5,
     Shotgun = 6,
+    Mine    = 7,
+    Bouncer = 8,
+    Homer   = 9,
 };
-inline constexpr std::uint8_t kSpecialKindCount = 7;
+inline constexpr std::uint8_t kSpecialKindCount = 10;
+
+/// M5.8 — Homer angular-step ceiling (radians per tick @ 60 Hz).
+/// Picked so a Homer chasing an evasive Bee at 200 wu/s can still
+/// nominally turn 18°/tick → tracks but is dodgeable.
+inline constexpr float kHomerTurnPerTickRad = 0.32f;
+
+/// M5.8 — per-bounce velocity damping on Bouncer reflections. 0.9
+/// keeps the shot meaningfully fast across its 3 bounces (final speed
+/// ≈ 73% of muzzle) while preventing corner-grazes from accelerating.
+inline constexpr float kBouncerDamping = 0.9f;
 
 struct SpecialWeaponSpec {
     std::uint16_t magazine;          ///< rounds per mag (1 = one-shot per reload)
@@ -348,15 +389,15 @@ struct SpecialWeaponSpec {
     std::uint8_t  bulletsPerShot;    ///< how many bullets `spawnBullet` is called for
     std::uint8_t  weaponKind;        ///< stamped into Bullet.weaponKind
     std::uint8_t  damagePerBullet;   ///< Bullet.damage
-    std::uint8_t  _pad0;
-    float         muzzleSpeed;       ///< world units / s
+    std::uint8_t  bouncesLeft;       ///< M5.8 — Bouncer initial wall-hits budget (0 = non-reflecting)
+    float         muzzleSpeed;       ///< world units / s (0 = drop-in-place, M5.8 Mine)
     float         ttlSeconds;        ///< per-bullet lifetime
     float         spreadStepRad;     ///< angle between adjacent bullets in the fan
 };
 static_assert(sizeof(SpecialWeaponSpec) == 24, "SpecialWeaponSpec must stay 24 bytes");
 
 inline constexpr SpecialWeaponSpec kSpecialWeaponSpecs[kSpecialKindCount] = {
-    // {mag, reload, cool, n, kind, dmg, _, speed,  ttl,  step}
+    // {mag, reload, cool, n, kind, dmg, bounces, speed,  ttl,  step}
     // ── Spread (legacy) ── 3 bullets, ±17°, 1.25 s reload.
     {  1,   75,    22,    3, 1,    5,  0, 520.0f, 0.9f, 0.30f },
     // ── Rapid ── 12-round mag, 8-tick loader, 80-tick reload. Long
@@ -387,6 +428,24 @@ inline constexpr SpecialWeaponSpec kSpecialWeaponSpecs[kSpecialKindCount] = {
     //   stack at close range to one-shot Bee-class hulls. Short ttl
     //   (0.65 s) so the spread doesn't persist past 1 screen.
     {  1,   85,    30,    7, 7,    3,  0, 500.0f, 0.65f, 0.18f },
+    // ── Mine ── M5.8. Drop-in-place stationary projectile.
+    //   `muzzleSpeed = 0` → spawn at ship position with zero forward
+    //   velocity. 4-round mag (carries a few traps), 110-tick reload,
+    //   30-tick loader. 3.5 s ttl lets a mine outlast a typical
+    //   maneuver. Heavy damage (28) — the trade-off for being passive.
+    {  4,   110,   30,    1, 8,    28, 0, 0.0f,   3.5f, 0.0f },
+    // ── Bouncer ── M5.8. Single bullet, 3 wall-hits before despawn.
+    //   2-round mag, 75-tick reload, 22-tick loader, decent damage
+    //   per-bullet (10) so a corridor-bounce kill is meaningful. Long
+    //   ttl (1.8 s) so the bounces have time to land. `spreadStepRad`
+    //   0 — single straight shot at the muzzle.
+    {  2,   75,    22,    1, 9,    10, 3, 480.0f, 1.8f, 0.0f },
+    // ── Homer ── M5.8. Single steering bullet at slow speed (320 wu/s)
+    //   so the angular-step ceiling actually matters; high ttl (2.4 s)
+    //   gives it a wide kill window. Damage 14 — enough to one-shot
+    //   half-HP Bee-class, but the slow speed makes it dodgeable.
+    //   3-round mag, 130-tick reload, 50-tick loader.
+    {  3,   130,   50,    1, 10,   14, 0, 320.0f, 2.4f, 0.0f },
 };
 
 inline const SpecialWeaponSpec& specialSpecAt(std::uint8_t kind) noexcept {

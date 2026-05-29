@@ -861,15 +861,15 @@ Mirrors the ChatGPT notes' suggested milestone order, refined with TOU-import wo
 - Sound: AudioTriggerSystem with miniaudio backend; drop `sfx/` and `music/` into `assets/`. — landed M4.8 (SFX bank wired; music staged but driver follows in M5).
 - **Acceptance**: 1 human + 3 bots deathmatch on jungle with original sounds and original ship sprites runs at fixed 60 Hz for ≥ 5 minutes with no crashes / OOMs. — bounded `300 ticks` smoke run lands the sprite layer + audio bank with no errors; full 5-minute interactive run is for the user's machine to verify.
 
-### Milestone 5 — Polish + replay (stretch)
+### Milestone 5 — Polish + replay (stretch) — **COMPLETE ✅**
 - M5.1 — configurable humans/bots + split-screen cameras (**LANDED ✅**).
 - Shared dynamic camera framing all live ships (now superseded by M5.1's
   per-human split — bot ships do not get cameras, see § M5.1 below).
-- Particle fidelity polish (explosions, debris, smoke).
-- Replay capture (input log + commit-hash stream) + playback.
-- Procedural-level generation pass (Tier 0 GG themes already imported, just need the generator).
-- More weapons toward the original's 50+.
-- **Acceptance**: replay round-trips bit-identical (`commitHash` stream matches frame-for-frame).
+- Particle fidelity polish (explosions, debris, smoke) — M5.3 ✅.
+- Replay capture (input log + commit-hash stream) + playback — M5.4 ✅.
+- Procedural-level generation pass (Tier 0 GG themes already imported, just need the generator) — M5.5 ✅.
+- More weapons toward the original's 50+ — M5.6 + M5.7 + M5.8 ✅ (10 specials + Dumbfire = 11 total).
+- **Acceptance**: replay round-trips bit-identical (`commitHash` stream matches frame-for-frame) — verified across every special-weapon variant + the procedural generator + repair pickups (M5.4 onwards).
 
 #### M5.1 — Configurable humans/bots + split-screen (LANDED ✅)
 
@@ -1478,6 +1478,117 @@ new specials AND with repair tiles active.
 Pre-M5.7 `ctest` had 133 tests; M5.7 adds `tou2d_repair_pickup_test`
 and `tou2d_camera_zoom_test` for a new total of 135 — all green.
 Release build with `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean.
+
+#### M5.8 — Final weapon batch + M5 closeout (LANDED ✅, 2026-05-29)
+
+**M5 stretch goal closed.** Catalogue now ships ten special weapons
++ Dumbfire — eleven total. M5.8 demonstrates three engine
+touchpaths that didn't exist before:
+
+1. **Mine** — `muzzleSpeed = 0` in the spec table is the
+   drop-in-place signal. `WeaponFireSystem::spawnBullet` skips the
+   muzzle-offset push AND velocity inheritance, dropping the bullet
+   at the ship's position with zero forward velocity. Reuses every
+   downstream system (ProjectileSystem ticks the ttl; existing
+   collision systems handle a ship-on-mine hit). Long ttl (3.5 s)
+   gives the trap real persistence.
+2. **Bouncer** — `BulletTerrainSystem` extension. On solid-cell hit
+   for a Bouncer-kind bullet (`weaponKind == 9`, `bouncesLeft > 0`,
+   non-bedrock), the bullet reflects instead of destroying: the
+   "back" cell on each axis (`backX = cx ± 1` based on velocity
+   direction) is probed; if it's air, that axis's velocity flips and
+   the bullet is nudged back into the air cell to avoid a re-collision
+   next tick. Corner hits (both neighbors solid) flip both axes —
+   straight back. Per-bounce `kBouncerDamping = 0.9` keeps the shot
+   meaningfully fast across its 3-bounce budget (≈73% of muzzle speed
+   at the final bounce). `bouncesLeft` decrements per hit; on zero
+   the normal destroy path takes over.
+3. **Homer** — new `BulletHomingSystem` (header-only-style; ~140 LOC).
+   Walks Homer-kind bullets (`weaponKind == 10`), finds the nearest
+   enemy ship (slot != `ownerSlot`, skips DisabledTag), computes the
+   shortest signed angular delta between current velocity heading
+   and target bearing, and rotates by at most `kHomerTurnPerTickRad`
+   (0.32 rad ≈ 18°/tick) so dodging is possible. Speed is preserved
+   across the rotation. Pass 1 of `update()` flat-collects all ship
+   (x, y, slot) into a `kMaxPlayerSlots`-sized array so the bullet
+   loop is `O(bullets * shipCount)` on a hot vector instead of
+   re-walking ship chunks per bullet. Wave-ordering: between
+   `weaponFire` and `projectile` so a freshly-spawned Homer locks on
+   this tick.
+
+**Bullet POD grew 8 → 12 bytes** for the `bouncesLeft` byte (+ 3 pad).
+Game-side POD; not serialized; nothing pins the legacy size. The
+`SpecialWeaponSpec` slot that was `_pad0` is now `bouncesLeft` — same
+24-byte layout, repurposed.
+
+Ten special kinds (M5.8 additions in bold):
+
+| Kind         | weaponKind | mag | reload | cool | bullets | dmg | bounces | speed | ttl  | step    |
+|--------------|------------|-----|--------|------|---------|-----|---------|-------|------|---------|
+| Spread       | 1          | 1   | 75     | 22   | 3       | 5   | 0       | 520   | 0.90 | 0.30 rad|
+| Rapid        | 2          | 12  | 80     | 8    | 1       | 5   | 0       | 600   | 1.00 | 0       |
+| Sniper       | 3          | 3   | 120    | 60   | 1       | 24  | 0       | 1100  | 1.60 | 0       |
+| Quintet      | 4          | 1   | 90     | 30   | 5       | 4   | 0       | 560   | 0.95 | 0.175 rad|
+| Heavy        | 5          | 4   | 90     | 35   | 1       | 20  | 0       | 440   | 2.00 | 0       |
+| Quad         | 6          | 2   | 80     | 25   | 4       | 4   | 0       | 560   | 1.00 | 0.10 rad |
+| Shotgun      | 7          | 1   | 85     | 30   | 7       | 3   | 0       | 500   | 0.65 | 0.18 rad |
+| **Mine**     | **8**      | **4**| **110**| **30**| **1**  | **28**| **0** | **0**     | **3.50** | **0**       |
+| **Bouncer**  | **9**      | **2**| **75** | **22**| **1**  | **10**| **3** | **480**   | **1.80** | **0**       |
+| **Homer**    | **10**     | **3**| **130**| **50**| **1**  | **14**| **0** | **320**   | **2.40** | **0**       |
+
+**CLI additions** (main.cpp):
+
+| Token            | Effect                                                              |
+|------------------|---------------------------------------------------------------------|
+| `--special=mine` | Mine drop-in-place; sits at ship for 3.5 s; 28 damage on contact    |
+| `--special=bouncer` | Reflects 3 times off solid terrain; ship hit / bedrock destroy   |
+| `--special=homer` | Steers toward nearest enemy at ≤18°/tick; slow speed; long ttl    |
+
+**Smoke matrix** (2026-05-29):
+
+| Cmdline                                                          | ticks | verified | mismatches |
+|------------------------------------------------------------------|-------|----------|------------|
+| `--gen --special=mine --record/--play`                            | 150   | 150      | 0          |
+| `--gen --special=bouncer --record/--play`                         | 150   | 150      | 0          |
+| `--gen --special=homer --record/--play`                           | 150   | 150      | 0          |
+| `200 --special=mine` (headless)                                   | 200   | n/a      | n/a        |
+| `200 --special=bouncer` (headless)                                | 200   | n/a      | n/a        |
+| `200 --special=homer` (headless)                                  | 200   | n/a      | n/a        |
+| `--special=plasma` (rejected, updated error message)              | n/a   | n/a      | exit 2     |
+
+Pre-M5.8 `ctest` had 135 tests; M5.8 adds `tou2d_weapon_mechanics_test`
+for a new total of 136 — all green. Release build with
+`-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean.
+
+**Files touched:**
+
+- `DemoTypes.hpp` — three catalogue entries, `Bullet::bouncesLeft`,
+  `SpecialWeaponSpec::bouncesLeft` (renamed from `_pad0`),
+  `kHomerTurnPerTickRad`, `kBouncerDamping`.
+- `WeaponFireSystem.cpp` — `spawnBullet` accepts `bouncesLeft`; the
+  `speed == 0` branch suppresses muzzle offset + velocity inheritance.
+- `BulletTerrainSystem.cpp` — pre-destroy reflect branch for Bouncer-
+  kind bullets; back-cell axis probe; per-bounce damping; bullet
+  nudged back into the air cell.
+- `BulletHomingSystem.{hpp,cpp}` — new system.
+- `TouGame.cpp` — registers BulletHomingSystem between weaponFire
+  and projectile.
+- `CMakeLists.txt` — adds `BulletHomingSystem.cpp` to tou2d_core.
+- `main.cpp` — three new `--special=` tokens; switch + log line
+  coverage.
+- `tests/tou2d_specials_test.cpp` — extends enum/catalogue assertions.
+- `tests/tou2d_weapon_mechanics_test.cpp` — new test pinning the
+  Bouncer reflect math and Homer angular-step + speed-preservation
+  contract.
+
+**M5 ACCEPTANCE STATUS: COMPLETE.** Replay round-trips bit-identical
+across every M5.4–M5.8 feature combination; the catalogue stretch
+goal is closed. Future weapon additions (rockets, mines variants,
+homers, etc.) lay against the same `kSpecialWeaponSpecs`
+table-driven path established here. Out-of-band weapon mechanics
+(self-effects like Teleporter, terrain-spawn like Brickwall) remain
+deferred to a post-v1 milestone — they require a non-trivial new
+fire path beyond `spawnBullet`.
 
 ### Out of scope for v1
 - Split-screen (deferred per § 1).

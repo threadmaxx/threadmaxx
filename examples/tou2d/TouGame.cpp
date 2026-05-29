@@ -2,6 +2,7 @@
 
 #include "AudioSystem.hpp"
 #include "BotControlSystem.hpp"
+#include "BulletHomingSystem.hpp"
 #include "BulletShipCollisionSystem.hpp"
 #include "BulletTerrainSystem.hpp"
 #include "ParticleSystem.hpp"
@@ -246,6 +247,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto* repairPickupPtr = repairPickup.get();
     auto weaponFire    = std::make_unique<WeaponFireSystem>(ids_, &engine);
     weaponFire->setRoundEndedFlag(roundEnded_);
+    auto homing        = std::make_unique<BulletHomingSystem>(ids_);
     auto projectile    = std::make_unique<ProjectileSystem>(ids_);
     auto* projectilePtr = projectile.get();
     auto bulletShip        = std::make_unique<BulletShipCollisionSystem>(ids_, &engine);
@@ -288,6 +290,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(collision));
     engine.registerSystem(std::move(repairPickup)); // M5.7 — consume Repair tiles BEFORE weaponFire so a cycled weapon fires this same tick
     engine.registerSystem(std::move(weaponFire));
+    engine.registerSystem(std::move(homing));       // M5.8 — steer Homer bullets BEFORE projectile/bulletShip so a freshly-spawned Homer locks on this tick
     engine.registerSystem(std::move(projectile));
     engine.registerSystem(std::move(bulletShip));   // ships first → bullet despawn before terrain check
     engine.registerSystem(std::move(bulletTerrain));
