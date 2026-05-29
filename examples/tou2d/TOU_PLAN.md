@@ -1353,6 +1353,132 @@ pinning the enum order + spec-table non-degeneracy for a new total
 of 133 — all green. Release build with
 `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean.
 
+#### M5.7 — Repair pickups + extra weapons + camera zoom (LANDED ✅, 2026-05-29)
+
+Three bundled additions, one batch:
+
+1. **Three more special weapons** extend the M5.6 catalogue to seven
+   total: Heavy, Quad, Shotgun. Hooking a new kind is still one row
+   in `kSpecialWeaponSpecs`.
+2. **Repair pickup tiles** — a non-blocking `Attribute::Repair`
+   variant of the terrain. Ship-vs-tile overlap consumes the tile,
+   heals the ship by `kRepairHealAmount` (40), and cycles the
+   ship's `WeaponLoadout::specialKind` to the next entry in the
+   catalogue (`+1 mod kSpecialKindCount`). Matches the original
+   TOU's repair-pad mechanic.
+3. **Per-viewport zoom normalization** — when there's more than one
+   human, each split-screen viewport scales `orthoHalfH` by the
+   viewport's height fraction so a ship spans the same on-screen
+   pixel count in single-player full-screen, 2-player horizontal
+   split, AND 3/4-player 2×2 grid. Without this, 4-player ships
+   were rendered at HALF size relative to the single-player baseline.
+
+Seven special kinds (M5.7 additions in bold):
+
+| Kind     | weaponKind | mag | reload | cooldown | bullets | dmg/bullet | speed | ttl  | step    |
+|----------|------------|-----|--------|----------|---------|------------|-------|------|---------|
+| Spread   | 1          | 1   | 75     | 22       | 3       | 5          | 520   | 0.90 | 0.30 rad|
+| Rapid    | 2          | 12  | 80     | 8        | 1       | 5          | 600   | 1.00 | 0       |
+| Sniper   | 3          | 3   | 120    | 60       | 1       | 24         | 1100  | 1.60 | 0       |
+| Quintet  | 4          | 1   | 90     | 30       | 5       | 4          | 560   | 0.95 | 0.175 rad|
+| **Heavy**    | **5**          | **4**   | **90**     | **35**       | **1**       | **20**         | **440**   | **2.00** | **0**       |
+| **Quad**     | **6**          | **2**   | **80**     | **25**       | **4**       | **4**          | **560**   | **1.00** | **0.10 rad** |
+| **Shotgun**  | **7**          | **1**   | **85**     | **30**       | **7**       | **3**          | **500**   | **0.65** | **0.18 rad** |
+
+**Repair pickup contract.** `RepairPickupSystem` registers between
+`TerrainCollisionSystem` and `WeaponFireSystem` so the freshly-
+cycled weapon fires the same tick the ship grabs the tile. Reads
+Transform + UserData; writes EntityStructural (for the
+`Ship::currentHp` + `WeaponLoadout::specialKind` writes). AABB
+overlap rule matches the existing collision half-extent (11 wu)
+so the visual cue lines up with the consume moment. On consume:
+
+```text
+hp_after  = min(maxHp, hp_before + 40)
+kind_after = (kind_before + 1) % kSpecialKindCount
+ammo_after = specialSpecAt(kind_after).magazine    (+ zero both reload counters)
+grid.clear(cx, cy)  // Repair → Air
+emit AudioPlay{kSoundTileBreak}
+emit particle dust burst
+```
+
+The procedural generator sprinkles `cfg.repairTileCount` random
+Air cells per level (default 8 for fresh CLI runs; 0 for any
+config left at struct-default — preserves pre-M5.7 test +
+back-compat behaviour). The synthetic-arena fallback drops 8
+fixed-position tiles at ±8 cells from the origin. Imported `.lev`
+levels keep the pre-M5.7 posture (no repair tiles); migrating the
+legacy attribute byte to Repair is out of scope.
+
+**Replay v2 header** gains a `repairTileCount` byte at offset 26
+(re-using the first byte of the old `_pad2`). No version bump —
+pre-M5.7 v2 recordings stored a zero byte there, which now parses
+as `repairTileCount=0`. For procedural levels that means "no
+repair tiles," which exactly matches the pre-M5.7 generator's
+output → identical commit hash stream → clean round-trip without
+the recording author having opted in.
+
+**Camera zoom normalization.** `CameraSystem::buildRenderFrame`
+reads `effectiveOrthoHalfH() = orthoHalfH_ * viewportFor(0).height`.
+`HudSystem::buildRenderFrame` reads the same so HUD anchors land
+at each viewport's true TL corner. The world-units-per-pixel ratio
+is now identical across 1 / 2 / 3-4 human layouts; ship sprites
+render at constant on-screen pixel count.
+
+**CLI additions** (main.cpp):
+
+| Flag                        | Effect                                                                  |
+|-----------------------------|-------------------------------------------------------------------------|
+| `--special=heavy`           | Heavy 4-round mag, 90-tick reload, single 20-damage shell               |
+| `--special=quad`            | 4-bullet narrow even fan, 80-tick reload                                |
+| `--special=shotgun`         | 7-bullet wide fan at point-blank range, 85-tick reload                  |
+| `--repair-tiles=N`          | 0..255 repair pickup tiles in the procedural level (default 8 when `--gen`)|
+
+Pre-M5.6 `--special` tokens (`spread` / `rapid` / `sniper` /
+`quintet`) all still work. `--repair-tiles=300` rejected with
+exit 2 (out of range).
+
+**Other systems touched:**
+
+- `DemoTypes.hpp` — `Attribute::Repair = 3`,
+  `TerrainGrid::setRepair`, `kRepairHealAmount`, three more
+  catalogue entries.
+- `ProceduralLevel.hpp` — `repairTileCount` (replaces `_pad`),
+  determinism-preserving sprinkle pass.
+- `RepairPickupSystem.{hpp,cpp}` — new system; ~140 LOC.
+- `TouGame.{hpp,cpp}` — registers RepairPickupSystem; fans the
+  tile-destroy callback to it; synthetic-arena fixed sprinkle.
+- `CameraSystem.{hpp,cpp}` — `effectiveOrthoHalfH()`; projection +
+  ortho size scale by viewport height.
+- `HudSystem.cpp` — uses the effective half so HUD corners track
+  per-layout.
+- `Replay.{hpp,cpp}` — header `repairTileCount` byte; recorder
+  writes from genConfig; player exposes via `genConfig()`.
+- `main.cpp` — `--repair-tiles=N`, three new `--special` tokens,
+  switch-statement coverage for the new SpecialKind values.
+
+**Determinism contract.** Same
+`(seed, gen config, specialKind, repairTileCount)` → byte-identical
+commit hash stream across record / replay. Verified across the
+new specials AND with repair tiles active.
+
+**Smoke matrix** (2026-05-29):
+
+| Cmdline                                                          | ticks | verified | mismatches |
+|------------------------------------------------------------------|-------|----------|------------|
+| `--gen --gen-seed=1234 --special=heavy --record/--play`           | 250   | 250      | 0          |
+| `--gen --gen-seed=5678 --special=quad --record/--play`            | 200   | 200      | 0          |
+| `--gen --gen-seed=5678 --special=shotgun --record/--play`         | 200   | 200      | 0          |
+| `--gen --repair-tiles=0`                                          | 200   | n/a      | n/a        |
+| `--gen --repair-tiles=32`                                         | 200   | n/a      | n/a        |
+| `--humans=4 --bots=0 --gen --special=shotgun` (4-player camera)   | 200   | n/a      | n/a        |
+| `--special=plasma` (unknown token)                                | n/a   | n/a      | exit 2     |
+| `--repair-tiles=300` (out of range)                               | n/a   | n/a      | exit 2     |
+
+Pre-M5.7 `ctest` had 133 tests; M5.7 adds `tou2d_repair_pickup_test`
+and `tou2d_camera_zoom_test` for a new total of 135 — all green.
+Release build with `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON` clean.
+
 ### Out of scope for v1
 - Split-screen (deferred per § 1).
 - Level editor (the source-asset workflow IS the editor).

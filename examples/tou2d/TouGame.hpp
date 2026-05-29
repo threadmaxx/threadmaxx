@@ -22,6 +22,7 @@ namespace tou2d {
 class BulletTerrainSystem;
 class CameraSystem;
 class InputSystem;
+class RepairPickupSystem;
 class TerrainCollisionSystem;
 
 /// IGame implementation for the tou2d demo.
@@ -152,6 +153,7 @@ private:
     CameraSystem*            camera_         = nullptr;   // borrowed
     BulletTerrainSystem*     bulletTerrain_  = nullptr;   // borrowed
     TerrainCollisionSystem*  collision_      = nullptr;   // borrowed
+    RepairPickupSystem*      repairPickup_   = nullptr;   // borrowed
     InputSystem*             input_          = nullptr;   // borrowed
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for

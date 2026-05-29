@@ -1,10 +1,10 @@
-// tou2d_specials_test — pins the M5.6 special-weapon catalogue.
+// tou2d_specials_test — pins the M5.6 + M5.7 special-weapon catalogue.
 //
 // Contract:
-//   * `SpecialKind` enum values 0..3 cover Spread / Rapid / Sniper /
-//     Quintet, in stable order (must not be reordered — round-trips
-//     through `WeaponLoadout.specialKind` and would invalidate any
-//     persisted ship loadout).
+//   * `SpecialKind` enum values 0..6 cover Spread / Rapid / Sniper /
+//     Quintet / Heavy / Quad / Shotgun, in stable order (must not be
+//     reordered — round-trips through `WeaponLoadout.specialKind` and
+//     would invalidate any persisted ship loadout).
 //   * `kSpecialWeaponSpecs` has exactly `kSpecialKindCount` entries
 //     and each is non-degenerate (positive magazine, positive speed,
 //     positive ttl, bulletsPerShot >= 1).
@@ -33,7 +33,10 @@ int main() {
     CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Rapid),   std::uint8_t{1});
     CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Sniper),  std::uint8_t{2});
     CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Quintet), std::uint8_t{3});
-    CHECK_EQ(kSpecialKindCount, std::uint8_t{4});
+    CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Heavy),   std::uint8_t{4});
+    CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Quad),    std::uint8_t{5});
+    CHECK_EQ(static_cast<std::uint8_t>(SpecialKind::Shotgun), std::uint8_t{6});
+    CHECK_EQ(kSpecialKindCount, std::uint8_t{7});
 
     // ---- Each spec is non-degenerate -----------------------------------------
     std::set<std::uint8_t> seenWeaponKinds;
@@ -53,11 +56,15 @@ int main() {
     CHECK_EQ(seenWeaponKinds.size(), static_cast<std::size_t>(kSpecialKindCount));
 
     // ---- weaponKind values stable from DemoTypes.hpp comment table ----------
-    // Spread = 1 (pre-M5.6 legacy), Rapid = 2, Sniper = 3, Quintet = 4.
+    // Spread = 1 (pre-M5.6 legacy), Rapid = 2, Sniper = 3, Quintet = 4,
+    // Heavy = 5, Quad = 6, Shotgun = 7 (M5.7).
     CHECK_EQ(kSpecialWeaponSpecs[0].weaponKind, std::uint8_t{1});
     CHECK_EQ(kSpecialWeaponSpecs[1].weaponKind, std::uint8_t{2});
     CHECK_EQ(kSpecialWeaponSpecs[2].weaponKind, std::uint8_t{3});
     CHECK_EQ(kSpecialWeaponSpecs[3].weaponKind, std::uint8_t{4});
+    CHECK_EQ(kSpecialWeaponSpecs[4].weaponKind, std::uint8_t{5});
+    CHECK_EQ(kSpecialWeaponSpecs[5].weaponKind, std::uint8_t{6});
+    CHECK_EQ(kSpecialWeaponSpecs[6].weaponKind, std::uint8_t{7});
 
     // ---- Shape checks: per-kind fan width / cadence reads as designed -------
     // Spread: 3 bullets in a fan.
@@ -74,6 +81,22 @@ int main() {
     CHECK_EQ(kSpecialWeaponSpecs[3].bulletsPerShot, std::uint8_t{5});
     CHECK(kSpecialWeaponSpecs[3].spreadStepRad > 0.0f);
     CHECK(kSpecialWeaponSpecs[3].spreadStepRad < kSpecialWeaponSpecs[0].spreadStepRad);
+    // Heavy: single slow heavy bullet — damage > Sniper-class but
+    // muzzle speed below Spread's. Long ttl so the shell carries.
+    CHECK_EQ(kSpecialWeaponSpecs[4].bulletsPerShot, std::uint8_t{1});
+    CHECK(kSpecialWeaponSpecs[4].damagePerBullet >= 18);
+    CHECK(kSpecialWeaponSpecs[4].muzzleSpeed     <  kSpecialWeaponSpecs[0].muzzleSpeed);
+    CHECK(kSpecialWeaponSpecs[4].ttlSeconds      >= 1.5f);
+    CHECK_EQ(kSpecialWeaponSpecs[4].spreadStepRad, 0.0f);
+    // Quad: even fan, 4 bullets, narrower than Spread.
+    CHECK_EQ(kSpecialWeaponSpecs[5].bulletsPerShot, std::uint8_t{4});
+    CHECK(kSpecialWeaponSpecs[5].spreadStepRad > 0.0f);
+    CHECK(kSpecialWeaponSpecs[5].spreadStepRad < kSpecialWeaponSpecs[0].spreadStepRad);
+    // Shotgun: 7-bullet wide fan, low per-bullet damage, short ttl.
+    CHECK_EQ(kSpecialWeaponSpecs[6].bulletsPerShot, std::uint8_t{7});
+    CHECK(kSpecialWeaponSpecs[6].spreadStepRad > 0.0f);
+    CHECK(kSpecialWeaponSpecs[6].ttlSeconds    <  kSpecialWeaponSpecs[0].ttlSeconds);
+    CHECK(kSpecialWeaponSpecs[6].damagePerBullet <  kSpecialWeaponSpecs[0].damagePerBullet);
 
     // ---- Out-of-range clamp goes to Spread without UB ------------------------
     const auto& fallback = specialSpecAt(static_cast<std::uint8_t>(42));

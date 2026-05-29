@@ -17,7 +17,8 @@
 //   specialKind        uint8  (SpecialKind)    (1  byte) ── M5.6
 //   engineHashBasis    uint64 (FNV-1a basis)   (8  bytes — sanity check)
 //   levelDirLen        uint16                  (2  bytes)
-//   _pad2              uint16                  (2  bytes)
+//   repairTileCount    uint8  (0..255)         (1  byte) ── M5.7
+//   _pad3              uint8                   (1  byte)
 //   genSeed            uint32                  (4  bytes) ── M5.5
 //   ──────────────────                         (32 bytes total)
 //   levelDir           char[levelDirLen]       (variable, can be 0)
@@ -73,15 +74,16 @@ struct ReplayHeader {
     std::uint8_t  numHumans;
     std::uint8_t  numBots;
     std::uint8_t  matchMode;
-    std::uint8_t  useGen;       ///< M5.5 — 0=load levelDir, 1=use genConfig
-    std::uint8_t  genLevel;     ///< M5.5 — ProceduralLevelConfig::ggLevel
-    std::uint8_t  genDensity;   ///< M5.5 — ProceduralLevelConfig::stuffDensity
-    std::uint8_t  genPerim;     ///< M5.5 — ProceduralLevelConfig::perimeterBedrock
-    std::uint8_t  specialKind;  ///< M5.6 — SpecialKind enum value (pre-M5.6 recs had 0 here)
+    std::uint8_t  useGen;           ///< M5.5 — 0=load levelDir, 1=use genConfig
+    std::uint8_t  genLevel;         ///< M5.5 — ProceduralLevelConfig::ggLevel
+    std::uint8_t  genDensity;       ///< M5.5 — ProceduralLevelConfig::stuffDensity
+    std::uint8_t  genPerim;         ///< M5.5 — ProceduralLevelConfig::perimeterBedrock
+    std::uint8_t  specialKind;      ///< M5.6 — SpecialKind enum value (pre-M5.6 recs had 0 here)
     std::uint64_t engineHashBasis;
     std::uint16_t levelDirLen;
-    std::uint16_t _pad2;
-    std::uint32_t genSeed;      ///< M5.5 — ProceduralLevelConfig::seed
+    std::uint8_t  repairTileCount;  ///< M5.7 — ProceduralLevelConfig::repairTileCount (pre-M5.7 recs had 0 here = no tiles)
+    std::uint8_t  _pad3;
+    std::uint32_t genSeed;          ///< M5.5 — ProceduralLevelConfig::seed
 };
 static_assert(sizeof(ReplayHeader) == 32, "ReplayHeader must be 32 bytes");
 

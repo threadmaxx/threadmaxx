@@ -60,7 +60,18 @@ public:
                    ? followTargets_[humanSlot]
                    : threadmaxx::Vec3{0.0f, 0.0f, 0.0f};
     }
+    /// Raw camera-design half-height. M5.7 — kept stable across layouts;
+    /// the per-viewport effective value scales by viewport.h so a ship
+    /// renders at the same pixel size in every split-screen mode.
     float orthoHalfH() const noexcept { return orthoHalfH_; }
+
+    /// M5.7 — effective ortho half-height for the current layout.
+    /// Equals `orthoHalfH_ * viewportFor(0).height`. All humans in any
+    /// given layout share the same viewport height fraction so this is
+    /// a single-value accessor rather than per-slot. Used by both
+    /// `buildRenderFrame` (for the projection matrix) and `HudSystem`
+    /// (for HUD anchor placement) so the two stay in sync.
+    float effectiveOrthoHalfH() const noexcept;
 
     /// Aspect ratio of the per-camera viewport (NOT the framebuffer).
     /// Computed from the layout for `numHumans_`: 1 → full; 2 → half-

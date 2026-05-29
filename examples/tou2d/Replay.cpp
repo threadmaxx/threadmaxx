@@ -36,8 +36,9 @@ bool ReplayRecorder::open(const std::filesystem::path& path,
     hdr.useGen     = gen ? 1u : 0u;
     hdr.genLevel   = gen ? genConfig->ggLevel          : 0u;
     hdr.genDensity = gen ? genConfig->stuffDensity     : 0u;
-    hdr.genPerim   = gen ? genConfig->perimeterBedrock : 0u;
-    hdr.genSeed    = gen ? genConfig->seed             : 0u;
+    hdr.genPerim       = gen ? genConfig->perimeterBedrock : 0u;
+    hdr.genSeed        = gen ? genConfig->seed             : 0u;
+    hdr.repairTileCount= gen ? genConfig->repairTileCount  : 0u;  // M5.7
     hdr.levelDirLen = gen ? std::uint16_t{0}
                           : static_cast<std::uint16_t>(
                                 std::min<std::size_t>(levelDir.size(), 0xFFFFu));
@@ -119,6 +120,7 @@ bool ReplayPlayer::open(const std::filesystem::path& path) {
         g.ggLevel          = hdr.genLevel;
         g.stuffDensity     = hdr.genDensity;
         g.perimeterBedrock = hdr.genPerim;
+        g.repairTileCount  = hdr.repairTileCount;  // M5.7
         genConfig_         = g;
     } else {
         genConfig_.reset();

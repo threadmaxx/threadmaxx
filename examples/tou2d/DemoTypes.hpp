@@ -187,10 +187,19 @@ inline constexpr std::uint16_t kRestartHoldoffTicks = 90;
 
 /// Tile-grid terrain classification. Mirrors the layout of the imported
 /// `.lev` attribute byte.
+///
+/// M5.7 — `Repair` is a non-blocking pickup tile. A ship that overlaps
+/// one is healed and has its `WeaponLoadout::specialKind` advanced
+/// (wrap-around at `kSpecialKindCount`); the tile is consumed. The
+/// procedural generator + synthetic arena sprinkle a few of these;
+/// imported `.lev` levels currently do not (no migration path from
+/// the legacy attribute byte). `RepairPickupSystem` owns the
+/// consume-on-overlap logic.
 enum class Attribute : std::uint8_t {
     Air    = 0,
     Solid  = 1,
     Damage = 2,
+    Repair = 3,
 };
 
 /// In-flight projectile. `weaponKind` values:
@@ -199,6 +208,9 @@ enum class Attribute : std::uint8_t {
 ///   * 2 = Rapid    (M5.6)
 ///   * 3 = Sniper   (M5.6)
 ///   * 4 = Quintet  (M5.6)
+///   * 5 = Heavy    (M5.7)
+///   * 6 = Quad     (M5.7)
+///   * 7 = Shotgun  (M5.7)
 /// `ownerSlot` mirrors the firing ship's `LocalPlayer::slot` so kill
 /// credit can route to the right player score on impact.
 struct Bullet {
@@ -293,9 +305,8 @@ inline constexpr std::uint16_t kDumbfireMagazine = 1;  // visual "ready" pip; am
 /// Dumbfire never reloads — basic is infinite-fire on a fixed cooldown.
 inline constexpr std::uint16_t kDumbfireReloadTicks = 0;
 
-/// M5.6 — special-weapon catalogue.
-///
-/// Adds three new weapons beyond the original Spread:
+/// M5.6 — special-weapon catalogue. M5.7 extends with Heavy / Quad /
+/// Shotgun.
 ///
 ///   * **Spread**  (kind 0) — 3-bullet ±17° fan; single-burst mag, 1.25 s
 ///                            reload. Unchanged from the M3.3 design.
@@ -306,18 +317,29 @@ inline constexpr std::uint16_t kDumbfireReloadTicks = 0;
 ///                            damage, slow cadence, small magazine.
 ///   * **Quintet** (kind 3) — 5-bullet ±10°/±20° narrow fan; tighter
 ///                            than Spread but more lanes.
+///   * **Heavy**   (kind 4) — single slow heavy shell. Hard-hitter
+///                            ideal for stationary targets; brutal
+///                            against thin terrain. Small mag, long
+///                            cadence.
+///   * **Quad**    (kind 5) — 4-bullet even fan (parallel-feeling
+///                            chaingun). Medium damage, fast cadence.
+///   * **Shotgun** (kind 6) — 7-bullet wide fan at point-blank range,
+///                            short TTL. The room-clearer.
 ///
 /// `weaponKind` is the byte stamped into spawned `Bullet`s so impact
 /// effects (sparks, audio) can route per-weapon. The values 0 (Dumbfire)
-/// and 1 (Spread) are stable from pre-M5.6 — the new specials extend
-/// the namespace at 2/3/4.
+/// and 1 (Spread) are stable from pre-M5.6; M5.6 added 2/3/4; M5.7
+/// extends with 5/6/7.
 enum class SpecialKind : std::uint8_t {
     Spread  = 0,
     Rapid   = 1,
     Sniper  = 2,
     Quintet = 3,
+    Heavy   = 4,
+    Quad    = 5,
+    Shotgun = 6,
 };
-inline constexpr std::uint8_t kSpecialKindCount = 4;
+inline constexpr std::uint8_t kSpecialKindCount = 7;
 
 struct SpecialWeaponSpec {
     std::uint16_t magazine;          ///< rounds per mag (1 = one-shot per reload)
@@ -350,6 +372,21 @@ inline constexpr SpecialWeaponSpec kSpecialWeaponSpecs[kSpecialKindCount] = {
     //   90-tick reload. Tighter than Spread, harder to track but
     //   covers more lanes when it lands.
     {  1,   90,    30,    5, 4,    4,  0, 560.0f, 0.95f, 0.175f },
+    // ── Heavy ── M5.7. 4-round mag, 35-tick loader, 90-tick reload.
+    //   Single slow heavy shell at 440 wu/s with 20 damage — punches
+    //   through Basic-ship HP in 8 hits, kills a Bee in 3. Long ttl
+    //   so the shell traverses the level without despawning early.
+    {  4,   90,    35,    1, 5,    20, 0, 440.0f, 2.0f, 0.0f  },
+    // ── Quad ── M5.7. 2-round mag, 80-tick reload, 25-tick loader,
+    //   4 bullets in an even fan at ±~5° / ±~15° (step 0.10 rad).
+    //   Mid-damage chaingun-feel for medium range.
+    {  2,   80,    25,    4, 6,    4,  0, 560.0f, 1.0f, 0.10f },
+    // ── Shotgun ── M5.7. 1-round mag, 85-tick reload, 30-tick
+    //   loader, 7 bullets in a wide fan at ±~5° / ±~15° / ±~25°
+    //   (step 0.18 rad). Per-bullet damage low (3) but the bullets
+    //   stack at close range to one-shot Bee-class hulls. Short ttl
+    //   (0.65 s) so the spread doesn't persist past 1 screen.
+    {  1,   85,    30,    7, 7,    3,  0, 500.0f, 0.65f, 0.18f },
 };
 
 inline const SpecialWeaponSpec& specialSpecAt(std::uint8_t kind) noexcept {
@@ -362,6 +399,20 @@ inline const SpecialWeaponSpec& specialSpecAt(std::uint8_t kind) noexcept {
 /// rewriting.
 inline constexpr std::uint16_t kSpreadMagazine    = 1;
 inline constexpr std::uint16_t kSpreadReloadTicks = 75;
+
+/// M5.7 — repair-tile pickup tunables.
+///
+/// * `kRepairHealAmount` — HP restored when a ship overlaps a Repair
+///   cell. Clamped at `Ship::maxHp` (so a full-HP ship still grabs
+///   the tile for the weapon-switch effect — same as the original).
+/// * `kRepairTileColor` — visual marker emitted by the background
+///   painter when a Repair tile is FIRST written into the grid (the
+///   painter draws a slot-colored dot at the world-center of the
+///   cell). Procedural-gen + synthetic-arena seeders fire the same
+///   destroy callback the bullet-break path uses; the painter
+///   distinguishes by attribute.
+inline constexpr float        kRepairHealAmount = 40.0f;
+inline constexpr std::uint32_t kRepairTileColor = 0xFF40FFA0u;  // teal
 
 /// Number of source attribute / visual-JPG pixels that map to one
 /// runtime tile along each axis. After M3.3's flat-grid terrain the
@@ -488,6 +539,17 @@ struct TerrainGrid {
         const std::size_t i = indexOf(worldCellX, worldCellY);
         hp[i]   = hpVal;
         attr[i] = a;
+    }
+
+    /// M5.7 — flip a cell to a non-blocking Repair pickup. `hp` stays
+    /// nonzero so `RepairPickupSystem` can sentinel a still-live tile
+    /// vs. one that has already been claimed mid-tick.
+    void setRepair(std::int32_t worldCellX, std::int32_t worldCellY,
+                   std::uint8_t hpVal = 1) noexcept {
+        if (!inBounds(worldCellX, worldCellY)) return;
+        const std::size_t i = indexOf(worldCellX, worldCellY);
+        hp[i]   = hpVal;
+        attr[i] = Attribute::Repair;
     }
 
     void clear(std::int32_t worldCellX, std::int32_t worldCellY) noexcept {

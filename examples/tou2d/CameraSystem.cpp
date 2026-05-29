@@ -79,6 +79,18 @@ float CameraSystem::viewportAspect() const noexcept {
     return subPixelW / (subPixelH > 0.0f ? subPixelH : 1.0f);
 }
 
+float CameraSystem::effectiveOrthoHalfH() const noexcept {
+    // M5.7 — scale by viewport.h so the world-units / pixel ratio is
+    // identical across layouts. 1 / 2 humans → full-height viewports →
+    // scale = 1.0; 3 / 4 humans → half-height viewports → scale = 0.5.
+    // Slots outside [0, numHumans_) return a zero-area viewport — fall
+    // back to the raw half so a stray query (e.g. host helper) gets a
+    // sensible value rather than 0.
+    const threadmaxx::Viewport vp = viewportFor(0);
+    const float scale = vp.height > 0.0f ? vp.height : 1.0f;
+    return orthoHalfH_ * scale;
+}
+
 void CameraSystem::update(threadmaxx::SystemContext& ctx) {
     const auto idsLp = ids_.localPlayer;
     if (!idsLp.valid()) return;
@@ -109,7 +121,10 @@ void CameraSystem::update(threadmaxx::SystemContext& ctx) {
 
 void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     const float aspect = viewportAspect();
-    const float halfH  = orthoHalfH_;
+    // M5.7 — use the layout-effective half-height (scaled by viewport.h)
+    // so a ship spans the same pixel count in single-player full-screen
+    // AND in any split-screen mode.
+    const float halfH  = effectiveOrthoHalfH();
     const float halfW  = halfH * aspect;
 
     for (std::uint8_t slot = 0; slot < numHumans_; ++slot) {
@@ -124,7 +139,7 @@ void CameraSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         cam.nearZ     = 0.1f;
         cam.farZ      = 200.0f;
         cam.aspect    = aspect;
-        cam.orthoSize = orthoHalfH_;
+        cam.orthoSize = halfH;
         cam.viewport  = viewportFor(slot);
         cam.view       = buildView2D(center.x, center.y, cam.position.z);
         cam.projection = buildOrthoProj(halfW, halfH, cam.nearZ, cam.farZ);

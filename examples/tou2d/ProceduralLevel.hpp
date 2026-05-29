@@ -47,12 +47,17 @@ inline constexpr std::uint8_t kProcBlobHp = 24;
 
 /// Configuration for one generator invocation. Defaults produce a
 /// playable medium-size level on seed 0.
+///
+/// M5.7 — the former `_pad` byte is now `repairTileCount`. Defaults to
+/// 0 so existing tests (and the pre-M5.7 v2 replay path, which stored
+/// a zero byte at the equivalent header offset) reproduce identically.
+/// `main.cpp` bumps the default to 8 for fresh CLI runs.
 struct ProceduralLevelConfig {
     std::uint32_t seed             = 0;   ///< RANDOMSEED equivalent
     std::uint8_t  ggLevel          = 2;   ///< 0..4 → kGgLevelCells
     std::uint8_t  stuffDensity     = 50;  ///< STUFFD equivalent, 0..100
     std::uint8_t  perimeterBedrock = 1;   ///< 1 ring of 0xFF if non-zero
-    std::uint8_t  _pad             = 0;   ///< keep config 8-byte
+    std::uint8_t  repairTileCount  = 0;   ///< M5.7 — sprinkled Air→Repair cells
 };
 static_assert(sizeof(ProceduralLevelConfig) == 8,
               "ProceduralLevelConfig must stay 8 bytes — replay header re-uses the same layout");
@@ -201,6 +206,38 @@ inline ProceduralLevelInfo generateProceduralLevel(
             if (a != Attribute::Air) ++newCount;
         }
         info.solidCount = newCount;
+    }
+
+    // M5.7 — sprinkle Repair pickup tiles into Air cells. Reuses the
+    // same `rng` so the same (seed, ggLevel, stuffDensity, perim,
+    // repairTileCount) tuple always produces the same final grid.
+    // Up to `kMaxRepairAttempts` rejection samples per requested tile
+    // (most cells in a 5%-density level are Air, so the rejection
+    // budget is rarely close to exhausted).
+    if (cfg.repairTileCount > 0) {
+        constexpr std::int32_t kMaxRepairAttempts = 32;
+        const std::int32_t margin = 2;
+        const std::int32_t rxMin = -halfX + margin;
+        const std::int32_t rxMax = cells - halfX - 1 - margin;
+        const std::int32_t ryMin = -(cells - halfY - 1) + margin;
+        const std::int32_t ryMax = halfY - margin;
+        if (rxMax > rxMin && ryMax > ryMin) {
+            std::uniform_int_distribution<std::int32_t> rdX(rxMin, rxMax);
+            std::uniform_int_distribution<std::int32_t> rdY(ryMin, ryMax);
+            std::int32_t placed = 0;
+            for (std::int32_t i = 0;
+                 i < cfg.repairTileCount && placed < cfg.repairTileCount; ++i) {
+                for (std::int32_t attempt = 0; attempt < kMaxRepairAttempts; ++attempt) {
+                    const std::int32_t cx = rdX(rng);
+                    const std::int32_t cy = rdY(rng);
+                    if (grid.attrAt(cx, cy) != Attribute::Air) continue;
+                    grid.setRepair(cx, cy);
+                    ++placed;
+                    ++info.solidCount;  // Repair counts as non-Air
+                    break;
+                }
+            }
+        }
     }
 
     info.loaded = true;

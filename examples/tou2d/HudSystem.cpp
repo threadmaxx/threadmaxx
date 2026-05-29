@@ -107,7 +107,11 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
 void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     if (!camera_) return;
 
-    const float halfH  = camera_->orthoHalfH();
+    // M5.7 — read the layout-effective half-height. With 3-4 humans
+    // this is half the design value, so the HUD's TL-corner anchor
+    // (which adds ±halfH / ±halfW offsets) lands at the smaller
+    // viewport's actual corner rather than off-screen.
+    const float halfH  = camera_->effectiveOrthoHalfH();
     const float halfW  = halfH * camera_->viewportAspect();
     const std::uint8_t numHumans = camera_->numHumans();
 

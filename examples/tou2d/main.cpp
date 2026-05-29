@@ -144,6 +144,11 @@ int main(int argc, char** argv) {
     // Selects an entry in `kSpecialWeaponSpecs`. `--special=<name>`
     // chooses by token; default `spread` keeps pre-M5.6 behaviour.
     std::uint8_t       specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Spread);
+    // M5.7 — repair-tile sprinkle count for the procedural generator.
+    // 0 = pre-M5.7 behaviour (no Repair cells). The default of 8 is
+    // applied below if --gen is on AND the user didn't pass --repair-tiles.
+    bool               repairTilesSpecified = false;
+    std::uint8_t       repairTiles          = 0;
 
     // Lightweight arg parse — supports any order of:
     //   <N>                  : bounded run for N ticks
@@ -158,8 +163,12 @@ int main(int argc, char** argv) {
     //   --gen-level=N        : 0..4 size class (default 2)
     //   --gen-density=N      : 0..100 stuff density (default 50)
     //   --gen-perim=<0|1>    : 1 cell of bedrock around the canvas (default 1)
-    //   --special=<token>    : starting special weapon. Tokens (M5.6):
-    //                          spread (default), rapid, sniper, quintet
+    //   --special=<token>    : starting special weapon. Tokens (M5.6+M5.7):
+    //                          spread (default), rapid, sniper, quintet,
+    //                          heavy, quad, shotgun
+    //   --repair-tiles=N     : sprinkle N Repair pickup tiles into the
+    //                          procedural level (M5.7). 0..255, default
+    //                          8 when --gen is active, 0 otherwise.
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--level" && i + 1 < argc) {
@@ -211,12 +220,24 @@ int main(int argc, char** argv) {
             else if (val == "rapid")   specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Rapid);
             else if (val == "sniper")  specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Sniper);
             else if (val == "quintet") specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Quintet);
+            else if (val == "heavy")   specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Heavy);
+            else if (val == "quad")    specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Quad);
+            else if (val == "shotgun") specialKind = static_cast<std::uint8_t>(tou2d::SpecialKind::Shotgun);
             else {
                 std::fprintf(stderr,
-                    "[tou2d] --special=%s — expected spread|rapid|sniper|quintet\n",
+                    "[tou2d] --special=%s — expected spread|rapid|sniper|quintet|heavy|quad|shotgun\n",
                     val.c_str());
                 return 2;
             }
+        } else if (a.rfind("--repair-tiles=", 0) == 0) {
+            const long v = std::strtol(a.c_str() + 15, nullptr, 10);
+            if (v < 0 || v > 255) {
+                std::fprintf(stderr,
+                    "[tou2d] --repair-tiles=%ld — expected 0..255\n", v);
+                return 2;
+            }
+            repairTiles          = static_cast<std::uint8_t>(v);
+            repairTilesSpecified = true;
         } else if (a.rfind("--mode=", 0) == 0) {
             const std::string val = a.substr(7);
             if (val == "dm" || val == "deathmatch") {
@@ -279,6 +300,14 @@ int main(int argc, char** argv) {
             "[tou2d] --gen and --level are mutually exclusive\n");
         return 2;
     }
+    // M5.7 — default repair-tile sprinkle for --gen runs. The CLI
+    // default is 8 tiles, applied only when --gen is active and the
+    // user didn't explicitly --repair-tiles=N. A --play header trumps
+    // this entirely (resolved a few lines below).
+    if (useGen) {
+        genCfg.repairTileCount =
+            repairTilesSpecified ? repairTiles : std::uint8_t{8};
+    }
     tou2d::ReplayPlayer replayPlayer;
     if (!playPath.empty()) {
         if (!replayPlayer.open(playPath)) {
@@ -299,12 +328,13 @@ int main(int argc, char** argv) {
             genCfg = *replayPlayer.genConfig();
             levelDir.clear();
             std::printf("[tou2d] --play %s: header genSeed=0x%08x ggLevel=%u "
-                        "stuffD=%u perim=%u\n",
+                        "stuffD=%u perim=%u repair=%u\n",
                         playPath.c_str(),
                         genCfg.seed,
                         unsigned(genCfg.ggLevel),
                         unsigned(genCfg.stuffDensity),
-                        unsigned(genCfg.perimeterBedrock));
+                        unsigned(genCfg.perimeterBedrock),
+                        unsigned(genCfg.repairTileCount));
         } else {
             useGen = false;
             if (!replayPlayer.levelDir().empty()) {
@@ -349,11 +379,12 @@ int main(int argc, char** argv) {
     if (useGen) {
         game.setGenerationConfig(genCfg);
         std::printf("[tou2d] proc-gen level: seed=0x%08x ggLevel=%u "
-                    "stuffD=%u perim=%u\n",
+                    "stuffD=%u perim=%u repair=%u\n",
                     genCfg.seed,
                     unsigned(genCfg.ggLevel),
                     unsigned(genCfg.stuffDensity),
-                    unsigned(genCfg.perimeterBedrock));
+                    unsigned(genCfg.perimeterBedrock),
+                    unsigned(genCfg.repairTileCount));
     } else if (!levelDir.empty()) {
         game.setLevelDir(levelDir);
         std::printf("[tou2d] loading level from %s\n", levelDir.c_str());
@@ -378,13 +409,16 @@ int main(int argc, char** argv) {
     std::printf("[tou2d] players: %u human + %u bots\n",
                 unsigned(numHumans), unsigned(numBots));
     {
-        // M5.6 — log the resolved special weapon by token.
+        // M5.6 / M5.7 — log the resolved special weapon by token.
         const char* tok = "spread";
         switch (static_cast<tou2d::SpecialKind>(specialKind)) {
             case tou2d::SpecialKind::Spread:  tok = "spread";  break;
             case tou2d::SpecialKind::Rapid:   tok = "rapid";   break;
             case tou2d::SpecialKind::Sniper:  tok = "sniper";  break;
             case tou2d::SpecialKind::Quintet: tok = "quintet"; break;
+            case tou2d::SpecialKind::Heavy:   tok = "heavy";   break;
+            case tou2d::SpecialKind::Quad:    tok = "quad";    break;
+            case tou2d::SpecialKind::Shotgun: tok = "shotgun"; break;
         }
         std::printf("[tou2d] special weapon: %s\n", tok);
     }

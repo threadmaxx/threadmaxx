@@ -11,6 +11,7 @@
 #include "LevelLoader.hpp"
 #include "MovementSystem.hpp"
 #include "ProjectileSystem.hpp"
+#include "RepairPickupSystem.hpp"
 #include "RoundRestartSystem.hpp"
 #include "ShipLifecycleSystem.hpp"
 #include "SpriteAtlas.hpp"
@@ -34,6 +35,12 @@ namespace {
 /// walls and bounce off; rendering shows only the JPG background (none
 /// installed in the synthetic-arena path) so visually it's a void with
 /// hard walls — fine as a smoke target.
+///
+/// M5.7 — also drops a small fixed sprinkle of Repair tiles inside the
+/// arena. Fixed positions so the synthetic-path smoke is deterministic
+/// without piping a seed through. Eight tiles spaced around the origin
+/// at ±r in both axes — far enough from the spawn that early ticks
+/// don't immediately consume them.
 void populateSyntheticArena(TerrainGrid& grid) {
     constexpr int half = kArenaHalfCells;
     const std::int32_t cellsX = 2 * half + 1;
@@ -47,6 +54,17 @@ void populateSyntheticArena(TerrainGrid& grid) {
             if (!isPerimeter) continue;
             grid.setSolid(cx, cy, /*hp=*/0xFF, Attribute::Solid);  // bedrock
         }
+    }
+
+    constexpr int kSpoke = 8;
+    constexpr std::array<std::pair<int, int>, 8> kRepairCells = {{
+        {  kSpoke,  0       }, { -kSpoke,  0       },
+        {  0,       kSpoke  }, {  0,      -kSpoke  },
+        {  kSpoke,  kSpoke  }, { -kSpoke, -kSpoke  },
+        {  kSpoke, -kSpoke  }, { -kSpoke,  kSpoke  },
+    }};
+    for (const auto& [cx, cy] : kRepairCells) {
+        grid.setRepair(cx, cy);
     }
 }
 
@@ -224,6 +242,8 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto* movementPtr  = movement.get();
     auto collision     = std::make_unique<TerrainCollisionSystem>(ids_, &grid_);
     auto* collisionPtr = collision.get();
+    auto repairPickup     = std::make_unique<RepairPickupSystem>(ids_, &grid_, &engine);
+    auto* repairPickupPtr = repairPickup.get();
     auto weaponFire    = std::make_unique<WeaponFireSystem>(ids_, &engine);
     weaponFire->setRoundEndedFlag(roundEnded_);
     auto projectile    = std::make_unique<ProjectileSystem>(ids_);
@@ -247,11 +267,13 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     bulletShip   ->setParticleSystem(particlesPtr);
     bulletTerrain->setParticleSystem(particlesPtr);
     shipLife     ->setParticleSystem(particlesPtr);
+    repairPickup ->setParticleSystem(particlesPtr);
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera->setNumHumans(numHumans_);
     camera_         = camera.get();
     bulletTerrain_  = bulletTerrainPtr;
     collision_      = collisionPtr;
+    repairPickup_   = repairPickupPtr;
     auto hud        = std::make_unique<HudSystem>(ids_, camera_);
     hud->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
 
@@ -264,6 +286,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(particles));    // M5.3 — integrate existing particles BEFORE any emitter spawns fresh ones this tick
     engine.registerSystem(std::move(movement));
     engine.registerSystem(std::move(collision));
+    engine.registerSystem(std::move(repairPickup)); // M5.7 — consume Repair tiles BEFORE weaponFire so a cycled weapon fires this same tick
     engine.registerSystem(std::move(weaponFire));
     engine.registerSystem(std::move(projectile));
     engine.registerSystem(std::move(bulletShip));   // ships first → bullet despawn before terrain check
@@ -369,11 +392,13 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     camera_        = nullptr;
     bulletTerrain_ = nullptr;
     collision_     = nullptr;
+    repairPickup_  = nullptr;
     input_         = nullptr;
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {
     if (bulletTerrain_) bulletTerrain_->setDestroyCallback(cb);
+    if (repairPickup_)  repairPickup_ ->setDestroyCallback(cb);
     if (collision_)     collision_    ->setDestroyCallback(std::move(cb));
 }
 

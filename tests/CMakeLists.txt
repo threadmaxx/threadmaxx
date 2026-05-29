@@ -107,6 +107,7 @@ set(THREADMAXX_TESTS
     tou2d_shp_body_test
     tou2d_proc_gen_test
     tou2d_specials_test
+    tou2d_repair_pickup_test
     # rpg_save_load_test — superseded by tests/rpg_demo/test_round_trip
     # (batch D-audit) which exercises the actual SaveLoadSystem rather
     # than re-implementing the wire format.
@@ -162,4 +163,24 @@ endif()
 # `tests/simd/`. Skipped if the SIMD opt-in is off.
 if (TARGET threadmaxx::simd)
     add_subdirectory(simd)
+endif()
+
+# M5.7 — tests that need to link tou2d_core (CameraSystem's full
+# implementation). Skipped when tou2d isn't built (no Vulkan renderer).
+if (TARGET tou2d_core)
+    add_executable(tou2d_camera_zoom_test tou2d_camera_zoom_test.cpp)
+    target_link_libraries(tou2d_camera_zoom_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_camera_zoom_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_camera_zoom_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_camera_zoom_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_camera_zoom_test COMMAND tou2d_camera_zoom_test)
 endif()
