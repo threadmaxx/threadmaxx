@@ -755,112 +755,172 @@ int main(int argc, char** argv) {
         }
     } bgPainter;
 
-    if (!levelDir.empty()) {
-        const std::filesystem::path bgPath =
-            std::filesystem::path(levelDir) / "visual.jpg";
-        int w = 0, h = 0, n = 0;
-        if (stbi_uc* pixels = stbi_load(bgPath.string().c_str(),
-                                        &w, &h, &n, /*req_comp=*/4)) {
-            // Pad the image up to (cellsX * pxPerTile) × (cellsY *
-            // pxPerTile) so the texture's pixel grid is EXACT-aligned
-            // with the cell grid. Without this step the JPG's
-            // image-pixel-to-world-pixel ratio drifts cumulatively
-            // across the image (~21 wu by the right edge on the
-            // jungle level), which makes the visible image misalign
-            // with the collision grid (and the destruction paint
-            // lands one tile right of where the user shot). The pad
-            // is opaque black (0,0,0,255) — matches "void / off-level"
-            // intent.
-            const int cellsX  = game.levelCellsX() > 0 ? game.levelCellsX() : 1;
-            const int cellsY  = game.levelCellsY() > 0 ? game.levelCellsY() : 1;
-            const int tilePx  = tou2d::kImportedPxPerTile;
-            const int paddedW = cellsX * tilePx;
-            const int paddedH = cellsY * tilePx;
-            const std::size_t paddedBytes =
-                static_cast<std::size_t>(paddedW) *
-                static_cast<std::size_t>(paddedH) * 4u;
-            bgPainter.pixels.assign(paddedBytes, std::uint8_t{0});
-            for (std::size_t i = 3; i < paddedBytes; i += 4) {
-                bgPainter.pixels[i] = 0xFF;  // opaque
-            }
-            const int copyH = std::min(h, paddedH);
-            const int copyW = std::min(w, paddedW);
-            for (int y = 0; y < copyH; ++y) {
-                const std::uint8_t* srcRow =
-                    pixels + static_cast<std::ptrdiff_t>(y) * w * 4;
-                std::uint8_t* dstRow =
-                    bgPainter.pixels.data() +
-                    static_cast<std::ptrdiff_t>(y) * paddedW * 4;
-                std::memcpy(dstRow, srcRow,
-                            static_cast<std::size_t>(copyW) * 4u);
-            }
-            bgPainter.width    = paddedW;
-            bgPainter.height   = paddedH;
-            bgPainter.halfX    = cellsX / 2;
-            bgPainter.halfY    = cellsY / 2;
-            bgPainter.renderer = renderer.get();
-
-            const bool ok = renderer->setBackgroundFromRgba(
-                std::span<const std::uint8_t>(bgPainter.pixels.data(),
-                                              bgPainter.pixels.size()),
-                static_cast<std::uint32_t>(paddedW),
-                static_cast<std::uint32_t>(paddedH));
-
-            // World-space placement of the JPG quad — matches the cell
-            // grid's actual extent. For LevelLoader's mapping
-            //   worldCellX = imgCx - halfX,  worldCellY = halfY - imgCy
-            // (halfX/Y = cellsX/Y / 2, integer division) the cells run
-            //   X: [-halfX, cellsX - halfX - 1]
-            //   Y: [-(cellsY - halfY - 1), halfY]
-            // For even cellsX, X is asymmetric → center at -tile/2; for
-            // even cellsY, Y is asymmetric → center at +tile/2.
-            const float tile  = tou2d::kTileWorldUnits;
-            const int   halfX = cellsX / 2;
-            const int   halfY = cellsY / 2;
-            const float minWorldX = -static_cast<float>(halfX) * tile - tile * 0.5f;
-            const float maxWorldX = static_cast<float>(cellsX - halfX - 1) * tile + tile * 0.5f;
-            const float minWorldY = -static_cast<float>(cellsY - halfY - 1) * tile - tile * 0.5f;
-            const float maxWorldY = static_cast<float>(halfY) * tile + tile * 0.5f;
-            renderer->setBackgroundWorldExtent(
-                (maxWorldX - minWorldX) * 0.5f,
-                (maxWorldY - minWorldY) * 0.5f,
-                (maxWorldX + minWorldX) * 0.5f,
-                (maxWorldY + minWorldY) * 0.5f);
-
-            game.setTileDestroyCallback(
-                [&bgPainter](int cx, int cy) { bgPainter.paintTile(cx, cy); });
-
-            // M4.8 — size the sprite compositor's foreground buffer to
-            // match the background. World rect is identical so
-            // foreground pixels land 1:1 over background pixels.
-            compositor.resize(paddedW, paddedH,
-                              halfX * tilePx,
-                              halfY * tilePx,
-                              tou2d::kWorldUnitsPerImagePixel);
-            {
-                const bool fgOk = renderer->setForegroundFromRgba(
-                    compositor.pixels(),
-                    static_cast<std::uint32_t>(paddedW),
-                    static_cast<std::uint32_t>(paddedH));
-                renderer->setForegroundWorldExtent(
-                    (maxWorldX - minWorldX) * 0.5f,
-                    (maxWorldY - minWorldY) * 0.5f,
-                    (maxWorldX + minWorldX) * 0.5f,
-                    (maxWorldY + minWorldY) * 0.5f);
-                std::printf("[tou2d] foreground sprite layer installed=%d\n",
-                            int(fgOk));
-            }
-
-            stbi_image_free(pixels);
-            std::printf("[tou2d] background %s: %dx%d -> padded %dx%d "
-                        "(channels=%d) installed=%d\n",
-                        bgPath.string().c_str(), w, h, paddedW, paddedH,
-                        n, int(ok));
-        } else {
-            std::fprintf(stderr,
-                "[tou2d] background %s: stbi_load failed (%s)\n",
-                bgPath.string().c_str(), stbi_failure_reason());
+    // 2026-05-29 — bg / fg / compositor init runs for EVERY level
+    // source (imported JPG, procedural generator, synthetic arena).
+    // Pre-M6.5 this entire block was gated on `if (!levelDir.empty())`,
+    // so the no-args GUI launch and `--gen` runs both fell through with
+    // bgPainter / compositor uninitialized — sprite-mode ships had no
+    // foreground texture to composite into and went invisible, and
+    // SpriteCompositor::tick early-outs on `imgW_ == 0`. The grid is
+    // populated by `onSetup` regardless of source; we either copy the
+    // visual.jpg (when a level dir is set AND the file decoded) or
+    // synthesize a placeholder background by attribute-coloring each
+    // grid cell.
+    {
+        const int cellsX  = game.levelCellsX() > 0 ? game.levelCellsX() : 1;
+        const int cellsY  = game.levelCellsY() > 0 ? game.levelCellsY() : 1;
+        const int tilePx  = tou2d::kImportedPxPerTile;
+        const int paddedW = cellsX * tilePx;
+        const int paddedH = cellsY * tilePx;
+        const int halfX   = cellsX / 2;
+        const int halfY   = cellsY / 2;
+        const std::size_t paddedBytes =
+            static_cast<std::size_t>(paddedW) *
+            static_cast<std::size_t>(paddedH) * 4u;
+        bgPainter.pixels.assign(paddedBytes, std::uint8_t{0});
+        for (std::size_t i = 3; i < paddedBytes; i += 4) {
+            bgPainter.pixels[i] = 0xFF;  // opaque
         }
+        bgPainter.width    = paddedW;
+        bgPainter.height   = paddedH;
+        bgPainter.halfX    = halfX;
+        bgPainter.halfY    = halfY;
+        bgPainter.renderer = renderer.get();
+
+        bool bgFromJpg = false;
+        if (!levelDir.empty()) {
+            const std::filesystem::path bgPath =
+                std::filesystem::path(levelDir) / "visual.jpg";
+            int w = 0, h = 0, n = 0;
+            if (stbi_uc* pixels = stbi_load(bgPath.string().c_str(),
+                                            &w, &h, &n, /*req_comp=*/4)) {
+                // Pad the image up to (cellsX * pxPerTile) × (cellsY *
+                // pxPerTile) so the texture's pixel grid is
+                // EXACT-aligned with the cell grid. Without this step
+                // the JPG's image-pixel-to-world-pixel ratio drifts
+                // cumulatively across the image (~21 wu by the right
+                // edge on the jungle level), which makes the visible
+                // image misalign with the collision grid (and the
+                // destruction paint lands one tile right of where the
+                // user shot). The pad is opaque black (0,0,0,255) —
+                // matches "void / off-level" intent.
+                const int copyH = std::min(h, paddedH);
+                const int copyW = std::min(w, paddedW);
+                for (int y = 0; y < copyH; ++y) {
+                    const std::uint8_t* srcRow =
+                        pixels + static_cast<std::ptrdiff_t>(y) * w * 4;
+                    std::uint8_t* dstRow =
+                        bgPainter.pixels.data() +
+                        static_cast<std::ptrdiff_t>(y) * paddedW * 4;
+                    std::memcpy(dstRow, srcRow,
+                                static_cast<std::size_t>(copyW) * 4u);
+                }
+                stbi_image_free(pixels);
+                std::printf("[tou2d] background %s: %dx%d -> padded %dx%d "
+                            "(channels=%d)\n",
+                            bgPath.string().c_str(), w, h, paddedW, paddedH, n);
+                bgFromJpg = true;
+            } else {
+                std::fprintf(stderr,
+                    "[tou2d] background %s: stbi_load failed (%s) — "
+                    "synthesizing placeholder from grid\n",
+                    bgPath.string().c_str(), stbi_failure_reason());
+            }
+        }
+
+        if (!bgFromJpg) {
+            // Synthesize from the grid: each tile is painted a flat
+            // color keyed off its `Attribute` and HP, then a tiny
+            // hash-driven jitter breaks up the uniformity so the
+            // placeholder doesn't read as a solid color field.
+            const auto& grid = game.terrainGrid();
+            for (int py = 0; py < paddedH; ++py) {
+                const int imgCy      = py / tilePx;
+                const int worldCellY = halfY - imgCy;
+                for (int px = 0; px < paddedW; ++px) {
+                    const int imgCx      = px / tilePx;
+                    const int worldCellX = imgCx - halfX;
+                    const auto         a    = grid.attrAt(worldCellX, worldCellY);
+                    const std::uint8_t hpV  = grid.hpAt  (worldCellX, worldCellY);
+                    std::uint8_t r = 24, g = 38, b = 52;  // Air: dark teal
+                    if (a == tou2d::Attribute::Solid) {
+                        if (hpV == 0xFFu) { r = 26;  g = 26;  b = 28;  }  // Bedrock
+                        else              { r = 96;  g = 74;  b = 50;  }  // destructible rock
+                    } else if (a == tou2d::Attribute::Repair) {
+                        r = 64; g = 156; b = 76;
+                    } else if (a == tou2d::Attribute::Damage) {
+                        r = 156; g = 60; b = 60;
+                    }
+                    const std::uint32_t hh =
+                        (static_cast<std::uint32_t>(px) * 0x9E3779B1u) ^
+                        (static_cast<std::uint32_t>(py) * 0x85EBCA77u);
+                    const int   jitter = static_cast<int>(hh >> 28) - 8;  // ±8
+                    auto bump = [jitter](std::uint8_t v) {
+                        const int n = static_cast<int>(v) + jitter;
+                        return static_cast<std::uint8_t>(std::clamp(n, 0, 255));
+                    };
+                    const std::size_t off =
+                        (static_cast<std::size_t>(py) *
+                         static_cast<std::size_t>(paddedW) +
+                         static_cast<std::size_t>(px)) * 4u;
+                    bgPainter.pixels[off + 0] = bump(r);
+                    bgPainter.pixels[off + 1] = bump(g);
+                    bgPainter.pixels[off + 2] = bump(b);
+                    bgPainter.pixels[off + 3] = 0xFF;
+                }
+            }
+            std::printf("[tou2d] background synthesized from %dx%d grid -> "
+                        "%dx%d pixels\n",
+                        cellsX, cellsY, paddedW, paddedH);
+        }
+
+        const bool ok = renderer->setBackgroundFromRgba(
+            std::span<const std::uint8_t>(bgPainter.pixels.data(),
+                                          bgPainter.pixels.size()),
+            static_cast<std::uint32_t>(paddedW),
+            static_cast<std::uint32_t>(paddedH));
+
+        // World-space placement matches the cell grid's actual extent.
+        // For LevelLoader's mapping
+        //   worldCellX = imgCx - halfX,  worldCellY = halfY - imgCy
+        // (halfX/Y = cellsX/Y / 2, integer division) the cells run
+        //   X: [-halfX, cellsX - halfX - 1]
+        //   Y: [-(cellsY - halfY - 1), halfY]
+        // For even cellsX, X is asymmetric → center at -tile/2; for
+        // even cellsY, Y is asymmetric → center at +tile/2.
+        const float tile      = tou2d::kTileWorldUnits;
+        const float minWorldX = -static_cast<float>(halfX) * tile - tile * 0.5f;
+        const float maxWorldX = static_cast<float>(cellsX - halfX - 1) * tile + tile * 0.5f;
+        const float minWorldY = -static_cast<float>(cellsY - halfY - 1) * tile - tile * 0.5f;
+        const float maxWorldY = static_cast<float>(halfY) * tile + tile * 0.5f;
+        renderer->setBackgroundWorldExtent(
+            (maxWorldX - minWorldX) * 0.5f,
+            (maxWorldY - minWorldY) * 0.5f,
+            (maxWorldX + minWorldX) * 0.5f,
+            (maxWorldY + minWorldY) * 0.5f);
+
+        game.setTileDestroyCallback(
+            [&bgPainter](int cx, int cy) { bgPainter.paintTile(cx, cy); });
+
+        // M4.8 — size the sprite compositor's foreground buffer to
+        // match the background. World rect is identical so foreground
+        // pixels land 1:1 over background pixels.
+        compositor.resize(paddedW, paddedH,
+                          halfX * tilePx,
+                          halfY * tilePx,
+                          tou2d::kWorldUnitsPerImagePixel);
+        const bool fgOk = renderer->setForegroundFromRgba(
+            compositor.pixels(),
+            static_cast<std::uint32_t>(paddedW),
+            static_cast<std::uint32_t>(paddedH));
+        renderer->setForegroundWorldExtent(
+            (maxWorldX - minWorldX) * 0.5f,
+            (maxWorldY - minWorldY) * 0.5f,
+            (maxWorldX + minWorldX) * 0.5f,
+            (maxWorldY + minWorldY) * 0.5f);
+        std::printf("[tou2d] background installed=%d (jpg=%d) "
+                    "foreground installed=%d\n",
+                    int(ok), int(bgFromJpg), int(fgOk));
     }
 
     std::printf("[tou2d] running %s — Ctrl-C / window close to exit\n",
@@ -1065,14 +1125,29 @@ int main(int argc, char** argv) {
                 }
                 const int lineH = (fontAtlas.ascent - fontAtlas.descent +
                                    fontAtlas.lineGap);
-                float baseY = static_cast<float>(fontAtlas.ascent + 8);
+                const auto rs = ui->currentRows();
+                const std::int32_t focus = ui->focusIndex();
+                // 2026-05-29 — anchor the menu stack to the LOWER-left of
+                // the overlay instead of the upper-left. The title sits
+                // 1.5 line heights above the first row; the last row's
+                // baseline lands `bottomMargin` above the overlay bottom
+                // (descent is negative, so adding it pulls the baseline
+                // up by |descent| px so glyph descenders clear).
+                constexpr float kBottomMargin = 16.0f;
+                const std::int32_t numRows =
+                    static_cast<std::int32_t>(rs.size());
+                const float lastRowBaseY =
+                    static_cast<float>(uiOverlay.height()) - kBottomMargin
+                    + static_cast<float>(fontAtlas.descent);
+                float baseY = lastRowBaseY -
+                    (static_cast<float>(numRows - 1) +
+                     1.5f /*title-to-first-row gap*/) *
+                    static_cast<float>(lineH);
                 uiOverlay.drawText(fontAtlas,
                                    /*baseX=*/ 16.0f, baseY,
                                    /*color=*/ 0xFFFFFFFFu, title);
                 baseY += static_cast<float>(lineH) * 1.5f;
 
-                const auto rs = ui->currentRows();
-                const std::int32_t focus = ui->focusIndex();
                 for (std::size_t i = 0; i < rs.size(); ++i) {
                     const bool focused = (static_cast<std::int32_t>(i) == focus);
                     // 0xAABBGGRR — focused=cyan, enabled=white,

@@ -153,6 +153,11 @@ public:
     std::int32_t levelCellsX() const noexcept { return cellsX_; }
     std::int32_t levelCellsY() const noexcept { return cellsY_; }
 
+    /// Read-only access to the terrain grid after `onSetup` has run.
+    /// Host uses this to synthesize a placeholder background image when
+    /// no `--level` JPG is available (generator + synthetic-arena paths).
+    const TerrainGrid& terrainGrid() const noexcept { return grid_; }
+
     /// Fires once per destroyed tile from either destruction path.
     using TileDestroyCallback =
         std::function<void(std::int32_t cellX, std::int32_t cellY)>;
