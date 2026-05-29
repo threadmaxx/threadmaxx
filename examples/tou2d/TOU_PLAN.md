@@ -871,6 +871,20 @@ Mirrors the ChatGPT notes' suggested milestone order, refined with TOU-import wo
 - More weapons toward the original's 50+ — M5.6 + M5.7 + M5.8 ✅ (10 specials + Dumbfire = 11 total).
 - **Acceptance**: replay round-trips bit-identical (`commitHash` stream matches frame-for-frame) — verified across every special-weapon variant + the procedural generator + repair pickups (M5.4 onwards).
 
+### Milestone 6 — Complete GUI / UX polish (PLANNED, NEXT)
+- M6.0 — engine prereqs: TTF font (drop-in swappable, baked via `stb_truetype.h`), UI compositor at `RenderPass::Overlay`, `KeyMap` action indirection.
+- M6.1 — `UISystem` state machine + main menu (keyboard navigation, focus model, safe defaults).
+- M6.2 — Match / level setup screen (every gameplay knob the CLI exposes today, exposed graphically + benchmark presets row).
+- M6.3 — Ship / player slot assignment (2-4 humans, explicit ship + color + tag picks).
+- M6.4 — Pause menu wired to `Engine::setPaused` (deterministic resume; replay-safe).
+- M6.5 — Options menu (Video / Audio / Controls / Gameplay / Accessibility / Benchmark) + persistent `settings.dat`.
+- M6.6 — Results / scoreboard screen + rematch flow.
+- M6.7 — HUD polish: thicker bars, warning indicators, photosensitive-mode flash cap.
+- M6.8 — Notification / dialog layer (toast channel; pickup feed, kill feed, system messages).
+- M6.9 — Debug / benchmark overlay (FPS, entity count, commitHash, top-3 systems, world seed).
+- M6.10 — Flow polish + acceptance pass (launch-to-gameplay-in-1s, universal Esc, headless menu replay).
+- **Acceptance**: full M6 acceptance checklist (see § 7.M6 below) — main menu / setup / options / pause / HUD / results / benchmarks all functional and budget-meeting; replay determinism preserved across menu / pause cycles; CLI direct-jump path unchanged.
+
 #### M5.1 — Configurable humans/bots + split-screen (LANDED ✅)
 
 **Player counts.** `--humans=N` (1..4) and `--bots=M` (0..63) flags
@@ -1590,6 +1604,425 @@ table-driven path established here. Out-of-band weapon mechanics
 deferred to a post-v1 milestone — they require a non-trivial new
 fire path beyond `spawnBullet`.
 
+### Milestone 6 — Complete GUI / UX polish (PLANNED, NEXT)
+
+**Intent.** Turn the gameplay-complete demo into a shippable PC game
+experience: real main menu, level / match setup, options menus,
+pause menu, ship loadout, results screen, polished HUD, clean input
+navigation, benchmark / stress presets, smooth transitions between
+menus and gameplay. The simulation contract (deterministic step,
+replay capture, per-archetype hash) stays untouched — every menu
+lives at the example layer (no public engine surface changes).
+
+**Design heuristic.** Late-90s / early-2000s PC game UI, modernised
+for readability. Fast to start, fast to restart, clear under local-MP
+chaos, readable during explosions and weapon spam. **Not decorative —
+practical, fast, testable.** Every M6 batch ships with at least one
+headless smoke + (where relevant) a deterministic replay round-trip,
+same gate every prior milestone passed.
+
+**Sub-batch order** (each batch lands independently; no batch blocks
+gameplay):
+
+| Batch | Title | Depends on | Engine-side prereq? |
+|-------|-------|------------|---------------------|
+| M6.0  | Engine prereqs — TTF font (drop-in) + UI compositor + key-action layer | — | YES (font + key-map) |
+| M6.1  | UI state machine + main menu | M6.0 | no |
+| M6.2  | Match / level setup screen | M6.1 | no |
+| M6.3  | Ship / player slot assignment screen | M6.1 | no |
+| M6.4  | Pause menu (in-game) | M6.1 | no (uses `Engine::setPaused`) |
+| M6.5  | Options menu + persistence | M6.0, M6.1 | YES (settings POD) |
+| M6.6  | Results / scoreboard screen | M6.1 | no |
+| M6.7  | HUD polish pass (readability, warnings) | M6.0 | no |
+| M6.8  | Notification / dialog layer | M6.0 | no |
+| M6.9  | Debug / benchmark overlay | M6.0 | no |
+| M6.10 | Flow polish + acceptance pass | all prior | no |
+
+#### M6.0 — Engine prereqs (font + UI compositor + key-action map)
+
+Three foundation pieces M6.1+ all need. Each is example-layer; nothing
+in `include/threadmaxx/` changes.
+
+1. **TTF font atlas, drop-in swappable.** Bake any TTF/OTF to a glyph
+   atlas at startup via `stb_truetype.h` (single-header, public domain,
+   pulled in alongside `stb_image`). The font file path is a resource
+   loaded through `ResourceRegistry` — swap by replacing
+   `assets/ui/font.ttf` (or pointing the loader at a different file via
+   `tou2d::ui::FontConfig::ttfPath`). v1 default: a permissively
+   licensed file shipped in-tree (DejaVu Sans, JetBrains Mono, or Inter
+   — SIL OFL / Apache-2.0 / Bitstream-Vera). The atlas type:
+
+   ```cpp
+   struct GlyphMetrics {
+       std::int16_t  u0, v0, u1, v1;   // atlas pixel rect
+       std::int16_t  xoff, yoff;       // pen-relative draw offset
+       std::int16_t  xadvance;         // 26.6 → integer pixels
+       std::uint16_t codepoint;        // sparse — supports non-ASCII
+   };
+   struct FontAtlas {
+       int                              pixelSize;      // baked size
+       int                              atlasW, atlasH;
+       int                              ascent, descent, lineGap;
+       std::vector<std::byte>           pixels;         // R8 alpha
+       std::vector<GlyphMetrics>        glyphs;         // sorted by codepoint
+       std::unordered_map<std::uint32_t, std::uint32_t> indexByCp;  // O(1) lookup
+   };
+   ```
+
+   `tou2d::ui::bakeFont(ttfBytes, FontConfig{pixelSize, codepoints})`
+   produces a `FontAtlas` (one bake per UI-scale tier — M6.5's slider
+   gets clean glyphs at 75/100/125/150% instead of nearest-neighbour
+   smearing). `tou2d::ui::textPrintf(builder, atlas, x, y, color, fmt,
+   ...)` walks the codepoint stream, looks up `GlyphMetrics`, issues
+   one `DrawItem` per glyph against the `RenderPass::Overlay` lane with
+   per-glyph UV rect. `tou2d::ui::measureText(atlas, text)` returns the
+   pixel bbox + baseline. Proportional metrics + horizontal advance;
+   kerning pairs deferred (stb_truetype gives them cheaply — opt-in if
+   labels look loose). No SDF, no hinting toggle, no subpixel
+   positioning — this is HUD typography, not document rendering.
+
+   **Drop-in contract**: any TTF/OTF that defines the ASCII range
+   (0x20..0x7E) loads and renders without code changes. Codepoint
+   coverage beyond ASCII is opt-in via `FontConfig::codepoints`
+   (default: 0x20..0x7E + a handful of HUD symbols). Atlas dims are
+   computed from the input; no hard-coded grid pitch.
+
+2. **UI compositor layer.** A lightweight `RenderFrameBuilder` slice
+   that lives at NDC z-order ABOVE the gameplay layer. Renderer-side,
+   the existing `RenderPass::Overlay` lane is the obvious home — every
+   UI quad goes there; depth test off; alpha blending on; reset every
+   tick. No retained-mode tree; the immediate-mode model fits
+   threadmaxx's "rebuild every tick from systems" rhythm.
+
+3. **Key-action indirection.** `InputSystem` today reads GLFW keys
+   directly and dispatches per-slot. M6.0 inserts a `KeyMap` POD between
+   GLFW and the action enum:
+
+   ```cpp
+   enum class Action : std::uint8_t {
+       Thrust, RotateLeft, RotateRight, FireDumb, FireSpecial,
+       Pause, UiUp, UiDown, UiLeft, UiRight, UiAccept, UiCancel,
+       kActionCount
+   };
+   struct KeyMap {                       // 4 player slots * Action::kActionCount
+       std::uint16_t binding[kMaxHumans][static_cast<std::size_t>(Action::kActionCount)];
+   };
+   ```
+
+   `InputSystem` reads `KeyMap` instead of hard-coded scancodes; M6.5's
+   Controls screen mutates `KeyMap` in place. Defaults match the
+   original TOU bindings so existing keyboards keep working.
+
+**Acceptance**: `tou2d::ui::textPrintf` renders "HELLO" cleanly at
+arbitrary screen coords across all 4 viewports; existing gameplay
+input is bit-identical (rebind the defaults and the replay determinism
+test still round-trips); ctest unchanged at 137+ (new
+`tou2d_font_atlas_test`, `tou2d_keymap_default_binding_test`).
+
+#### M6.1 — UI state machine + main menu (PLANNED)
+
+**`UISystem`** — new `ISystem` that owns the screen state machine:
+
+```cpp
+enum class UIScreen : std::uint8_t {
+    None,         // gameplay-only (legacy path)
+    MainMenu,
+    MatchSetup,
+    PlayerSetup,
+    Options,
+    Pause,
+    Results,
+    Credits,
+};
+```
+
+Wave ordering: BEFORE `InputSystem` so a screen-active tick can swallow
+gameplay input. `UISystem::update` reads the action enum (M6.0), routes
+to per-screen handlers, emits `UIScreenChanged{from, to}` events via
+the typed event channel for any system that wants to react.
+
+**Main menu rows** (matches the user's spec):
+- `Continue / Resume` (greyed if no saved match)
+- `Single Match`
+- `Level Setup` (jumps to M6.2)
+- `Options` (jumps to M6.5)
+- `Benchmark / Stress` (preset launcher — see M6.5)
+- `Credits / About`
+- `Quit`
+
+**Focus model.** Single-focus index per screen; `UiUp` / `UiDown` move;
+`UiAccept` fires; `UiCancel` pops back. Mouse hover sets focus
+(optional polish — keyboard is the contract).
+
+**Safe defaults on first launch.** When no settings file exists,
+`UISystem` lands on MainMenu and offers "Quick Start" (= 1 human + 3
+bots, jungle level) as the top option. The legacy `--humans` / `--bots`
+CLI flags still work — they bypass MainMenu and jump straight to a
+match, matching today's behaviour for headless smoke / replay use.
+
+**Acceptance**: launching without CLI args shows MainMenu; navigating
+with arrows + Enter into "Single Match" → "Start" lands in gameplay
+identical to today's `--humans=1 --bots=3 --level <default>`; headless
+smoke (`./threadmaxx_tou2d 200`) still bypasses the menu via the
+existing CLI-direct-jump path (no regression).
+
+#### M6.2 — Match / level setup screen (PLANNED)
+
+Configurable knobs (each row is a horizontal scroller, `UiLeft` / `UiRight`
+to cycle, `UiDown` to next row):
+
+| Knob | Range | Source of truth |
+|------|-------|-----------------|
+| Level | imported `assets/levels/*` + procedural | `LevelLoader` enumerates dir |
+| Gen vs handcrafted | toggle | flips `ProceduralLevel` path |
+| Gravity | 0.5× .. 2.0×, 0.25× step | `MovementSystem` constant |
+| Wind | off / light / strong | `MovementSystem` x-bias |
+| Humans | 1..4 | replaces `--humans` |
+| Bots | 0..63 | replaces `--bots` |
+| Weapon table | default / minimal / chaos | filters `kSpecialWeaponSpecs` |
+| Match timer | off / 2 min / 5 min / 10 min | drives `RoundRestartSystem` |
+| Score limit | 1..30 kills | drives `RoundRestartSystem` |
+| Respawn rules | instant / 2 s / 5 s | `ShipLifecycleSystem` delay |
+| Damage scale | 0.5× .. 2.0× | global multiplier in `BulletShipCollisionSystem` |
+| Camera mode | follow / fixed / dynamic | `CameraSystem` mode enum |
+| Stress preset | off / 8 bots / 32 bots / 63 bots | bypass other knobs (see M6.5) |
+
+Persistence: serialised to `MatchSetup` POD; passed to the legacy
+match-start path. The headless CLI flags map to `MatchSetup` fields
+1:1 so the determinism contract is unchanged (same setup → same
+commitHash stream).
+
+**Acceptance**: setting "Bots = 32, Level = procedural, Gravity = 1.5×"
+from the menu and starting yields a match indistinguishable (in
+commitHash) from the equivalent CLI invocation.
+
+#### M6.3 — Ship / player slot assignment screen (PLANNED)
+
+For each slot (1..4):
+- Player tag (3-char nickname; entered with arrow-keys-cycle-A-Z to
+  avoid a full virtual keyboard in v1)
+- Input device — "Keyboard P1" / "Keyboard P2" / "Keyboard P3" / "Keyboard P4"
+  (controllers deferred, see § Out of scope below)
+- Ship kind — Basic / Bee / X Wing / Destroyer (already cycle-by-slot
+  today; M6.3 makes it explicit)
+- Color / team — 4 palette presets (yellow / blue / red / green —
+  already loaded as atlases)
+- "AI fill" toggle per empty slot
+
+**Acceptance**: 2-human + 2-bot setup with explicit ship picks works;
+the same setup via CLI flags (`--humans=2 --bots=2`) produces an
+identical match (the menu just exposes per-slot overrides; defaults
+match the auto-cycle).
+
+#### M6.4 — Pause menu (PLANNED)
+
+`UIScreen::Pause` triggered by the `Pause` action (default `Esc`).
+On enter:
+1. `Engine::setPaused(true)` (already exists).
+2. Capture a snapshot of the back render frame so the paused gameplay
+   stays visible behind the menu — `submitInterpolatedFrame(0.0)` keeps
+   the world frozen on-screen for free.
+
+Rows:
+- Resume (`UiCancel` also resumes)
+- Restart match (rebuilds the world via the M6.2 setup)
+- Options (jumps to M6.5; pop returns here)
+- Level setup (jumps to M6.2; pop returns here)
+- Return to main menu (drops the world)
+- Quit
+
+**Pause-while-replay-recording**: dropped frames must not desync the
+recorded input stream. Easiest fix: `Engine::setPaused(true)` already
+zeros per-tick stats; we just need `Replay` to skip emitting on
+paused steps. One-line change.
+
+**Acceptance**: pausing mid-match for 10 s and resuming produces a
+deterministic continuation (replay round-trip identical to an
+unpaused match where the 10 s never elapsed).
+
+#### M6.5 — Options menu + persistence (PLANNED)
+
+**Categories** (left-hand list, right-hand panel):
+
+| Category | v1 settings |
+|----------|-------------|
+| Video | resolution (list of GLFW-reported modes), fullscreen / windowed, vsync on/off, UI scale (75% / 100% / 125% / 150%) |
+| Audio | master / music / SFX volume (0-100 each) |
+| Controls | per-action key bindings × 4 player slots (M6.0's `KeyMap`) |
+| Gameplay | default damage scale, default respawn delay, default camera mode (these populate M6.2's setup defaults) |
+| Accessibility | HUD scale, big-warning toggle, screen-shake on/off, photosensitive mode (caps particle flash brightness) |
+| Benchmark | trace sink on/off, FrameSnapshot JSONL output path, scripted skip policy on/off — exposes existing engine knobs |
+
+**Persistence POD** — `~/.config/tou2d/settings.dat`, host-endian
+binary (same caveats as `WorldSnapshot`):
+
+```
+[magic 'T2DS' u32][version u32]
+[video: resolution_w u32, resolution_h u32, fullscreen u8, vsync u8, ui_scale u8, _pad u8]
+[audio: master u8, music u8, sfx u8, _pad u8]
+[controls: KeyMap (struct size pinned by tests)]
+[gameplay: damage_scale f32, respawn_delay_ticks u16, camera_mode u8, _pad u8]
+[accessibility: hud_scale u8, big_warnings u8, screen_shake u8, photosensitive u8]
+[benchmark: trace_sink_on u8, scripted_skip_on u8, _pad u16, jsonl_path_len u32, jsonl_path[]]
+```
+
+Loaded at startup; missing file → write defaults. Atomic write
+(write to `.tmp`, rename). Version mismatch → log + use defaults.
+
+**Resolution change handling.** Mid-run resolution / windowed-mode
+changes require swapchain recreation. v1 scope: changes apply on next
+launch (a "restart required" toast appears on confirm). Live
+fullscreen toggle is deferred — flag in § Out of scope.
+
+**Benchmark presets.** A single-button row for each: "8 bots / jungle /
+3 min", "32 bots / procedural / 5 min", "63 bots / procedural /
+unlimited". Each preset pre-fills the M6.2 setup screen and starts
+the match. Useful for the user-side perf-iteration loop.
+
+**Acceptance**: changing master volume + a single keybind, restart,
+relaunch — the binding sticks; the settings.dat file is forward-compat
+(adding a new field bumps version; old files load with that field
+defaulted).
+
+#### M6.6 — Results / scoreboard screen (PLANNED)
+
+Triggered by `RoundRestartSystem` when the round ends (already emits
+`MatchEnded` event today; M6.6 subscribes and flips `UIScreen::Results`).
+
+Rows shown:
+- Winner banner (top, prominent; "DRAW" if tie)
+- Per-slot scoreboard: tag, ship, kills, deaths, damage dealt, damage
+  taken (the per-slot stats `BulletShipCollisionSystem` already tracks)
+- Buttons: Rematch (re-runs M6.2's setup), Return to setup, Main menu
+
+**Match stats POD** is gathered by `ResultsCollector` (new tiny
+system, postStep only, drains the round-end channel). No public
+engine surface change.
+
+**Acceptance**: 1-human + 3-bot 60-second match ends → Results
+screen shows correct per-slot kills (cross-checked against
+`writeJsonLines` output for the same run); Rematch correctly
+re-seeds (deterministic seed-from-tick when in record mode).
+
+#### M6.7 — HUD polish pass (PLANNED)
+
+Foreground of the existing `HudSystem` (M4.4 + M5.2). Tier:
+readability under heavy combat clutter.
+
+- **Health / shield**: thicker bar; outline; flash on damage tick;
+  red-pulse threshold at ≤25%.
+- **Weapon block**: current weapon icon (small sprite from the M6.0
+  atlas), ammo / cooldown bar, reload indicator.
+- **Score**: per-player kill count, team score (if teams), match
+  timer countdown.
+- **Identity**: slot number + tag (top-right corner of each viewport).
+- **Warnings**: low-HP, low-ammo, ship-on-fire — top-center of viewport,
+  3-second auto-fade unless still active.
+- **Photosensitive mode**: caps explosion-flash alpha at 0.4 (default
+  1.0); set via M6.5.
+
+Cost gate: HudSystem must stay under 50 µs / tick at 4-viewport
+4-bot composition (current is ~12 µs; budget headroom).
+
+**Acceptance**: visual diff on a 200-tick canned scenario (jungle,
+2 humans, 2 bots, mid-combat); HudSystem `update + buildRenderFrame`
+combined < 50 µs in the jsonl trace.
+
+#### M6.8 — Notification / dialog layer (PLANNED)
+
+`UIToastChannel` — a typed event channel that any system can emit
+into:
+
+```cpp
+struct UIToast {
+    std::uint8_t  slot;           // 0..3 viewport, or 0xFF for all
+    std::uint16_t durationTicks;
+    std::uint8_t  severity;       // 0 = info, 1 = warn, 2 = critical
+    char          message[28];    // fixed; 28-byte inline buffer
+};
+```
+
+Existing emitters (M6.0 → M6.10 wave):
+- `RepairPickupSystem` → "+25 HP" toast on pickup
+- `BulletShipCollisionSystem` → "P1 fragged P3" kill feed
+- `RoundRestartSystem` → "ROUND STARTING IN 3..." countdown
+- `UISystem` → "Settings saved", "Controls remapped" confirmations
+
+The toast layer is one `ISystem` (`ToastRenderSystem`) that drains
+the channel each tick, manages per-slot stacks (LIFO, max 4 visible),
+expires old entries, renders via M6.0's textPrintf.
+
+**Acceptance**: a 60-tick match with 5 simultaneous pickup events
+displays all five toasts without dropping (stack-cap = 4 → oldest
+fades); replay round-trip identical (toasts are render-side only,
+not gameplay-affecting).
+
+#### M6.9 — Debug / benchmark overlay (PLANNED)
+
+Toggled with `F3` (rebindable). Overlay row by row:
+
+- FPS (rolling 60-frame avg) + frame time ms
+- Engine `EngineStats::tick`, `commitHash` (last 8 hex), worker count
+- Entity count (`World::totalEntities()`)
+- Projectile count, active particle count, terrain block count
+- Active human slots / bot slots
+- Active camera mode + viewport count
+- Current benchmark preset (if any)
+- World seed (from `ProceduralLevel` or "imported:<name>")
+- Per-system top-3 (system name, last-tick µs) — drained from
+  `Engine::frameSnapshot()`
+
+All fields read from existing engine telemetry — no new public
+surface. Sub-150-µs render budget (text is the cost).
+
+**Acceptance**: overlay reads stable in a 60s headless run with
+`F3` simulated as on; the entity / projectile counts in the overlay
+match `writeJsonLines(snap)` for the same tick.
+
+#### M6.10 — Flow polish + acceptance pass (PLANNED)
+
+The closeout batch. Time-tester runs end-to-end the user-flow and
+files punch list bugs. Targets:
+
+- Launch → MainMenu in < 1 s on the development machine
+- MainMenu → "Quick Start" → in-game in < 1 s
+- Mid-match Pause → Restart → in-game in < 500 ms
+- Match end → Results → Rematch → in-game in < 1 s
+- Esc-Esc-Esc from any screen lands at MainMenu (universal abort)
+
+Then a smoke matrix covering every screen × every entry point, with
+headless playback where possible (UI state is deterministic given the
+input enum stream — replay can drive the menus too).
+
+**M6 ACCEPTANCE CRITERIA** (mirrors the source proposal):
+
+- [ ] proper main menu, keyboard-navigable
+- [ ] level setup configurable (every M6.2 row works)
+- [ ] options menu present with persistent settings.dat
+- [ ] pause works correctly (deterministic resume)
+- [ ] HUD readable under heavy combat (M6.7 budget met)
+- [ ] results / scoreboard screen exists and is accurate
+- [ ] benchmark presets one-button launchable from M6.5
+- [ ] local multiplayer setup (2-4 humans) is < 30 s from launch
+- [ ] GUI does not interfere with engine stress goals (frame budget
+      headroom preserved at 32-bot stress on the perf box)
+- [ ] every M6 batch ships with a test in the same PR (M6 convention,
+      same as M3-M5)
+
+#### M6 — Engine-side prereqs not done here
+
+Items the M6 proposal mentions but that are intentionally NOT in
+v1 M6 (size + scope risk):
+
+| Item | Why deferred | Where it'd land |
+|------|--------------|-----------------|
+| Controller / gamepad support | engine has no input abstraction beyond the GLFW key path; GLFW does report joysticks but routing through `KeyMap` requires a new device-id field everywhere | post-v1 input epic |
+| Mid-run resolution / fullscreen toggle | requires Vulkan swapchain recreation + per-system viewport invalidation | post-v1 renderer epic |
+| Mouse navigation (full) | feasible but the contract is keyboard; mouse hover-focus is M6.1 polish-tier, click-to-fire-button is post-v1 |
+| Retained-mode UI framework | over-scoping for an arcade game; immediate-mode + the M6.0 compositor is enough |
+| Localisation / i18n | M6.0's TTF bake is ASCII-only by default; non-Latin requires expanding `FontConfig::codepoints` AND a TTF that covers those ranges. Mechanism is there — just not enabled in v1. |
+| Save / load mid-match | "Continue" in M6.1 is greyed in v1 — full save state requires a different POD than `WorldSnapshot` (input state, RNG state, replay buffer) |
+
 ### Out of scope for v1
 - Split-screen (deferred per § 1).
 - Level editor (the source-asset workflow IS the editor).
@@ -1612,6 +2045,10 @@ Each item here is a known engine subsystem that hasn't been exercised in this sh
 | Audio thread integration | miniaudio runs its own callback thread; AudioTriggerSystem must enqueue, not block | Use `EventChannel<AudioPlay>` — the typed event channel is already MPSC-safe. miniaudio drains on its own thread. |
 | Input → multi-player on one keyboard | 7 keys × 4 players = 28 keys; key-ghosting on cheap keyboards | Document a known-good rollover-friendly keyboard. Joystick / gamepad support is stretch. |
 | Determinism with floats | The original used integer / fixed-point physics on Win9x | Stick to `float` but pin `-ffloat-store` / `-msse2 -mfpmath=sse` (already the engine default on Linux). Document that replay determinism is single-platform. |
+| Text rendering (M6) | No font system in the engine today; HudSystem uses sprite-digits only | M6.0 ships a TTF runtime bake via `stb_truetype.h` + `textPrintf` example-side. Drop-in swappable font (replace the .ttf, pixel size + codepoint range from `FontConfig`). SDF / hinting / kerning are opt-in later. |
+| UI compositor cost (M6) | Many small `DrawItem`s per tick (each glyph is one quad) at 4 viewports could push the renderer's instance buffer | M6 budget gate: HudSystem + UISystem combined < 100 µs / tick. If breached, batch glyphs into a single instanced draw per text run. |
+| Settings persistence portability (M6.5) | Host-endian POD on disk → BE host loads LE-saved file produces garbage | v1 scope is Linux x86_64 only (same as the perf box); document the limitation. Cross-host config sync is out of scope. |
+| Pause + replay interaction (M6.4) | Recording on paused frames would desync the input stream | `Replay::onStep` skips paused steps; `Engine::setPaused(true)` already zeros per-tick stats so the contract is clean. Pinned by a M6.4 replay round-trip test. |
 
 ---
 
@@ -1623,6 +2060,7 @@ Per the standing project commit policy (don't autonomously commit; user authoriz
 - **Milestone 1** — first code-bearing batch. Bundles renderer choice + ship-thrust loop. Single PR / commit.
 - **Milestone 2** — second batch. Bundles terrain + Tier 1 importer.
 - Each subsequent milestone — its own batch.
+- **Milestone 6** — each M6.x batch its own commit (the M5 cadence: one batch == one commit, each with its own test + headless smoke). M6.0 is the lone batch that may touch multiple game-side systems at once (font + compositor + KeyMap) since they're tightly coupled; subsequent M6.x batches are self-contained.
 
 Per the threadmaxx convention (see `CLAUDE.md` § "When adding a new public symbol"), if any milestone exposes a new public engine knob, that knob lands with a `doc/performance_tuning.md` entry in the same batch. No new public surface is currently planned — the tou2d binary is example-side only.
 
