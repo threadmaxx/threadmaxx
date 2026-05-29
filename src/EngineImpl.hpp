@@ -287,6 +287,14 @@ public:
     /// Forwarded to via `Engine::engineSerial()`.
     std::uint64_t engineSerial() const noexcept { return engineSerial_; }
 
+    // Submit the currently-published front frame with an overridden alpha.
+    // Used by run() to deliver interpolation frames between sim steps,
+    // without rebuilding the instance array (world state is unchanged
+    // between ticks), and by hosts that drive step() manually and want
+    // to keep the renderer presenting while setPaused(true). Safe to
+    // call only on the sim thread.
+    void submitInterpolatedFrame(float alpha);
+
 private:
     // Applies a command buffer's commands to the world. Single-threaded.
     void commitBuffer(CommandBuffer& cb);
@@ -329,12 +337,6 @@ private:
 
     // Build the back render frame from current world state, then publish it.
     void buildRenderFrame();
-
-    // Submit the currently-published front frame with an overridden alpha.
-    // Used by run() to deliver interpolation frames between sim steps,
-    // without rebuilding the instance array (world state is unchanged
-    // between ticks). Safe to call only on the sim thread.
-    void submitInterpolatedFrame(float alpha);
 
     // Recompute waves_ from systems_'s declared read/write sets. Greedy
     // first-fit in registration order, so within a wave the order is also

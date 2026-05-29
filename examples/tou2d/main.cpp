@@ -1011,6 +1011,19 @@ int main(int argc, char** argv) {
             }
         }
         engine.step();
+        // M6.4 fix — when paused, `step()` is a no-op and never calls
+        // `renderer->submitFrame`, so the swapchain freezes on the last
+        // pre-pause image. The host meanwhile keeps repainting the UI
+        // overlay bitmap (Pause screen rows, focus highlight) and
+        // pushing those changes to the GPU texture via
+        // `updateUiOverlayRegion`. Without a fresh submit those texture
+        // updates never reach the screen — symptom: menu is functionally
+        // present (Quit etc. selectable) but invisible. Resubmit the
+        // existing front frame so the renderer redraws with the latest
+        // UI overlay texture. alpha=0 because sim state didn't advance.
+        if (framePaused) {
+            engine.submitInterpolatedFrame(0.0f);
+        }
         if (replayRecorder.valid() && !framePaused) {
             replayRecorder.recordTick(
                 std::span<const tou2d::PlayerInput>(sampledInputs.data(),

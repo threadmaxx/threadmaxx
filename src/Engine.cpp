@@ -16,6 +16,9 @@ Engine::~Engine() = default;
 bool Engine::initialize(IGame& game) { return impl_->initialize(game, *this); }
 void Engine::step()                   { impl_->step(); }
 void Engine::run()                    { impl_->run(); }
+void Engine::submitInterpolatedFrame(float alpha) noexcept {
+    impl_->submitInterpolatedFrame(alpha);
+}
 void Engine::shutdown()               { impl_->shutdown(); }
 
 void Engine::requestQuit() noexcept       { impl_->requestQuit(); }

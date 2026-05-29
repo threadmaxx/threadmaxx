@@ -94,6 +94,19 @@ public:
     /// Performs render-frame interpolation between sim ticks.
     void run();
 
+    /// Re-submit the current front render frame with the given
+    /// interpolation `alpha` (0..1). Useful for hosts that drive `step()`
+    /// manually and need to keep the renderer presenting even while
+    /// `setPaused(true)` — `step()` is a no-op when paused (no
+    /// `submitFrame` call), so without this hook the swapchain freezes
+    /// on the pre-pause image. Renderer-side textures updated between
+    /// paused ticks (e.g. a UI overlay bitmap) become visible only once
+    /// a fresh frame is submitted; calling this every paused tick
+    /// guarantees that. World state is not rebuilt; only `RenderFrame::alpha`
+    /// is overwritten.
+    /// @thread_safety Sim thread only.
+    void submitInterpolatedFrame(float alpha) noexcept;
+
     /// Tear down in reverse-registration order. Idempotent.
     void shutdown();
 
