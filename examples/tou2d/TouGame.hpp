@@ -116,6 +116,13 @@ public:
     /// a `ReplayPlayer*` for `--play` mode; null after teardown.
     InputSystem*  inputSystem()  noexcept { return input_; }
 
+    /// M6.1 — borrowed pointer to the UI state-machine system. Valid
+    /// only between `onSetup` and `onTeardown`. The host (main.cpp)
+    /// uses it to flip into MainMenu on no-CLI launches and to pump
+    /// per-frame key edges into `moveFocus` / `acceptFocused`. Null
+    /// after teardown.
+    UISystem*     uiSystem()     noexcept { return ui_; }
+
     /// Handle of P1's ship — host-side smoke tests use this to verify
     /// final position. Valid only between onSetup and onTeardown.
     threadmaxx::EntityHandle playerShip() const noexcept {

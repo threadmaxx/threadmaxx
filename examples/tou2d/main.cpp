@@ -12,6 +12,7 @@
 #include "Replay.hpp"
 #include "SpriteCompositor.hpp"
 #include "TouGame.hpp"
+#include "UISystem.hpp"
 #include "ui/Font.hpp"
 #include "ui/UiOverlayBitmap.hpp"
 
@@ -288,6 +289,15 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // M6.1 — "no CLI args" => show MainMenu before gameplay. Any arg
+    // (`<N>` bounded tick count, `--humans`, `--bots`, `--level`,
+    // `--gen*`, `--special`, `--record`, `--play`, `--mode`,
+    // `--repair-tiles`, ...) bypasses the menu: headless smoke,
+    // benchmark loops, and replay round-trips are unaffected. The
+    // bypass is a UX shortcut — gameplay still defaults to the M5.1
+    // shape (1 human + 3 bots, synthetic arena).
+    const bool cliMenuBypass = (argc > 1);
+
     // M5.4 — `--record` and `--play` are mutually exclusive. In play
     // mode the replay file's header overrides --humans / --bots /
     // --mode / --level so the playback ALWAYS matches the recording's
@@ -490,12 +500,54 @@ int main(int argc, char** argv) {
     // M6.0b — CPU-side RGBA8 framebuffer the per-tick UI emits paint
     // into. Sized to the swapchain extent; resize is rare (only on
     // window resize). One full-frame upload on first tick, partial
-    // dirty-bbox uploads thereafter. v1 UI content is the
-    // "TOU2D · M6.0b" marker; M6.1+ fills in real menu content.
+    // dirty-bbox uploads thereafter. M6.1 fills it with the active
+    // UIScreen's rows + focus highlight; when on UIScreen::None the
+    // overlay is cleared (transparent) so gameplay shows through.
     tou2d::ui::UiOverlayBitmap uiOverlay;
     uiOverlay.resize(kInitialWidth, kInitialHeight);
     std::vector<std::uint8_t> uiUploadScratch;
     bool uiOverlayInstalled = false;
+
+    // M6.1 — UI key-edge tracker. We poll GLFW directly each frame
+    // (independently of InputSystem, which is paused while a menu is
+    // up) and dispatch UiUp/UiDown/UiAccept/UiCancel actions on the
+    // RISING edge — held keys do not auto-repeat. The KeyMap defaults
+    // (declared once on startup) populate the UI bindings on slot 0.
+    const tou2d::KeyMap uiKeyMap = tou2d::makeDefaultKeyMap();
+    struct UiKeyEdges {
+        bool prev[6] = {};   // index: 0=UiUp 1=UiDown 2=UiLeft 3=UiRight 4=UiAccept 5=UiCancel
+        bool rising[6] = {};
+        void poll(GLFWwindow* w, const tou2d::KeyMap& km) {
+            if (!w) return;
+            const auto& row = km.binding[0];
+            constexpr std::array<tou2d::Action, 6> kSlots = {
+                tou2d::Action::UiUp, tou2d::Action::UiDown,
+                tou2d::Action::UiLeft, tou2d::Action::UiRight,
+                tou2d::Action::UiAccept, tou2d::Action::UiCancel,
+            };
+            for (std::size_t i = 0; i < kSlots.size(); ++i) {
+                const std::uint16_t key =
+                    row[static_cast<std::size_t>(kSlots[i])];
+                const bool cur = (key != tou2d::kKeyUnbound) &&
+                                 glfwGetKey(w, static_cast<int>(key)) == GLFW_PRESS;
+                rising[i] = cur && !prev[i];
+                prev[i]   = cur;
+            }
+        }
+    };
+    UiKeyEdges uiEdges{};
+
+    // M6.1 — flip into MainMenu when launched without CLI args. The
+    // engine starts paused so no ticks accumulate behind the menu;
+    // the per-frame UI sync (below) keeps engine.paused() bound to
+    // ui->menuActive(). The bypass path leaves UIScreen::None set in
+    // the UISystem constructor — gameplay starts immediately, same as
+    // every M1..M5 milestone.
+    if (game.uiSystem() && !cliMenuBypass) {
+        game.uiSystem()->setCurrent(tou2d::UIScreen::MainMenu);
+        engine.setPaused(true);
+        std::printf("[tou2d] no CLI args — opening MainMenu\n");
+    }
 
     // M5.4 — wire the replay player into the input system once onSetup
     // has run. Recorder opens here too so the file's header lands
@@ -812,6 +864,38 @@ int main(int argc, char** argv) {
     std::array<tou2d::PlayerInput, tou2d::kReplayKeyboardSlots> sampledInputs{};
     while (!glfwWindowShouldClose(window) && !engine.quitRequested()) {
         glfwPollEvents();
+        // M6.1 — pump UI key edges + dispatch when a menu is up. Drives
+        // moveFocus / acceptFocused on UiUp / UiDown / UiAccept.
+        // UiCancel returns to MainMenu from sub-screens; on MainMenu
+        // it's a no-op (Quit row is the explicit exit). Bypass: when
+        // current() == None the poller still updates prev[] but takes
+        // no action — so cancelling out of a menu doesn't auto-fire
+        // UiAccept on the first gameplay frame.
+        auto* ui = game.uiSystem();
+        if (ui) {
+            uiEdges.poll(window, uiKeyMap);
+            if (ui->menuActive()) {
+                if (uiEdges.rising[0]) ui->moveFocus(-1);
+                if (uiEdges.rising[1]) ui->moveFocus(+1);
+                if (uiEdges.rising[4]) ui->acceptFocused();
+                if (uiEdges.rising[5] && ui->current() != tou2d::UIScreen::MainMenu) {
+                    ui->setCurrent(tou2d::UIScreen::MainMenu);
+                }
+            }
+            // Bind engine pause to menu-active. Cheap conditional set
+            // — Engine::setPaused doesn't fire change events, so a
+            // no-op call is free.
+            const bool wantPaused = ui->menuActive();
+            if (engine.paused() != wantPaused) {
+                engine.setPaused(wantPaused);
+            }
+            if (ui->pendingQuit()) {
+                std::printf("[tou2d] menu Quit selected — exiting\n");
+                ui->clearPendingQuit();
+                break;
+            }
+        }
+
         // M5.4 — playback advances the recorded stream BEFORE step so
         // InputSystem reads the current tick's inputs from the player.
         // EOF ends the run cleanly.
@@ -853,22 +937,51 @@ int main(int argc, char** argv) {
                 ++hashMismatches;
             }
         }
-        // M6.0b — repaint the UI overlay bitmap for this tick. The
-        // overlay is a single CPU-side RGBA8 framebuffer; we clear,
-        // emit text (and eventually rects, sprites, etc.), then
-        // upload only the dirty bbox. v1 content: a marker proving
-        // the renderer path is live. M6.1+ replaces this body with
-        // per-UIScreen handlers.
+        // M6.1 — repaint the UI overlay bitmap for this tick. Three
+        // paths:
+        //   * font invalid → no overlay (graceful degrade).
+        //   * menuActive → paint the active screen's rows + focus.
+        //   * !menuActive → clear to transparent (gameplay tint).
+        // The dirty-bbox upload path is the same for all three so the
+        // GPU texture always reflects exactly what's in the bitmap.
         if (fontAtlas.valid()) {
             uiOverlay.clear(0u);  // transparent
-            // Top-left HUD marker. y = ascent so the baseline sits
-            // one full font height below the screen top — keeps the
-            // glyphs entirely on-screen even at the smallest atlas.
-            uiOverlay.drawText(fontAtlas,
-                               /*baseX=*/ 8.0f,
-                               /*baseY=*/ static_cast<float>(fontAtlas.ascent + 4),
-                               /*color=*/ 0xFFFFFFFFu,
-                               "TOU2D \xB7 M6.0b READY");
+            if (ui && ui->menuActive()) {
+                // Title line — paints which screen the user is on.
+                const char* title = "TOU2D";
+                switch (ui->current()) {
+                    case tou2d::UIScreen::MainMenu: title = "TOU2D \xB7 Main Menu";       break;
+                    case tou2d::UIScreen::Credits:  title = "TOU2D \xB7 Credits";          break;
+                    default:                        title = "TOU2D \xB7 Menu";             break;
+                }
+                const int lineH = (fontAtlas.ascent - fontAtlas.descent +
+                                   fontAtlas.lineGap);
+                float baseY = static_cast<float>(fontAtlas.ascent + 8);
+                uiOverlay.drawText(fontAtlas,
+                                   /*baseX=*/ 16.0f, baseY,
+                                   /*color=*/ 0xFFFFFFFFu, title);
+                baseY += static_cast<float>(lineH) * 1.5f;
+
+                const auto rs = ui->currentRows();
+                const std::int32_t focus = ui->focusIndex();
+                for (std::size_t i = 0; i < rs.size(); ++i) {
+                    const bool focused = (static_cast<std::int32_t>(i) == focus);
+                    // 0xAABBGGRR — focused=cyan, enabled=white,
+                    // disabled=mid-grey. The leading "> " marker is
+                    // the second focus cue (colorblind-safe).
+                    const std::uint32_t color =
+                        focused             ? 0xFFFFFF40u :   // cyan
+                        rs[i].enabled       ? 0xFFFFFFFFu :   // white
+                                              0xFF808080u;    // grey
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf), "%s %s",
+                                  focused ? ">" : " ", rs[i].label);
+                    uiOverlay.drawText(fontAtlas,
+                                       /*baseX=*/ 24.0f, baseY,
+                                       color, buf);
+                    baseY += static_cast<float>(lineH);
+                }
+            }
             if (!uiOverlayInstalled) {
                 const bool ok = renderer->setUiOverlayFromRgba(
                     uiOverlay.bytes(), uiOverlay.width(), uiOverlay.height());

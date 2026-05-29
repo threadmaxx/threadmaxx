@@ -407,6 +407,7 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     collision_     = nullptr;
     repairPickup_  = nullptr;
     input_         = nullptr;
+    ui_            = nullptr;
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {

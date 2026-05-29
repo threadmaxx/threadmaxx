@@ -1627,7 +1627,8 @@ gameplay):
 | Batch | Title | Depends on | Engine-side prereq? |
 |-------|-------|------------|---------------------|
 | M6.0  | Engine prereqs — TTF font (drop-in) + UI compositor + key-action layer | — | YES (font + key-map) |
-| M6.1  | UI state machine + main menu | M6.0 | no |
+| M6.0b | Vulkan overlay path + UISystem skeleton + CPU compositor | M6.0 | no |
+| M6.1  | UI state machine + main menu (LANDED 2026-05-29) | M6.0b | no |
 | M6.2  | Match / level setup screen | M6.1 | no |
 | M6.3  | Ship / player slot assignment screen | M6.1 | no |
 | M6.4  | Pause menu (in-game) | M6.1 | no (uses `Engine::setPaused`) |
@@ -1719,7 +1720,45 @@ input is bit-identical (rebind the defaults and the replay determinism
 test still round-trips); ctest unchanged at 137+ (new
 `tou2d_font_atlas_test`, `tou2d_keymap_default_binding_test`).
 
-#### M6.1 — UI state machine + main menu (PLANNED)
+#### M6.1 — UI state machine + main menu (LANDED 2026-05-29)
+
+**Outcome.** `UISystem` registered before `InputSystem`; owns the
+`UIScreen current` state + a per-screen `MenuRow` table + a focus
+cursor. MainMenu rows match the §M6 spec (Continue greyed, Single
+Match, Level Setup stub, Options stub, Benchmark stub, Credits, Quit).
+Credits is a single-`Back`-row sub-screen. The four stub rows log to
+stderr; LevelSetup/Options/Benchmark land in M6.2/M6.5 respectively.
+
+**Input.** main.cpp polls GLFW directly for the six `Ui*` actions on
+slot 0 of the default `KeyMap`, edge-detects RISING transitions, and
+calls `moveFocus(±1)` / `acceptFocused()` / `setCurrent(MainMenu)`
+(UiCancel pop-back from sub-screens). `UISystem::update` stays empty
+so the wave scheduler treats it as a no-op; the state mutates outside
+the engine step.
+
+**Pause coupling.** When `menuActive()`, main.cpp calls
+`engine.setPaused(true)`; transition back to `UIScreen::None` unpauses.
+`engine.step()` is a no-op while paused, so ships freeze in-place
+without an explicit InputSystem swallow.
+
+**CLI bypass.** `argc > 1` → bypass menu; gameplay starts immediately
+on `UIScreen::None` (preserves headless smoke + replay + bench
+behaviour). `argc == 1` → land on MainMenu paused; "Single Match"
+dismisses the menu and unfreezes the existing world (no re-spawn —
+ships were already seeded in `TouGame::onSetup` with the M5.1
+defaults).
+
+**Tests.**
+* `tou2d_menu_navigation_test` — pins the MainMenu row table, focus
+  init lands on first enabled, moveFocus wrap, moveFocus skips
+  disabled, Quit → `pendingQuit()`, Credits → Back round-trip.
+* Existing `tou2d_uiscreen_state_machine_test` covers the
+  `UIScreenChanged` emit + same-screen no-op invariants.
+* Headless bounded run (`./threadmaxx_tou2d 200`) bypasses menu and
+  produces the same final ship pos as M6.0b.
+* Record/replay round-trip at 150 ticks: 0 hash mismatches.
+
+**Spec reference (preserved for context).**
 
 **`UISystem`** — new `ISystem` that owns the screen state machine:
 
