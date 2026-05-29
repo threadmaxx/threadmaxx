@@ -10,6 +10,7 @@ set(THREADMAXX_TESTS
     system_stats_test
     query_test
     alpha_test
+    submit_interpolated_frame_test
     parallel_systems_test
     acceleration_test
     resource_registry_test

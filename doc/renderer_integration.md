@@ -233,6 +233,44 @@ keyed by `EntityHandle`, then lerp `prev -> current` by `alpha` in your
 draw call. The `examples/boids` SDL2 renderer does this; copy from
 there.
 
+### Paused-host re-submit (manual `step()` drivers)
+
+Hosts that drive `step()` themselves — i.e. not via `run()` — need
+`Engine::submitInterpolatedFrame(float alpha)` whenever they want a
+fresh frame on screen but the world state did not advance. The
+canonical case is a paused engine with a host-owned UI overlay:
+
+- `setPaused(true)` makes `step()` a no-op. It does NOT call
+  `submitFrame`, so the renderer's swapchain freezes on the
+  last pre-pause image.
+- The host meanwhile keeps editing renderer-side resources — e.g. a
+  UI overlay bitmap with a Pause menu, focus highlight, scoreboard
+  text — and pushing those edits to GPU textures.
+- Without a fresh `submitFrame` call, those texture updates never
+  reach the screen. Symptom: menu is functionally responsive
+  (input handled, selection moves) but invisible.
+
+`submitInterpolatedFrame(alpha)` re-presents the current front frame
+with the supplied alpha. World state is not rebuilt; only
+`RenderFrame::alpha` is overwritten. Use `alpha = 0` when the sim
+did not advance (it didn't — we're paused). Call it every paused
+iteration of your host loop:
+
+```cpp
+while (!engine.quitRequested()) {
+    pollInput();
+    refreshUiOverlay();              // edits renderer-side textures
+    engine.step();
+    if (engine.paused()) {
+        engine.submitInterpolatedFrame(0.0f);
+    }
+}
+```
+
+`run()` already calls `submitInterpolatedFrame` internally between
+catch-up steps; manual drivers must invoke it explicitly. Sim-thread
+only — same context as `step()`.
+
 ## Worked example
 
 The minimal example's `ConsoleRenderer` does the smallest thing that

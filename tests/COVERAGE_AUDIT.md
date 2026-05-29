@@ -59,6 +59,7 @@ real regressions. They are still listed below for completeness.
 
 ## Engine.hpp
 - ✓ ctor / dtor / `initialize` / `step` / `run` / `shutdown` — `alpha_test.cpp` + most integration tests
+- ✓ `submitInterpolatedFrame(float)` (M6.4 follow-up) — `submit_interpolated_frame_test.cpp` pins the paused-host re-submit hook: alpha overwrite, tick unchanged, N-call repeatability, normal `step()` path still wins post-unpause. `alpha_test.cpp` exercises the transitive `run()`-mediated path.
 - ✓ `requestQuit` — `alpha_test.cpp`
 - ✗ `quitRequested` — **UNCOVERED. Trivial.** Sister to `requestQuit`; `run()` polls it internally. No new test required.
 - ✓ `registerSystem` / `registerSystemAt` / `registeredSystemCount` — `register_system_at_test.cpp`
@@ -276,7 +277,7 @@ real regressions. They are still listed below for completeness.
 | CommandBuffer.hpp | 27 | 25 | 1 (`Bundle::with`) | 1 (`valueOnlyCount`) |
 | Components.hpp | 14 | 14 | 0 | 0 |
 | Config.hpp | 9 | 8 | 0 | 1 (`maxStepsPerIteration`) |
-| Engine.hpp | ~38 | 33 | 1 (`clearScriptedSkips`) | 4 (getters: `quitRequested`, `stallTimeout`, `timeScale`, `tickBudget`/`skipPolicy`) |
+| Engine.hpp | ~39 | 34 | 1 (`clearScriptedSkips`) | 4 (getters: `quitRequested`, `stallTimeout`, `timeScale`, `tickBudget`/`skipPolicy`) |
 | EventChannel.hpp | 9 | 9 | 0 | 0 |
 | Game.hpp | 2 | 1 | 0 | 1 (`onTeardown`) |
 | Handles.hpp | 3 | 3 | 0 | 0 |
