@@ -71,6 +71,19 @@ void populateSyntheticArena(TerrainGrid& grid) {
     for (const auto& [cx, cy] : kRepairCells) {
         grid.setRepairBase(cx, cy);
     }
+
+    // M7.6 — two small water puddles in the synthetic arena. Placed off
+    // the spawn axes so the smoke test still exits cleanly when no ship
+    // wanders into one; the demo's auto-aim AI typically grazes the
+    // bottom-quadrant puddle within the first few seconds.
+    constexpr int kPuddleRX = kSpoke + 3;
+    constexpr int kPuddleRY = kSpoke + 2;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            grid.setWater( kPuddleRX + dx, -kPuddleRY + dy);
+            grid.setWater(-kPuddleRX + dx,  kPuddleRY + dy);
+        }
+    }
 }
 
 /// Spawn one ship at (x, y) with LocalPlayer slot `slot`. P1 uses
@@ -305,6 +318,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     repairPickup ->setParticleSystem(particlesPtr);
     repairKit    ->setParticleSystem(particlesPtr);
     movementPtr  ->setParticleSystem(particlesPtr);   // M7.3 §5.1 — thruster plume
+    movementPtr  ->setTerrainGrid(&grid_);            // M7.6 — water sampling
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera->setNumHumans(numHumans_);
     camera_         = camera.get();

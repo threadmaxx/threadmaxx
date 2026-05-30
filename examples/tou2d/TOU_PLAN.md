@@ -3148,27 +3148,75 @@ Verification: build clean (no warnings); ctest 158/158 green; 200-
 tick smoke (`./build/examples/minimal/threadmaxx_minimal 200`)
 ends with `[ConsoleRenderer] shutdown after 201 frames`.
 
-**M7.6 — Water mechanic (NEW; buoyancy in MovementSystem)**
+**M7.6 — Water mechanic (buoyancy in MovementSystem) — LANDED 2026-05-30**
 
-No water concept exists today (`Attribute` is `Empty`/`Solid`/`Repair`).
-M7.6 adds it:
+Pre-M7.6 `Attribute` was `Air`/`Solid`/`Damage`/`RepairBase` —
+no water concept. M7.6 adds a non-blocking traversable cell that
+ships pass through but feel mechanically.
 
-- New terrain attribute `Water`. Visualized at level-load time as
-  blue tint on the background painter; mechanically interrogated
-  per-tick by `MovementSystem`.
-- MovementSystem applies, when the ship's center is in a water
-  cell:
-  - Velocity drag multiplier ~0.6 (configurable; reduces effective
-    thrust + max speed).
-  - Upward buoyancy force that offsets gravity; tunable so neutral
-    buoyancy lets a ship hover without thrust input. Suggested
-    starting point: `kBuoyancy = -kGravity * 0.7` for sink-but-
-    slowly behavior.
-- Transitions: smooth via per-tick interpolation rather than hard
-  switch at the cell boundary.
+1. **Data model (M7.6.a).** `DemoTypes.hpp` gains:
+   - `Attribute::Water = 4` (stable byte position past
+     `RepairBase = 3`).
+   - `TerrainGrid::setWater(cx, cy)` — non-blocking flip
+     (`hp = 0`, attr = Water; bullets and terrain-collision treat
+     it as Air-equivalent for solidity).
+   - Tunables: `kWaterBuoyancyFraction = 0.7f` (gravity scale
+     when fully submerged is `1 - 0.7 = 0.3`, sink-but-slowly),
+     `kWaterDragPerSecond = 1.6f` (first-order drag on top of
+     air damping), `kWaterTileColor = 0xFFB87038u` (ABGR
+     translucent blue for the background painter).
 
-Test pin: assert a ship dropped into a water cell decelerates +
-the gravity integration switches sign.
+2. **MovementSystem integration (M7.6.b).** New borrowed
+   `setTerrainGrid(const TerrainGrid*)`. Each integrate step
+   samples the ship's center + 4 cardinal neighbors at one
+   ship-half offset (5 samples total) for `Attribute::Water`;
+   `wetness = wet_samples / 5` is the smooth-blend fraction
+   in `[0, 1]`. Applied to:
+   - Gravity: `v.y -= kGravityAccel * (1 - wetness *
+     kWaterBuoyancyFraction) * dt`.
+   - Drag: after the normal air damping, when `wetness > 0`,
+     multiply both linear axes by `exp(-kWaterDrag * wetness * dt)`.
+   Null-grid is a no-op (collapses to pre-M7.6 behaviour) so
+   headless tests don't need to wire a grid.
+
+3. **TouGame wiring (M7.6.c).** `setTerrainGrid(&grid_)` on the
+   movement system at registration time. Synthetic arena
+   sprinkles two 5×3 puddles offset from the spawn axes so the
+   200-tick smoke run grazes a Water cell during normal AI
+   behaviour without being so close to spawn that the round
+   trivially exits inside one.
+
+4. **Background painter (M7.6.d).** New Water arm in
+   `main.cpp`'s level-load synth painter — translucent blue
+   (`r=56, g=112, b=184`) so water cells read as water at load.
+
+5. **Tests (M7.6.e).** New `tou2d_water_test`. Six sections:
+   - `Attribute::Water = 4` byte pin (forward-compat).
+   - `setWater` round-trip: attr → Water, hp stays 0, OOB silent.
+   - Tunable bands: buoyancy ∈ (0, 1), drag ∈ (0, 5).
+   - Integration semantics, mirroring `MovementSystem`'s
+     gravity → air-damp → water-damp order:
+     - air-only matches expected `-g·dt` step delta,
+     - fully-wet single-tick velocity strictly greater (less
+       downward) than air-only,
+     - after 600 ticks (10 s @ 60 Hz) wet terminal-fall speed
+       is at least 25% slower than air-only,
+     - half-wetness strictly between (smooth-blend
+       monotonicity).
+
+6. **Deferred follow-ups.** Procedural water sprinkle
+   (parallel to `repairTileCount`) is OUT — would expand
+   `ProceduralLevelConfig` past its 8-byte replay-header
+   reservation. Lands when the replay header version bumps.
+   `BulletTerrainSystem` does not currently special-case Water
+   (bullets fly through, treated as Air via `hp == 0`); a
+   future polish round can add splash particles. Smooth-blend
+   wetness is also not piped into the thruster plume audio
+   yet — covered by a future audio polish batch.
+
+Verification: ctest green (159/159 with the new
+`tou2d_water_test`; +1 over M7.5). 200-tick headless smoke
+clean (`[ConsoleRenderer] shutdown after 201 frames`).
 
 **M7.7 — Acceptance closeout**
 
@@ -3189,7 +3237,7 @@ Mirror the M6.10 acceptance checklist for the M7 batches:
 |---|---|
 | `cameraMask` on `DebugLine` / `DebugPoint` | LANDED 2026-05-30 as part of M7.2 |
 | New `Pickup` user component + `PickupKind` enum | M7.5 prereq; sized as part of the split |
-| New terrain `Attribute::Water` enum value | M7.6 prereq; same patch as the buoyancy math |
+| New terrain `Attribute::Water` enum value | LANDED 2026-05-30 as part of M7.6 |
 
 ### Out of scope for v1
 - Split-screen (deferred per § 1).

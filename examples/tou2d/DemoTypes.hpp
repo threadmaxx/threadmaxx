@@ -221,6 +221,9 @@ enum class Attribute : std::uint8_t {
     Damage     = 2,
     RepairBase = 3,   ///< M7.5 — renamed from Repair (kept value 3 for
                       ///  snapshot stability with pre-M7.5 levels).
+    Water      = 4,   ///< M7.6 — non-blocking traversable cell. MovementSystem
+                      ///  reads it per tick and applies buoyancy + drag;
+                      ///  ships pass through without collision.
 };
 
 /// In-flight projectile. `weaponKind` values:
@@ -501,6 +504,25 @@ inline constexpr std::uint32_t kRepairTileColor = 0xFF40FFA0u;  // teal
 /// vs. sustained fire. Edge-triggered special-cycle still happens on
 /// entry (once per visit), preserving the M5.7 weapon-rotation feel.
 inline constexpr float kRepairBaseHpPerTick = 1.0f;
+
+/// M7.6 — water mechanic tunables.
+///
+/// `kWaterBuoyancyFraction` — fraction of gravity that buoyancy cancels
+/// when the ship is fully submerged. 0.7 → 30% effective gravity in
+/// water, so a thrust-off ship sinks slowly rather than hovering;
+/// matches the TOU_PLAN sink-but-slowly target.
+///
+/// `kWaterDragPerSecond` — additional first-order velocity damping
+/// applied on top of `kAirDamping`. Scales with the per-ship wetness
+/// fraction so a ship straddling the water surface sees a smooth
+/// continuous transition (no step at the cell boundary).
+///
+/// `kWaterTileColor` — translucent blue painted by the level-load
+/// background painter. Same alpha-bake convention as
+/// `kRepairTileColor` (RGBA, low byte = R).
+inline constexpr float        kWaterBuoyancyFraction = 0.7f;
+inline constexpr float        kWaterDragPerSecond    = 1.6f;
+inline constexpr std::uint32_t kWaterTileColor       = 0xFFB87038u;  // ABGR translucent blue
 
 /// M7.5 — data-driven pickup catalogue. `PickupKind` is the discriminator
 /// stored on the `Pickup` user component; `PickupSpec` carries the per-
@@ -826,6 +848,17 @@ struct TerrainGrid {
         const std::size_t i = indexOf(worldCellX, worldCellY);
         hp[i]   = hpVal;
         attr[i] = Attribute::RepairBase;
+    }
+
+    /// M7.6 — flip a cell to a non-blocking Water attribute. `hp` stays
+    /// 0 so terrain-collision treats it as Air (bullets pass, ships
+    /// don't bounce); `MovementSystem` reads the attribute per tick
+    /// and applies buoyancy + drag when the ship samples Water cells.
+    void setWater(std::int32_t worldCellX, std::int32_t worldCellY) noexcept {
+        if (!inBounds(worldCellX, worldCellY)) return;
+        const std::size_t i = indexOf(worldCellX, worldCellY);
+        hp[i]   = 0;
+        attr[i] = Attribute::Water;
     }
 
     void clear(std::int32_t worldCellX, std::int32_t worldCellY) noexcept {

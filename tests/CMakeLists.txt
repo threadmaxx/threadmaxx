@@ -310,6 +310,26 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_pickup_framework_test COMMAND tou2d_pickup_framework_test)
 
+    # M7.6 — water mechanic. Pins Attribute::Water enum byte,
+    # TerrainGrid::setWater round-trip, tuning-constant bands, and the
+    # MovementSystem integrate-step semantics (air-only vs fully-wet vs
+    # smooth blend at half wetness).
+    add_executable(tou2d_water_test tou2d_water_test.cpp)
+    target_link_libraries(tou2d_water_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_water_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_water_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_water_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_water_test COMMAND tou2d_water_test)
+
     # M6.0b — UISystem state machine + UIScreen enum + UIScreenChanged
     # event payload pin.
     add_executable(tou2d_uiscreen_state_machine_test

@@ -12,6 +12,14 @@ namespace tou2d {
 
 namespace {
 
+// M7.6 — neighbor sample offsets (in ship halves). Five samples per
+// ship: center plus the four cardinal-neighbor cells one ship-half
+// out. Wetness = wet-sample-count / 5 so a ship straddling the
+// surface sees a smoothly-varying fraction in [0.0, 1.0] instead of
+// a single hard 0→1 step at the cell boundary.
+constexpr int kWaterSampleCount = 5;
+constexpr float kShipHalfForSampling = 14.0f;
+
 // M1 / M4.5 tunables. The thrust / turn / cap constants below are the
 // REFERENCE values that match the "Basic ship" stat row (Strength 3 /
 // Thrusters 3 / Turning 3). Every other ship is computed as a ratio
@@ -43,6 +51,30 @@ inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
 inline threadmaxx::Quat quatFromAngleZ(float theta) noexcept {
     const float half = theta * 0.5f;
     return {0.0f, 0.0f, std::sin(half), std::cos(half)};
+}
+
+// M7.6 — five-sample wetness lookup in [0.0, 1.0]. Center + 4
+// cardinals at one ship-half offset. Out-of-bounds samples are
+// treated as Air (count toward "dry"), so a ship at the world edge
+// can never spuriously buoy upward.
+inline float sampleWetness(const TerrainGrid& grid, float px, float py) noexcept {
+    const float halfWu = kShipHalfForSampling;
+    const std::pair<float, float> samples[kWaterSampleCount] = {
+        { px,           py           },
+        { px + halfWu,  py           },
+        { px - halfWu,  py           },
+        { px,           py + halfWu  },
+        { px,           py - halfWu  },
+    };
+    int wet = 0;
+    for (const auto& s : samples) {
+        const std::int32_t cx = static_cast<std::int32_t>(
+            std::floor(s.first / kTileWorldUnits));
+        const std::int32_t cy = static_cast<std::int32_t>(
+            std::floor(s.second / kTileWorldUnits));
+        if (grid.attrAt(cx, cy) == Attribute::Water) ++wet;
+    }
+    return static_cast<float>(wet) / static_cast<float>(kWaterSampleCount);
 }
 
 } // namespace
@@ -136,12 +168,27 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
                 v.linear.x += forward.x * thrustMag * dt;
                 v.linear.y += forward.y * thrustMag * dt;
 
-                // ---- Gravity -----------------------------------------------
-                v.linear.y -= kGravityAccel * dt;
+                // ---- Gravity (M7.6 — buoyancy attenuates when wet) ---------
+                // wetness = 0 → full gravity; wetness = 1 → gravity reduced
+                // by `kWaterBuoyancyFraction`. Smooth blend via the 5-sample
+                // fraction so straddling the surface gives a continuous
+                // transition rather than a step at the cell boundary.
+                const float wetness = (terrain_ != nullptr)
+                    ? sampleWetness(*terrain_, t.position.x, t.position.y)
+                    : 0.0f;
+                const float gravityScale =
+                    1.0f - wetness * kWaterBuoyancyFraction;
+                v.linear.y -= kGravityAccel * gravityScale * dt;
 
-                // ---- Air damping -------------------------------------------
+                // ---- Air damping (M7.6 — extra drag scales with wetness) --
                 v.linear.x *= damping;
                 v.linear.y *= damping;
+                if (wetness > 0.0f) {
+                    const float waterDamping =
+                        std::exp(-kWaterDragPerSecond * wetness * dt);
+                    v.linear.x *= waterDamping;
+                    v.linear.y *= waterDamping;
+                }
 
                 // ---- Integrate position ------------------------------------
                 t.position.x += v.linear.x * dt;

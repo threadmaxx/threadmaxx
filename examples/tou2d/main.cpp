@@ -920,6 +920,12 @@ int main(int argc, char** argv) {
                         r = 64; g = 156; b = 76;
                     } else if (a == tou2d::Attribute::Damage) {
                         r = 156; g = 60; b = 60;
+                    } else if (a == tou2d::Attribute::Water) {
+                        // M7.6 — translucent-blue look against the dark
+                        // teal air. Vivid enough to read as water at
+                        // load; the in-game integrate is what makes it
+                        // feel wet (buoyancy + drag).
+                        r = 56; g = 112; b = 184;
                     }
                     const std::uint32_t hh =
                         (static_cast<std::uint32_t>(px) * 0x9E3779B1u) ^

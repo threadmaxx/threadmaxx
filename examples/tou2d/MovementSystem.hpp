@@ -9,6 +9,7 @@
 namespace tou2d {
 
 class ParticleSystem;
+struct TerrainGrid;
 
 /// Reads PlayerInput + Transform + Velocity per ship, applies thrust
 /// (turn rate to orientation, forward force to velocity), then folds
@@ -69,6 +70,15 @@ public:
     /// particles and `update()` then just skips the emit.
     void setParticleSystem(ParticleSystem* p) noexcept { particles_ = p; }
 
+    /// M7.6 — borrowed pointer to the demo's TerrainGrid. When set,
+    /// `update()` samples each ship's center + 4 cardinal neighbors
+    /// (at one ship-half offset) for `Attribute::Water`; the resulting
+    /// 0..1 wetness fraction blends buoyancy and per-tick drag into
+    /// the normal gravity / damping integrate. Null is fine — without
+    /// a grid, water mechanics are a no-op and behaviour collapses
+    /// to the pre-M7.6 air-only path.
+    void setTerrainGrid(const TerrainGrid* g) noexcept { terrain_ = g; }
+
     /// M7.3 §5.1 — emit one thruster puff every `kThrustEmitInterval`
     /// ticks per actively-thrusting ship. 3 → 20 puffs/sec at 60 Hz;
     /// combined with TTL 12-18 each ship caps at ~6 live thrust
@@ -82,8 +92,9 @@ private:
     float            levelMaxX_   = 0.0f;
     float            levelMaxY_   = 0.0f;
     bool             levelActive_ = false;
-    ParticleSystem*  particles_   = nullptr;
-    std::uint32_t    tickPhase_   = 0;   // M7.3 — bumped each update() call
+    ParticleSystem*    particles_ = nullptr;
+    const TerrainGrid* terrain_   = nullptr;   // M7.6 — water lookup; nullable
+    std::uint32_t      tickPhase_ = 0;   // M7.3 — bumped each update() call
 };
 
 } // namespace tou2d
