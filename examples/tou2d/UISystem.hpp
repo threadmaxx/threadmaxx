@@ -131,7 +131,12 @@ enum class MatchSetupKnob : std::uint8_t {
     SlotRole     = 13,
     SlotShip     = 14,
     SlotPalette  = 15,
-    Count        = 16,  ///< Sentinel (== number of scroller knob classes).
+    /// M7.4 — per-slot faction selector. Cycles through Auto + faction
+    /// IDs 0..N-1 (kPlayerSetupFactionCycleMax). Auto = use the slot
+    /// index, which puts every slot in its own faction (default = pre-
+    /// M7.4 free-for-all).
+    SlotFaction  = 16,
+    Count        = 17,  ///< Sentinel (== number of scroller knob classes).
 };
 
 /// M6.5 — scroller knob identifier for Options sub-screens. Parallel

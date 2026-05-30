@@ -203,8 +203,8 @@ constexpr MenuRow kMatchSetupRows[] = {
 
 // M6.3 — PlayerSetup screen rows. One row block per slot (slot-major
 // order). Within a slot the order is `Tag c1 / Tag c2 / Tag c3 / Role
-// / Ship / Palette`. After all 4 slots a single "Back" action returns
-// to MatchSetup. Total = 4 × 6 + 1 = 25 rows.
+// / Ship / Palette / Faction (M7.4)`. After all 4 slots a single
+// "Back" action returns to MatchSetup. Total = 4 × 7 + 1 = 29 rows.
 //
 // Each per-slot row carries the slotIdx so the knob handlers
 // (`cycleKnob_` / `formatKnobValue_`) can route to the right slot in
@@ -225,6 +225,8 @@ constexpr MenuRow kPlayerSetupRows[] = {
       MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     0 },
     { "Slot 1 palette",    MenuAction::None, true,
       MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  0 },
+    { "Slot 1 faction",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotFaction,  0 },
     // ---- Slot 2 -------------------------------------------------
     { "Slot 2 tag c1",     MenuAction::None, true,
       MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar0, 1 },
@@ -238,6 +240,8 @@ constexpr MenuRow kPlayerSetupRows[] = {
       MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     1 },
     { "Slot 2 palette",    MenuAction::None, true,
       MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  1 },
+    { "Slot 2 faction",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotFaction,  1 },
     // ---- Slot 3 -------------------------------------------------
     { "Slot 3 tag c1",     MenuAction::None, true,
       MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar0, 2 },
@@ -251,6 +255,8 @@ constexpr MenuRow kPlayerSetupRows[] = {
       MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     2 },
     { "Slot 3 palette",    MenuAction::None, true,
       MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  2 },
+    { "Slot 3 faction",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotFaction,  2 },
     // ---- Slot 4 -------------------------------------------------
     { "Slot 4 tag c1",     MenuAction::None, true,
       MenuRowKind::Scroller, MatchSetupKnob::SlotTagChar0, 3 },
@@ -264,12 +270,14 @@ constexpr MenuRow kPlayerSetupRows[] = {
       MenuRowKind::Scroller, MatchSetupKnob::SlotShip,     3 },
     { "Slot 4 palette",    MenuAction::None, true,
       MenuRowKind::Scroller, MatchSetupKnob::SlotPalette,  3 },
+    { "Slot 4 faction",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::SlotFaction,  3 },
     // ---- Trailer ------------------------------------------------
     { "Back",              MenuAction::BackToMain, true },
 };
 static_assert(std::size(kPlayerSetupRows) ==
-                  kMatchSetupSlotCount * 6 + 1,
-              "PlayerSetup row table = 4 slots * 6 fields + 1 Back row");
+                  kMatchSetupSlotCount * 7 + 1,
+              "PlayerSetup row table = 4 slots * 7 fields + 1 Back row");
 
 // M6.6 — Results screen rows. Layout (top-to-bottom):
 //   row 0  — winner banner (Display, slotIdx = 0xFF)
@@ -730,6 +738,22 @@ std::uint8_t paletteFromIndex_(std::int64_t idx) noexcept {
 // Role cycle is Auto / Human / Bot = 3 positions, encoded directly.
 constexpr std::size_t kRoleCycleSize = 3;
 
+// M7.4 — Faction cycle is Auto + 4 named factions = 5 positions. The
+// faction count matches `kMatchSetupSlotCount` so any two of the four
+// keyboard-eligible slots can pair up; bots beyond slot 3 still get a
+// per-slot default via the Auto sentinel.
+constexpr std::size_t kFactionCycleSize = 5;
+
+std::int64_t factionToIndex_(std::uint8_t v) noexcept {
+    if (v == 0xFFu) return 0;
+    if (v >= kFactionCycleSize - 1) return 0;
+    return 1 + static_cast<std::int64_t>(v);
+}
+std::uint8_t factionFromIndex_(std::int64_t idx) noexcept {
+    if (idx <= 0) return 0xFFu;
+    return static_cast<std::uint8_t>(idx - 1);
+}
+
 } // namespace
 
 void UISystem::cycleKnob_(MatchSetupKnob knob,
@@ -866,6 +890,15 @@ void UISystem::cycleKnob_(MatchSetupKnob knob,
             const std::int64_t nxt = wrapInRange_(
                 cur, delta, static_cast<std::int64_t>(kPaletteCycleSize));
             s->paletteIdx = paletteFromIndex_(nxt);
+            break;
+        }
+        case MatchSetupKnob::SlotFaction: {
+            PlayerSlotSetup* s = slotOrNull();
+            if (!s) break;
+            const std::int64_t cur = factionToIndex_(s->factionId);
+            const std::int64_t nxt = wrapInRange_(
+                cur, delta, static_cast<std::int64_t>(kFactionCycleSize));
+            s->factionId = factionFromIndex_(nxt);
             break;
         }
         case MatchSetupKnob::Count:
@@ -1071,6 +1104,20 @@ std::size_t UISystem::formatKnobValue_(MatchSetupKnob knob,
                 n = std::snprintf(buf, bufN, "%s", kPaletteLabels[p]);
             } else {
                 n = std::snprintf(buf, bufN, "?");
+            }
+            break;
+        }
+        case MatchSetupKnob::SlotFaction: {
+            if (slotIdx >= kMatchSetupSlotCount) { buf[0] = '\0'; break; }
+            const std::uint8_t f =
+                matchSetup_.playerSlots[slotIdx].factionId;
+            if (f == 0xFFu) {
+                n = std::snprintf(buf, bufN, "Auto");
+            } else {
+                // Render as "F<n>" so a screenshot of the menu is
+                // unambiguous; the cycle size matches kFactionCycleSize
+                // (Auto + 4 named) so f ∈ [0, 3] here in normal use.
+                n = std::snprintf(buf, bufN, "F%u", unsigned(f));
             }
             break;
         }

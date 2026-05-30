@@ -32,6 +32,12 @@ struct PlayerInput {
 };
 static_assert(sizeof(PlayerInput) == 8, "PlayerInput must stay 8 bytes");
 
+/// M7.4 — sentinel meaning "use slot as faction" for LocalPlayer /
+/// PlayerSlotSetup. With the default sentinel every slot ends up in
+/// its own faction, which reproduces the pre-M7.4 free-for-all (no
+/// ally relationships) since `findAlly` requires equal factionId.
+inline constexpr std::uint8_t kFactionAuto = 0xFFu;
+
 /// Marks an entity as one of the local players. `slot` ∈ [0, 3] picks
 /// the key-binding row (P1 arrows / P2 WSAD / P3 IJKL / P4 numpad).
 ///
@@ -39,10 +45,20 @@ static_assert(sizeof(PlayerInput) == 8, "PlayerInput must stay 8 bytes");
 /// to seek-and-fire AI (BotControlSystem). Both systems are preStep —
 /// BotControlSystem is registered AFTER InputSystem so it overrides
 /// the keyboard read for bot ships only.
+///
+/// M7.4 — `factionId` groups ships into ally pools. BotControlSystem
+/// skips same-faction candidates when picking a target; WeaponFireSystem
+/// suppresses a bot's basic/special shot whose forward arc covers a
+/// same-faction ally. Humans aren't filtered (friendly fire stays as a
+/// game rule when the human aims at an ally manually). The resolved
+/// value is always < `kFactionAuto`; TouGame::spawnShip rewrites the
+/// sentinel to `slot` at spawn time so default = unique faction =
+/// pre-M7.4 free-for-all behaviour.
 struct LocalPlayer {
-    std::uint8_t slot  = 0;
-    std::uint8_t isBot = 0;
-    std::uint8_t _pad[6] = {};
+    std::uint8_t slot      = 0;
+    std::uint8_t isBot     = 0;
+    std::uint8_t factionId = kFactionAuto;
+    std::uint8_t _pad[5]   = {};
 };
 static_assert(sizeof(LocalPlayer) == 8, "LocalPlayer must stay 8 bytes");
 

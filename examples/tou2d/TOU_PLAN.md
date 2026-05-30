@@ -2970,25 +2970,83 @@ Thrust particle hits the wire with `colorRGBA & 0x00FFFFFF` ==
 `kThrustColorHot`, a damage-smoke puff with `0x00606468u`.
 ctest 156/156 green; 200-tick smoke clean.
 
-**M7.4 — Faction system (NEW; bot ally targeting)**
+**M7.4 — Faction system (bot ally targeting) — LANDED 2026-05-30**
 
-No `Faction` concept exists in the codebase today. M7.4 introduces
-one as the minimum needed for ally non-aggression:
+Game-side only; no engine surface touched. Adds the first ally
+relationship in the demo via a single `uint8_t factionId` field
+threaded through LocalPlayer, MatchSetup, the spawn path, and two
+existing systems.
 
-- Add `Faction` enum or `uint8_t factionId` field to the existing
-  `LocalPlayer` user component (the per-slot config already carries
-  bot/human and tag; faction is a natural addition).
-- Extend `MatchSetup` + the Player setup screen with a per-slot
-  faction selector (M6.3 added per-slot tag/role overrides — the
-  same screen is the right home).
-- BotControlSystem target acquisition filters candidates by
-  `lp.factionId != self.factionId` before geometry. Same filter
-  in WeaponFireSystem to prevent friendly-fire if a bot does fire
-  toward an ally (manual aim by a human can still hit allies —
-  matches the prompt's "friendly fire may exist as game rule").
+1. **§a engine-data field.** `LocalPlayer` gains a `factionId` byte
+   (replaces one byte of the `_pad[6]` padding so the POD stays at
+   8 bytes; `static_assert` unchanged). Default = `kFactionAuto`
+   sentinel (0xFF). Same sentinel on `PlayerSlotSetup.factionId`
+   (replaces one byte of its own `_pad[2]`). Sentinel semantics:
+   "use slot as faction" — TouGame::spawnShip rewrites it to `slot`
+   at spawn time, so default-init reproduces the pre-M7.4 free-for-
+   all (every slot in its own unique faction).
 
-Test pin: 4-bot scenario with two factions; assert bots never
-target same-faction ally for N seconds.
+2. **§b spawn plumbing.** `spawnShip` takes a new `factionId`
+   parameter and stamps it on `LocalPlayer`. TouGame::onSetup
+   resolves per-slot overrides exactly the same way it resolves
+   shipKind/palette (sentinel → auto; anything else → pinned).
+
+3. **§c BotControlSystem ally skip.** `ShipPos` gains a `factionId`
+   byte; pass 1 of `preStep` captures it from the LocalPlayer span.
+   The engage-target loop in pass 2 rejects candidates with matching
+   `factionId` before the geometry check. Effect: a bot never picks
+   an ally as its nearest target, so the orbit/aim/wobble pipeline
+   never aims at one. Same-faction-only-in-range bots fall through
+   to wander instead of orbiting an ally.
+
+4. **§d WeaponFireSystem friendly-fire suppression (bots only).**
+   New pre-pass collects positions + `factionId` of every live
+   LocalPlayer ship into a fixed-size `std::array<AllyPos, 16>`
+   (matches BotControlSystem's `live` cap). For each firing ship,
+   if it's a bot AND `botShotHitsAlly` returns true (any same-
+   faction ally inside the forward cone — half-angle
+   `kFriendlyFireArcRad ≈ 17°`, range `kFriendlyFireRangeWU = 220`),
+   both the basic and special branches are gated off this tick.
+   Humans bypass the check entirely (friendly fire stays a game
+   rule for manual aim, per the M7.4 design note). The arc is
+   deliberately wider than BotControlSystem's `kFacingFire` (~10°)
+   so the suppression is conservative — false-positive suppressions
+   are preferable to blue-on-blue. Cost: O(N) per shot at N ≤ 16
+   live ships.
+
+5. **§e PlayerSetup UI Faction column.** Adds
+   `MatchSetupKnob::SlotFaction` and per-slot row in
+   `kPlayerSetupRows`. Per-slot stride goes from 6 → 7; total rows
+   from 25 → 29; the trailing Back row moves to index 28. Cycle is
+   Auto + 4 factions = 5 positions (`kFactionCycleSize`), matching
+   the 4 keyboard-eligible slots so any two of them can be paired
+   into the same faction. Formatter renders "Auto" / "F0" .. "F3".
+   `tou2d_player_setup_test` updated to match the new stride /
+   indices and adds a Faction-cycle block.
+
+6. **§f test pin: `tou2d_faction_test`.** Eight scenarios on
+   `botShotHitsAlly` (straight-ahead ally → suppressed; different
+   faction → fires; out-of-range / out-of-arc / behind → fires;
+   self-row skip; multi-ally OR semantics; empty list) plus
+   defaults / sentinel-correctness pins for `LocalPlayer.factionId`
+   and `PlayerSlotSetup.factionId` and band-checks on the arc /
+   range tunables vs BotControlSystem's engagement constants. Lives
+   alongside `tou2d_particles_test` in `tests/CMakeLists.txt`. The
+   refactor exposing `AllyPos` + `botShotHitsAlly` +
+   `kFriendlyFireArcRad` / `kFriendlyFireRangeWU` via
+   `WeaponFireSystem.hpp` (formerly anonymous-namespace bits)
+   makes the helper directly unit-testable without an engine
+   harness.
+
+Files touched: `DemoTypes.hpp`, `MatchSetup.hpp`,
+`BotControlSystem.{hpp,cpp}` (only .cpp), `WeaponFireSystem.{hpp,cpp}`,
+`UISystem.{hpp,cpp}`, `TouGame.cpp`,
+`tests/tou2d_player_setup_test.cpp`, `tests/tou2d_faction_test.cpp`
+(new), `tests/CMakeLists.txt`, this plan.
+
+Verification: build clean under
+`-DTHREADMAXX_WARNINGS_AS_ERRORS=ON`; ctest all green; 200-tick
+smoke clean.
 
 **M7.5 — Pickup framework split (NEW; repair base vs kit)**
 

@@ -46,6 +46,14 @@ inline float orientationAngleZ(const threadmaxx::Quat& q) noexcept {
                       1.0f - 2.0f * (q.y * q.y + q.z * q.z));
 }
 
+inline float wrapPi_(float a) noexcept {
+    constexpr float twoPi = 6.28318530718f;
+    constexpr float pi    = 3.14159265359f;
+    a = std::fmod(a + pi, twoPi);
+    if (a < 0.0f) a += twoPi;
+    return a - pi;
+}
+
 /// Spawn one bullet pointed at world-space angle `angle`, inheriting
 /// the ship's velocity. Shared between Dumbfire (1 call) and Spread
 /// (3 calls per fire).
@@ -111,6 +119,25 @@ void spawnBullet(threadmaxx::SystemContext& ctx,
 
 } // namespace
 
+bool botShotHitsAlly(std::span<const AllyPos> allies,
+                     float ox, float oy,
+                     float fireAngle,
+                     std::uint8_t selfFaction,
+                     std::uint32_t selfIdx) noexcept {
+    for (const AllyPos& a : allies) {
+        if (a.selfIdx == selfIdx)             continue;
+        if (a.factionId != selfFaction)       continue;
+        const float dx = a.x - ox;
+        const float dy = a.y - oy;
+        const float r2 = dx * dx + dy * dy;
+        if (r2 > kFriendlyFireRangeWU * kFriendlyFireRangeWU) continue;
+        const float angleToAlly = std::atan2(-dx, dy);
+        const float delta       = std::fabs(wrapPi_(angleToAlly - fireAngle));
+        if (delta < kFriendlyFireArcRad) return true;
+    }
+    return false;
+}
+
 WeaponFireSystem::WeaponFireSystem(UserComponentIds ids,
                                    threadmaxx::Engine* engine) noexcept
     : ids_(ids), engine_(engine) {}
@@ -134,6 +161,37 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
 
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
+
+        // M7.4 — pre-collect every live (non-disabled) LocalPlayer
+        // ship's position + factionId so the per-fire arc test below
+        // is O(N) per shot. Bounded at 16 because the existing demo
+        // caps ships at ≤16 alive (matches BotControlSystem's `live`
+        // buffer). A larger arena would need a dynamic vector — but
+        // tou2d isn't that.
+        std::array<AllyPos, 16> allies{};
+        std::size_t             allyCount = 0;
+        if (idsLp.valid()) {
+            for (const auto* chunkPtr : view.chunks()) {
+                if (!chunkPtr) continue;
+                const auto& chunk = *chunkPtr;
+                if (!chunk.mask.has(idsLp.componentBit()))              continue;
+                if (!chunk.mask.has(threadmaxx::Component::Transform))  continue;
+                if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+                const auto& transforms = chunk.transforms;
+                const auto  entities   = chunk.entities;
+                const auto  lpSpan     = threadmaxx::user::chunkSpan<LocalPlayer>(chunk, idsLp);
+                for (std::size_t row = 0, n = entities.size(); row < n; ++row) {
+                    if (allyCount >= allies.size()) break;
+                    allies[allyCount].x         = transforms[row].position.x;
+                    allies[allyCount].y         = transforms[row].position.y;
+                    allies[allyCount].factionId = lpSpan[row].factionId;
+                    allies[allyCount].selfIdx   = entities[row].index;
+                    ++allyCount;
+                }
+            }
+        }
+        const std::span<const AllyPos> allyView{allies.data(), allyCount};
+
         for (const auto* chunkPtr : view.chunks()) {
             if (!chunkPtr) continue;
             const auto& chunk = *chunkPtr;
@@ -167,6 +225,20 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                 const auto& shipT = positions[row];
                 const auto& shipV = velocities[row];
 
+                // M7.4 — friendly-fire gate. Only bots are filtered;
+                // human shots stay unrestricted per the M7.4 design
+                // note ("friendly fire may exist as game rule" — only
+                // for manual human aim). Computed once per ship per
+                // tick and reused by both fire branches below.
+                const bool isBot = hasLp && lpSpan[row].isBot != 0;
+                const std::uint8_t selfFaction =
+                    hasLp ? lpSpan[row].factionId : kFactionAuto;
+                const bool suppressBotShot = isBot &&
+                    botShotHitsAlly(allyView,
+                                    shipT.position.x, shipT.position.y,
+                                    angle, selfFaction,
+                                    entities[row].index);
+
                 // ---- Tick reloads + loader cooldowns down first -----
                 // 2026-05-28 — dumbfire never reloads (infinite ammo
                 // on the basic weapon per M5.2). Only the special
@@ -192,7 +264,7 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                 // 2026-05-28 — infinite ammo, no reload. Gate is just
                 // "input held AND per-shot cooldown ready". `ld.dumbfireAmmo`
                 // stays pinned at the magazine size for HUD compat.
-                if (in.fireBasic && ld.dumbfireCooldown == 0) {
+                if (in.fireBasic && ld.dumbfireCooldown == 0 && !suppressBotShot) {
                     spawnBullet(ctx, cb, idsBl, shipT, shipV,
                                 angle,
                                 kMuzzleSpeed,
@@ -219,7 +291,7 @@ void WeaponFireSystem::update(threadmaxx::SystemContext& ctx) {
                     ld.specialReloadIn == 0 &&
                     ld.specialCooldown == 0 &&
                     ld.specialAmmo > 0;
-                if (in.fireSpecial && canSpecial) {
+                if (in.fireSpecial && canSpecial && !suppressBotShot) {
                     const int n      = static_cast<int>(spec.bulletsPerShot);
                     const int half   = (n - 1) / 2;
                     const bool even  = (n % 2) == 0;

@@ -42,7 +42,13 @@ struct PlayerSlotSetup {
     std::uint8_t        role        = 0;     ///< 0=Auto, 1=Human, 2=Bot
     std::uint8_t        shipKindIdx = 0xFFu; ///< 0xFF = auto
     std::uint8_t        paletteIdx  = 0xFFu; ///< 0xFF = auto
-    std::uint8_t        _pad[2]     = {};
+    /// M7.4 — per-slot faction override. 0xFF (`kFactionAuto`) means
+    /// "use the slot index as the faction" — every default-init slot
+    /// ends up in its own faction, reproducing the pre-M7.4 free-for-
+    /// all. Any other value pins the LocalPlayer.factionId at spawn
+    /// time. Two slots sharing the same value are allies.
+    std::uint8_t        factionId   = 0xFFu;
+    std::uint8_t        _pad[1]     = {};
 };
 static_assert(sizeof(PlayerSlotSetup) == 8,
               "PlayerSlotSetup must stay 8 bytes — embedded in MatchSetup "

@@ -130,6 +130,12 @@ struct ShipPos {
     threadmaxx::EntityHandle handle{};
     float                    x  = 0, y  = 0;
     float                    vx = 0, vy = 0;   ///< for aim-lead
+    /// M7.4 — captured from `LocalPlayer.factionId` in pass 1 so the
+    /// engage-target loop can skip same-faction candidates without a
+    /// second user-component lookup. Defaults to the sentinel so
+    /// chunks that lack LocalPlayer (defensive — should not happen
+    /// with the current world layout) compare unequal to everyone.
+    std::uint8_t             factionId = kFactionAuto;
 };
 
 /// Cast a ray of length `kAvoidLookahead` along `angle` from `(ox, oy)`
@@ -305,13 +311,17 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
             const auto& transforms = chunk.transforms;
             const auto& velocities = chunk.velocities;
             const auto  entities   = chunk.entities;
+            // M7.4 — capture per-row factionId so the engage-target
+            // search can reject same-faction candidates.
+            const auto  lpSpan     = threadmaxx::user::chunkSpan<LocalPlayer>(chunk, idsLp);
             for (std::size_t row = 0, n = entities.size(); row < n; ++row) {
                 if (liveCount >= live.size()) break;
-                live[liveCount].handle = entities[row];
-                live[liveCount].x      = transforms[row].position.x;
-                live[liveCount].y      = transforms[row].position.y;
-                live[liveCount].vx     = velocities[row].linear.x;
-                live[liveCount].vy     = velocities[row].linear.y;
+                live[liveCount].handle    = entities[row];
+                live[liveCount].x         = transforms[row].position.x;
+                live[liveCount].y         = transforms[row].position.y;
+                live[liveCount].vx        = velocities[row].linear.x;
+                live[liveCount].vy        = velocities[row].linear.y;
+                live[liveCount].factionId = lpSpan[row].factionId;
                 ++liveCount;
             }
         }
@@ -340,13 +350,18 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                 if (lpSpan[row].isBot == 0) continue;  // human — InputSystem won this slot
 
                 const auto& selfT = transforms[row];
-                const std::uint8_t slot = lpSpan[row].slot;
+                const std::uint8_t slot         = lpSpan[row].slot;
+                const std::uint8_t selfFaction  = lpSpan[row].factionId;
 
-                // Nearest other live ship.
+                // Nearest other live ship. M7.4 — same-faction ships
+                // are skipped here so a bot never engages an ally.
+                // Bots in the only-allies-in-range case fall through
+                // to the wander branch instead of orbiting a friend.
                 float            bestD2 = 1e30f;
                 const ShipPos*   tgt    = nullptr;
                 for (std::size_t i = 0; i < liveCount; ++i) {
                     if (live[i].handle.index == entities[row].index) continue;
+                    if (live[i].factionId == selfFaction)            continue;
                     const float dx = live[i].x - selfT.position.x;
                     const float dy = live[i].y - selfT.position.y;
                     const float d2 = dx * dx + dy * dy;

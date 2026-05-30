@@ -5,11 +5,55 @@
 #include <threadmaxx/System.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
+#include <span>
 
 namespace threadmaxx { class Engine; }
 
 namespace tou2d {
+
+/// M7.4 — friendly-fire arc tunables. Bots fire-suppress when ANY
+/// same-faction ally lies inside a forward cone of half-angle
+/// `kFriendlyFireArcRad` and within `kFriendlyFireRangeWU`. The arc is
+/// deliberately a bit wider than BotControlSystem's `kFacingFire`
+/// (~10°) so a near-miss bullet gets suppressed conservatively. The
+/// range mirrors BotControlSystem's `kFireRange` (220 wu) so we only
+/// gate inside the bot's effective engagement bubble. Humans bypass
+/// the gate — friendly fire stays as an explicit game rule for manual
+/// aim only.
+inline constexpr float kFriendlyFireArcRad  = 0.30f;   // ~17°
+inline constexpr float kFriendlyFireRangeWU = 220.0f;
+
+/// M7.4 — POD describing one live ally candidate for `botShotHitsAlly`
+/// to evaluate. The `selfIdx` field carries the entity index so the
+/// helper can skip the firing ship's own row when iterating.
+struct AllyPos {
+    float         x = 0.0f, y = 0.0f;
+    std::uint8_t  factionId = 0xFFu;
+    std::uint32_t selfIdx   = 0xFFFFFFFFu;
+};
+
+/// M7.4 — friendly-fire suppression test for a bot's shot.
+///
+/// Returns true when any same-faction ally lies inside the firing
+/// cone (forward half-angle `kFriendlyFireArcRad`, range
+/// `kFriendlyFireRangeWU`). Returns false otherwise — including when
+/// `allies` is empty or the only entries are the firing ship itself,
+/// a different faction, or out-of-arc / out-of-range. Pure
+/// (no globals); the engine path passes the firing ship's `ox/oy`,
+/// `fireAngle` (orientation Z), `selfFaction` (factionId from the
+/// LocalPlayer span), and `selfIdx` (entity index from the chunk).
+///
+/// The check is conservative — it suppresses a shot whose ARC covers
+/// an ally even if the ally is laterally offset from the immediate
+/// firing line, accepting some false-positive suppressions to make
+/// blue-on-blue impossible in normal play.
+bool botShotHitsAlly(std::span<const AllyPos> allies,
+                     float ox, float oy,
+                     float fireAngle,
+                     std::uint8_t selfFaction,
+                     std::uint32_t selfIdx) noexcept;
 
 /// Reads PlayerInput.fireBasic + ship Transform per local-player ship,
 /// spawns Bullet entities pointed along the ship's current orientation.

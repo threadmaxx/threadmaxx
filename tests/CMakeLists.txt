@@ -272,6 +272,25 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_particles_test COMMAND tou2d_particles_test)
 
+    # M7.4 — faction system (bot ally targeting + friendly-fire
+    # suppression). Pins LocalPlayer / PlayerSlotSetup factionId
+    # defaults + the WeaponFireSystem botShotHitsAlly helper.
+    add_executable(tou2d_faction_test tou2d_faction_test.cpp)
+    target_link_libraries(tou2d_faction_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_faction_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_faction_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_faction_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_faction_test COMMAND tou2d_faction_test)
+
     # M6.0b — UISystem state machine + UIScreen enum + UIScreenChanged
     # event payload pin.
     add_executable(tou2d_uiscreen_state_machine_test

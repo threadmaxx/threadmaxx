@@ -4,8 +4,9 @@
 //   * MatchSetup row 10 = "Players..." Action row whose accept routes
 //     to UIScreen::PlayerSetup.
 //   * PlayerSetup row table — 4 slots × (TagChar0/TagChar1/TagChar2 +
-//     Role + Ship + Palette), then Back. 25 rows total in slot-major
-//     order; per-slot rows carry slotIdx in [0, 4).
+//     Role + Ship + Palette + Faction), then Back. 29 rows total in
+//     slot-major order; per-slot rows carry slotIdx in [0, 4). The
+//     Faction column was added in M7.4.
 //   * Constructing UISystem with UIScreen::PlayerSetup lands focus on
 //     row 0 (slot 0 / TagChar0).
 //   * cycleFocused(+1) on a tag-char row advances the alphabet (space →
@@ -74,11 +75,13 @@ int main() {
     {
         UISystem ui(nullptr, UIScreen::PlayerSetup);
         const auto rs = ui.currentRows();
-        CHECK_EQ(rs.size(), kMatchSetupSlotCount * 6 + 1);
-        CHECK_EQ(rs.size(), std::size_t{25});
+        // M7.4 — added a per-slot Faction row, so per-slot stride is 7
+        // and total = 4*7 + 1 = 29.
+        CHECK_EQ(rs.size(), kMatchSetupSlotCount * 7 + 1);
+        CHECK_EQ(rs.size(), std::size_t{29});
 
         // Slot-major order: for each slot, rows in
-        // TagChar0/TagChar1/TagChar2/Role/Ship/Palette order.
+        // TagChar0/TagChar1/TagChar2/Role/Ship/Palette/Faction order.
         const MatchSetupKnob kPerSlotOrder[] = {
             MatchSetupKnob::SlotTagChar0,
             MatchSetupKnob::SlotTagChar1,
@@ -86,10 +89,11 @@ int main() {
             MatchSetupKnob::SlotRole,
             MatchSetupKnob::SlotShip,
             MatchSetupKnob::SlotPalette,
+            MatchSetupKnob::SlotFaction,
         };
         for (std::size_t slot = 0; slot < kMatchSetupSlotCount; ++slot) {
-            for (std::size_t f = 0; f < 6; ++f) {
-                const std::size_t idx = slot * 6 + f;
+            for (std::size_t f = 0; f < 7; ++f) {
+                const std::size_t idx = slot * 7 + f;
                 CHECK(rs[idx].kind == MenuRowKind::Scroller);
                 CHECK(rs[idx].scrollerKnob == kPerSlotOrder[f]);
                 CHECK_EQ(rs[idx].slotIdx, static_cast<std::uint8_t>(slot));
@@ -98,7 +102,7 @@ int main() {
         }
 
         // Trailing Back action row.
-        const std::size_t backIdx = kMatchSetupSlotCount * 6;
+        const std::size_t backIdx = kMatchSetupSlotCount * 7;
         CHECK(rs[backIdx].kind == MenuRowKind::Action);
         CHECK(rs[backIdx].action == MenuAction::BackToMain);
         CHECK(std::strcmp(rs[backIdx].label, "Back") == 0);
@@ -185,12 +189,12 @@ int main() {
     // ---- Per-slot writes target the row's slotIdx ------------------
     {
         UISystem ui(nullptr, UIScreen::PlayerSetup);
-        // Move to slot 1's Ship row (slot 1 starts at row 6; Ship is +4).
-        for (int i = 0; i < 6 + 4; ++i) ui.moveFocus(+1);
-        CHECK_EQ(ui.focusIndex(), std::int32_t{10});
+        // M7.4 — slot 1 starts at row 7 (stride is now 7); Ship is +4 = row 11.
+        for (int i = 0; i < 7 + 4; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{11});
         const auto& rs = ui.currentRows();
-        CHECK_EQ(rs[10].slotIdx, std::uint8_t{1});
-        CHECK(rs[10].scrollerKnob == MatchSetupKnob::SlotShip);
+        CHECK_EQ(rs[11].slotIdx, std::uint8_t{1});
+        CHECK(rs[11].scrollerKnob == MatchSetupKnob::SlotShip);
         ui.cycleFocused(+1);
         // Slot 1's ship changed; slot 0's didn't.
         CHECK_EQ(ui.matchSetup().playerSlots[1].shipKindIdx, std::uint8_t{0});
@@ -198,6 +202,25 @@ int main() {
         // Slot 2 and 3 also untouched.
         CHECK_EQ(ui.matchSetup().playerSlots[2].shipKindIdx, std::uint8_t{0xFFu});
         CHECK_EQ(ui.matchSetup().playerSlots[3].shipKindIdx, std::uint8_t{0xFFu});
+    }
+
+    // ---- Faction cycle: Auto + 4 IDs (M7.4) ------------------------
+    {
+        UISystem ui(nullptr, UIScreen::PlayerSetup);
+        // Slot 0 Faction is row 6 (the per-slot stride's last field).
+        for (int i = 0; i < 6; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{6});
+        const auto& rs = ui.currentRows();
+        CHECK(rs[6].scrollerKnob == MatchSetupKnob::SlotFaction);
+        CHECK_EQ(ui.matchSetup().playerSlots[0].factionId, std::uint8_t{0xFFu});
+        ui.cycleFocused(+1);  // Auto → F0
+        CHECK_EQ(ui.matchSetup().playerSlots[0].factionId, std::uint8_t{0});
+        ui.cycleFocused(+5);  // full wrap (5 positions) — back to F0
+        CHECK_EQ(ui.matchSetup().playerSlots[0].factionId, std::uint8_t{0});
+        ui.cycleFocused(-1);  // F0 → Auto
+        CHECK_EQ(ui.matchSetup().playerSlots[0].factionId, std::uint8_t{0xFFu});
+        ui.cycleFocused(-1);  // Auto → F3 (wrap)
+        CHECK_EQ(ui.matchSetup().playerSlots[0].factionId, std::uint8_t{3});
     }
 
     // ---- formatRow paints slot prefix + value ----------------------
@@ -216,24 +239,29 @@ int main() {
         // Row 5 = slot 1 palette, default Auto.
         ui.formatRow(5, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Slot 1 palette: Auto") == 0);
-        // Set slot 0 tag char 0 to 'X' and re-render.
+        // Row 6 = slot 1 faction (M7.4), default Auto.
+        ui.formatRow(6, buf, sizeof(buf));
+        CHECK(std::strcmp(buf, "Slot 1 faction: Auto") == 0);
+        // Set slot 0 tag char 0 to 'X' and re-render. Focus is on
+        // row 0 (slot 1 tag c1) so cycleFocused writes there.
+        CHECK_EQ(ui.focusIndex(), std::int32_t{0});
         ui.cycleFocused(+24);  // space → X
         ui.formatRow(0, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Slot 1 tag c1: X") == 0);
-        // Row 12 = slot 3 tag c1 (slot 2 is 6..11, slot 3 starts at 12).
-        ui.formatRow(12, buf, sizeof(buf));
+        // Row 14 = slot 3 tag c1 (slot 2 is 7..13, slot 3 starts at 14).
+        ui.formatRow(14, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Slot 3 tag c1: _") == 0);
-        // Row 24 = Back.
-        ui.formatRow(24, buf, sizeof(buf));
+        // Row 28 = Back.
+        ui.formatRow(28, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Back") == 0);
     }
 
     // ---- BackToMain from PlayerSetup routes to MatchSetup ----------
     {
         UISystem ui(nullptr, UIScreen::PlayerSetup);
-        // Navigate to Back (row 24).
-        for (int i = 0; i < 24; ++i) ui.moveFocus(+1);
-        CHECK_EQ(ui.focusIndex(), std::int32_t{24});
+        // M7.4 — Back is now at row 28 (was 24 pre-Faction column).
+        for (int i = 0; i < 28; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{28});
         const MenuAction got = ui.acceptFocused();
         CHECK(got == MenuAction::BackToMain);
         // M6.3 — PlayerSetup Back goes to MatchSetup (not MainMenu).
@@ -258,6 +286,8 @@ int main() {
             CHECK_EQ(s.role, std::uint8_t{0});
             CHECK_EQ(s.shipKindIdx, std::uint8_t{0xFFu});
             CHECK_EQ(s.paletteIdx, std::uint8_t{0xFFu});
+            // M7.4 — Faction default sentinel.
+            CHECK_EQ(s.factionId, std::uint8_t{0xFFu});
         }
     }
 

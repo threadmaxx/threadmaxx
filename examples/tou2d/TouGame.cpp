@@ -86,7 +86,8 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
                                    std::uint8_t isBot,
                                    std::uint16_t shipKindIdx,
                                    std::int32_t  spriteAtlasIdx,
-                                   std::uint8_t  specialKind) {
+                                   std::uint8_t  specialKind,
+                                   std::uint8_t  factionId) {
     const auto h = engine.reserveEntityHandle();
 
     threadmaxx::Bundle b = {};
@@ -112,8 +113,9 @@ threadmaxx::EntityHandle spawnShip(threadmaxx::Engine& engine,
     seed.spawnBundle(h, b);
 
     LocalPlayer lp{};
-    lp.slot  = slot;
-    lp.isBot = isBot;
+    lp.slot      = slot;
+    lp.isBot     = isBot;
+    lp.factionId = factionId;
     threadmaxx::addUserComponent(seed, ids.localPlayer, h, lp);
     threadmaxx::addUserComponent(seed, ids.playerInput, h, PlayerInput{});
 
@@ -451,11 +453,20 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
         const std::int32_t atlasIdx =
             atlasIdxByPalette[paletteIdx];
 
+        // M7.4 — resolve factionId. Sentinel = "auto" = use the slot
+        // index, which puts every default-init slot in its own faction
+        // and reproduces the pre-M7.4 free-for-all. An explicit value
+        // pins this slot's faction at spawn time.
+        const std::uint8_t factionId =
+            (override && override->factionId != kFactionAuto)
+                ? override->factionId
+                : static_cast<std::uint8_t>(slot);
+
         playerShips_[slot] = spawnShip(
             engine, seed, ids_,
             static_cast<std::uint8_t>(slot), x, y,
             isBot ? std::uint8_t{1} : std::uint8_t{0},
-            kindIdx, atlasIdx, defaultSpecial_);
+            kindIdx, atlasIdx, defaultSpecial_, factionId);
     }
 }
 
