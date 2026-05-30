@@ -83,6 +83,26 @@ public:
     /// return `{0, 0, 0, 0}` (zero-area, never rendered).
     threadmaxx::Viewport viewportFor(std::uint8_t humanSlot) const noexcept;
 
+    /// Batch-A §7 — install the level's world-space rect so the
+    /// per-slot follow target can be clamped before the camera
+    /// projection sees it. With this set, when a player approaches
+    /// an edge the camera stops scrolling, the player visually shifts
+    /// toward the edge of their viewport, and the level's vertex
+    /// stays inside the visible frame. Pre-set: no clamp (legacy
+    /// behaviour — camera centers on the player unconditionally).
+    /// Mutually exclusive states are only `active` ↔ `inactive` via
+    /// the rect coordinates: `(maxX > minX) && (maxY > minY)`. Cheap
+    /// inline setter — call once from `TouGame::onSetup` after the
+    /// terrain grid is sized.
+    void setLevelRect(float minX, float minY,
+                      float maxX, float maxY) noexcept {
+        levelMinX_   = minX;
+        levelMinY_   = minY;
+        levelMaxX_   = maxX;
+        levelMaxY_   = maxY;
+        levelActive_ = (maxX > minX) && (maxY > minY);
+    }
+
 private:
     UserComponentIds ids_;
     std::array<threadmaxx::Vec3, kMaxHumans> followTargets_{};
@@ -92,6 +112,18 @@ private:
     /// Half-height of the visible region in world units. Picked so a
     /// ~32-unit ship occupies ~10% of the visible height.
     float            orthoHalfH_   = 160.0f;
+    /// Batch-A §7 — world-space level rect for follow-target clamping.
+    /// `levelActive_` gates the clamp; when false `update()` writes the
+    /// raw player position straight into `followTargets_` (pre-§7
+    /// behaviour). When true the per-axis clamp window is
+    /// `[min + half, max - half]` derived from `effectiveOrthoHalfH()`
+    /// and `viewportAspect()`; if the level is narrower than the
+    /// viewport the camera locks to the level's midpoint instead.
+    float            levelMinX_    = 0.0f;
+    float            levelMinY_    = 0.0f;
+    float            levelMaxX_    = 0.0f;
+    float            levelMaxY_    = 0.0f;
+    bool             levelActive_  = false;
 };
 
 } // namespace tou2d

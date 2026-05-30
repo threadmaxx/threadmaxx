@@ -1213,10 +1213,12 @@ int main(int argc, char** argv) {
             // M6.6 — Rematch drain. Same posture as RestartMatch — the
             // user picked Results -> Rematch, host reapplies the same
             // MatchSetup the round was played with and tears down +
-            // restarts the engine. The new engine starts fresh
-            // (`roundEnded_` is reallocated by TouGame's restart path)
-            // so prevRoundEnded must be reset to avoid spurious re-fires
-            // against the stale shared_ptr.
+            // restarts the engine. TouGame::onSetup explicitly resets
+            // the round-end latch + winner pointers (Batch-A §2), so
+            // the new engine starts with roundEnded_->load() == false.
+            // prevRoundEnded is also reset here to keep the host's
+            // rising-edge detector aligned with the freshly-cleared
+            // latch.
             if (ui->pendingRematch()) {
                 const tou2d::MatchSetup s = ui->matchSetup();
                 ui->clearPendingRematch();

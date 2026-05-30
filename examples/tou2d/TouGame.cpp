@@ -163,6 +163,21 @@ TouGame::TouGame(GLFWwindow* window) noexcept : window_(window) {}
 void TouGame::onSetup(threadmaxx::Engine& engine,
                       threadmaxx::World&  /*world*/,
                       threadmaxx::CommandBuffer& seed) {
+    // Batch-A §2 — reset round-end state on every onSetup. `engine.shutdown()`
+    // tears down the engine but TouGame outlives it, so without this the
+    // `winnerSlot_` / `winnerKills_` members and the `roundEnded_` atomic
+    // (all set by `BulletShipCollisionSystem` when round 1 ended) carry over
+    // into round 2. main.cpp's rising-edge check (`roundEnded && !prevRoundEnded`)
+    // then fires on the very first tick of round 2, snapshotting MatchResults
+    // with the stale winner + zero per-slot kills and re-showing the Results
+    // screen. Resetting here is the only place that runs on EVERY engine
+    // init path (CLI start, menu Start, Rematch, Restart match).
+    winnerSlot_  = 0;
+    winnerKills_ = 0;
+    if (roundEnded_) {
+        roundEnded_->store(false, std::memory_order_release);
+    }
+
     // ---- User components ----------------------------------------------------
     ids_.playerInput = engine.registerUserComponent<PlayerInput>();
     ids_.localPlayer = engine.registerUserComponent<LocalPlayer>();
@@ -305,6 +320,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
 
     movementPtr  ->setLevelRect(minX, minY, maxX, maxY);
     projectilePtr->setLevelRect(minX, minY, maxX, maxY);
+    camera_      ->setLevelRect(minX, minY, maxX, maxY);   // Batch-A §7 — clamp follow target
 
     engine.registerSystem(std::move(ui));           // M6.0b — empty body while current()==None; M6.1 fills handlers
     engine.registerSystem(std::move(input));

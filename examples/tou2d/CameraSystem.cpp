@@ -99,6 +99,25 @@ void CameraSystem::update(threadmaxx::SystemContext& ctx) {
     // emit one camera per human. Bots are skipped (isBot==1). A human
     // slot whose ship is missing keeps the previous tick's value
     // (camera holds still rather than snapping to origin).
+    //
+    // Batch-A §7 — when a level rect is installed via `setLevelRect`,
+    // each slot's follow target is clamped per axis to
+    // `[min + halfExtent, max - halfExtent]` so the visible window
+    // stays inside the level. The player visually shifts toward the
+    // edge of the viewport when they approach the rect, and the level
+    // vertices stay in frame. If the level is narrower than the
+    // viewport (clamp interval is empty), the camera locks to the
+    // level's midpoint on that axis.
+    const bool  clampActive = levelActive_;
+    const float halfH       = effectiveOrthoHalfH();
+    const float halfW       = halfH * viewportAspect();
+    const float minCX = levelMinX_ + halfW;
+    const float maxCX = levelMaxX_ - halfW;
+    const float minCY = levelMinY_ + halfH;
+    const float maxCY = levelMaxY_ - halfH;
+    const float midX  = (levelMinX_ + levelMaxX_) * 0.5f;
+    const float midY  = (levelMinY_ + levelMaxY_) * 0.5f;
+
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& /*cb*/) {
         const auto& view = ctx.worldView();
         for (const auto* chunkPtr : view.chunks()) {
@@ -113,7 +132,16 @@ void CameraSystem::update(threadmaxx::SystemContext& ctx) {
                 const LocalPlayer& lp = lpSpan[row];
                 if (lp.isBot != 0) continue;
                 if (lp.slot >= followTargets_.size()) continue;
-                followTargets_[lp.slot] = transforms[row].position;
+                threadmaxx::Vec3 c = transforms[row].position;
+                if (clampActive) {
+                    c.x = (minCX > maxCX) ? midX
+                                          : (c.x < minCX ? minCX
+                                                         : (c.x > maxCX ? maxCX : c.x));
+                    c.y = (minCY > maxCY) ? midY
+                                          : (c.y < minCY ? minCY
+                                                         : (c.y > maxCY ? maxCY : c.y));
+                }
+                followTargets_[lp.slot] = c;
             }
         }
     });
