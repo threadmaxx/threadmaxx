@@ -9,6 +9,7 @@
 #include <threadmaxx/UserComponent.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <random>
 #include <vector>
@@ -204,18 +205,22 @@ inline constexpr std::uint16_t kRestartHoldoffTicks = 90;
 /// Tile-grid terrain classification. Mirrors the layout of the imported
 /// `.lev` attribute byte.
 ///
-/// M5.7 — `Repair` is a non-blocking pickup tile. A ship that overlaps
-/// one is healed and has its `WeaponLoadout::specialKind` advanced
-/// (wrap-around at `kSpecialKindCount`); the tile is consumed. The
-/// procedural generator + synthetic arena sprinkle a few of these;
-/// imported `.lev` levels currently do not (no migration path from
-/// the legacy attribute byte). `RepairPickupSystem` owns the
-/// consume-on-overlap logic.
+/// M5.7 — `RepairBase` (previously `Repair`) is a non-blocking pickup
+/// tile. M7.5 reworked the semantics: ships that overlap a base
+/// regenerate HP per tick (`kRepairBaseHpPerTick`) and have their
+/// `WeaponLoadout::specialKind` advanced exactly once on the entry
+/// edge — the tile DOES NOT consume on touch and keeps offering regen
+/// + cycle for as long as the ship stays on it. The procedural
+/// generator + synthetic arena sprinkle a few of these. Single-shot
+/// healing now lives on the new entity-based `Pickup` user component
+/// (`PickupKind::RepairKit`, handled by `RepairKitSystem`), keeping
+/// the tile/entity split data-driven.
 enum class Attribute : std::uint8_t {
-    Air    = 0,
-    Solid  = 1,
-    Damage = 2,
-    Repair = 3,
+    Air        = 0,
+    Solid      = 1,
+    Damage     = 2,
+    RepairBase = 3,   ///< M7.5 — renamed from Repair (kept value 3 for
+                      ///  snapshot stability with pre-M7.5 levels).
 };
 
 /// In-flight projectile. `weaponKind` values:
@@ -489,6 +494,70 @@ inline constexpr std::uint16_t kSpreadReloadTicks = 75;
 inline constexpr float        kRepairHealAmount = 40.0f;
 inline constexpr std::uint32_t kRepairTileColor = 0xFF40FFA0u;  // teal
 
+/// M7.5 — RepairBase regen rate (HP per tick) while a ship's AABB
+/// overlaps the tile. Picked so a max-HP ship (200 HP) refills in
+/// roughly 3 seconds at 60 Hz from empty — fast enough to feel useful,
+/// slow enough that hovering on a base isn't a get-out-of-jail-free
+/// vs. sustained fire. Edge-triggered special-cycle still happens on
+/// entry (once per visit), preserving the M5.7 weapon-rotation feel.
+inline constexpr float kRepairBaseHpPerTick = 1.0f;
+
+/// M7.5 — data-driven pickup catalogue. `PickupKind` is the discriminator
+/// stored on the `Pickup` user component; `PickupSpec` carries the per-
+/// kind tunables. Keep additions append-only — the value persists into
+/// snapshots / level files via the `Pickup::kind` byte.
+///
+/// `RepairKit` mirrors the pre-M7.5 single-shot Repair tile behaviour
+/// (heal + cycle special) but on an entity (not a terrain cell) so a
+/// kit can despawn on pickup and respawn after a fixed delay.
+enum class PickupKind : std::uint8_t {
+    RepairKit = 0,
+    Count
+};
+inline constexpr std::uint8_t kPickupKindCount =
+    static_cast<std::uint8_t>(PickupKind::Count);
+
+/// M7.5 — per-kind tuning. Flat POD table indexed by `PickupKind` —
+/// no virtual interface, the consumer system switches on `kind` at the
+/// apply site (`RepairKitSystem` for kits, `RepairPickupSystem` for
+/// the corresponding RepairBase tile semantics).
+struct PickupSpec {
+    std::uint16_t respawnIntervalTicks = 0;
+    std::uint16_t effectMagnitude      = 0;
+    std::uint8_t  _pad[4]              = {};
+};
+static_assert(sizeof(PickupSpec) == 8, "PickupSpec must stay 8 bytes");
+
+/// Catalogue. Indexed by `static_cast<std::size_t>(kind)`.
+inline constexpr std::array<PickupSpec, kPickupKindCount> kPickupSpecs = {{
+    // RepairKit: 40 HP per pickup (matches pre-M7.5 `kRepairHealAmount`),
+    // respawn after 6 seconds at 60 Hz so the map stays populated.
+    PickupSpec{ /*respawnIntervalTicks*/ 360, /*effectMagnitude*/ 40 },
+}};
+
+inline constexpr const PickupSpec& pickupSpecAt(PickupKind k) noexcept {
+    return kPickupSpecs[static_cast<std::size_t>(k)];
+}
+
+/// M7.5 — user component carried by entity-based pickups (i.e. NOT
+/// terrain tiles — `Attribute::RepairBase` keeps the tile lane). One
+/// pickup entity = one `Pickup` POD + a `Transform`. `state` tracks
+/// the active vs. respawning lane; `respawnIn` is the ticks-until-
+/// re-enable counter advanced by `RepairKitSystem`.
+///
+///   state == 0 → active. AABB-overlapped by a ship → apply effect
+///                (per `pickupSpecAt(kind).effectMagnitude`), flip
+///                state to 1, attach `DisabledTag`, set `respawnIn`.
+///   state == 1 → respawning. System ticks `respawnIn` down each step;
+///                on zero, flip back to active and remove `DisabledTag`.
+struct Pickup {
+    std::uint8_t  kind      = 0;   ///< `PickupKind`
+    std::uint8_t  state     = 0;   ///< 0=active, 1=respawning
+    std::uint16_t respawnIn = 0;   ///< ticks until re-activate
+    std::uint8_t  _pad[4]   = {};
+};
+static_assert(sizeof(Pickup) == 8, "Pickup must stay 8 bytes");
+
 /// Number of source attribute / visual-JPG pixels that map to one
 /// runtime tile along each axis. After M3.3's flat-grid terrain the
 /// pxPerTile knob only governs destruction granularity + JPG-paint
@@ -669,6 +738,7 @@ struct UserComponentIds {
     threadmaxx::UserComponentId bullet;
     threadmaxx::UserComponentId loadout;  ///< M4.2 — per-ship ammo / reload state
     threadmaxx::UserComponentId sprite;   ///< M4.8 — per-ship sprite reference
+    threadmaxx::UserComponentId pickup;   ///< M7.5 — entity-based collectible kit
 };
 
 /// M3.3 — flat array of (hp, attribute) per cell. Replaces the per-tile
@@ -744,15 +814,18 @@ struct TerrainGrid {
         attr[i] = a;
     }
 
-    /// M5.7 — flip a cell to a non-blocking Repair pickup. `hp` stays
-    /// nonzero so `RepairPickupSystem` can sentinel a still-live tile
-    /// vs. one that has already been claimed mid-tick.
-    void setRepair(std::int32_t worldCellX, std::int32_t worldCellY,
-                   std::uint8_t hpVal = 1) noexcept {
+    /// M5.7 / M7.5 — flip a cell to a non-blocking RepairBase pickup.
+    /// `hp` stays nonzero so `RepairPickupSystem` can sentinel a still-
+    /// live tile vs. one that has already been claimed mid-tick. The
+    /// cell does NOT consume on overlap — see `Attribute::RepairBase`
+    /// for the regen + edge-triggered special-cycle semantics that
+    /// landed with M7.5.
+    void setRepairBase(std::int32_t worldCellX, std::int32_t worldCellY,
+                       std::uint8_t hpVal = 1) noexcept {
         if (!inBounds(worldCellX, worldCellY)) return;
         const std::size_t i = indexOf(worldCellX, worldCellY);
         hp[i]   = hpVal;
-        attr[i] = Attribute::Repair;
+        attr[i] = Attribute::RepairBase;
     }
 
     void clear(std::int32_t worldCellX, std::int32_t worldCellY) noexcept {

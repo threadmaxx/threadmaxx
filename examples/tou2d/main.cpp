@@ -916,7 +916,7 @@ int main(int argc, char** argv) {
                     if (a == tou2d::Attribute::Solid) {
                         if (hpV == 0xFFu) { r = 26;  g = 26;  b = 28;  }  // Bedrock
                         else              { r = 96;  g = 74;  b = 50;  }  // destructible rock
-                    } else if (a == tou2d::Attribute::Repair) {
+                    } else if (a == tou2d::Attribute::RepairBase) {
                         r = 64; g = 156; b = 76;
                     } else if (a == tou2d::Attribute::Damage) {
                         r = 156; g = 60; b = 60;

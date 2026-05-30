@@ -312,7 +312,7 @@ inline ProceduralLevelInfo generateProceduralLevel(
                     const std::int32_t cx = rdX(rng);
                     const std::int32_t cy = rdY(rng);
                     if (grid.attrAt(cx, cy) != Attribute::Air) continue;
-                    grid.setRepair(cx, cy);
+                    grid.setRepairBase(cx, cy);
                     ++placed;
                     ++info.solidCount;  // Repair counts as non-Air
                     break;

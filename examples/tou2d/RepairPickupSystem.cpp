@@ -43,6 +43,11 @@ void RepairPickupSystem::update(threadmaxx::SystemContext& ctx) {
     if (!idsShip.valid()) return;
     if (!grid_)            return;
 
+    // M7.5 — collected at the head of this step; swapped into
+    // `onBasePrev_` at the end so the next step sees the correct
+    // entry-edge state.
+    std::unordered_set<std::uint32_t> onBaseNow;
+
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
         for (const auto* chunkPtr : view.chunks()) {
@@ -72,12 +77,16 @@ void RepairPickupSystem::update(threadmaxx::SystemContext& ctx) {
                 const std::int32_t cx = worldToCell(pos.x);
                 const std::int32_t cy = worldToCell(pos.y);
 
-                for (int dy = -range; dy <= range; ++dy) {
-                    for (int dx = -range; dx <= range; ++dx) {
+                bool             overlapping = false;
+                std::int32_t     hitCx       = 0;
+                std::int32_t     hitCy       = 0;
+
+                for (int dy = -range; dy <= range && !overlapping; ++dy) {
+                    for (int dx = -range; dx <= range && !overlapping; ++dx) {
                         const std::int32_t qcx = cx + dx;
                         const std::int32_t qcy = cy + dy;
-                        if (grid_->attrAt(qcx, qcy) != Attribute::Repair) continue;
-                        if (grid_->hpAt(qcx, qcy) == 0)                   continue;
+                        if (grid_->attrAt(qcx, qcy) != Attribute::RepairBase) continue;
+                        if (grid_->hpAt(qcx, qcy) == 0)                       continue;
 
                         const float tileCenterX = cellToWorld(qcx);
                         const float tileCenterY = cellToWorld(qcy);
@@ -86,45 +95,59 @@ void RepairPickupSystem::update(threadmaxx::SystemContext& ctx) {
                         if (std::fabs(pos.x - tileCenterX) > tileHalf + shipHalf) continue;
                         if (std::fabs(pos.y - tileCenterY) > tileHalf + shipHalf) continue;
 
-                        // ---- Consume the tile -------------------------
-                        grid_->clear(qcx, qcy);
-                        if (destroyCb_) destroyCb_(qcx, qcy);
-                        ++pickupsThisStep_;
-                        ++pickupsTotal_;
+                        overlapping = true;
+                        hitCx       = qcx;
+                        hitCy       = qcy;
+                    }
+                }
+                if (!overlapping) continue;
 
-                        // ---- Heal the ship ----------------------------
-                        Ship ship = shipSpan[row];
+                const std::uint32_t idx = entities[row].index;
+                onBaseNow.insert(idx);
+                const bool entryEdge = (onBasePrev_.find(idx) == onBasePrev_.end());
+
+                // ---- Per-tick regen (always while overlapping) -------
+                {
+                    Ship ship = shipSpan[row];
+                    if (ship.currentHp < ship.maxHp) {
                         ship.currentHp = std::min(
                             ship.maxHp,
-                            ship.currentHp + kRepairHealAmount);
+                            ship.currentHp + kRepairBaseHpPerTick);
                         threadmaxx::addUserComponent(cb, idsShip, entities[row], ship);
+                    }
+                }
 
-                        // ---- Cycle the special weapon -----------------
-                        if (hasLd) {
-                            WeaponLoadout ld = ldSpan[row];
-                            ld.specialKind = static_cast<std::uint8_t>(
-                                (ld.specialKind + 1u) % kSpecialKindCount);
-                            const SpecialWeaponSpec& spec =
-                                specialSpecAt(ld.specialKind);
-                            ld.specialAmmo     = spec.magazine;
-                            ld.specialReloadIn = 0;
-                            ld.specialCooldown = 0;
-                            threadmaxx::addUserComponent(cb, idsLd, entities[row], ld);
-                        }
+                // ---- Entry-edge: cycle special + cue ------------------
+                if (entryEdge) {
+                    ++pickupsThisStep_;
+                    ++pickupsTotal_;
 
-                        if (engine_) {
-                            engine_->events<AudioPlay>().emit(
-                                AudioPlay{audio::kSoundTileBreak, 0, 0});
-                        }
-                        if (particles_) {
-                            particles_->emitTileBreakDust(
-                                tileCenterX, tileCenterY);
-                        }
+                    if (hasLd) {
+                        WeaponLoadout ld = ldSpan[row];
+                        ld.specialKind = static_cast<std::uint8_t>(
+                            (ld.specialKind + 1u) % kSpecialKindCount);
+                        const SpecialWeaponSpec& spec =
+                            specialSpecAt(ld.specialKind);
+                        ld.specialAmmo     = spec.magazine;
+                        ld.specialReloadIn = 0;
+                        ld.specialCooldown = 0;
+                        threadmaxx::addUserComponent(cb, idsLd, entities[row], ld);
+                    }
+
+                    if (engine_) {
+                        engine_->events<AudioPlay>().emit(
+                            AudioPlay{audio::kSoundTileBreak, 0, 0});
+                    }
+                    if (particles_) {
+                        particles_->emitTileBreakDust(
+                            cellToWorld(hitCx), cellToWorld(hitCy));
                     }
                 }
             }
         }
     });
+
+    onBasePrev_.swap(onBaseNow);
 }
 
 } // namespace tou2d

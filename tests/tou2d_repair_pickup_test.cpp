@@ -1,18 +1,17 @@
-// tou2d_repair_pickup_test — pins the M5.7 repair-tile pickup contract.
+// tou2d_repair_pickup_test — pins the M5.7 + M7.5 RepairBase contract.
 //
-// Contract:
-//   * `Attribute::Repair` is a distinct, non-blocking attribute. It is
-//     NOT `Solid`, so existing terrain-collision code that filters on
-//     `Solid` keeps passing the ship through repair cells.
-//   * `TerrainGrid::setRepair` writes Attribute::Repair with a non-zero
-//     HP sentinel; `clear` flips back to Air.
+// M7.5 reworked the on-touch semantics from "consume on overlap" to
+// "non-consuming regen + entry-edge cycle". This test pins:
+//   * `Attribute::RepairBase` (renamed from M5.7's `Attribute::Repair`)
+//     is a distinct, non-blocking attribute at the same enum value
+//     (3) so existing snapshots stay loadable.
+//   * `TerrainGrid::setRepairBase` writes Attribute::RepairBase with a
+//     non-zero HP sentinel; `clear` flips back to Air.
 //   * The cycle rule `specialKind = (specialKind + 1) % kSpecialKindCount`
 //     visits every kind exactly once across one full revolution.
-//   * Healing clamps to `Ship::maxHp` so a full-HP ship still
-//     consumes the tile (the original game's behaviour — the player
-//     grabs it for the weapon-cycle effect even when at full health).
+//   * Per-tick regen at `kRepairBaseHpPerTick` clamps to `Ship::maxHp`.
 //   * Procedural generator with `repairTileCount = N` produces a grid
-//     containing exactly N `Attribute::Repair` cells, and the same
+//     containing exactly N `Attribute::RepairBase` cells, and the same
 //     config reproduces the exact same placement (determinism).
 
 #include "Check.hpp"
@@ -40,20 +39,20 @@ int main() {
     using tou2d::ProceduralLevelConfig;
     using tou2d::generateProceduralLevel;
 
-    // ---- Attribute is distinct -------------------------------------------
-    static_assert(static_cast<std::uint8_t>(Attribute::Repair) == 3,
-                  "Repair must stay at enum value 3 — round-trips through "
-                  "ProceduralLevelConfig and snapshots");
-    CHECK(Attribute::Repair != Attribute::Solid);
-    CHECK(Attribute::Repair != Attribute::Air);
+    // ---- Attribute is distinct (M7.5 — renamed from Repair) --------------
+    static_assert(static_cast<std::uint8_t>(Attribute::RepairBase) == 3,
+                  "RepairBase must stay at enum value 3 — round-trips through "
+                  "ProceduralLevelConfig and pre-M7.5 snapshots");
+    CHECK(Attribute::RepairBase != Attribute::Solid);
+    CHECK(Attribute::RepairBase != Attribute::Air);
 
-    // ---- setRepair / clear round-trip ------------------------------------
+    // ---- setRepairBase / clear round-trip --------------------------------
     {
         TerrainGrid g;
         g.reset(9, 9);
         CHECK_EQ(g.attrAt(0, 0), Attribute::Air);
-        g.setRepair(0, 0);
-        CHECK_EQ(g.attrAt(0, 0), Attribute::Repair);
+        g.setRepairBase(0, 0);
+        CHECK_EQ(g.attrAt(0, 0), Attribute::RepairBase);
         CHECK(g.hpAt(0, 0) > 0);
         g.clear(0, 0);
         CHECK_EQ(g.attrAt(0, 0), Attribute::Air);
@@ -75,22 +74,24 @@ int main() {
         }
     }
 
-    // ---- Heal clamps to maxHp --------------------------------------------
+    // ---- M7.5 — Per-tick regen at kRepairBaseHpPerTick, clamped at maxHp -
     {
         tou2d::Ship sh{};
         sh.maxHp     = 150.0f;
-        sh.currentHp = 140.0f;
+        sh.currentHp = 149.5f;
         const float healed = std::min(
             sh.maxHp,
-            sh.currentHp + tou2d::kRepairHealAmount);
+            sh.currentHp + tou2d::kRepairBaseHpPerTick);
         CHECK_EQ(healed, sh.maxHp);  // clamped at full
-        // From a non-full state, heal increases.
+        // From a non-full state, regen increases by exactly the per-tick
+        // step (well clear of maxHp so no clamp).
         sh.currentHp = 50.0f;
         const float healed2 = std::min(
             sh.maxHp,
-            sh.currentHp + tou2d::kRepairHealAmount);
+            sh.currentHp + tou2d::kRepairBaseHpPerTick);
         CHECK(healed2 > sh.currentHp);
         CHECK(healed2 <= sh.maxHp);
+        CHECK_EQ(healed2, sh.currentHp + tou2d::kRepairBaseHpPerTick);
     }
 
     // ---- Procedural generator sprinkles requested count ------------------
@@ -110,14 +111,14 @@ int main() {
         // Determinism: same config → same grid.
         CHECK(a.attr == b.attr);
         CHECK(a.hp   == b.hp);
-        // Exactly N Repair cells (the random sampler is given enough
+        // Exactly N RepairBase cells (the random sampler is given enough
         // attempts that this is reliable on a 112x112 medium canvas
         // with ~50% air). If the test ever flakes here, bump
         // kMaxRepairAttempts in ProceduralLevel.hpp.
-        CHECK_EQ(countAttr(a, Attribute::Repair), std::int32_t{12});
+        CHECK_EQ(countAttr(a, Attribute::RepairBase), std::int32_t{12});
     }
 
-    // ---- repairTileCount == 0 → no Repair cells (pre-M5.7 path) ----------
+    // ---- repairTileCount == 0 → no RepairBase cells (pre-M5.7 path) ------
     {
         ProceduralLevelConfig cfg{};
         cfg.seed            = 0xCAFEBABEu;
@@ -128,7 +129,7 @@ int main() {
 
         TerrainGrid g;
         generateProceduralLevel(g, cfg);
-        CHECK_EQ(countAttr(g, Attribute::Repair), std::int32_t{0});
+        CHECK_EQ(countAttr(g, Attribute::RepairBase), std::int32_t{0});
     }
 
     // ---- Distinct repairTileCount produces a distinct grid --------------
@@ -145,7 +146,7 @@ int main() {
         cfg.repairTileCount = 16;
         TerrainGrid b;
         generateProceduralLevel(b, cfg);
-        CHECK(countAttr(a, Attribute::Repair) != countAttr(b, Attribute::Repair));
+        CHECK(countAttr(a, Attribute::RepairBase) != countAttr(b, Attribute::RepairBase));
     }
 
     EXIT_WITH_RESULT();

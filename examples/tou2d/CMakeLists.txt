@@ -37,6 +37,7 @@ add_library(tou2d_core STATIC
     AudioSystem.cpp
     Replay.cpp
     RepairPickupSystem.cpp
+    RepairKitSystem.cpp
     BulletHomingSystem.cpp
     # M6.0 — UI prereqs (TTF font + text layout). The font asset lives
     # at the repo's root-level `assets/ui/font.ttf` (mirroring the

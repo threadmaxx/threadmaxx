@@ -3048,37 +3048,105 @@ Verification: build clean under
 `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON`; ctest all green; 200-tick
 smoke clean.
 
-**M7.5 — Pickup framework split (NEW; repair base vs kit)**
+**M7.5 — Pickup framework split (repair base vs kit) — LANDED 2026-05-30**
 
-Current terrain grid carries one `Repair` attribute per cell;
-`RepairPickupSystem` consumes it on touch. Splitting:
+Pre-M7.5 the terrain grid carried one `Attribute::Repair` per cell
+and `RepairPickupSystem` consumed it on touch (heal + cycle special +
+clear). M7.5 splits that into two lanes — a non-consuming tile base
+that regenerates per tick, and an entity-based collectible kit that
+respawns on a timer. Six sub-batches:
 
-- **Repair base** = sittable station. Stays on consume; while a
-  ship is standing on it, HP regenerates AND a "swap special"
-  prompt fires (Player input maps a key to cycle special). Models
-  as a new terrain attribute `RepairBase`.
-- **Repair kit** = collectible. Single-use, despawns on pickup,
-  respawns after a configurable interval. Models as a dedicated
-  entity (not a tile) with `Pickup { kind: u8, respawnIn: u16 }`
-  user component.
-- Data-driven config table:
-  ```cpp
-  struct PickupSpec {
-      PickupKind kind;
-      uint16_t   respawnIntervalTicks;
-      uint16_t   effectMagnitude;
-      // ... no virtual interface — switch on `kind` at apply site.
-  };
-  ```
-  Single-source-of-truth table indexed by `PickupKind` for the
-  emitter timing + effect strength.
-- Migration: existing `Repair` terrain tiles become `RepairBase`
-  (keeps existing levels playable); new `RepairKit` pickups must
-  be explicitly spawned by the procedural generator / level
-  loader.
+1. **Data model (M7.5.a).** `DemoTypes.hpp` gains:
+   * `Attribute::RepairBase = 3` (renamed from `Repair`; same byte
+     so existing snapshots and procedurally-generated levels load
+     unchanged).
+   * `PickupKind { RepairKit = 0, Count }` + `kPickupKindCount`.
+   * `Pickup { kind:u8, state:u8, respawnIn:u16, _pad[4] }` —
+     8-byte user component. `state` is 0=active, 1=respawning.
+   * `PickupSpec { respawnIntervalTicks:u16, effectMagnitude:u16,
+     _pad[4] }` — 8 bytes; `pickupSpecAt(PickupKind)` constexpr
+     accessor into `kPickupSpecs` (single-source-of-truth table
+     indexed by `PickupKind`).
+   * `kRepairBaseHpPerTick = 1.0f` (per-tick regen rate; max-HP
+     ship refills in ~3 s at 60 Hz).
+   * `UserComponentIds::pickup` field.
 
-Test pin: assert RepairBase doesn't consume; assert RepairKit
-respawns after `respawnIntervalTicks`.
+2. **Terrain migration (M7.5.b).** `TerrainGrid::setRepair` →
+   `setRepairBase`. Call-site sweep: `ProceduralLevel.hpp` (proc
+   sprinkles), `TouGame.cpp` (synthetic arena spokes), `main.cpp`
+   (background painter), `BotControlSystem.cpp` (nearest-repair
+   scan), tests.
+
+3. **RepairPickupSystem rewire (M7.5.c).** Non-consuming RepairBase
+   semantics. New behaviour:
+   * Per-tick `Ship::currentHp += kRepairBaseHpPerTick` (clamped
+     to `maxHp`) while a ship's AABB overlaps a RepairBase tile.
+   * Edge-triggered special-cycle: first tick a ship newly enters
+     a base, advances `WeaponLoadout::specialKind` once + refills
+     `specialAmmo` to the new spec's magazine. Doesn't re-trigger
+     while the ship stays put.
+   * Audio cue + particle burst fire on entry only.
+   * Tile DOES NOT consume — no `grid->clear` / no destroyCb.
+   * Per-ship entry-edge state lives in `onBasePrev_` (entity
+     index set) on the system; swapped at end of `update()`.
+
+4. **RepairKitSystem (M7.5.d).** New system `tou2d.repairKit`.
+   Two-pass `update()` inside `ctx.single`:
+   * Pass 1 snapshots up-to-16 live ships' positions / Ship /
+     WeaponLoadout pointers from non-disabled chunks.
+   * Pass 2 walks every chunk carrying the `Pickup` bit (no
+     `DisabledTag` filter — respawning kits must tick down even
+     while hidden). For `state == 0`: AABB-test against each
+     snapshotted ship, on hit apply `pickupSpecAt(kind)` effect
+     (RepairKit → heal `effectMagnitude` HP + cycle special), set
+     `state = 1`, write `respawnIn = respawnIntervalTicks`, attach
+     `DisabledTag` (kit hidden during cooldown). For `state == 1`:
+     decrement `respawnIn`; on zero, flip to `state = 0` and
+     remove `DisabledTag`.
+   * `kKitHalfExtent = 8 wu` so a near-miss still grabs (kits are
+     sparse vs. tiles).
+   * Public per-step counters: `pickupsThisStep`, `pickupsTotal`,
+     `respawnsThisStep`.
+   * Future kinds: switch on `kind` at the apply site — no virtual
+     interface, per the M7.5 data-driven plan.
+
+5. **TouGame integration (M7.5.e).** Registers `Pickup` user
+   component after `ShipSpriteRef`. Spawns `RepairKitSystem`
+   alongside the existing `RepairPickupSystem` (disjoint chunks —
+   `Pickup` chunks are never `Ship` chunks, so they coexist in the
+   same wave without conflict). Wires `setParticleSystem` for the
+   kit FX. No kits spawned yet — the framework lands; the demo
+   keeps its RepairBase spokes from the synthetic arena and 12
+   sprinkled bases from proc-gen. Kit-spawning + render asset is
+   intentionally deferred to a follow-up batch so M7.5 stays a
+   clean "framework + behaviour split" landing.
+
+6. **Tests (M7.5.f).** `tou2d_repair_pickup_test` updated:
+   * `Attribute::Repair` → `Attribute::RepairBase` everywhere
+     (enum-byte 3 pin retained).
+   * `setRepair` → `setRepairBase`.
+   * Per-tick regen check: clamps to `maxHp` from 149.5 + 1.0; a
+     non-full ship gains exactly `kRepairBaseHpPerTick`.
+   * Procedural determinism + count checks retargeted to
+     `Attribute::RepairBase`.
+   `tou2d_bot_behavior_test` `setRepair` → `setRepairBase` sweep
+   (5 sites). New `tou2d_pickup_framework_test` pins six contract
+   sections: Attribute byte, PickupKind cardinality, Pickup POD
+   size + defaults, PickupSpec catalogue values + sensible band,
+   regen-vs-kit-heal tunable band, and a respawn-countdown
+   simulation that exercises the state-1 → state-0 transition.
+
+Files touched: `DemoTypes.hpp`, `RepairPickupSystem.{hpp,cpp}`,
+`RepairKitSystem.{hpp,cpp}` (new), `TouGame.cpp`,
+`BotControlSystem.{hpp,cpp}`, `ProceduralLevel.hpp`, `main.cpp`,
+`examples/tou2d/CMakeLists.txt`, `tests/CMakeLists.txt`,
+`tests/tou2d_repair_pickup_test.cpp`,
+`tests/tou2d_bot_behavior_test.cpp`,
+`tests/tou2d_pickup_framework_test.cpp` (new), this plan.
+
+Verification: build clean (no warnings); ctest 158/158 green; 200-
+tick smoke (`./build/examples/minimal/threadmaxx_minimal 200`)
+ends with `[ConsoleRenderer] shutdown after 201 frames`.
 
 **M7.6 — Water mechanic (NEW; buoyancy in MovementSystem)**
 

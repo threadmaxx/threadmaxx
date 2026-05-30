@@ -291,6 +291,25 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_faction_test COMMAND tou2d_faction_test)
 
+    # M7.5 — pickup framework split (RepairBase tile vs RepairKit
+    # entity). Pins PickupKind / Pickup / PickupSpec / Attribute byte
+    # values + respawn-countdown shape.
+    add_executable(tou2d_pickup_framework_test tou2d_pickup_framework_test.cpp)
+    target_link_libraries(tou2d_pickup_framework_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_pickup_framework_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_pickup_framework_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_pickup_framework_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_pickup_framework_test COMMAND tou2d_pickup_framework_test)
+
     # M6.0b — UISystem state machine + UIScreen enum + UIScreenChanged
     # event payload pin.
     add_executable(tou2d_uiscreen_state_machine_test

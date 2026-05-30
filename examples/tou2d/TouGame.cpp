@@ -13,6 +13,7 @@
 #include "LevelLoader.hpp"
 #include "MovementSystem.hpp"
 #include "ProjectileSystem.hpp"
+#include "RepairKitSystem.hpp"
 #include "RepairPickupSystem.hpp"
 #include "RoundRestartSystem.hpp"
 #include "ShipLifecycleSystem.hpp"
@@ -68,7 +69,7 @@ void populateSyntheticArena(TerrainGrid& grid) {
         {  kSpoke, -kSpoke  }, { -kSpoke,  kSpoke  },
     }};
     for (const auto& [cx, cy] : kRepairCells) {
-        grid.setRepair(cx, cy);
+        grid.setRepairBase(cx, cy);
     }
 }
 
@@ -187,6 +188,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     ids_.bullet      = engine.registerUserComponent<Bullet>();
     ids_.loadout     = engine.registerUserComponent<WeaponLoadout>();
     ids_.sprite      = engine.registerUserComponent<ShipSpriteRef>();
+    ids_.pickup      = engine.registerUserComponent<Pickup>();
 
     // ---- Pre-warm typed event channels on the sim thread -------------------
     // M4.3 — collision is now the authoritative writer for the round-
@@ -273,6 +275,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto* collisionPtr = collision.get();
     auto repairPickup     = std::make_unique<RepairPickupSystem>(ids_, &grid_, &engine);
     auto* repairPickupPtr = repairPickup.get();
+    auto repairKit        = std::make_unique<RepairKitSystem>(ids_, &engine);
     auto weaponFire    = std::make_unique<WeaponFireSystem>(ids_, &engine);
     weaponFire->setRoundEndedFlag(roundEnded_);
     auto homing        = std::make_unique<BulletHomingSystem>(ids_);
@@ -300,6 +303,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     bulletTerrain->setParticleSystem(particlesPtr);
     shipLife     ->setParticleSystem(particlesPtr);
     repairPickup ->setParticleSystem(particlesPtr);
+    repairKit    ->setParticleSystem(particlesPtr);
     movementPtr  ->setParticleSystem(particlesPtr);   // M7.3 §5.1 — thruster plume
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera->setNumHumans(numHumans_);
@@ -333,7 +337,8 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(particles));    // M5.3 — integrate existing particles BEFORE any emitter spawns fresh ones this tick
     engine.registerSystem(std::move(movement));
     engine.registerSystem(std::move(collision));
-    engine.registerSystem(std::move(repairPickup)); // M5.7 — consume Repair tiles BEFORE weaponFire so a cycled weapon fires this same tick
+    engine.registerSystem(std::move(repairPickup)); // M5.7 / M7.5 — RepairBase regen + entry-edge cycle BEFORE weaponFire so a cycled weapon fires this same tick
+    engine.registerSystem(std::move(repairKit));    // M7.5 — entity-based collectible kits; runs alongside repairPickup (disjoint chunks)
     engine.registerSystem(std::move(weaponFire));
     engine.registerSystem(std::move(homing));       // M5.8 — steer Homer bullets BEFORE projectile/bulletShip so a freshly-spawned Homer locks on this tick
     engine.registerSystem(std::move(projectile));

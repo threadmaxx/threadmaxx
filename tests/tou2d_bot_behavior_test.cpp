@@ -51,7 +51,7 @@ int main() {
     {
         TerrainGrid g;
         g.reset(9, 9);
-        g.setRepair(0, 0);
+        g.setRepairBase(0, 0);
         float ox = 0, oy = 0;
         CHECK(!findNearestRepairTile(g,  0.0f, 0.0f,  0.0f, ox, oy));
         CHECK(!findNearestRepairTile(g,  0.0f, 0.0f, -1.0f, ox, oy));
@@ -63,7 +63,7 @@ int main() {
         g.reset(33, 33);
         // Tile at cell (10, 10) → world (10*kTileWorldUnits, 10*kTileWorldUnits)
         // ≈ (35, 35) world units. Distance from origin ≈ 49.5 wu.
-        g.setRepair(10, 10);
+        g.setRepairBase(10, 10);
         float ox = -1.0f, oy = -1.0f;
         CHECK(!findNearestRepairTile(g, 0.0f, 0.0f, 20.0f, ox, oy));
         CHECK_EQ(ox, -1.0f);
@@ -74,7 +74,7 @@ int main() {
     {
         TerrainGrid g;
         g.reset(33, 33);
-        g.setRepair(10, 10);
+        g.setRepairBase(10, 10);
         float ox = 0, oy = 0;
         CHECK(findNearestRepairTile(g, 0.0f, 0.0f, 100.0f, ox, oy));
         const float expectedX = 10.0f * kTileWorldUnits;
@@ -87,9 +87,9 @@ int main() {
     {
         TerrainGrid g;
         g.reset(33, 33);
-        g.setRepair(  1,  0);   // ~3.5 wu away from origin (NEAREST)
-        g.setRepair( 10,  5);   // ~39 wu away
-        g.setRepair(-12, -3);   // ~43 wu away
+        g.setRepairBase(  1,  0);   // ~3.5 wu away from origin (NEAREST)
+        g.setRepairBase( 10,  5);   // ~39 wu away
+        g.setRepairBase(-12, -3);   // ~43 wu away
         float ox = 0, oy = 0;
         CHECK(findNearestRepairTile(g, 0.0f, 0.0f, 200.0f, ox, oy));
         CHECK_EQ(ox, 1.0f * kTileWorldUnits);

@@ -244,7 +244,7 @@ bool findNearestRepairTile(const TerrainGrid& grid,
     for (std::int32_t cy = cyLo; cy <= cyHi; ++cy) {
         for (std::int32_t cx = cxLo; cx <= cxHi; ++cx) {
             if (!grid.inBounds(cx, cy)) continue;
-            if (grid.attrAt(cx, cy) != Attribute::Repair) continue;
+            if (grid.attrAt(cx, cy) != Attribute::RepairBase) continue;
             const float wx = static_cast<float>(cx) * kTileWorldUnits;
             const float wy = static_cast<float>(cy) * kTileWorldUnits;
             const float dx = wx - ox;

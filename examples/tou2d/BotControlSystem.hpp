@@ -31,10 +31,10 @@ inline constexpr float kBotChaosFireChancePerTick = 0.005f;
 
 /// M7.1 — scan the grid's tiles inside the bounding square around
 /// `(ox, oy)` of half-extent `maxRadiusWU`; write the world coordinates
-/// of the nearest `Attribute::Repair` cell to `(outX, outY)`. Returns
-/// false when the grid is empty, the search radius is non-positive, or
-/// no Repair cell exists inside the radius. Cells whose centers lie
-/// exactly on the radius boundary count as inside.
+/// of the nearest `Attribute::RepairBase` cell to `(outX, outY)`.
+/// Returns false when the grid is empty, the search radius is non-
+/// positive, or no RepairBase cell exists inside the radius. Cells
+/// whose centers lie exactly on the radius boundary count as inside.
 bool findNearestRepairTile(const TerrainGrid& grid,
                            float ox, float oy,
                            float maxRadiusWU,
