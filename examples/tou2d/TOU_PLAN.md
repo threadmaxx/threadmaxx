@@ -2707,6 +2707,200 @@ v1 M6 (size + scope risk):
 | Localisation / i18n | M6.0's TTF bake is ASCII-only by default; non-Latin requires expanding `FontConfig::codepoints` AND a TTF that covers those ranges. Mechanism is there — just not enabled in v1. |
 | Save / load mid-match | "Continue" in M6.1 is greyed in v1 — full save state requires a different POD than `WorldSnapshot` (input state, RNG state, replay buffer) |
 
+### Milestone 7 — Polish pass + playtest debt (PLANNED, AFTER M6.10)
+
+Spun out 2026-05-30 from a single-prompt playtest-feedback dump that
+mixed real bugs with new-feature requests. The bugs landed inline
+as Batch A and Batch D; the feature work is sized here as discrete
+batches so each gets its own scoping pass.
+
+**Batch A (LANDED 2026-05-30)** — three real bugs the feedback prompt
+flagged, fixable without new infrastructure:
+
+- **§3** notification text wasn't visible because `ToastRenderSystem`
+  emits world-space `DebugLine` strips but the Vulkan renderer
+  doesn't draw `DebugText`. main.cpp now reads each slot's active
+  toast stack and paints the text through the existing
+  `UiOverlayBitmap` + `FontAtlas` → Vulkan upload path that menu
+  screens use. Per-slot pixel anchor derives from
+  `CameraSystem::viewportFor(slot)`. Commit `9d703c5`.
+- **§2** results HUD + Rematch leaked round-1 state into round-2.
+  `TouGame::winnerSlot_` / `winnerKills_` / `roundEnded_` are
+  TouGame members that survive `engine.shutdown()`; the new
+  engine's tick 0 then re-fired the host's rising-edge Results
+  detector. Fix: `TouGame::onSetup` resets all three at the top,
+  covering every initialize path (CLI Start, menu Start,
+  Pause→Restart match, Results→Rematch). Commit `f7874d8`.
+- **§7** camera scrolled past the level perimeter. New
+  `CameraSystem::setLevelRect` mirrors the MovementSystem /
+  ProjectileSystem setter; `update()` clamps each slot's follow
+  target to `[min + halfExtent, max - halfExtent]` per axis with
+  the halfExtent derived from `effectiveOrthoHalfH()` ×
+  `viewportAspect()` so the clamp matches per-viewport split-
+  screen zoom. Levels narrower than the viewport lock to the
+  midpoint. Commit `f7874d8`.
+
+**M7.1 — Bot behavior polish (BotControlSystem)**
+
+Three behavioral fixes from the playtest, none requiring new ECS
+components or system wiring:
+
+1. Low-HP behavior — replace the unconditional flee with a guarded
+   seek: only retreat toward a repair tile if one exists within a
+   configurable radius (~`kBotRepairSearchRadiusWU`). Otherwise
+   keep fighting. Requires the bot to know about repair tiles —
+   currently `BotControlSystem` doesn't read the terrain grid; needs
+   a borrowed `const TerrainGrid*` like `RepairPickupSystem` has.
+2. Occasional unaimed shots — low-probability chaos layer on top of
+   the aimed-fire decision. Per-tick fire chance ≈ 0.005 (~0.3 Hz
+   at 60 Hz). Deterministic: drive off the existing per-bot RNG
+   seeded from slot index.
+3. Stuck / no-wander — diagnose. Hypotheses: target acquisition
+   short-circuits on stale `targetSlot_`, wander state transition
+   never fires, or steering converges to zero against a wall.
+   Investigation pass first; fix scope unknown until repro is
+   isolated.
+
+Test pin: extend `tou2d_specials_test` or add
+`tou2d_bot_behavior_test` covering each branch.
+
+**M7.2 — Per-camera HUD ownership (engine-side primitive change)**
+
+`DebugLine` / `DebugPoint` don't carry a `cameraMask` field, so
+HudSystem's per-slot HUD anchored to that slot's world-space
+follow-center is currently visible from every camera whose frustum
+contains the anchor point (the existing HudSystem comment calls
+this "acceptable v1 limitation"). Real fix touches the engine:
+
+- Add `uint32_t cameraMask = 0xFFFFFFFFu` to `DebugLine` and
+  `DebugPoint` in `include/threadmaxx/render/DebugGeometry.hpp`.
+- Plumb through Vulkan renderer's debug-pass: it already iterates
+  cameras and emits one draw per camera per debug primitive;
+  filter by `(cameraMask >> cameraIndex) & 1`.
+- Update HudSystem to set `cameraMask = (1u << slot)` on every
+  per-slot primitive it emits. Shared overlays (winner banner)
+  stay at all-ones.
+- Migration risk: defaults to 0xFFFFFFFFu so existing callers see
+  no change. Bump CLAUDE.md's render-contract note.
+
+Test pin: contract test asserting that a per-slot debug line with
+`cameraMask = (1u << 0)` doesn't appear in camera 1's pass.
+
+**M7.3 — Visual polish (ParticleSystem)**
+
+Two emitter changes, no new system or component types:
+
+- **§5.1** thruster particle color aging: `Particle::Thrust` kind
+  already exists. Add per-particle color interpolation from a
+  yellow-orange start (~`0xFFFFAA40`) through red-orange end
+  (~`0xFF4040E0` in 0xAABBGGRR) keyed off the same lifetime
+  fraction the alpha fade uses. The compositor renders cube
+  particles tinted from per-particle color, so this is one
+  interpolation in `ParticleSystem::integrate`.
+- **§5.2** damage smoke threshold: spawn a small smoke emitter on
+  each ship whose `Ship.currentHp / Ship.maxHp < kDamageSmokeFracThreshold`
+  (start at 0.4). Intensity (particles/sec) scales with damage. New
+  system or new branch in `WeaponFireSystem` / `ShipLifecycleSystem`
+  — the latter is the existing damage observer.
+
+Test pin: assert thrust-particle color lerp across age fractions;
+assert smoke emission rate vs HP fraction monotonicity.
+
+**M7.4 — Faction system (NEW; bot ally targeting)**
+
+No `Faction` concept exists in the codebase today. M7.4 introduces
+one as the minimum needed for ally non-aggression:
+
+- Add `Faction` enum or `uint8_t factionId` field to the existing
+  `LocalPlayer` user component (the per-slot config already carries
+  bot/human and tag; faction is a natural addition).
+- Extend `MatchSetup` + the Player setup screen with a per-slot
+  faction selector (M6.3 added per-slot tag/role overrides — the
+  same screen is the right home).
+- BotControlSystem target acquisition filters candidates by
+  `lp.factionId != self.factionId` before geometry. Same filter
+  in WeaponFireSystem to prevent friendly-fire if a bot does fire
+  toward an ally (manual aim by a human can still hit allies —
+  matches the prompt's "friendly fire may exist as game rule").
+
+Test pin: 4-bot scenario with two factions; assert bots never
+target same-faction ally for N seconds.
+
+**M7.5 — Pickup framework split (NEW; repair base vs kit)**
+
+Current terrain grid carries one `Repair` attribute per cell;
+`RepairPickupSystem` consumes it on touch. Splitting:
+
+- **Repair base** = sittable station. Stays on consume; while a
+  ship is standing on it, HP regenerates AND a "swap special"
+  prompt fires (Player input maps a key to cycle special). Models
+  as a new terrain attribute `RepairBase`.
+- **Repair kit** = collectible. Single-use, despawns on pickup,
+  respawns after a configurable interval. Models as a dedicated
+  entity (not a tile) with `Pickup { kind: u8, respawnIn: u16 }`
+  user component.
+- Data-driven config table:
+  ```cpp
+  struct PickupSpec {
+      PickupKind kind;
+      uint16_t   respawnIntervalTicks;
+      uint16_t   effectMagnitude;
+      // ... no virtual interface — switch on `kind` at apply site.
+  };
+  ```
+  Single-source-of-truth table indexed by `PickupKind` for the
+  emitter timing + effect strength.
+- Migration: existing `Repair` terrain tiles become `RepairBase`
+  (keeps existing levels playable); new `RepairKit` pickups must
+  be explicitly spawned by the procedural generator / level
+  loader.
+
+Test pin: assert RepairBase doesn't consume; assert RepairKit
+respawns after `respawnIntervalTicks`.
+
+**M7.6 — Water mechanic (NEW; buoyancy in MovementSystem)**
+
+No water concept exists today (`Attribute` is `Empty`/`Solid`/`Repair`).
+M7.6 adds it:
+
+- New terrain attribute `Water`. Visualized at level-load time as
+  blue tint on the background painter; mechanically interrogated
+  per-tick by `MovementSystem`.
+- MovementSystem applies, when the ship's center is in a water
+  cell:
+  - Velocity drag multiplier ~0.6 (configurable; reduces effective
+    thrust + max speed).
+  - Upward buoyancy force that offsets gravity; tunable so neutral
+    buoyancy lets a ship hover without thrust input. Suggested
+    starting point: `kBuoyancy = -kGravity * 0.7` for sink-but-
+    slowly behavior.
+- Transitions: smooth via per-tick interpolation rather than hard
+  switch at the cell boundary.
+
+Test pin: assert a ship dropped into a water cell decelerates +
+the gravity integration switches sign.
+
+**M7.7 — Acceptance closeout**
+
+Mirror the M6.10 acceptance checklist for the M7 batches:
+- [ ] AI low-HP behavior tactical (M7.1)
+- [ ] AI no longer stalls / wanders correctly (M7.1)
+- [ ] HUD per-camera ownership clean across all layouts (M7.2)
+- [ ] Thruster + damage smoke read correctly under playtest (M7.3)
+- [ ] Allied AI does not target same-faction members (M7.4)
+- [ ] Repair base vs kit split is playable + extensible (M7.5)
+- [ ] Water is traversable with smooth transitions (M7.6)
+- [ ] No M6 acceptance criteria regressed
+- [ ] Every M7 batch shipped with a test in the same PR
+
+#### M7 — Engine-side prereqs
+
+| Item | Why deferred to M7 (not done inline) |
+|---|---|
+| `cameraMask` on `DebugLine` / `DebugPoint` | M7.2 prereq; touches public render header + Vulkan renderer pass + CLAUDE.md render-contract note |
+| New `Pickup` user component + `PickupKind` enum | M7.5 prereq; sized as part of the split |
+| New terrain `Attribute::Water` enum value | M7.6 prereq; same patch as the buoyancy math |
+
 ### Out of scope for v1
 - Split-screen (deferred per § 1).
 - Level editor (the source-asset workflow IS the editor).
