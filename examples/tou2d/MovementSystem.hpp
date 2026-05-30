@@ -4,7 +4,11 @@
 
 #include <threadmaxx/System.hpp>
 
+#include <cstdint>
+
 namespace tou2d {
+
+class ParticleSystem;
 
 /// Reads PlayerInput + Transform + Velocity per ship, applies thrust
 /// (turn rate to orientation, forward force to velocity), then folds
@@ -58,6 +62,19 @@ public:
         levelActive_ = (maxX > minX) && (maxY > minY);
     }
 
+    /// M7.3 §5.1 — borrowed pointer to the demo's ParticleSystem.
+    /// When set, every Nth tick (`kThrustEmitInterval`) each ship
+    /// whose `PlayerInput::thrust > 0` emits one Thrust particle
+    /// behind the engine. Null is fine — headless tests don't wire
+    /// particles and `update()` then just skips the emit.
+    void setParticleSystem(ParticleSystem* p) noexcept { particles_ = p; }
+
+    /// M7.3 §5.1 — emit one thruster puff every `kThrustEmitInterval`
+    /// ticks per actively-thrusting ship. 3 → 20 puffs/sec at 60 Hz;
+    /// combined with TTL 12-18 each ship caps at ~6 live thrust
+    /// particles in the 256-particle pool.
+    static constexpr std::uint32_t kThrustEmitInterval = 3;
+
 private:
     UserComponentIds ids_;
     float            levelMinX_   = 0.0f;
@@ -65,6 +82,8 @@ private:
     float            levelMaxX_   = 0.0f;
     float            levelMaxY_   = 0.0f;
     bool             levelActive_ = false;
+    ParticleSystem*  particles_   = nullptr;
+    std::uint32_t    tickPhase_   = 0;   // M7.3 — bumped each update() call
 };
 
 } // namespace tou2d

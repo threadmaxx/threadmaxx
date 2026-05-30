@@ -8,6 +8,7 @@
 #include <threadmaxx/render/DebugGeometry.hpp>
 #include <threadmaxx/render/RenderFrameBuilder.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace tou2d {
@@ -47,6 +48,10 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
         if (sp.ticksLeft > 0) sp.ticksLeft = static_cast<std::uint16_t>(sp.ticksLeft - 1);
     }
 
+    // M7.3 §5.2 — bump the damage-smoke phase. Once per update() call
+    // so the cadence is deterministic given a fixed call order.
+    const std::uint32_t phase = tickPhase_++;
+
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
         for (const auto* chunkPtr : view.chunks()) {
@@ -73,6 +78,25 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                 Ship ship = shipSpan[row];
 
                 if (!disabled) {
+                    // M7.3 §5.2 — damage-smoke poll for alive ships.
+                    // Cadence is keyed off (hpFrac, phase + row) so
+                    // multiple damaged ships stagger their puffs across
+                    // consecutive ticks rather than all firing on the
+                    // same one. ShipLifecycleSystem is the right home
+                    // because it already iterates Ship+Transform every
+                    // tick; we don't need a new system or a new wave.
+                    if (ship.currentHp > 0.0f && particles_) {
+                        const float maxHp  = std::max(1.0f, ship.maxHp);
+                        const float hpFrac = ship.currentHp / maxHp;
+                        const std::uint32_t interval =
+                            ParticleSystem::damageSmokeInterval(hpFrac);
+                        if (interval > 0 &&
+                            ((phase + static_cast<std::uint32_t>(row)) % interval) == 0u) {
+                            particles_->emitDamageSmoke(
+                                positions[row].position.x,
+                                positions[row].position.y);
+                        }
+                    }
                     if (ship.currentHp > 0.0f) continue;
 
                     // ---- Begin death --------------------------------

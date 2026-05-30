@@ -63,6 +63,52 @@ public:
     /// darker than the surviving rock around it.
     void emitTileBreakDust (float x, float y);
 
+    /// M7.3 §5.1 — engine thruster plume at world `(x, y)`. `(vx, vy)`
+    /// is the particle's initial world velocity (typically `-forward *
+    /// kThrustEjectSpeed` so the plume trails behind a moving ship).
+    /// Color is interpolated from yellow-orange at spawn to red-orange
+    /// at end-of-life via `thrustColorForAge` in `buildRenderFrame`;
+    /// the stored `rgb` field is set to the spawn color so callers can
+    /// inspect a freshly-spawned particle's color directly.
+    void emitThrusterParticle(float x, float y, float vx, float vy);
+
+    /// M7.3 §5.2 — damage smoke puff at world `(x, y)`. One puff per
+    /// call; the caller (typically `ShipLifecycleSystem`) rate-limits
+    /// via `damageSmokeInterval(hpFrac)` so puff cadence scales with
+    /// damage. Color is hardcoded dark-gray (same family as the
+    /// death-explosion smoke), TTL is shorter so the trail is closer
+    /// to "wisps" than to a billowing cloud.
+    void emitDamageSmoke(float x, float y);
+
+    /// M7.3 §5.1 — color for a thruster particle at remaining-life
+    /// fraction `frac` (1.0 = just spawned, 0.0 = expired). Lerps
+    /// from yellow-orange to red-orange in `0xAABBGGRR` packing.
+    /// Static so tests can pin the curve without an Engine instance.
+    static std::uint32_t thrustColorForAge(float frac) noexcept;
+
+    /// M7.3 §5.2 — ticks-per-puff for a ship at HP fraction `hpFrac`.
+    /// Returns 0 when no smoke should emit (`hpFrac >=
+    /// kDamageSmokeFracThreshold`); otherwise a positive integer that
+    /// monotonically decreases as `hpFrac` drops (more damage → more
+    /// smoke). Static so tests can pin the rate curve.
+    static std::uint32_t damageSmokeInterval(float hpFrac) noexcept;
+
+    /// M7.3 §5.2 — HP fraction at which damage smoke begins. Below
+    /// this threshold every ship leaks a periodic smoke puff whose
+    /// cadence scales with how far below.
+    static constexpr float kDamageSmokeFracThreshold = 0.4f;
+
+    /// M7.3 §5.1 — thruster eject speed (world units / second). Used
+    /// by callers to compute `(vx, vy) = -forward * kThrustEjectSpeed`
+    /// before invoking `emitThrusterParticle`. Public so the test pin
+    /// can recover deterministic spawn velocities.
+    static constexpr float kThrustEjectSpeed = 90.0f;
+
+    /// M7.3 §5.1 — spawn color (frac == 1.0). Yellow-orange, `0xAABBGGRR`.
+    static constexpr std::uint32_t kThrustColorHot  = 0xFF40AAFFu;
+    /// M7.3 §5.1 — end-of-life color (frac == 0.0). Red-orange, `0xAABBGGRR`.
+    static constexpr std::uint32_t kThrustColorCool = 0xFF4040E0u;
+
     /// M6.7 — accessibility hookup. When `photosensitive == 1`, every
     /// particle's emit alpha is multiplied by `kPhotosensitiveAlphaScale`
     /// (= 0.4) in `buildRenderFrame` so the explosion / spark / dust
@@ -92,6 +138,7 @@ private:
         Debris = 0,  ///< outward fly + falling gravity + fast fade
         Smoke  = 1,  ///< slower outward + anti-gravity (rises) + drag
         Spark  = 2,  ///< bright, no gravity, very short-lived
+        Thrust = 3,  ///< M7.3 — engine plume; no gravity, color ages
     };
 
     /// Per-particle state. POD; trivially copyable for round-robin

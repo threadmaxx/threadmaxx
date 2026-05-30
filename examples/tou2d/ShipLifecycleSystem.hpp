@@ -101,6 +101,12 @@ private:
     std::mt19937                    rng_{0xBA51CF11u};
     std::array<DeathSpark, 8>       sparks_{};
     std::uint32_t                   nextSpark_ = 0;
+    /// M7.3 §5.2 — per-system tick counter bumped each update() call.
+    /// Damage-smoke emission for an alive-but-damaged ship at row `r`
+    /// fires when `(tickPhase_ + r) % damageSmokeInterval(hpFrac) == 0`,
+    /// giving per-ship phase offsets so simultaneous puffs are
+    /// staggered across consecutive ticks.
+    std::uint32_t                   tickPhase_ = 0;
 };
 
 } // namespace tou2d

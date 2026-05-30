@@ -253,6 +253,25 @@ if (TARGET tou2d_core)
     add_test(NAME tou2d_ui_overlay_bitmap_test
              COMMAND tou2d_ui_overlay_bitmap_test)
 
+    # M7.3 — ParticleSystem visual-polish (thruster color aging +
+    # damage smoke rate curve). Static helpers + emit/buildRenderFrame
+    # round-trip. Links tou2d_core for the ParticleSystem .cpp body.
+    add_executable(tou2d_particles_test tou2d_particles_test.cpp)
+    target_link_libraries(tou2d_particles_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_particles_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_particles_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_particles_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_particles_test COMMAND tou2d_particles_test)
+
     # M6.0b — UISystem state machine + UIScreen enum + UIScreenChanged
     # event payload pin.
     add_executable(tou2d_uiscreen_state_machine_test

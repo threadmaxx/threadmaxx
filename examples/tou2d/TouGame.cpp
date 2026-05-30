@@ -298,6 +298,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     bulletTerrain->setParticleSystem(particlesPtr);
     shipLife     ->setParticleSystem(particlesPtr);
     repairPickup ->setParticleSystem(particlesPtr);
+    movementPtr  ->setParticleSystem(particlesPtr);   // M7.3 §5.1 — thruster plume
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera->setNumHumans(numHumans_);
     camera_         = camera.get();

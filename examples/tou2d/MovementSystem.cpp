@@ -1,5 +1,7 @@
 #include "MovementSystem.hpp"
 
+#include "ParticleSystem.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Query.hpp>
 #include <threadmaxx/World.hpp>
@@ -54,6 +56,16 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
 
     const float dt = static_cast<float>(ctx.dt());
     const float damping = std::exp(-kAirDamping * dt);
+
+    // M7.3 §5.1 — drive thruster particle cadence off a tick counter.
+    // Bumped exactly once per update() call so the emit phase is
+    // deterministic given a fixed call order (matches the rest of the
+    // demo's "RNG sequence per call order" invariant).
+    const std::uint32_t phase = tickPhase_++;
+    const bool emitThrustThisTick =
+        (particles_ != nullptr) &&
+        (kThrustEmitInterval > 0) &&
+        ((phase % kThrustEmitInterval) == 0);
 
     // Sequential single() — M1 has one ship. The system layout
     // (parallelFor over chunks) lands in M3 when 2-4 players + bots
@@ -153,6 +165,25 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
 
                 cb.setVelocity(entities[row], v);
                 cb.setTransform(entities[row], t);
+
+                // M7.3 §5.1 — engine plume. Emit when the ship is
+                // actively pressing forward thrust (back/reverse
+                // doesn't get a plume — it's a tactical brake, not a
+                // burn). Spawn point is ship pos minus a short stub
+                // along forward so the puff sits BEHIND the engine;
+                // initial velocity is opposite of forward at
+                // ParticleSystem::kThrustEjectSpeed so the trail
+                // streams out cleanly even on a stationary thrust.
+                if (emitThrustThisTick && in.thrust > 0) {
+                    constexpr float kEngineStub = 12.0f;  // wu behind ship centroid
+                    const float ex = t.position.x - forward.x * kEngineStub;
+                    const float ey = t.position.y - forward.y * kEngineStub;
+                    const float ev = ParticleSystem::kThrustEjectSpeed;
+                    particles_->emitThrusterParticle(
+                        ex, ey,
+                        -forward.x * ev,
+                        -forward.y * ev);
+                }
             }
         }
     });

@@ -2907,25 +2907,68 @@ contract section, `doc/render_contract.md` "Per-camera debug
 geometry" subsection, `tests/COVERAGE_AUDIT.md` coverage row.
 ctest 155/155 green; 200-tick smoke clean.
 
-**M7.3 — Visual polish (ParticleSystem)**
+**M7.3 — Visual polish (ParticleSystem) — LANDED 2026-05-30**
 
-Two emitter changes, no new system or component types:
+Two ParticleSystem additions, both game-side, no engine surface
+touched. The pre-M7.3 plan assumed `Particle::Thrust` already
+existed and the start-color hex used the legacy `0xAARRGGBB`
+convention — neither was true; both were resolved in the landing
+patch.
 
-- **§5.1** thruster particle color aging: `Particle::Thrust` kind
-  already exists. Add per-particle color interpolation from a
-  yellow-orange start (~`0xFFFFAA40`) through red-orange end
-  (~`0xFF4040E0` in 0xAABBGGRR) keyed off the same lifetime
-  fraction the alpha fade uses. The compositor renders cube
-  particles tinted from per-particle color, so this is one
-  interpolation in `ParticleSystem::integrate`.
-- **§5.2** damage smoke threshold: spawn a small smoke emitter on
-  each ship whose `Ship.currentHp / Ship.maxHp < kDamageSmokeFracThreshold`
-  (start at 0.4). Intensity (particles/sec) scales with damage. New
-  system or new branch in `WeaponFireSystem` / `ShipLifecycleSystem`
-  — the latter is the existing damage observer.
+1. **§5.1 thruster plume (M7.3.a).** New `Kind::Thrust` enum
+   value (the pre-existing kinds were Debris / Smoke / Spark);
+   zero gravity + faster alpha decay (`kThrustAlphaExp = 1.6`) so
+   the trail reads as a wisp rather than a debris stream. New
+   public method
+   `ParticleSystem::emitThrusterParticle(x, y, vx, vy)` spawns
+   one particle per call with TTL 12-18 ticks. In
+   `buildRenderFrame`, the Thrust branch overrides the stored
+   `rgb` with `thrustColorForAge(frac)` — a per-channel lerp from
+   `kThrustColorHot = 0xFF40AAFFu` (yellow-orange, RGB(255,170,64))
+   at `frac = 1.0` to `kThrustColorCool = 0xFF4040E0u`
+   (red-orange, RGB(224,64,64)) at `frac = 0.0`. The hex literals
+   are in the engine's documented `0xAABBGGRR` packing (see
+   `unpackRGBA` in `VulkanRenderer.cpp`); the pre-M7.3 TOU_PLAN
+   start-color `0xFFFFAA40` was in the legacy `0xAARRGGBB`
+   convention and re-encoded to `0xFF40AAFFu` on landing.
 
-Test pin: assert thrust-particle color lerp across age fractions;
-assert smoke emission rate vs HP fraction monotonicity.
+2. **§5.1 wire (M7.3.b).** `MovementSystem` gains a borrowed
+   `ParticleSystem*` setter (same pattern as ShipLifecycle /
+   BulletShip / BulletTerrain / RepairPickup), a `tickPhase_`
+   counter bumped each `update()`, and a
+   `kThrustEmitInterval = 3` constant so each actively-thrusting
+   ship emits one puff every 3 ticks (~20/sec at 60 Hz). Emit
+   point is `ship_pos - forward * 12 wu` so the puff sits behind
+   the engine; spawn velocity is `-forward * kThrustEjectSpeed`
+   (`= 90` wu/s) so the trail streams cleanly. Only forward
+   thrust (`in.thrust > 0`) emits — reverse is a tactical brake,
+   no plume.
+
+3. **§5.2 damage smoke (M7.3.c).** New public method
+   `ParticleSystem::emitDamageSmoke(x, y)` spawns one dark-gray
+   smoke puff (color `0x00606468u`, same family as the
+   death-explosion smoke; reuses `Kind::Smoke` so the existing
+   drag + rise integration applies; TTL 30-50 ticks vs the
+   60-90 of explosion smoke so the pool isn't saturated by a
+   continuously-damaged ship). Static helper
+   `damageSmokeInterval(hpFrac)` returns 0 above
+   `kDamageSmokeFracThreshold = 0.4`; below threshold it lerps
+   linearly from ~30 ticks/puff at the threshold to ~3 ticks/puff
+   at `hpFrac = 0`. `ShipLifecycleSystem` (the existing damage
+   observer) polls each alive ship per tick — `if interval > 0
+   && (tickPhase + row) % interval == 0 emitDamageSmoke(...)`.
+   The `+ row` offset staggers simultaneous puffs across
+   consecutive ticks so multiple damaged ships don't all fire on
+   the same one.
+
+Test pin: `tou2d_particles_test` (M7.3.d). Pins
+`thrustColorForAge` endpoints + per-channel monotonic lerp +
+boundary clamping; pins `damageSmokeInterval` threshold gate +
+monotonicity (40-sample sweep) + documented [3, 32] band; pins
+the emit + `buildRenderFrame` round-trip — a freshly-emitted
+Thrust particle hits the wire with `colorRGBA & 0x00FFFFFF` ==
+`kThrustColorHot`, a damage-smoke puff with `0x00606468u`.
+ctest 156/156 green; 200-tick smoke clean.
 
 **M7.4 — Faction system (NEW; bot ally targeting)**
 
