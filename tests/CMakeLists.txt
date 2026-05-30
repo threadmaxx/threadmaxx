@@ -336,6 +336,29 @@ if (TARGET tou2d_core)
     add_test(NAME tou2d_pause_test
              COMMAND tou2d_pause_test)
 
+    # M6.10 — universal-Esc routing. Pins `UISystem::triggerBack()`
+    # for every screen in the graph + the Options sub-screen → Options
+    # → MainMenu chain (Esc-out-of-OptionsX now hits the parent Options
+    # screen first AND fires `pendingSettingsSave_` on the second hop;
+    # the pre-M6.10 main.cpp UiCancel shortcut silently skipped both).
+    add_executable(tou2d_ui_back_routing_test
+        tou2d_ui_back_routing_test.cpp)
+    target_link_libraries(tou2d_ui_back_routing_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_ui_back_routing_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_ui_back_routing_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_ui_back_routing_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_ui_back_routing_test
+             COMMAND tou2d_ui_back_routing_test)
+
     # M6.3 — PlayerSetup screen row table, per-slot scroller cycles
     # (tag alphabet, role tristate, ship kind, palette), per-slot write
     # isolation, formatRow rendering, BackToMain → MatchSetup routing,

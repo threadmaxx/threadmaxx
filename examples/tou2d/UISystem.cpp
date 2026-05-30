@@ -496,28 +496,12 @@ MenuAction UISystem::acceptFocused() noexcept {
             setCurrent(UIScreen::PlayerSetup);
             break;
         case MenuAction::BackToMain:
-            // M6.3 — PlayerSetup → MatchSetup; M6.5 — Options sub-screen
-            // → Options; Options → MainMenu (and triggers settings save);
-            // all other screens → MainMenu. One row label, screen-aware
-            // routing.
-            if (current_ == UIScreen::PlayerSetup) {
-                setCurrent(UIScreen::MatchSetup);
-            } else if (current_ == UIScreen::OptionsVideo ||
-                       current_ == UIScreen::OptionsAudio ||
-                       current_ == UIScreen::OptionsControls ||
-                       current_ == UIScreen::OptionsGameplay ||
-                       current_ == UIScreen::OptionsAccessibility ||
-                       current_ == UIScreen::OptionsBenchmark) {
-                setCurrent(UIScreen::Options);
-            } else if (current_ == UIScreen::Options) {
-                // M6.5 — leaving the Options tree triggers a settings.dat
-                // save. The host drains the sticky flag and calls
-                // `saveSettings()` (atomic tmp+rename).
-                pendingSettingsSave_ = true;
-                setCurrent(UIScreen::MainMenu);
-            } else {
-                setCurrent(UIScreen::MainMenu);
-            }
+            // M6.10 — routed through `triggerBack()` so the screen-aware
+            // back semantics live in exactly one place. The Back ROW
+            // never appears on Pause (Pause uses Resume) so the Pause
+            // → None arm in triggerBack is unreachable from here — it
+            // exists for the UiCancel-from-Pause caller in main.cpp.
+            triggerBack();
             break;
         case MenuAction::StartMatch:
             // M6.2 — host observes the sticky flag on the next frame,
@@ -621,6 +605,47 @@ MenuAction UISystem::acceptFocused() noexcept {
             break;
     }
     return row.action;
+}
+
+UIScreen UISystem::triggerBack() noexcept {
+    // M6.10 — single "step up one screen" dispatcher. Mirrors the
+    // pre-M6.10 BackToMain semantics in `acceptFocused`, extended with
+    // a Pause → None arm so the host's UiCancel edge can route every
+    // in-menu state through here. Pre-M6.10 the UiCancel handler in
+    // main.cpp shortcut-jumped any non-Pause sub-screen straight to
+    // MainMenu, which silently skipped the `Options → MainMenu`
+    // `pendingSettingsSave_` flip — leaving sub-screen edits unsaved
+    // when the user Esc'd out instead of cycling through `Back`.
+    switch (current_) {
+        case UIScreen::Pause:
+            setCurrent(UIScreen::None);
+            break;
+        case UIScreen::PlayerSetup:
+            setCurrent(UIScreen::MatchSetup);
+            break;
+        case UIScreen::OptionsVideo:
+        case UIScreen::OptionsAudio:
+        case UIScreen::OptionsControls:
+        case UIScreen::OptionsGameplay:
+        case UIScreen::OptionsAccessibility:
+        case UIScreen::OptionsBenchmark:
+            setCurrent(UIScreen::Options);
+            break;
+        case UIScreen::Options:
+            pendingSettingsSave_ = true;
+            setCurrent(UIScreen::MainMenu);
+            break;
+        case UIScreen::MatchSetup:
+        case UIScreen::Results:
+        case UIScreen::Credits:
+            setCurrent(UIScreen::MainMenu);
+            break;
+        case UIScreen::None:
+        case UIScreen::MainMenu:
+            // No parent — explicit no-op.
+            break;
+    }
+    return current_;
 }
 
 void UISystem::cycleFocused(std::int32_t delta) noexcept {

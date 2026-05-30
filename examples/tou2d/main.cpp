@@ -1150,15 +1150,16 @@ int main(int argc, char** argv) {
                 if (uiEdges.rising[3]) ui->cycleFocused(+1);
                 if (uiEdges.rising[4]) ui->acceptFocused();
                 if (uiEdges.rising[5]) {
-                    // M6.4 — UiCancel: from Pause resume gameplay;
-                    // from other sub-screens pop to MainMenu; on
-                    // MainMenu itself it's a no-op (Quit is the
-                    // explicit exit there).
-                    if (ui->current() == tou2d::UIScreen::Pause) {
-                        ui->setCurrent(tou2d::UIScreen::None);
-                    } else if (ui->current() != tou2d::UIScreen::MainMenu) {
-                        ui->setCurrent(tou2d::UIScreen::MainMenu);
-                    }
+                    // M6.10 — UiCancel: route through
+                    // `UISystem::triggerBack()` so screen-aware step-up
+                    // semantics live in one place (Pause→None,
+                    // PlayerSetup→MatchSetup, OptionsX→Options,
+                    // Options→MainMenu + pendingSettingsSave_, all
+                    // other sub-screens→MainMenu; MainMenu = no-op).
+                    // Pre-M6.10 the inline branch skipped the parent
+                    // Options screen AND the settings save when the
+                    // user Esc'd out of an Options sub-screen.
+                    ui->triggerBack();
                 }
             }
             // Bind engine pause to menu-active. Cheap conditional set

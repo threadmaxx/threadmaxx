@@ -268,6 +268,22 @@ public:
     /// returns the same action so the host can react if needed.
     MenuAction acceptFocused() noexcept;
 
+    /// M6.10 — "step up one screen" navigation. Used by the host on
+    /// the UiCancel edge (default Esc). Routes:
+    ///   Pause                → None (resume gameplay)
+    ///   PlayerSetup          → MatchSetup
+    ///   Options* sub-screen  → Options
+    ///   Options              → MainMenu + `pendingSettingsSave_`
+    ///   MatchSetup/Results/Credits → MainMenu (no save)
+    ///   MainMenu / None      → no-op
+    /// Returns the screen that's current after the call (== old when
+    /// no-op). Equivalent to firing a `BackToMain` row from any screen
+    /// that has one — the difference is that `triggerBack()` ALSO works
+    /// from Pause (no `BackToMain` row there) and from sub-screens
+    /// whose `BackToMain` would otherwise skip the parent Options
+    /// screen + its settings save (pre-M6.10 bug).
+    UIScreen triggerBack() noexcept;
+
     /// True after a `MenuAction::Quit` accept fired. Cleared by the
     /// host (typically after breaking the frame loop). Sticky so a
     /// late frame poll picks it up.
