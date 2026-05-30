@@ -404,4 +404,52 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_toast_render_test
              COMMAND tou2d_toast_render_test)
+
+    # tou2d_settings_io_test — M6.5 contract pin. POD layout (Settings
+    # = 268 B); round-trip save/load preserves every field including
+    # KeyMap rows + inline jsonl path; missing/short/bad-magic/
+    # bad-version files all fail cleanly without mutating `out`;
+    # atomic write produces the final file (tmp companion gone);
+    # defaultSettingsPath honours XDG_CONFIG_HOME / HOME fallback.
+    add_executable(tou2d_settings_io_test
+        tou2d_settings_io_test.cpp)
+    target_link_libraries(tou2d_settings_io_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_settings_io_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_settings_io_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_settings_io_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_settings_io_test
+             COMMAND tou2d_settings_io_test)
+
+    # tou2d_options_screen_test — M6.5 contract pin. Options sub-screen
+    # navigation (Options → 6 sub-screens → Back → Options → Back +
+    # save → MainMenu); per-knob cycling mutates settings_ as expected
+    # and the Audio knobs emit AudioVolumeChanged; benchmark presets
+    # pre-fill matchSetup_ and fire pendingStartMatch_; Resolution
+    # Display row renders dynamic content.
+    add_executable(tou2d_options_screen_test
+        tou2d_options_screen_test.cpp)
+    target_link_libraries(tou2d_options_screen_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_options_screen_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_options_screen_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_options_screen_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_options_screen_test
+             COMMAND tou2d_options_screen_test)
 endif()

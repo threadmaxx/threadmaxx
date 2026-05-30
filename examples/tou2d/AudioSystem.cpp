@@ -64,6 +64,15 @@ struct AudioSystem::Impl {
     std::array<bool, audio::kSoundCount>     soundOk{};
     std::filesystem::path        assetDir;
     threadmaxx::Subscription     sub;
+    /// M6.5 — typed `AudioVolumeChanged` listener. Host emits once at
+    /// startup after loading settings.dat and on every Options→Audio
+    /// knob cycle. Applies via ma_engine_set_volume (master) and
+    /// per-sound multipliers (sfx) — music is no-op until a music
+    /// driver lands.
+    threadmaxx::Subscription     volSub;
+    /// M6.5 — 0.0..1.0 sfx multiplier applied to every AudioPlay event.
+    /// Defaults to 1.0; updated by `AudioVolumeChanged` listener.
+    float                        sfxScale_ = 1.0f;
 
     Impl(threadmaxx::Engine* eng, std::filesystem::path dir)
         : assetDir(std::move(dir)) {
@@ -104,7 +113,26 @@ struct AudioSystem::Impl {
             soundOk[entry.id] = true;
         }
 
-        // ---- 3. Subscribe to AudioPlay events ----------------------
+        // ---- 3. Subscribe to AudioVolumeChanged events --------------
+        // Host emits once at startup after loading settings.dat AND on
+        // every Options→Audio knob cycle. Master is applied through the
+        // global engine volume; sfx is folded into per-sound multipliers
+        // alongside the per-event volume in the AudioPlay handler.
+        volSub = eng->events<AudioVolumeChanged>().subscribeScoped(
+            [this](const AudioVolumeChanged& ev) {
+                if (!engineOk) return;
+                const float master = static_cast<float>(ev.master) / 100.0f;
+                ma_engine_set_volume(&engine, master);
+                // sfx 0..100 → 0.0..1.0; folded into per-sound volume on
+                // the next AudioPlay. We just stash it on the engine via
+                // a static — simplest path for v1; a per-instance field
+                // would be cleaner if the host ran multiple engines.
+                sfxScale_ = static_cast<float>(ev.sfx) / 100.0f;
+                // music: no-op until a music driver lands.
+                (void)ev.music;
+            });
+
+        // ---- 4. Subscribe to AudioPlay events ----------------------
         // The handler runs on the sim thread during the event-channel
         // drain at end of each tick; safe to call into ma_sound APIs.
         sub = eng->events<AudioPlay>().subscribeScoped(
@@ -113,12 +141,15 @@ struct AudioSystem::Impl {
                 if (ev.soundId >= soundOk.size())   return;
                 if (!soundOk[ev.soundId])            return;
                 ma_sound& s = sounds[ev.soundId];
-                // Volume: 0 means "default". For now everything plays
-                // at 1.0; tweak per-sound later by passing nonzero.
-                if (ev.volume > 0) {
-                    ma_sound_set_volume(&s,
-                        static_cast<float>(ev.volume) / 255.0f);
-                }
+                // Volume: 0 means "use sfxScale_ alone". Nonzero scales
+                // through the M6.5 sfx slider: per-event * sfxScale_,
+                // both in 0..1. Master is global on the engine and
+                // applies on top of this.
+                const float perEvent =
+                    (ev.volume > 0)
+                        ? (static_cast<float>(ev.volume) / 255.0f)
+                        : 1.0f;
+                ma_sound_set_volume(&s, perEvent * sfxScale_);
                 // Restart-from-beginning + play. Polyphony: this
                 // simple path cuts off the previous instance of the
                 // same sound — fine for short SFX (laser zaps are

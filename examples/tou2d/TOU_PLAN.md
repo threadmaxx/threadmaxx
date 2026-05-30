@@ -1632,7 +1632,7 @@ gameplay):
 | M6.2  | Match / level setup screen (LANDED 2026-05-29) | M6.1 | no |
 | M6.3  | Ship / player slot assignment screen (LANDED 2026-05-30) | M6.1 | no |
 | M6.4  | Pause menu (in-game) (LANDED 2026-05-29) | M6.1 | no (uses `Engine::setPaused`) |
-| M6.5  | Options menu + persistence | M6.0, M6.1 | YES (settings POD) |
+| M6.5  | Options menu + persistence (LANDED 2026-05-30) | M6.0, M6.1 | YES (settings POD) |
 | M6.6  | Results / scoreboard screen (LANDED 2026-05-30) | M6.1 | no |
 | M6.7  | HUD polish pass (readability, warnings) | M6.0 | no |
 | M6.8  | Notification / dialog layer (LANDED 2026-05-30) | M6.0 | no |
@@ -2088,49 +2088,186 @@ Headless 200-tick smoke (`./threadmaxx_tou2d 200`) final ship pos
   this batch; the file format would need per-frame snapshots, not just
   inputs + hash.
 
-#### M6.5 — Options menu + persistence (PLANNED)
+#### M6.5 — Options menu + persistence (LANDED 2026-05-30)
 
-**Categories** (left-hand list, right-hand panel):
+**Wired surface.**
 
-| Category | v1 settings |
-|----------|-------------|
-| Video | resolution (list of GLFW-reported modes), fullscreen / windowed, vsync on/off, UI scale (75% / 100% / 125% / 150%) |
-| Audio | master / music / SFX volume (0-100 each) |
-| Controls | per-action key bindings × 4 player slots (M6.0's `KeyMap`) |
-| Gameplay | default damage scale, default respawn delay, default camera mode (these populate M6.2's setup defaults) |
-| Accessibility | HUD scale, big-warning toggle, screen-shake on/off, photosensitive mode (caps particle flash brightness) |
-| Benchmark | trace sink on/off, FrameSnapshot JSONL output path, scripted skip policy on/off — exposes existing engine knobs |
+- New `Settings.hpp` carries six category PODs (Video / Audio /
+  Gameplay / Accessibility / Benchmark) + the existing `KeyMap` for
+  Controls. Total `sizeof(Settings) == 268`; layout is pinned by
+  `tou2d_settings_io_test`. Each category POD has its own static-assert
+  so a stray field addition fails at compile time rather than silently
+  shifting the wire shape.
+- `SettingsIo.cpp` implements `loadSettings` / `saveSettings` /
+  `defaultSettingsPath`. Save is atomic: write to `<path>.tmp`, rename
+  over `path` via `std::filesystem::rename`. Loader rejects missing
+  file / magic mismatch / version mismatch / short read — `out` is
+  left untouched so the caller's `Settings{}` defaults stand.
+- Six new `UIScreen` values (`OptionsVideo` / `OptionsAudio` /
+  `OptionsControls` / `OptionsGameplay` / `OptionsAccessibility` /
+  `OptionsBenchmark`) — append-only after the existing 0..7 set.
+- New `SettingsKnob` enum (15 values + Count sentinel) parallels
+  `MatchSetupKnob`; `MenuRow` carries both so the cycler dispatches
+  through the right knob domain based on which is non-Count.
+- `MenuAction` extended with the six `OptionsX` sub-screen entries +
+  three `BenchmarkPresetN` action types. `MenuAction::Options` now
+  actually transitions to `UIScreen::Options` (pre-M6.5 it stub-logged
+  to stderr).
+- `MenuAction::BackToMain` extended with screen-aware routing: from
+  any Options sub-screen → `UIScreen::Options`; from `UIScreen::Options`
+  → `UIScreen::MainMenu` AND sets `pendingSettingsSave_`.
+- `BulletShipCollisionSystem` and the rest of gameplay are untouched
+  — Options is purely a UI surface + persistence layer. The applied
+  values today are the audio volumes (master via
+  `ma_engine_set_volume`, sfx folded into per-`AudioPlay` multipliers);
+  the rest are persisted but not yet read by gameplay (see § "Still
+  TBD" below).
 
-**Persistence POD** — `~/.config/tou2d/settings.dat`, host-endian
-binary (same caveats as `WorldSnapshot`):
+**Data plumbing.**
+
+- `UISystem::settings()` / `setSettings()` are the read/write surface.
+  `pendingSettingsSave()` is the sticky flag the host drains by
+  calling `saveSettings(defaultSettingsPath(), ui->settings())`.
+- New `AudioVolumeChanged` typed event (4-byte POD; render-side only).
+  `AudioSystem` subscribes once on registration and applies master to
+  the global `ma_engine` and sfx into a per-instance multiplier folded
+  into every `AudioPlay` handler.
+- `main.cpp` calls `loadSettings(defaultSettingsPath(), s)` at
+  startup, seeds `ui->setSettings(s)`, then emits one
+  `AudioVolumeChanged` so AudioSystem applies the loaded values.
+
+**Persistence wire format.**
 
 ```
-[magic 'T2DS' u32][version u32]
-[video: resolution_w u32, resolution_h u32, fullscreen u8, vsync u8, ui_scale u8, _pad u8]
-[audio: master u8, music u8, sfx u8, _pad u8]
-[controls: KeyMap (struct size pinned by tests)]
-[gameplay: damage_scale f32, respawn_delay_ticks u16, camera_mode u8, _pad u8]
-[accessibility: hud_scale u8, big_warnings u8, screen_shake u8, photosensitive u8]
-[benchmark: trace_sink_on u8, scripted_skip_on u8, _pad u16, jsonl_path_len u32, jsonl_path[]]
+[magic 'T2DS' u32][version u32]            // 8 B
+[Video         12 B] resolution_w/h u32, fullscreen u8, vsync u8, ui_scale u8, _pad u8
+[Audio          4 B] master u8, music u8, sfx u8, _pad u8
+[Controls     112 B] KeyMap (kMaxHumans * kActionCount * sizeof(uint16_t))
+[Gameplay       8 B] damage_scale f32, respawn_delay_ticks u16, camera_mode u8, _pad u8
+[Accessibility  4 B] hud_scale u8, big_warnings u8, screen_shake u8, photosensitive u8
+[Benchmark    128 B] trace_sink_on u8, scripted_skip_on u8, _pad u16, jsonl_path[124]
 ```
 
-Loaded at startup; missing file → write defaults. Atomic write
-(write to `.tmp`, rename). Version mismatch → log + use defaults.
+Total payload = 268 B; file size with header = 276 B. Host-endian
+(same caveats as `WorldSnapshot`). The `jsonl_path` is a fixed-size
+inline buffer rather than the plan's variable-length tail — keeps the
+in-memory POD trivially copyable and the file size stride-predictable.
+A user who needs >123 bytes of path can edit the file by hand; the
+file format will gain a variable-length tail when M6.5b lands.
 
-**Resolution change handling.** Mid-run resolution / windowed-mode
-changes require swapchain recreation. v1 scope: changes apply on next
-launch (a "restart required" toast appears on confirm). Live
-fullscreen toggle is deferred — flag in § Out of scope.
+**Determinism contract.**
 
-**Benchmark presets.** A single-button row for each: "8 bots / jungle /
-3 min", "32 bots / procedural / 5 min", "63 bots / procedural /
-unlimited". Each preset pre-fills the M6.2 setup screen and starts
-the match. Useful for the user-side perf-iteration loop.
+- `Settings` is **runtime-side state only** — never round-tripped
+  through `WorldSnapshot`, never affects `commitHash`. Replays don't
+  read it; the recorded stream is bit-identical with or without a
+  settings.dat present (verified via 200-tick `threadmaxx_minimal`
+  smoke after this batch — last frame matches pre-batch exactly).
+- `AudioVolumeChanged` is render-side only (never replayed). The
+  AudioSystem subscription is wired through engine event channels;
+  applying the master volume is a single `ma_engine_set_volume` call
+  on the sim thread during drain — no impact on gameplay timing.
+- Benchmark presets pre-fill `matchSetup_` and fire
+  `pendingStartMatch_` — same posture as the MatchSetup screen's
+  Start row. Restart is host-driven; the new match uses the preset's
+  `MatchSetup`. `commitHash` stream is determined by that POD, so the
+  same preset reproduces the same hash stream every time.
 
-**Acceptance**: changing master volume + a single keybind, restart,
-relaunch — the binding sticks; the settings.dat file is forward-compat
-(adding a new field bumps version; old files load with that field
-defaulted).
+**Test.**
+
+`tests/tou2d_settings_io_test.cpp` pins:
+- `VideoSettings` / `AudioSettings` / `GameplaySettings` /
+  `AccessibilitySettings` / `BenchmarkSettings` POD sizes individually
+  and `Settings` aggregate size.
+- Default-constructed `Settings` matches the loader-fallback baseline
+  (audio 80/80/80, vsync on, etc.).
+- Missing file → `loadSettings` returns false; `out` untouched.
+- Full round-trip — set every category's non-default field, save,
+  load into a fresh `Settings`, verify every field matches.
+- Atomic write — after `saveSettings` the canonical file exists,
+  the `.tmp` companion has been renamed away, file size = 276.
+- Magic-mismatch / version-mismatch / truncated-payload files all
+  fail cleanly without mutating `out`.
+- `defaultSettingsPath()` honours `XDG_CONFIG_HOME`, falls back to
+  `$HOME/.config/tou2d/settings.dat`, returns empty when neither is
+  set.
+- `saveSettings({}, s)` returns false (empty path rejected).
+
+`tests/tou2d_options_screen_test.cpp` pins:
+- `UIScreen` enum IDs (Options = 4 and the six sub-screens at 8..13)
+  — stable wire shape for any future replay support.
+- MainMenu Options row transitions to `UIScreen::Options`.
+- Each Options category Action row transitions to its matching
+  sub-screen.
+- Sub-screen `Back` rows return to `UIScreen::Options` and do NOT
+  yet trigger `pendingSettingsSave_`.
+- `UIScreen::Options` `Back` row transitions to `MainMenu` AND sets
+  `pendingSettingsSave_`.
+- Audio knob cycling mutates `settings_.audio.*` and emits exactly
+  one `AudioVolumeChanged` event per cycle (positive + negative
+  delta, with correct payload).
+- Accessibility toggle wraps 0↔1.
+- Video UI-scale cycles through the preset list 75/100/125/150 with
+  correct wraparound on both ends.
+- Benchmark preset pre-fills `matchSetup_` (verified humans + bots +
+  useGen flag), fires `pendingStartMatch_`, dismisses to
+  `UIScreen::None`.
+- Resolution Display row renders dynamic content from
+  `settings_.video.resolutionW/H`.
+
+**Acceptance.**
+
+- Build clean under warnings-as-errors (`-Wsign-conversion`,
+  `-Wconversion`, `-Wshadow`, `-Wold-style-cast` — `tou2d_core`,
+  `tou2d_settings_io_test`, `tou2d_options_screen_test`).
+- `ctest` 149/149 green (was 147; this batch adds
+  `tou2d_settings_io_test` and `tou2d_options_screen_test`).
+- `threadmaxx_minimal 200` final-tick output unchanged (engine path
+  is untouched; only example-side code added).
+- `tou2d_pause_test` updated to reflect M6.5's contract change
+  (Options from Pause now transitions to `UIScreen::Options` instead
+  of stub-logging) — same one-line behavioural delta the test pins.
+
+**Still TBD (deferred follow-ups, NOT M6.5 blockers).**
+
+- **Key rebinding UI** (M6.5b). The `KeyMap` round-trips through
+  `settings.dat` today, so manual edits survive across runs; but the
+  Options→Controls sub-screen renders static placeholder rows until
+  a keyboard-capture modal lands. The pre-existing `InputSystem`
+  reader still uses its own hard-coded default map — wiring the
+  settings-loaded `KeyMap` through it is part of the same M6.5b
+  batch.
+- **Live audio music driver.** `music` knob persists + cycles but
+  AudioSystem is a no-op for that lane until a music driver ships
+  (slated alongside the per-level OGG import path).
+- **Video knob application.** `fullscreen` / `vsync` / `ui_scale` /
+  resolution all persist but require swapchain recreation to take
+  effect mid-run. v1 scope is "applies next launch"; the
+  `restart required` toast + `ui_scale` atlas re-bake plumbing land
+  with M6.7's HUD-scale follow-up (HUD-scale is the most-impactful
+  knob; once that's wired, fullscreen / vsync follow the same shape).
+- **Gameplay knob application.** `damageScale` / `respawnDelayTicks`
+  / `cameraMode` persist but are not yet read by
+  `BulletShipCollisionSystem` / `ShipLifecycleSystem` /
+  `CameraSystem`. Each is a one-liner read at engine-restart time
+  inside `TouGame::setMatchSetup` once the settings POD threads
+  through that path — landing alongside whichever batch first needs
+  the gameplay knob (typically M6.7 or the rebalancing pass).
+- **Accessibility knob application.** Same shape — `hudScale` reads
+  in M6.7's HUD polish pass; `bigWarnings` likewise; `screenShake`
+  reads when `CameraSystem` grows a shake routine; `photosensitive`
+  reads when `ParticleSystem` exposes a flash-alpha cap.
+- **Benchmark trace-sink + scripted-skip wiring.** Toggles persist
+  but the host doesn't yet read them at startup. Trivial to wire in
+  `main.cpp` (`engine.setTraceSink(&fileSink)` /
+  `engine.setSkipPolicy(SkipPolicy::Scripted)`); deferred to keep
+  this batch's blast radius focused on the persistence + Options
+  surface.
+- **Variable-length JSONL path on disk.** Plan's `[len u32][bytes]`
+  tail was deferred — v1 uses a 124-byte inline buffer. Bumping
+  `kSettingsVersion` to 2 (with a parallel loader for v1 → v2
+  upgrade) is the path forward when a longer path is needed.
+- **`ChromeTracer` instrumentation** of the save/load fire — useful
+  for the M6.9 debug overlay batch; not needed today.
 
 #### M6.6 — Results / scoreboard screen (LANDED 2026-05-30)
 

@@ -578,14 +578,21 @@ static_assert(sizeof(KeyMap) ==
 /// future replay determinism depend on a stable wire shape for any
 /// UI transition stored in a save file. Add new screens at the end.
 enum class UIScreen : std::uint8_t {
-    None        = 0,   ///< gameplay-only; UISystem swallows nothing
-    MainMenu    = 1,
-    MatchSetup  = 2,
-    PlayerSetup = 3,
-    Options     = 4,
-    Pause       = 5,
-    Results     = 6,
-    Credits     = 7,
+    None                 = 0,   ///< gameplay-only; UISystem swallows nothing
+    MainMenu             = 1,
+    MatchSetup           = 2,
+    PlayerSetup          = 3,
+    Options              = 4,   ///< M6.5 — top-level Options category list
+    Pause                = 5,
+    Results              = 6,
+    Credits              = 7,
+    /// M6.5 — Options sub-screens. Order is stable; append-only.
+    OptionsVideo         = 8,
+    OptionsAudio         = 9,
+    OptionsControls      = 10,
+    OptionsGameplay      = 11,
+    OptionsAccessibility = 12,
+    OptionsBenchmark     = 13,
 };
 
 /// M6.0b — typed event emitted by `UISystem::setCurrent` on transition.
@@ -621,6 +628,22 @@ struct UIToast {
 static_assert(sizeof(UIToast) == 32,
               "UIToast must stay 32 bytes — render-side POD memcpy'd "
               "through the typed event channel.");
+
+/// M6.5 — typed event emitted by the host whenever the Options→Audio
+/// sub-screen cycles a volume knob (and once at startup after loading
+/// settings.dat). `AudioSystem` subscribes and applies the new values
+/// via miniaudio. Render-side only — never round-tripped through
+/// `WorldSnapshot`, never affects `commitHash`. Values are 0..100;
+/// AudioSystem scales by 1/100 before handing to ma_engine_set_volume.
+struct AudioVolumeChanged {
+    std::uint8_t master;
+    std::uint8_t music;
+    std::uint8_t sfx;
+    std::uint8_t _pad = 0;
+};
+static_assert(sizeof(AudioVolumeChanged) == 4,
+              "AudioVolumeChanged stays 4 bytes — single u32 payload "
+              "carried through the typed event channel.");
 
 /// Ids handed back by `Engine::registerUserComponent`.
 struct UserComponentIds {

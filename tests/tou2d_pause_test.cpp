@@ -146,7 +146,8 @@ int main() {
         CHECK(!ui.pendingQuit());
     }
 
-    // ---- Options from Pause: stub log, stays on Pause --------------
+    // ---- Options from Pause: M6.5 — transitions to UIScreen::Options
+    //      (pre-M6.5 the action stubbed-logged and stayed on Pause).
     {
         UISystem ui(nullptr, UIScreen::Pause);
         ui.moveFocus(+1);  // RestartMatch (1)
@@ -154,7 +155,7 @@ int main() {
         CHECK_EQ(ui.focusIndex(), std::int32_t{2});
         const MenuAction got = ui.acceptFocused();
         CHECK(got == MenuAction::Options);
-        CHECK(ui.current() == UIScreen::Pause);
+        CHECK(ui.current() == UIScreen::Options);
         CHECK(!ui.pendingRestartMatch());
         CHECK(!ui.pendingReturnToMainMenu());
     }

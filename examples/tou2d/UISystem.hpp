@@ -2,6 +2,7 @@
 
 #include "DemoTypes.hpp"
 #include "MatchSetup.hpp"
+#include "Settings.hpp"
 
 #include <threadmaxx/System.hpp>
 
@@ -36,6 +37,18 @@ enum class MenuAction : std::uint8_t {
     PlayerSetup       = 13,  ///< M6.3 — jumps to UIScreen::PlayerSetup.
     Rematch           = 14,  ///< M6.6 — set pendingRematch_, dismiss menu (host re-applies setup).
     ReturnToSetup     = 15,  ///< M6.6 — jump back to UIScreen::MatchSetup (carry over matchSetup_).
+    /// M6.5 — Options sub-screen entries. Order matches `UIScreen::Options*`.
+    OptionsVideo         = 16,
+    OptionsAudio         = 17,
+    OptionsControls      = 18,
+    OptionsGameplay      = 19,
+    OptionsAccessibility = 20,
+    OptionsBenchmark     = 21,
+    /// M6.5 — benchmark presets. Each pre-fills `matchSetup_` and fires
+    /// `pendingStartMatch_`. Order matches the on-screen vertical order.
+    BenchmarkPreset1     = 22, ///< 8 bots / procedural / 3 min
+    BenchmarkPreset2     = 23, ///< 32 bots / procedural / 5 min
+    BenchmarkPreset3     = 24, ///< 63 bots / procedural / unlimited
 };
 
 /// M6.2 — distinguishes a plain "fire on accept" row from a horizontal
@@ -121,6 +134,34 @@ enum class MatchSetupKnob : std::uint8_t {
     Count        = 16,  ///< Sentinel (== number of scroller knob classes).
 };
 
+/// M6.5 — scroller knob identifier for Options sub-screens. Parallel
+/// to `MatchSetupKnob` but routes to `settings_` instead of
+/// `matchSetup_`. Order matches the per-screen vertical row order so
+/// the test pinning row indices stays trivial.
+enum class SettingsKnob : std::uint8_t {
+    // Video
+    VideoFullscreen      = 0,
+    VideoVsync           = 1,
+    VideoUiScale         = 2,
+    // Audio (emit AudioVolumeChanged on cycle)
+    AudioMaster          = 3,
+    AudioMusic           = 4,
+    AudioSfx             = 5,
+    // Gameplay
+    GameplayDamageScale  = 6,
+    GameplayRespawnDelay = 7,
+    GameplayCameraMode   = 8,
+    // Accessibility
+    AccessHudScale       = 9,
+    AccessBigWarnings    = 10,
+    AccessScreenShake    = 11,
+    AccessPhotosensitive = 12,
+    // Benchmark
+    BenchTraceSink       = 13,
+    BenchScriptedSkip    = 14,
+    Count                = 15,  ///< Sentinel
+};
+
 /// M6.1 — single menu row descriptor. `enabled == false` paints greyed
 /// and is skipped by `moveFocus`. The `label` pointer is borrowed; v1
 /// rows are constexpr string literals owned by UISystem itself.
@@ -139,6 +180,11 @@ struct MenuRow {
     /// SlotShip / SlotPalette). Ignored for the global knobs and Action
     /// rows; must be in [0, kMatchSetupSlotCount) for per-slot rows.
     std::uint8_t    slotIdx      = 0;
+    /// M6.5 — settings knob identifier for Options sub-screens. When
+    /// non-Count AND `kind == Scroller`, the cycler routes through
+    /// `settings_` instead of `matchSetup_`. Mutually exclusive with
+    /// `scrollerKnob` (only one of the two is meaningful per row).
+    SettingsKnob    settingsKnob = SettingsKnob::Count;
 };
 
 /// M6.0b — top-level UI state machine. Owns `UIScreen current`; the
@@ -311,6 +357,25 @@ public:
     bool pendingReturnToMainMenu() const noexcept { return pendingReturnToMainMenu_; }
     void clearPendingReturnToMainMenu() noexcept   { pendingReturnToMainMenu_ = false; }
 
+    /// ---- M6.5 Options screen ------------------------------------------
+
+    /// Working `Settings` the Options sub-screens edit in-place. Loaded
+    /// at startup via the host's `loadSettings()` call into
+    /// `setSettings()`; saved on Options→Back via `pendingSettingsSave()`.
+    Settings&       settings() noexcept       { return settings_; }
+    const Settings& settings() const noexcept { return settings_; }
+
+    /// Replace the in-memory settings (typically called at startup after
+    /// `loadSettings()`). The audio knobs do NOT auto-emit here — the
+    /// host emits `AudioVolumeChanged` once explicitly after seeding.
+    void setSettings(const Settings& s) noexcept { settings_ = s; }
+
+    /// True after a back-out from `UIScreen::Options` (or from any
+    /// Options sub-screen all the way out). Sticky; the host calls
+    /// `saveSettings()` and then clears via `clearPendingSettingsSave()`.
+    bool pendingSettingsSave() const noexcept { return pendingSettingsSave_; }
+    void clearPendingSettingsSave() noexcept   { pendingSettingsSave_ = false; }
+
 private:
     void resetFocusToFirstEnabled_() noexcept;
     /// M6.3 — `slotIdx` is meaningful only for per-slot knobs
@@ -323,6 +388,17 @@ private:
                                  std::uint8_t   slotIdx,
                                  char*          buf,
                                  std::size_t    bufN) const noexcept;
+    /// M6.5 — settings-knob cycle dispatch. Emits
+    /// `AudioVolumeChanged` whenever an Audio knob moves, so a user
+    /// hears the volume change immediately (no host re-emit required).
+    void cycleSettingsKnob_(SettingsKnob knob, std::int32_t delta) noexcept;
+    /// M6.5 — render-time formatter for a SettingsKnob's current value.
+    std::size_t formatSettingsKnobValue_(SettingsKnob knob,
+                                         char*        buf,
+                                         std::size_t  bufN) const noexcept;
+    /// M6.5 — pre-fill `matchSetup_` from a benchmark preset and fire
+    /// `pendingStartMatch_`. Idempotent.
+    void applyBenchmarkPreset_(std::uint8_t preset) noexcept;
 
     threadmaxx::Engine* engine_;
     UIScreen            current_;
@@ -332,8 +408,10 @@ private:
     bool                pendingRestartMatch_     = false;
     bool                pendingReturnToMainMenu_ = false;
     bool                pendingRematch_          = false;
+    bool                pendingSettingsSave_     = false;
     MatchSetup          matchSetup_{};
     MatchResults        matchResults_{};
+    Settings            settings_{};
 };
 
 } // namespace tou2d

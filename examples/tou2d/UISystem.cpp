@@ -57,6 +57,116 @@ constexpr MenuRow kPauseRows[] = {
     { "Quit",                MenuAction::Quit,             true },
 };
 
+// M6.5 — Options top-level category list. Each Action transitions into
+// the matching `UIScreen::Options*` sub-screen. "Back" returns to the
+// parent screen (MainMenu or Pause depending on origin) AND triggers
+// `pendingSettingsSave_` so the host atomically writes settings.dat.
+constexpr MenuRow kOptionsRows[] = {
+    { "Video",               MenuAction::OptionsVideo,         true },
+    { "Audio",               MenuAction::OptionsAudio,         true },
+    { "Controls",            MenuAction::OptionsControls,      true },
+    { "Gameplay",            MenuAction::OptionsGameplay,      true },
+    { "Accessibility",       MenuAction::OptionsAccessibility, true },
+    { "Benchmark / Presets", MenuAction::OptionsBenchmark,     true },
+    { "Back",                MenuAction::BackToMain,           true },
+};
+
+// M6.5 — Options→Video sub-screen. UI scale picks among 75/100/125/150;
+// fullscreen/vsync are bool toggles. Resolution is exposed as a
+// Display row for v1 (no live swapchain recreation; the user-facing
+// "applies next launch" toast lands with the resolution selector
+// follow-up — see § "Still TBD" in TOU_PLAN.md M6.5).
+constexpr MenuRow kOptionsVideoRows[] = {
+    { "Resolution",  MenuAction::None, false,
+      MenuRowKind::Display, MatchSetupKnob::Count, 0,
+      SettingsKnob::Count },
+    { "Fullscreen",  MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::VideoFullscreen },
+    { "VSync",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::VideoVsync },
+    { "UI scale",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::VideoUiScale },
+    { "Back",        MenuAction::BackToMain, true },
+};
+
+// M6.5 — Options→Audio sub-screen. Cycling a row emits
+// `AudioVolumeChanged` so the user hears the change immediately.
+constexpr MenuRow kOptionsAudioRows[] = {
+    { "Master volume", MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::AudioMaster },
+    { "Music volume",  MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::AudioMusic },
+    { "SFX volume",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::AudioSfx },
+    { "Back",          MenuAction::BackToMain, true },
+};
+
+// M6.5 — Options→Controls sub-screen. In-menu key rebinding requires
+// a key-capture modal (deferred to M6.5b); for v1 the screen reads as
+// "edit settings.dat by hand" plus a Back row. The wire shape DOES
+// persist `KeyMap` so manual edits survive across runs.
+constexpr MenuRow kOptionsControlsRows[] = {
+    { "Key rebinding lands in M6.5b",        MenuAction::None,       false },
+    { "Settings.dat persists custom maps",   MenuAction::None,       false },
+    { "Back",                                MenuAction::BackToMain, true  },
+};
+
+// M6.5 — Options→Gameplay sub-screen. These are setup-time defaults
+// the next StartMatch picks up (read by the host's apply path on
+// engine restart, not edited live mid-match).
+constexpr MenuRow kOptionsGameplayRows[] = {
+    { "Damage scale",   MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::GameplayDamageScale },
+    { "Respawn delay",  MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::GameplayRespawnDelay },
+    { "Camera mode",    MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::GameplayCameraMode },
+    { "Back",           MenuAction::BackToMain, true },
+};
+
+// M6.5 — Options→Accessibility sub-screen.
+constexpr MenuRow kOptionsAccessibilityRows[] = {
+    { "HUD scale",          MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::AccessHudScale },
+    { "Big warnings",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::AccessBigWarnings },
+    { "Screen shake",       MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::AccessScreenShake },
+    { "Photosensitive mode", MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::AccessPhotosensitive },
+    { "Back",                MenuAction::BackToMain, true },
+};
+
+// M6.5 — Options→Benchmark sub-screen. Two persistent toggles + three
+// quick-launch preset action rows. Selecting a preset pre-fills
+// `matchSetup_` and fires `pendingStartMatch_` (same posture as the
+// MatchSetup screen's Start row).
+constexpr MenuRow kOptionsBenchmarkRows[] = {
+    { "Trace sink (JSONL)", MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::BenchTraceSink },
+    { "Scripted skip",      MenuAction::None, true,
+      MenuRowKind::Scroller, MatchSetupKnob::Count, 0,
+      SettingsKnob::BenchScriptedSkip },
+    { "Preset: 8 bots / procedural",  MenuAction::BenchmarkPreset1, true },
+    { "Preset: 32 bots / procedural", MenuAction::BenchmarkPreset2, true },
+    { "Preset: 63 bots / procedural", MenuAction::BenchmarkPreset3, true },
+    { "Back",                         MenuAction::BackToMain,       true },
+};
+
 // M6.2 — MatchSetup screen. Scroller rows bind 1:1 to MatchSetupKnob
 // values; the trailing Action rows (Players, Start, Back) fire the
 // standard MenuAction transitions. Order is the on-screen vertical
@@ -216,7 +326,14 @@ bool screenHasRows_(UIScreen s) noexcept {
            s == UIScreen::MatchSetup ||
            s == UIScreen::PlayerSetup ||
            s == UIScreen::Pause ||
-           s == UIScreen::Results;
+           s == UIScreen::Results ||
+           s == UIScreen::Options ||
+           s == UIScreen::OptionsVideo ||
+           s == UIScreen::OptionsAudio ||
+           s == UIScreen::OptionsControls ||
+           s == UIScreen::OptionsGameplay ||
+           s == UIScreen::OptionsAccessibility ||
+           s == UIScreen::OptionsBenchmark;
 }
 
 const char* matchModeLabel_(MatchMode m) noexcept {
@@ -283,13 +400,20 @@ void UISystem::update(threadmaxx::SystemContext& ctx) {
 
 std::span<const MenuRow> UISystem::rows(UIScreen screen) const noexcept {
     switch (screen) {
-        case UIScreen::MainMenu:    return { kMainMenuRows,    std::size(kMainMenuRows)    };
-        case UIScreen::Credits:     return { kCreditsRows,     std::size(kCreditsRows)     };
-        case UIScreen::MatchSetup:  return { kMatchSetupRows,  std::size(kMatchSetupRows)  };
-        case UIScreen::PlayerSetup: return { kPlayerSetupRows, std::size(kPlayerSetupRows) };
-        case UIScreen::Pause:       return { kPauseRows,       std::size(kPauseRows)       };
-        case UIScreen::Results:     return { kResultsRows,     std::size(kResultsRows)     };
-        default:                    return {};
+        case UIScreen::MainMenu:             return { kMainMenuRows,             std::size(kMainMenuRows)             };
+        case UIScreen::Credits:              return { kCreditsRows,              std::size(kCreditsRows)              };
+        case UIScreen::MatchSetup:           return { kMatchSetupRows,           std::size(kMatchSetupRows)           };
+        case UIScreen::PlayerSetup:          return { kPlayerSetupRows,          std::size(kPlayerSetupRows)          };
+        case UIScreen::Pause:                return { kPauseRows,                std::size(kPauseRows)                };
+        case UIScreen::Results:              return { kResultsRows,              std::size(kResultsRows)              };
+        case UIScreen::Options:              return { kOptionsRows,              std::size(kOptionsRows)              };
+        case UIScreen::OptionsVideo:         return { kOptionsVideoRows,         std::size(kOptionsVideoRows)         };
+        case UIScreen::OptionsAudio:         return { kOptionsAudioRows,         std::size(kOptionsAudioRows)         };
+        case UIScreen::OptionsControls:      return { kOptionsControlsRows,      std::size(kOptionsControlsRows)      };
+        case UIScreen::OptionsGameplay:      return { kOptionsGameplayRows,      std::size(kOptionsGameplayRows)      };
+        case UIScreen::OptionsAccessibility: return { kOptionsAccessibilityRows, std::size(kOptionsAccessibilityRows) };
+        case UIScreen::OptionsBenchmark:     return { kOptionsBenchmarkRows,     std::size(kOptionsBenchmarkRows)     };
+        default:                             return {};
     }
 }
 
@@ -372,10 +496,25 @@ MenuAction UISystem::acceptFocused() noexcept {
             setCurrent(UIScreen::PlayerSetup);
             break;
         case MenuAction::BackToMain:
-            // M6.3 — PlayerSetup → MatchSetup; all other screens →
-            // MainMenu. Keeps the back-row UX one-action-fits-all.
+            // M6.3 — PlayerSetup → MatchSetup; M6.5 — Options sub-screen
+            // → Options; Options → MainMenu (and triggers settings save);
+            // all other screens → MainMenu. One row label, screen-aware
+            // routing.
             if (current_ == UIScreen::PlayerSetup) {
                 setCurrent(UIScreen::MatchSetup);
+            } else if (current_ == UIScreen::OptionsVideo ||
+                       current_ == UIScreen::OptionsAudio ||
+                       current_ == UIScreen::OptionsControls ||
+                       current_ == UIScreen::OptionsGameplay ||
+                       current_ == UIScreen::OptionsAccessibility ||
+                       current_ == UIScreen::OptionsBenchmark) {
+                setCurrent(UIScreen::Options);
+            } else if (current_ == UIScreen::Options) {
+                // M6.5 — leaving the Options tree triggers a settings.dat
+                // save. The host drains the sticky flag and calls
+                // `saveSettings()` (atomic tmp+rename).
+                pendingSettingsSave_ = true;
+                setCurrent(UIScreen::MainMenu);
             } else {
                 setCurrent(UIScreen::MainMenu);
             }
@@ -442,10 +581,40 @@ MenuAction UISystem::acceptFocused() noexcept {
             pendingQuit_ = true;
             break;
         case MenuAction::Options:
-            std::fprintf(stderr, "[tou2d] Options screen not implemented (M6.5)\n");
+            // M6.5 — enter the Options tree from MainMenu or Pause.
+            setCurrent(UIScreen::Options);
+            break;
+        case MenuAction::OptionsVideo:
+            setCurrent(UIScreen::OptionsVideo);
+            break;
+        case MenuAction::OptionsAudio:
+            setCurrent(UIScreen::OptionsAudio);
+            break;
+        case MenuAction::OptionsControls:
+            setCurrent(UIScreen::OptionsControls);
+            break;
+        case MenuAction::OptionsGameplay:
+            setCurrent(UIScreen::OptionsGameplay);
+            break;
+        case MenuAction::OptionsAccessibility:
+            setCurrent(UIScreen::OptionsAccessibility);
+            break;
+        case MenuAction::OptionsBenchmark:
+            setCurrent(UIScreen::OptionsBenchmark);
+            break;
+        case MenuAction::BenchmarkPreset1:
+            applyBenchmarkPreset_(1);
+            break;
+        case MenuAction::BenchmarkPreset2:
+            applyBenchmarkPreset_(2);
+            break;
+        case MenuAction::BenchmarkPreset3:
+            applyBenchmarkPreset_(3);
             break;
         case MenuAction::Benchmark:
-            std::fprintf(stderr, "[tou2d] Benchmark preset not implemented (M6.5)\n");
+            // Legacy MainMenu "Benchmark / Stress" entry — funnel into
+            // the new Benchmark sub-screen for consistency with M6.5.
+            setCurrent(UIScreen::OptionsBenchmark);
             break;
         case MenuAction::Continue:
         case MenuAction::None:
@@ -463,7 +632,12 @@ void UISystem::cycleFocused(std::int32_t delta) noexcept {
     }
     const MenuRow& row = rs[static_cast<std::size_t>(focusIndex_)];
     if (row.kind != MenuRowKind::Scroller || !row.enabled) return;
-    cycleKnob_(row.scrollerKnob, row.slotIdx, delta);
+    // M6.5 — settings knob takes precedence on Options sub-screens.
+    if (row.settingsKnob != SettingsKnob::Count) {
+        cycleSettingsKnob_(row.settingsKnob, delta);
+    } else {
+        cycleKnob_(row.scrollerKnob, row.slotIdx, delta);
+    }
 }
 
 namespace {
@@ -692,6 +866,25 @@ std::size_t UISystem::formatRow(std::int32_t rowIdx,
         return copy;
     }
     if (row.kind == MenuRowKind::Display) {
+        // M6.5 — Options→Video Resolution Display row.
+        if (current_ == UIScreen::OptionsVideo) {
+            const int written = std::snprintf(
+                buf, bufN, "Resolution: %ux%u",
+                unsigned(settings_.video.resolutionW),
+                unsigned(settings_.video.resolutionH));
+            if (written < 0) { buf[0] = '\0'; return 0; }
+            const std::size_t w = static_cast<std::size_t>(written);
+            return (w < bufN) ? w : bufN - 1;
+        }
+        // M6.5 — Options→Controls placeholder rows render the static
+        // label verbatim (no dynamic content yet).
+        if (current_ == UIScreen::OptionsControls) {
+            const std::size_t n = std::strlen(row.label);
+            const std::size_t copy = (n < bufN - 1) ? n : bufN - 1;
+            std::memcpy(buf, row.label, copy);
+            buf[copy] = '\0';
+            return copy;
+        }
         // M6.6 — Results-screen rows render from `matchResults_`. Three
         // slot-encoded variants: 0xFF = winner banner, 0xFE = column
         // header, [0, kMatchSetupSlotCount) = per-slot line. The static
@@ -741,9 +934,15 @@ std::size_t UISystem::formatRow(std::int32_t rowIdx,
         const std::size_t w = static_cast<std::size_t>(written);
         return (w < bufN) ? w : bufN - 1;
     }
-    // Scroller — "<label>: <value>".
+    // Scroller — "<label>: <value>". M6.5 — settings knob takes
+    // precedence on Options sub-screens; falls through to MatchSetupKnob
+    // otherwise.
     char valBuf[40];
-    formatKnobValue_(row.scrollerKnob, row.slotIdx, valBuf, sizeof(valBuf));
+    if (row.settingsKnob != SettingsKnob::Count) {
+        formatSettingsKnobValue_(row.settingsKnob, valBuf, sizeof(valBuf));
+    } else {
+        formatKnobValue_(row.scrollerKnob, row.slotIdx, valBuf, sizeof(valBuf));
+    }
     const int written =
         std::snprintf(buf, bufN, "%s: %s", row.label, valBuf);
     if (written < 0) return 0;
@@ -857,6 +1056,283 @@ std::size_t UISystem::formatKnobValue_(MatchSetupKnob knob,
     if (n < 0) return 0;
     return static_cast<std::size_t>(n) < bufN ? static_cast<std::size_t>(n)
                                               : bufN - 1;
+}
+
+namespace {
+
+// M6.5 — UI scale presets the Options→Video knob cycles through.
+constexpr std::uint8_t kUiScalePresets[] = { 75, 100, 125, 150 };
+constexpr std::size_t  kUiScalePresetCount =
+    sizeof(kUiScalePresets) / sizeof(kUiScalePresets[0]);
+
+std::size_t uiScalePresetIndex_(std::uint8_t v) noexcept {
+    for (std::size_t i = 0; i < kUiScalePresetCount; ++i) {
+        if (kUiScalePresets[i] == v) return i;
+    }
+    return 1;  // default to 100% when the persisted value isn't a preset
+}
+
+// M6.5 — damage scale presets (×0.5 / ×0.75 / ×1.0 / ×1.25 / ×1.5 / ×2.0).
+constexpr float kDamageScalePresets[] = { 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f };
+constexpr std::size_t kDamageScalePresetCount =
+    sizeof(kDamageScalePresets) / sizeof(kDamageScalePresets[0]);
+
+std::size_t damageScalePresetIndex_(float v) noexcept {
+    // Pick the nearest preset by absolute difference.
+    std::size_t best = 2;  // index of 1.0
+    float       bestDiff = 1.0e9f;
+    for (std::size_t i = 0; i < kDamageScalePresetCount; ++i) {
+        const float d = v > kDamageScalePresets[i]
+                            ? v - kDamageScalePresets[i]
+                            : kDamageScalePresets[i] - v;
+        if (d < bestDiff) {
+            bestDiff = d;
+            best     = i;
+        }
+    }
+    return best;
+}
+
+// M6.5 — respawn delay presets (60 / 90 / 120 / 180 ticks @ 60 Hz).
+constexpr std::uint16_t kRespawnDelayPresets[] = { 60, 90, 120, 180 };
+constexpr std::size_t kRespawnDelayPresetCount =
+    sizeof(kRespawnDelayPresets) / sizeof(kRespawnDelayPresets[0]);
+
+std::size_t respawnDelayPresetIndex_(std::uint16_t v) noexcept {
+    for (std::size_t i = 0; i < kRespawnDelayPresetCount; ++i) {
+        if (kRespawnDelayPresets[i] == v) return i;
+    }
+    return 1;  // default to 90 when the persisted value isn't a preset
+}
+
+// M6.5 — HUD scale presets (75 / 100 / 125 / 150 / 175 / 200).
+constexpr std::uint8_t kHudScalePresets[] = { 75, 100, 125, 150, 175, 200 };
+constexpr std::size_t kHudScalePresetCount =
+    sizeof(kHudScalePresets) / sizeof(kHudScalePresets[0]);
+
+std::size_t hudScalePresetIndex_(std::uint8_t v) noexcept {
+    for (std::size_t i = 0; i < kHudScalePresetCount; ++i) {
+        if (kHudScalePresets[i] == v) return i;
+    }
+    return 1;  // default to 100
+}
+
+// Volume cycle: 0..100 in steps of 5 = 21 positions.
+constexpr std::int64_t kVolumeStep = 5;
+constexpr std::int64_t kVolumeSpan = 21;
+
+} // namespace
+
+void UISystem::cycleSettingsKnob_(SettingsKnob knob,
+                                  std::int32_t delta) noexcept {
+    auto cycleU8 = [delta](std::uint8_t& field, std::int64_t span) {
+        field = static_cast<std::uint8_t>(
+            wrapInRange_(field, delta, span));
+    };
+    auto cycleVolume = [&](std::uint8_t& field) {
+        const std::int64_t cur = static_cast<std::int64_t>(field) / kVolumeStep;
+        field = static_cast<std::uint8_t>(
+            wrapInRange_(cur, delta, kVolumeSpan) * kVolumeStep);
+    };
+    bool audioChanged = false;
+    switch (knob) {
+        case SettingsKnob::VideoFullscreen:
+            cycleU8(settings_.video.fullscreen, 2);
+            break;
+        case SettingsKnob::VideoVsync:
+            cycleU8(settings_.video.vsync, 2);
+            break;
+        case SettingsKnob::VideoUiScale: {
+            std::size_t idx = uiScalePresetIndex_(settings_.video.uiScale);
+            idx = static_cast<std::size_t>(wrapInRange_(
+                static_cast<std::int64_t>(idx), delta,
+                static_cast<std::int64_t>(kUiScalePresetCount)));
+            settings_.video.uiScale = kUiScalePresets[idx];
+            break;
+        }
+        case SettingsKnob::AudioMaster:
+            cycleVolume(settings_.audio.master);
+            audioChanged = true;
+            break;
+        case SettingsKnob::AudioMusic:
+            cycleVolume(settings_.audio.music);
+            audioChanged = true;
+            break;
+        case SettingsKnob::AudioSfx:
+            cycleVolume(settings_.audio.sfx);
+            audioChanged = true;
+            break;
+        case SettingsKnob::GameplayDamageScale: {
+            std::size_t idx = damageScalePresetIndex_(settings_.gameplay.damageScale);
+            idx = static_cast<std::size_t>(wrapInRange_(
+                static_cast<std::int64_t>(idx), delta,
+                static_cast<std::int64_t>(kDamageScalePresetCount)));
+            settings_.gameplay.damageScale = kDamageScalePresets[idx];
+            break;
+        }
+        case SettingsKnob::GameplayRespawnDelay: {
+            std::size_t idx = respawnDelayPresetIndex_(settings_.gameplay.respawnDelayTicks);
+            idx = static_cast<std::size_t>(wrapInRange_(
+                static_cast<std::int64_t>(idx), delta,
+                static_cast<std::int64_t>(kRespawnDelayPresetCount)));
+            settings_.gameplay.respawnDelayTicks = kRespawnDelayPresets[idx];
+            break;
+        }
+        case SettingsKnob::GameplayCameraMode:
+            cycleU8(settings_.gameplay.cameraMode, 3);
+            break;
+        case SettingsKnob::AccessHudScale: {
+            std::size_t idx = hudScalePresetIndex_(settings_.accessibility.hudScale);
+            idx = static_cast<std::size_t>(wrapInRange_(
+                static_cast<std::int64_t>(idx), delta,
+                static_cast<std::int64_t>(kHudScalePresetCount)));
+            settings_.accessibility.hudScale = kHudScalePresets[idx];
+            break;
+        }
+        case SettingsKnob::AccessBigWarnings:
+            cycleU8(settings_.accessibility.bigWarnings, 2);
+            break;
+        case SettingsKnob::AccessScreenShake:
+            cycleU8(settings_.accessibility.screenShake, 2);
+            break;
+        case SettingsKnob::AccessPhotosensitive:
+            cycleU8(settings_.accessibility.photosensitive, 2);
+            break;
+        case SettingsKnob::BenchTraceSink:
+            cycleU8(settings_.benchmark.traceSinkOn, 2);
+            break;
+        case SettingsKnob::BenchScriptedSkip:
+            cycleU8(settings_.benchmark.scriptedSkipOn, 2);
+            break;
+        case SettingsKnob::Count:
+            break;
+    }
+    if (audioChanged && engine_) {
+        engine_->events<AudioVolumeChanged>().emit(AudioVolumeChanged{
+            settings_.audio.master,
+            settings_.audio.music,
+            settings_.audio.sfx,
+            0});
+    }
+}
+
+std::size_t UISystem::formatSettingsKnobValue_(SettingsKnob knob,
+                                               char*        buf,
+                                               std::size_t  bufN) const noexcept {
+    if (bufN == 0) return 0;
+    int n = 0;
+    switch (knob) {
+        case SettingsKnob::VideoFullscreen:
+            n = std::snprintf(buf, bufN, "%s",
+                              settings_.video.fullscreen ? "On" : "Off");
+            break;
+        case SettingsKnob::VideoVsync:
+            n = std::snprintf(buf, bufN, "%s",
+                              settings_.video.vsync ? "On" : "Off");
+            break;
+        case SettingsKnob::VideoUiScale:
+            n = std::snprintf(buf, bufN, "%u%%",
+                              unsigned(settings_.video.uiScale));
+            break;
+        case SettingsKnob::AudioMaster:
+            n = std::snprintf(buf, bufN, "%u",
+                              unsigned(settings_.audio.master));
+            break;
+        case SettingsKnob::AudioMusic:
+            n = std::snprintf(buf, bufN, "%u",
+                              unsigned(settings_.audio.music));
+            break;
+        case SettingsKnob::AudioSfx:
+            n = std::snprintf(buf, bufN, "%u",
+                              unsigned(settings_.audio.sfx));
+            break;
+        case SettingsKnob::GameplayDamageScale:
+            n = std::snprintf(buf, bufN, "x%.2f",
+                              double(settings_.gameplay.damageScale));
+            break;
+        case SettingsKnob::GameplayRespawnDelay:
+            n = std::snprintf(buf, bufN, "%u ticks",
+                              unsigned(settings_.gameplay.respawnDelayTicks));
+            break;
+        case SettingsKnob::GameplayCameraMode: {
+            const char* label = "Split";
+            switch (settings_.gameplay.cameraMode) {
+                case 0: label = "Split";  break;
+                case 1: label = "Follow"; break;
+                case 2: label = "Fixed";  break;
+                default: label = "?";     break;
+            }
+            n = std::snprintf(buf, bufN, "%s", label);
+            break;
+        }
+        case SettingsKnob::AccessHudScale:
+            n = std::snprintf(buf, bufN, "%u%%",
+                              unsigned(settings_.accessibility.hudScale));
+            break;
+        case SettingsKnob::AccessBigWarnings:
+            n = std::snprintf(buf, bufN, "%s",
+                              settings_.accessibility.bigWarnings ? "On" : "Off");
+            break;
+        case SettingsKnob::AccessScreenShake:
+            n = std::snprintf(buf, bufN, "%s",
+                              settings_.accessibility.screenShake ? "On" : "Off");
+            break;
+        case SettingsKnob::AccessPhotosensitive:
+            n = std::snprintf(buf, bufN, "%s",
+                              settings_.accessibility.photosensitive ? "On" : "Off");
+            break;
+        case SettingsKnob::BenchTraceSink:
+            n = std::snprintf(buf, bufN, "%s",
+                              settings_.benchmark.traceSinkOn ? "On" : "Off");
+            break;
+        case SettingsKnob::BenchScriptedSkip:
+            n = std::snprintf(buf, bufN, "%s",
+                              settings_.benchmark.scriptedSkipOn ? "On" : "Off");
+            break;
+        case SettingsKnob::Count:
+            buf[0] = '\0';
+            break;
+    }
+    if (n < 0) return 0;
+    return static_cast<std::size_t>(n) < bufN ? static_cast<std::size_t>(n)
+                                              : bufN - 1;
+}
+
+void UISystem::applyBenchmarkPreset_(std::uint8_t preset) noexcept {
+    // Pre-fill `matchSetup_` with the preset's knobs, then fire
+    // pendingStartMatch_ + dismiss menu so the host applies via the
+    // same engine-restart path StartMatch uses.
+    MatchSetup s{};
+    s.useGen      = true;
+    s.matchMode   = MatchMode::Deathmatch;
+    s.specialKind = SpecialKind::Spread;
+    s.genCfg.seed             = 0xCAFEF00Du;
+    s.genCfg.perimeterBedrock = 1;
+    s.genCfg.repairTileCount  = 16;
+    switch (preset) {
+        case 1:
+            s.numHumans = 1;
+            s.numBots   = 8;
+            s.genCfg.ggLevel      = 2;
+            s.genCfg.stuffDensity = 40;
+            break;
+        case 2:
+            s.numHumans = 1;
+            s.numBots   = 32;
+            s.genCfg.ggLevel      = 3;
+            s.genCfg.stuffDensity = 30;
+            break;
+        case 3:
+        default:
+            s.numHumans = 1;
+            s.numBots   = 63;
+            s.genCfg.ggLevel      = 4;
+            s.genCfg.stuffDensity = 20;
+            break;
+    }
+    matchSetup_         = s;
+    pendingStartMatch_  = true;
+    setCurrent(UIScreen::None);
 }
 
 } // namespace tou2d

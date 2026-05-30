@@ -12,6 +12,7 @@
 #include "ProceduralLevel.hpp"
 #include "Replay.hpp"
 #include "SpriteCompositor.hpp"
+#include "Settings.hpp"
 #include "TouGame.hpp"
 #include "UISystem.hpp"
 #include "ui/Font.hpp"
@@ -20,6 +21,7 @@
 #include <threadmaxx_vk/VulkanRenderer.hpp>
 
 #include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/World.hpp>
 
 #define GLFW_INCLUDE_NONE
@@ -487,6 +489,31 @@ int main(int argc, char** argv) {
     // no-op'd.
     if (game.uiSystem()) {
         game.uiSystem()->matchSetup() = cliSetup;
+    }
+
+    // M6.5 — load persistent settings.dat (if present) and seed the
+    // UISystem's working `Settings`. Missing file / magic mismatch /
+    // version mismatch → defaults stand (Settings's default-ctor is
+    // the same as a fresh install). Emits an `AudioVolumeChanged` once
+    // so AudioSystem applies the loaded volumes (default 80/80/80 if
+    // no file).
+    {
+        tou2d::Settings settings{};
+        const auto sPath = tou2d::defaultSettingsPath();
+        const bool loaded = tou2d::loadSettings(sPath, settings);
+        std::printf("[tou2d] settings.dat: %s\n",
+                    loaded ? "loaded" :
+                    sPath.empty() ? "no XDG_CONFIG_HOME/HOME — defaults"
+                                  : "absent — defaults");
+        if (game.uiSystem()) {
+            game.uiSystem()->setSettings(settings);
+        }
+        engine.events<tou2d::AudioVolumeChanged>().emit(
+            tou2d::AudioVolumeChanged{
+                settings.audio.master,
+                settings.audio.music,
+                settings.audio.sfx,
+                0});
     }
 
     // M6.0b — bake the bundled UI font at startup. The asset lives at
@@ -1170,6 +1197,21 @@ int main(int argc, char** argv) {
                     "behind MainMenu at tick=%llu)\n",
                     static_cast<unsigned long long>(tick));
                 ui->clearPendingReturnToMainMenu();
+            }
+            // M6.5 — Options-tree back-out drain. Atomic write to
+            // settings.dat (tmp + rename). Failure → log + clear flag
+            // so we don't spin retrying on the same broken state. The
+            // working `settings_` was edited in place by the Options
+            // sub-screens; no extra copy needed here.
+            if (ui->pendingSettingsSave()) {
+                const auto sPath = tou2d::defaultSettingsPath();
+                const bool ok = tou2d::saveSettings(sPath, ui->settings());
+                std::printf(
+                    "[tou2d] settings.dat: %s (%s)\n",
+                    ok ? "saved" : "save FAILED",
+                    sPath.empty() ? "no XDG_CONFIG_HOME/HOME"
+                                  : sPath.string().c_str());
+                ui->clearPendingSettingsSave();
             }
         }
 

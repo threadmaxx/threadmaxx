@@ -52,6 +52,8 @@ add_library(tou2d_core STATIC
     # `UIScreen current` and emits UIScreenChanged on transition.
     ui/UiOverlayBitmap.cpp
     UISystem.cpp
+    # M6.5 — persistent settings POD reader / writer (atomic write).
+    SettingsIo.cpp
     # M6.8 — typed UIToast event channel + per-slot stack renderer.
     ToastRenderSystem.cpp
 )
