@@ -56,6 +56,8 @@ add_library(tou2d_core STATIC
     SettingsIo.cpp
     # M6.8 — typed UIToast event channel + per-slot stack renderer.
     ToastRenderSystem.cpp
+    # M6.9 — F3-toggled telemetry overlay.
+    DebugOverlaySystem.cpp
 )
 
 target_include_directories(tou2d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

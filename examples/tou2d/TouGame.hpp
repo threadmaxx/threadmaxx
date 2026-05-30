@@ -23,6 +23,7 @@ namespace tou2d {
 
 class BulletTerrainSystem;
 class CameraSystem;
+class DebugOverlaySystem;
 class HudSystem;
 class InputSystem;
 class ParticleSystem;
@@ -159,6 +160,11 @@ public:
     HudSystem*       hudSystem()      noexcept { return hud_; }
     ParticleSystem*  particleSystem() noexcept { return particles_; }
 
+    /// M6.9 — borrowed pointer to the F3-toggled telemetry overlay. The
+    /// host (main.cpp) flips its visibility on the F3 rising edge.
+    /// Valid only between `onSetup` and `onTeardown`.
+    DebugOverlaySystem* debugOverlaySystem() noexcept { return debugOverlay_; }
+
     /// Handle of P1's ship — host-side smoke tests use this to verify
     /// final position. Valid only between onSetup and onTeardown.
     threadmaxx::EntityHandle playerShip() const noexcept {
@@ -219,6 +225,7 @@ private:
     UISystem*                ui_             = nullptr;   // M6.0b — borrowed; engine owns
     HudSystem*               hud_            = nullptr;   // M6.7 — borrowed
     ParticleSystem*          particles_      = nullptr;   // M6.7 — borrowed
+    DebugOverlaySystem*      debugOverlay_   = nullptr;   // M6.9 — borrowed
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for
     // playerShip() (smoke-test position log) and onTeardown bookkeeping.

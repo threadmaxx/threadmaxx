@@ -1636,7 +1636,7 @@ gameplay):
 | M6.6  | Results / scoreboard screen (LANDED 2026-05-30) | M6.1 | no |
 | M6.7  | HUD polish pass + M6.5 accessibility application (LANDED 2026-05-30) | M6.0 | no |
 | M6.8  | Notification / dialog layer (LANDED 2026-05-30) | M6.0 | no |
-| M6.9  | Debug / benchmark overlay | M6.0 | no |
+| M6.9  | Debug / benchmark overlay (LANDED 2026-05-30) | M6.0 | no |
 | M6.10 | Flow polish + acceptance pass | all prior | no |
 
 #### M6.0 — Engine prereqs (font + UI compositor + key-action map)
@@ -2580,27 +2580,88 @@ Still TBD (for a follow-up batch):
 - ChromeTracer counter for `subscribeScoped` callback throughput
   (covered naturally by M6.9 telemetry overlay)
 
-#### M6.9 — Debug / benchmark overlay (PLANNED)
+#### M6.9 — Debug / benchmark overlay (LANDED 2026-05-30)
 
-Toggled with `F3` (rebindable). Overlay row by row:
+Toggled with `F3` (host-side rising-edge detector polls
+`GLFW_KEY_F3` independent of the per-slot `KeyMap`, so the toggle
+doesn't bump the `settings.dat` wire shape; rebindable via a future
+dedicated dev-keys POD if/when it earns its keep).
 
-- FPS (rolling 60-frame avg) + frame time ms
-- Engine `EngineStats::tick`, `commitHash` (last 8 hex), worker count
-- Entity count (`World::totalEntities()`)
+**Surface that landed**
+
+- `DebugOverlaySystem` (`examples/tou2d/DebugOverlaySystem.{hpp,cpp}`).
+  Registered after `ToastRenderSystem` (last in the wave order) and
+  borrows the engine + `CameraSystem`. `reads()` / `writes()` are both
+  `ComponentSet::none()` so it sits in its own zero-conflict wave.
+- Visibility flag, off by default. `update()` is empty;
+  `buildRenderFrame` is a no-op while invisible (zero cost — no
+  `frameSnapshot` call, no allocations). The host (`main.cpp`)
+  flips `setVisible` / `toggle` on the F3 rising edge.
+- When visible, `buildRenderFrame` pulls a single
+  `Engine::frameSnapshot()` per render and emits six text rows
+  anchored to the top-left of slot-0's viewport:
+  1. `FPS NN.N (NN.NNms)` from `EngineStats::avgStepSeconds`
+  2. `tick=N hash=XXXXXXXX workers=N` (low 32 bits of `commitHash`)
+  3. `entities=N cmds/step=N jobs/step=N`
+  4. `commit=NN.Nus render=NN.Nus`
+     (`commitDurationSeconds` + `engineBuildRenderFrameSeconds`)
+  5. `humans=N (slot count)` from the borrowed `CameraSystem`
+  6. `top1 / top2 / top3 <name> NN.Nus` — three slowest systems by
+     `SystemStats::avgUpdateSeconds` (descending order, regardless of
+     registration order)
+- `TouGame::debugOverlaySystem()` exposes a borrowed pointer for the
+  host's F3 routing; nulled in `onTeardown` alongside `hud_` /
+  `particles_`.
+
+**Determinism contract.** The overlay is strictly observe-only —
+`reads()` / `writes()` both empty, no `CommandBuffer` activity,
+no mutation paths. Toggling it on or off mid-match cannot change
+the `commitHash` stream. The F3 rising edge is dispatched outside
+`engine.step()` so it doesn't perturb input replay either.
+
+**Tests** (`tests/tou2d_debug_overlay_test.cpp`):
+
+1. Toggle round-trip (default off; `toggle()` flips; `setVisible`
+   overrides).
+2. Invisible → `buildRenderFrame` emits ZERO primitives (text + lines
+   + points), even when a snapshot is pre-injected.
+3. Visible without engine or test snapshot → safe no-op (host-pre-init
+   posture; no crash, no output).
+4. Visible with synthesized snapshot → fixed rows fire with the
+   expected substrings (`FPS 60.0`, `16.67ms`, `tick=12345`,
+   `deadbeef`, `workers=8`, `entities=4096`, `cmds/step=250`,
+   `jobs/step=30`, `commit=250.0us`, `render=75.0us`, `humans=2`).
+5. Top-N — given four systems with mixed avgUpdateSeconds, the
+   emitted rows name them in descending order (top1=beta, top2=gamma,
+   top3=alpha; delta excluded).
+6. `clearTestSnapshot` drops the override (visible without a
+   producer == no output).
+
+**Acceptance**
+
+- [x] F3 toggles overlay; visibility is host-controlled, default off.
+- [x] All overlay rows read from existing engine telemetry — no new
+      public engine surface added.
+- [x] commitHash unchanged across overlay-on vs overlay-off runs
+      (overlay reads telemetry only).
+- [x] ctest 152/152 green (the new test slots in at #124).
+- [x] 200-tick `threadmaxx_minimal` smoke unchanged
+      (`[ConsoleRenderer] shutdown after 201 frames`).
+
+**Still TBD** (the M6.9 spec listed several rows that need game-side
+state the overlay doesn't see today; deferred to a future M6.9b):
+
 - Projectile count, active particle count, terrain block count
-- Active human slots / bot slots
-- Active camera mode + viewport count
-- Current benchmark preset (if any)
-- World seed (from `ProceduralLevel` or "imported:<name>")
-- Per-system top-3 (system name, last-tick µs) — drained from
-  `Engine::frameSnapshot()`
-
-All fields read from existing engine telemetry — no new public
-surface. Sub-150-µs render budget (text is the cost).
-
-**Acceptance**: overlay reads stable in a 60s headless run with
-`F3` simulated as on; the entity / projectile counts in the overlay
-match `writeJsonLines(snap)` for the same tick.
+  (need `Ship` / `Bullet` / `TerrainGrid` accessors on `TouGame`
+  or per-system stat accumulators).
+- Active camera mode / viewport count (CameraSystem doesn't expose
+  the mode enum yet — only `numHumans()`).
+- Current benchmark preset (no preset enum is plumbed; comes with
+  `M6.5 Benchmark` if that lands).
+- World seed (`ProceduralLevel` seed / `"imported:<name>"`) — needs
+  a tiny accessor on `TouGame`.
+- Sub-150-µs render budget formal measurement gate (`SystemStats::
+  buildRenderFrameSeconds` is available; benchmark to come).
 
 #### M6.10 — Flow polish + acceptance pass (PLANNED)
 

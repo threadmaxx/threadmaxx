@@ -18,6 +18,7 @@
 #include "ShipLifecycleSystem.hpp"
 #include "SpriteAtlas.hpp"
 #include "ToastRenderSystem.hpp"
+#include "DebugOverlaySystem.hpp"
 #include "TerrainCollisionSystem.hpp"
 #include "WeaponFireSystem.hpp"
 
@@ -295,6 +296,11 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // camera_'s followCenter + orthoHalfH so each human's stack
     // anchors to its own viewport's top edge.
     auto toasts     = std::make_unique<ToastRenderSystem>(&engine, camera_);
+    // M6.9 — F3-toggled debug / benchmark overlay. Off by default.
+    // Reads `Engine::frameSnapshot` each render; no ECS reads / writes,
+    // sits in its own wave after the toasts.
+    auto debugOverlay = std::make_unique<DebugOverlaySystem>(&engine, camera_);
+    debugOverlay_ = debugOverlay.get();
 
     movementPtr  ->setLevelRect(minX, minY, maxX, maxY);
     projectilePtr->setLevelRect(minX, minY, maxX, maxY);
@@ -316,6 +322,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(camera));
     engine.registerSystem(std::move(hud));          // last — buildRenderFrame reads camera state
     engine.registerSystem(std::move(toasts));       // M6.8 — drains UIToast channel; renders strips over HUD
+    engine.registerSystem(std::move(debugOverlay)); // M6.9 — F3-toggled telemetry overlay; no-op while invisible
 
     // M4.8 — register AudioSystem (subscribes to AudioPlay; no ECS
     // reads/writes; sits in its own wave at the end).
@@ -443,6 +450,7 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     ui_            = nullptr;
     hud_           = nullptr;
     particles_     = nullptr;
+    debugOverlay_  = nullptr;
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {

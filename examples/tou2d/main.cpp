@@ -6,6 +6,7 @@
 // turn the ship with arrow keys, watch it fall under gravity.
 
 #include "CameraSystem.hpp"
+#include "DebugOverlaySystem.hpp"
 #include "DemoTypes.hpp"
 #include "InputSystem.hpp"
 #include "MatchSetup.hpp"
@@ -600,6 +601,22 @@ int main(int argc, char** argv) {
     };
     UiKeyEdges uiEdges{};
 
+    // M6.9 — F3 rising-edge tracker for the debug / benchmark overlay.
+    // Hardcoded to GLFW_KEY_F3 — not in KeyMap so the settings.dat
+    // wire shape stays unchanged. Rebindable later via a dedicated
+    // dev-keys POD if/when needed.
+    struct F3Edge {
+        bool prev   = false;
+        bool rising = false;
+        void poll(GLFWwindow* w) {
+            if (!w) { rising = false; return; }
+            const bool cur = glfwGetKey(w, GLFW_KEY_F3) == GLFW_PRESS;
+            rising = cur && !prev;
+            prev   = cur;
+        }
+    };
+    F3Edge f3Edge{};
+
     // M6.1 — flip into MainMenu when launched without CLI args. The
     // engine starts paused so no ticks accumulate behind the menu;
     // the per-frame UI sync (below) keeps engine.paused() bound to
@@ -1067,6 +1084,20 @@ int main(int argc, char** argv) {
     bool prevRoundEnded = false;
     while (!glfwWindowShouldClose(window) && !engine.quitRequested()) {
         glfwPollEvents();
+        // M6.9 — pump the F3 rising-edge and forward it to the borrowed
+        // DebugOverlaySystem. Independent of menu / pause state so the
+        // overlay can be toggled at any time, including over paused
+        // gameplay (the engine keeps re-submitting the front frame and
+        // the overlay's buildRenderFrame runs every submit).
+        f3Edge.poll(window);
+        if (f3Edge.rising) {
+            if (auto* dbg = game.debugOverlaySystem()) {
+                dbg->toggle();
+                std::printf(
+                    "[tou2d] F3 debug overlay: %s\n",
+                    dbg->visible() ? "on" : "off");
+            }
+        }
         // M6.1 — pump UI key edges + dispatch when a menu is up. Drives
         // moveFocus / acceptFocused on UiUp / UiDown / UiAccept.
         // UiCancel returns to MainMenu from sub-screens; on MainMenu

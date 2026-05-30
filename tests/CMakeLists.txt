@@ -503,4 +503,30 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_particle_photosensitive_test
              COMMAND tou2d_particle_photosensitive_test)
+
+    # tou2d_debug_overlay_test — M6.9 contract pin. DebugOverlaySystem
+    # is F3-toggled; off by default; while off `buildRenderFrame` emits
+    # zero primitives. While on it reads `Engine::frameSnapshot` (or a
+    # test-injected snapshot) and emits a vertical strip of debug-text
+    # rows: FPS, tick/commitHash/workers, entity/cmd/job counts, commit
+    # + render-build breakdown, slot count, and top-3 systems by
+    # avgUpdateSeconds. Test pushes synthesized stats and verifies the
+    # row substrings + the top-N sort.
+    add_executable(tou2d_debug_overlay_test
+        tou2d_debug_overlay_test.cpp)
+    target_link_libraries(tou2d_debug_overlay_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_debug_overlay_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_debug_overlay_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_debug_overlay_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_debug_overlay_test
+             COMMAND tou2d_debug_overlay_test)
 endif()
