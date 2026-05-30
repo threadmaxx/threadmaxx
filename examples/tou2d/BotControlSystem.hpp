@@ -11,6 +11,35 @@
 
 namespace tou2d {
 
+/// M7.1 — search radius (world units) the bot uses when deciding
+/// whether to retreat toward a Repair tile vs. keep fighting. If no
+/// Repair tile sits within this radius the low-HP bot falls through to
+/// the engage branch instead of fleeing into open space and dying
+/// anyway (the playtest signal: "bot just runs away and dies").
+inline constexpr float kBotRepairSearchRadiusWU = 240.0f;
+
+/// M7.1 — per-tick chance any non-engaged bot fires its basic weapon
+/// at whatever direction it's facing. Cheap "alive" signal so bots
+/// don't read as catatonic between engage windows. Skipped while
+/// already firing aimed or while seeking a repair tile. Driven off the
+/// per-bot xorshift32 stream so the schedule is deterministic.
+///
+/// 0.005 / tick ≈ 0.3 Hz at the 60 Hz tick rate — sparse enough that
+/// it never looks spammy, frequent enough to break the "stationary
+/// turret" impression in wander mode.
+inline constexpr float kBotChaosFireChancePerTick = 0.005f;
+
+/// M7.1 — scan the grid's tiles inside the bounding square around
+/// `(ox, oy)` of half-extent `maxRadiusWU`; write the world coordinates
+/// of the nearest `Attribute::Repair` cell to `(outX, outY)`. Returns
+/// false when the grid is empty, the search radius is non-positive, or
+/// no Repair cell exists inside the radius. Cells whose centers lie
+/// exactly on the radius boundary count as inside.
+bool findNearestRepairTile(const TerrainGrid& grid,
+                           float ox, float oy,
+                           float maxRadiusWU,
+                           float& outX, float& outY) noexcept;
+
 /// preStep system that overrides PlayerInput for ships with
 /// `LocalPlayer::isBot != 0`. Registered AFTER InputSystem so the bot
 /// writes win for those slots; human slots are untouched.

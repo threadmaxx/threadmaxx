@@ -552,4 +552,27 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_debug_overlay_test
              COMMAND tou2d_debug_overlay_test)
+
+    # tou2d_bot_behavior_test — M7.1 contract pin. Exercises the
+    # `findNearestRepairTile` helper that BotControlSystem uses to
+    # decide low-HP retreat vs. engage (M7.1.a) and the
+    # `kBotChaosFireChancePerTick` constant the chaos-fire roll
+    # consumes (M7.1.b). Pure-function surface; no Engine stand-up.
+    add_executable(tou2d_bot_behavior_test
+        tou2d_bot_behavior_test.cpp)
+    target_link_libraries(tou2d_bot_behavior_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_bot_behavior_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_bot_behavior_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_bot_behavior_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_bot_behavior_test
+             COMMAND tou2d_bot_behavior_test)
 endif()

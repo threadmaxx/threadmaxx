@@ -212,6 +212,53 @@ inline void sampleTerrainRepulsion(const TerrainGrid& grid,
 
 } // namespace
 
+bool findNearestRepairTile(const TerrainGrid& grid,
+                           float ox, float oy,
+                           float maxRadiusWU,
+                           float& outX, float& outY) noexcept {
+    if (grid.cellsX <= 0 || grid.cellsY <= 0) return false;
+    if (!(maxRadiusWU > 0.0f))               return false;
+
+    // Convert the radius to a cell extent and bound the scan square to
+    // the grid. `floor(.../tile + 0.5)` matches the grid's world→cell
+    // mapping used elsewhere (castTerrainRay, BulletTerrainSystem).
+    const float oCellXf = ox / kTileWorldUnits;
+    const float oCellYf = oy / kTileWorldUnits;
+    const std::int32_t rCells =
+        static_cast<std::int32_t>(std::ceil(maxRadiusWU / kTileWorldUnits));
+    const std::int32_t cxLo = static_cast<std::int32_t>(std::floor(oCellXf + 0.5f)) - rCells;
+    const std::int32_t cxHi = static_cast<std::int32_t>(std::floor(oCellXf + 0.5f)) + rCells;
+    const std::int32_t cyLo = static_cast<std::int32_t>(std::floor(oCellYf + 0.5f)) - rCells;
+    const std::int32_t cyHi = static_cast<std::int32_t>(std::floor(oCellYf + 0.5f)) + rCells;
+
+    bool  found    = false;
+    float bestD2   = maxRadiusWU * maxRadiusWU;
+    float bestX    = 0.0f;
+    float bestY    = 0.0f;
+    for (std::int32_t cy = cyLo; cy <= cyHi; ++cy) {
+        for (std::int32_t cx = cxLo; cx <= cxHi; ++cx) {
+            if (!grid.inBounds(cx, cy)) continue;
+            if (grid.attrAt(cx, cy) != Attribute::Repair) continue;
+            const float wx = static_cast<float>(cx) * kTileWorldUnits;
+            const float wy = static_cast<float>(cy) * kTileWorldUnits;
+            const float dx = wx - ox;
+            const float dy = wy - oy;
+            const float d2 = dx * dx + dy * dy;
+            if (d2 <= bestD2) {
+                bestD2 = d2;
+                bestX  = wx;
+                bestY  = wy;
+                found  = true;
+            }
+        }
+    }
+    if (found) {
+        outX = bestX;
+        outY = bestY;
+    }
+    return found;
+}
+
 BotControlSystem::BotControlSystem(UserComponentIds ids) noexcept : ids_(ids) {
     // M5.1 — seed every per-slot xorshift32 stream deterministically.
     // Matches the M4.1 four-slot scheme (golden-ratio constant XOR'd
@@ -321,7 +368,25 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                         if (frac <  kRetreatEnterHp) retreating_[slot] = true;
                     }
                 }
-                const bool retreat = slot < retreating_.size() && retreating_[slot];
+                // M7.1 — guarded retreat. The hysteresis latch above only
+                // signals INTENT to retreat; we only ACT on it if a Repair
+                // tile sits within `kBotRepairSearchRadiusWU`. Without a
+                // reachable heal source the bot flips back into engage —
+                // running away just to die in open space is worse than
+                // standing and fighting.
+                const bool wantRetreat = slot < retreating_.size() && retreating_[slot];
+                float retreatTargetX = 0.0f;
+                float retreatTargetY = 0.0f;
+                bool  haveRepair     = false;
+                if (wantRetreat && grid_) {
+                    haveRepair = findNearestRepairTile(*grid_,
+                                                       selfT.position.x,
+                                                       selfT.position.y,
+                                                       kBotRepairSearchRadiusWU,
+                                                       retreatTargetX,
+                                                       retreatTargetY);
+                }
+                const bool retreat = wantRetreat && haveRepair;
 
                 PlayerInput in{};  // all zero — drift if no target
 
@@ -399,8 +464,17 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                         desY = dy0 / range;
                     }
                     if (retreat) {
-                        desX = -desX;
-                        desY = -desY;
+                        // M7.1 — steer TOWARD the repair tile instead of
+                        // away-from-enemy. The hysteresis above only let
+                        // us in here when a tile exists inside the search
+                        // radius, so this vector is always finite.
+                        const float rdx = retreatTargetX - selfT.position.x;
+                        const float rdy = retreatTargetY - selfT.position.y;
+                        const float rd  = std::sqrt(rdx * rdx + rdy * rdy);
+                        if (rd > 1e-3f) {
+                            desX = rdx / rd;
+                            desY = rdy / rd;
+                        }
                     } else {
                         // Orbit bias: roll a ± sign on first close-range
                         // entry, latch it until we leave close range.
@@ -504,6 +578,25 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     if (angDelta >  kAngEpsilon) in.turnLeft  = 1;
                     if (angDelta < -kAngEpsilon) in.turnRight = 1;
                     if (std::fabs(angDelta) < kWanderFacingThrust) in.thrust = 1;
+                }
+
+                // ---- M7.1 CHAOS FIRE -------------------------------
+                // Low-probability basic shot dropped on top of any
+                // branch that left `in.fireBasic == 0`. Suppressed when
+                // already firing aimed (engage hit the fire-arc test),
+                // when a special is firing (avoid burning weapon-swap
+                // timing), and when we're seeking a repair tile (the
+                // bot's busy trying not to die — don't waste cycles).
+                if (in.fireBasic   == 0 &&
+                    in.fireSpecial == 0 &&
+                    !retreat              &&
+                    slot < rngBySlot_.size()) {
+                    const float r = static_cast<float>(
+                        xorshift32(rngBySlot_[slot]) >> 8) /
+                        static_cast<float>(1u << 24);
+                    if (r < kBotChaosFireChancePerTick) {
+                        in.fireBasic = 1;
+                    }
                 }
 
                 // ---- TERRAIN AVOIDANCE (overrides above) -----------

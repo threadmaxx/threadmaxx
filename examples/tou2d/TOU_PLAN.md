@@ -2818,29 +2818,53 @@ flagged, fixable without new infrastructure:
   screen zoom. Levels narrower than the viewport lock to the
   midpoint. Commit `f7874d8`.
 
-**M7.1 — Bot behavior polish (BotControlSystem)**
+**M7.1 — Bot behavior polish (BotControlSystem) — LANDED 2026-05-30**
 
-Three behavioral fixes from the playtest, none requiring new ECS
-components or system wiring:
+Three behavioral changes from the playtest. `BotControlSystem`
+already borrows a `const TerrainGrid*` (the 2026-05-28 terrain-
+avoidance batch wired the setter), so no new plumbing was needed for
+M7.1.a.
 
-1. Low-HP behavior — replace the unconditional flee with a guarded
-   seek: only retreat toward a repair tile if one exists within a
-   configurable radius (~`kBotRepairSearchRadiusWU`). Otherwise
-   keep fighting. Requires the bot to know about repair tiles —
-   currently `BotControlSystem` doesn't read the terrain grid; needs
-   a borrowed `const TerrainGrid*` like `RepairPickupSystem` has.
-2. Occasional unaimed shots — low-probability chaos layer on top of
-   the aimed-fire decision. Per-tick fire chance ≈ 0.005 (~0.3 Hz
-   at 60 Hz). Deterministic: drive off the existing per-bot RNG
-   seeded from slot index.
-3. Stuck / no-wander — diagnose. Hypotheses: target acquisition
-   short-circuits on stale `targetSlot_`, wander state transition
-   never fires, or steering converges to zero against a wall.
-   Investigation pass first; fix scope unknown until repro is
-   isolated.
+1. **Low-HP behavior — guarded retreat (M7.1.a).** New
+   `findNearestRepairTile(grid, origin, radius)` helper scans the
+   cells inside the bounding square around the bot and returns the
+   closest `Attribute::Repair` cell's world center, or false when
+   none exists inside `kBotRepairSearchRadiusWU` (240 wu — covers the
+   synthetic arena's diagonal end-to-end). The existing 0.30/0.50
+   hysteresis still flags retreat *intent*, but BotControlSystem only
+   *acts* on it when a repair tile is reachable: pursuit vector
+   becomes `(repair - self).normalised()` instead of
+   `-pursuit` (away-from-enemy), and the fire decision is gated off.
+   When no repair tile is in radius the bot falls through to the
+   engage branch — running away just to die in open space was the
+   playtest signal we're fixing.
+2. **Chaos fire layer (M7.1.b).** New
+   `kBotChaosFireChancePerTick = 0.005f` (~0.3 Hz at 60 Hz). After
+   the engage/wander branches and before terrain avoidance, a
+   suppressed-when-already-firing-or-retreating roll against the
+   per-slot xorshift32 stream sets `in.fireBasic = 1` with that
+   probability. Sparse enough to never read as spammy; frequent
+   enough to break the "catatonic turret" impression in wander mode.
+3. **Stuck / no-wander investigation (M7.1.c).** The wander branch
+   is correctly implemented; the threshold (`kWanderRange = 360 wu`)
+   exceeds the synthetic arena's diagonal (~115 wu) so every bot
+   always has an in-engage-range target there → engage fires every
+   tick → wander branch is unreachable in the arena. On the
+   procedural medium canvas (~392 wu) bots usually cluster and
+   wander still rarely fires. The "stuck" observation in the
+   playtest was almost certainly the pre-M7.1 retreat-without-repair
+   bug (away-from-enemy pursuit cancelling against terrain repulsion
+   → `desLen ≈ 0` → headingAngle falls back to aimAngle → bot flies
+   *toward* the enemy while wanting to retreat). M7.1.a removes the
+   retreat-into-open-space failure mode by definition. Decision:
+   don't retune `kWanderRange` silently — playtest judgement should
+   drive that change, not engine-side tuning.
 
-Test pin: extend `tou2d_specials_test` or add
-`tou2d_bot_behavior_test` covering each branch.
+Test pin: `tou2d_bot_behavior_test` (M7.1.d). Covers
+`findNearestRepairTile` on empty grid / non-positive radius /
+out-of-radius / inside-radius / multiple-tile-nearest-wins paths,
+plus sanity bounds on the two M7.1 constants. ctest 154/154 green;
+200-tick smoke clean.
 
 **M7.2 — Per-camera HUD ownership (engine-side primitive change)**
 
