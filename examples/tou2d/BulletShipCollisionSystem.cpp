@@ -207,6 +207,21 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                     const std::uint8_t shooter = firstShooterBySlot[slot];
                     if (shooter != kNoShooter && shooter != slot) {
                         killerByVictim[slot] = shooter;
+                        // M6.8 — broadcast a kill-feed toast. Render-only,
+                        // never round-tripped through WorldSnapshot, so
+                        // commitHash is unaffected.
+                        if (engine_) {
+                            UIToast t{};
+                            t.slot          = kToastSlotBroadcast;
+                            t.severity      = 0;
+                            t.durationTicks = 180;  // 3 s @ 60 Hz
+                            std::snprintf(
+                                t.message.data(), t.message.size(),
+                                "P%u fragged P%u",
+                                static_cast<unsigned>(shooter),
+                                static_cast<unsigned>(slot));
+                            engine_->events<UIToast>().emit(t);
+                        }
                     }
                 }
             }

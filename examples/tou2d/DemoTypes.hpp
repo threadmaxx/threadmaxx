@@ -601,6 +601,27 @@ static_assert(sizeof(UIScreenChanged) == 8,
               "UIScreenChanged stays 8 bytes — single cache line "
               "shared with PlayerInput / LocalPlayer.");
 
+/// M6.8 — broadcast slot sentinel for `UIToast::slot`. A toast tagged
+/// with this slot value is pushed onto every active per-slot stack.
+inline constexpr std::uint8_t kToastSlotBroadcast = 0xFFu;
+
+/// M6.8 — typed event for the notification / dialog layer.
+/// `ToastRenderSystem` subscribes once at registration; any system can
+/// emit (kill feed, pickup confirmation, settings-saved blurb). The
+/// channel is render-side only — events are NOT replayed through
+/// `WorldSnapshot` and do NOT affect commitHash. `message` is a fixed
+/// 28-byte NUL-padded inline buffer so the POD stays trivially copyable
+/// and fits 32 B / one cache line.
+struct UIToast {
+    std::uint8_t           slot          = 0;   ///< 0..3 viewport, or kToastSlotBroadcast
+    std::uint8_t           severity      = 0;   ///< 0=info, 1=warn, 2=critical
+    std::uint16_t          durationTicks = 0;   ///< how long the toast stays visible
+    std::array<char, 28>   message       = {};  ///< NUL-padded inline text
+};
+static_assert(sizeof(UIToast) == 32,
+              "UIToast must stay 32 bytes — render-side POD memcpy'd "
+              "through the typed event channel.");
+
 /// Ids handed back by `Engine::registerUserComponent`.
 struct UserComponentIds {
     threadmaxx::UserComponentId playerInput;

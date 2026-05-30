@@ -1635,7 +1635,7 @@ gameplay):
 | M6.5  | Options menu + persistence | M6.0, M6.1 | YES (settings POD) |
 | M6.6  | Results / scoreboard screen (LANDED 2026-05-30) | M6.1 | no |
 | M6.7  | HUD polish pass (readability, warnings) | M6.0 | no |
-| M6.8  | Notification / dialog layer | M6.0 | no |
+| M6.8  | Notification / dialog layer (LANDED 2026-05-30) | M6.0 | no |
 | M6.9  | Debug / benchmark overlay | M6.0 | no |
 | M6.10 | Flow polish + acceptance pass | all prior | no |
 
@@ -2254,34 +2254,84 @@ Cost gate: HudSystem must stay under 50 µs / tick at 4-viewport
 2 humans, 2 bots, mid-combat); HudSystem `update + buildRenderFrame`
 combined < 50 µs in the jsonl trace.
 
-#### M6.8 — Notification / dialog layer (PLANNED)
+#### M6.8 — Notification / dialog layer (LANDED 2026-05-30)
 
-`UIToastChannel` — a typed event channel that any system can emit
-into:
+`UIToast` POD lives in `DemoTypes.hpp` alongside the other render-side
+event PODs (RoundEnded, AudioPlay, UIScreenChanged):
 
 ```cpp
 struct UIToast {
-    std::uint8_t  slot;           // 0..3 viewport, or 0xFF for all
-    std::uint16_t durationTicks;
-    std::uint8_t  severity;       // 0 = info, 1 = warn, 2 = critical
-    char          message[28];    // fixed; 28-byte inline buffer
+    std::uint8_t           slot;          // 0..3 viewport, or kToastSlotBroadcast (0xFF)
+    std::uint8_t           severity;      // 0 = info, 1 = warn, 2 = critical
+    std::uint16_t          durationTicks;
+    std::array<char, 28>   message;       // NUL-padded inline buffer
 };
+static_assert(sizeof(UIToast) == 32);
 ```
 
-Existing emitters (M6.0 → M6.10 wave):
-- `RepairPickupSystem` → "+25 HP" toast on pickup
-- `BulletShipCollisionSystem` → "P1 fragged P3" kill feed
-- `RoundRestartSystem` → "ROUND STARTING IN 3..." countdown
-- `UISystem` → "Settings saved", "Controls remapped" confirmations
+Wired surface:
 
-The toast layer is one `ISystem` (`ToastRenderSystem`) that drains
-the channel each tick, manages per-slot stacks (LIFO, max 4 visible),
-expires old entries, renders via M6.0's textPrintf.
+- **Typed channel** — `engine.events<UIToast>()`; any system emits, the
+  drain runs at tick end on the sim thread before the front/back render
+  swap (so a toast emitted on tick N is visible in the same tick's
+  `buildRenderFrame`).
+- **`ToastRenderSystem`** — registered LAST after `HudSystem`. Subscribes
+  via `subscribeScoped` in `onRegister`; pushes drained toasts into
+  per-slot LIFO stacks under a single-thread invariant (drain runs on
+  the sim thread, ageing runs in `preStep` via `ctx.single`).
+- **Visible cap** — `kMaxVisiblePerSlot = 4`. The 5th push drops the
+  oldest entry from the front (FIFO drain on overflow → newest survives).
+- **Broadcast** — `slot == kToastSlotBroadcast` (0xFF) fans into all four
+  per-slot stacks independently, each enforcing its own cap.
+- **Ageing** — `preStep` decrements `remainingTicks` on every active
+  toast; entries that reach zero are removed.
+- **Rendering** — severity-tinted `DebugLine` strips (top + bottom edges
+  per row) stacked at each slot's top-edge, anchored against
+  `camera_->followCenter(slot) + halfH * kToastTopInsetFracOfHalfH`. The
+  v1 visual is the colour + stack height; the message string is kept in
+  `stacks_` for tests and a future text-rendering pass without
+  re-shipping the channel (HUD does not draw `DebugText` today, mirrored
+  here).
+- **One wired emitter** — `BulletShipCollisionSystem` emits a broadcast
+  kill-feed toast (`"P{killer} fragged P{victim}"`, 180-tick duration,
+  severity info) inside Pass 3 right where `killerByVictim[slot]` is
+  recorded. RepairPickup / RoundRestart / UISystem emitters in the v1
+  M6.8 wishlist are deferred (see "Still TBD" below) — they're each
+  one-line additions and can land alongside the next batch that touches
+  the relevant system.
 
-**Acceptance**: a 60-tick match with 5 simultaneous pickup events
-displays all five toasts without dropping (stack-cap = 4 → oldest
-fades); replay round-trip identical (toasts are render-side only,
-not gameplay-affecting).
+Determinism contract:
+
+- `UIToast` is **render-only** — never round-tripped through
+  `WorldSnapshot`, never affects `commitHash`. Replays don't need to
+  re-emit toasts; the wire shape is unchanged from v1.2.
+- The kill-feed emit happens inside `BulletShipCollisionSystem::update`
+  but only on the same condition that already records `killerByVictim`
+  — i.e. it fires deterministically with the existing gameplay
+  bookkeeping. The 200-tick minimal smoke is unchanged.
+
+Test: `tou2d_toast_render_test`. Nine sections pinning POD layout (32 B),
+single-slot push targeting, broadcast fan-out, LIFO push order, visible
+cap enforcement (5th push drops oldest), per-tick ageing (decrement →
+remove on zero), `durationTicks == 0` no-op, out-of-range slot
+discarded, and broadcast respecting per-slot caps independently. Uses
+`pushForTest` / `ageOnceForTest` hooks so the test doesn't have to
+stand up a real engine drain. ctest 147/147 green; minimal 200-tick
+smoke clean.
+
+**Acceptance**: 5 simultaneous kill-feed toasts in a 60-tick match
+result in 4 visible per slot (cap enforced) without dropping any
+render frame; replay-side state is bit-identical (toasts are
+render-side only). The test pins the cap-overflow ordering directly.
+
+Still TBD (for a follow-up batch):
+- RepairPickup / RoundRestart / UISystem emit-points (one-line addition
+  per system; deferred to keep this batch small)
+- DebugText path through Vulkan renderer so the `message` string is
+  actually rendered (today only the coloured strip shows; deferred to
+  the M6.7 HUD polish batch since both need the same DebugText pipe)
+- ChromeTracer counter for `subscribeScoped` callback throughput
+  (covered naturally by M6.9 telemetry overlay)
 
 #### M6.9 — Debug / benchmark overlay (PLANNED)
 

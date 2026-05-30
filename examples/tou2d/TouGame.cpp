@@ -17,6 +17,7 @@
 #include "RoundRestartSystem.hpp"
 #include "ShipLifecycleSystem.hpp"
 #include "SpriteAtlas.hpp"
+#include "ToastRenderSystem.hpp"
 #include "TerrainCollisionSystem.hpp"
 #include "WeaponFireSystem.hpp"
 
@@ -287,6 +288,11 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     repairPickup_   = repairPickupPtr;
     auto hud        = std::make_unique<HudSystem>(ids_, camera_);
     hud->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
+    // M6.8 — toast / notification layer. Subscribes to UIToast on
+    // registration; renders severity-tinted strips per slot using
+    // camera_'s followCenter + orthoHalfH so each human's stack
+    // anchors to its own viewport's top edge.
+    auto toasts     = std::make_unique<ToastRenderSystem>(&engine, camera_);
 
     movementPtr  ->setLevelRect(minX, minY, maxX, maxY);
     projectilePtr->setLevelRect(minX, minY, maxX, maxY);
@@ -307,6 +313,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     engine.registerSystem(std::move(shipLife));     // late — sees commits from movement/collision
     engine.registerSystem(std::move(camera));
     engine.registerSystem(std::move(hud));          // last — buildRenderFrame reads camera state
+    engine.registerSystem(std::move(toasts));       // M6.8 — drains UIToast channel; renders strips over HUD
 
     // M4.8 — register AudioSystem (subscribes to AudioPlay; no ECS
     // reads/writes; sits in its own wave at the end).
