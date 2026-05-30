@@ -16,6 +16,7 @@
 #include "ParticleSystem.hpp"
 #include "SpriteCompositor.hpp"
 #include "Settings.hpp"
+#include "ToastRenderSystem.hpp"
 #include "TouGame.hpp"
 #include "UISystem.hpp"
 #include "ui/Font.hpp"
@@ -1392,6 +1393,64 @@ int main(int argc, char** argv) {
                                        /*baseX=*/ 24.0f, baseY,
                                        color, buf);
                     baseY += static_cast<float>(lineH);
+                }
+            }
+            // Batch-A §3 — paint toast TEXT on top of the strips emitted
+            // by ToastRenderSystem in world-space. ToastRenderSystem
+            // draws colored bounding lines via DebugLine; the text
+            // itself goes here because text rendering goes through the
+            // CPU bitmap → Vulkan upload path, not the renderer's
+            // DebugText queue. Per-slot positioning derives from the
+            // CameraSystem's normalized viewport rect mapped into
+            // overlay pixel space; newest toast at the top of the
+            // stack, mirroring the strip layout.
+            if (const auto* toastSys = game.toastSystem()) {
+                const auto* cam = game.cameraSystem();
+                if (cam && fontAtlas.valid()) {
+                    const std::uint8_t humans = cam->numHumans();
+                    const int textLineH = (fontAtlas.ascent -
+                                           fontAtlas.descent +
+                                           fontAtlas.lineGap);
+                    const float overlayW = static_cast<float>(uiOverlay.width());
+                    const float overlayH = static_cast<float>(uiOverlay.height());
+                    for (std::uint8_t s = 0; s < humans; ++s) {
+                        const auto& active = toastSys->activeForSlot(s);
+                        if (active.empty()) continue;
+                        const auto vp = cam->viewportFor(s);
+                        const float ox = vp.x      * overlayW;
+                        const float oy = vp.y      * overlayH;
+                        const float ow = vp.width  * overlayW;
+                        const float oh = vp.height * overlayH;
+                        // Anchor matches the strip's 0.85 top inset
+                        // (in world half-height) → text sits ~7.5%
+                        // below the slot's viewport top edge.
+                        const float topBaseY = oy + oh * 0.075f
+                            + static_cast<float>(fontAtlas.ascent);
+                        // Newest at the top: active.back() = newest.
+                        for (std::size_t i = 0; i < active.size(); ++i) {
+                            const auto& a = active[active.size() - 1 - i];
+                            const std::uint32_t color =
+                                a.toast.severity == 2 ? 0xFFFF4040u :  // critical
+                                a.toast.severity == 1 ? 0xFFE0E040u :  // warn
+                                                        0xFFE0E0E0u;   // info
+                            // Find C-string length once for centering.
+                            const char* msg = a.toast.message.data();
+                            std::size_t n = 0;
+                            while (n < a.toast.message.size() && msg[n] != '\0') ++n;
+                            // Rough centering: 6 px advance per glyph
+                            // is a fair proxy for the 16 px font;
+                            // off-by-a-few-pixels is fine for a
+                            // notification strip.
+                            const float approxAdvancePx = 6.0f;
+                            const float textW = static_cast<float>(n) * approxAdvancePx;
+                            const float textX = ox + (ow - textW) * 0.5f;
+                            const float textY = topBaseY +
+                                static_cast<float>(i) * static_cast<float>(textLineH);
+                            uiOverlay.drawText(fontAtlas, textX, textY,
+                                               color,
+                                               std::string_view(msg, n));
+                        }
+                    }
                 }
             }
             if (!uiOverlayInstalled) {

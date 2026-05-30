@@ -296,6 +296,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // camera_'s followCenter + orthoHalfH so each human's stack
     // anchors to its own viewport's top edge.
     auto toasts     = std::make_unique<ToastRenderSystem>(&engine, camera_);
+    toasts_         = toasts.get();   // Batch-A §3 — host paints text into the UI overlay
     // M6.9 — F3-toggled debug / benchmark overlay. Off by default.
     // Reads `Engine::frameSnapshot` each render; no ECS reads / writes,
     // sits in its own wave after the toasts.
@@ -451,6 +452,7 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     hud_           = nullptr;
     particles_     = nullptr;
     debugOverlay_  = nullptr;
+    toasts_        = nullptr;
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {

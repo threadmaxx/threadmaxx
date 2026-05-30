@@ -30,6 +30,7 @@ class ParticleSystem;
 class UISystem;
 class RepairPickupSystem;
 class TerrainCollisionSystem;
+class ToastRenderSystem;
 
 /// IGame implementation for the tou2d demo.
 ///
@@ -165,6 +166,13 @@ public:
     /// Valid only between `onSetup` and `onTeardown`.
     DebugOverlaySystem* debugOverlaySystem() noexcept { return debugOverlay_; }
 
+    /// Batch-A §3 — borrowed pointer to the toast notification system.
+    /// Host (main.cpp) reads its per-slot active stacks to paint the
+    /// toast TEXT into the UI overlay each frame (the system itself
+    /// only emits the strip lines via `DebugLine`). Valid only between
+    /// `onSetup` and `onTeardown`.
+    ToastRenderSystem* toastSystem() noexcept { return toasts_; }
+
     /// Handle of P1's ship — host-side smoke tests use this to verify
     /// final position. Valid only between onSetup and onTeardown.
     threadmaxx::EntityHandle playerShip() const noexcept {
@@ -226,6 +234,7 @@ private:
     HudSystem*               hud_            = nullptr;   // M6.7 — borrowed
     ParticleSystem*          particles_      = nullptr;   // M6.7 — borrowed
     DebugOverlaySystem*      debugOverlay_   = nullptr;   // M6.9 — borrowed
+    ToastRenderSystem*       toasts_         = nullptr;   // Batch-A §3 — borrowed
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for
     // playerShip() (smoke-test position log) and onTeardown bookkeeping.
