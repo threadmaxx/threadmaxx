@@ -70,7 +70,11 @@ void ParticleSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             p.kind == Kind::Smoke  ? kSmokeAlphaExp
           : p.kind == Kind::Spark  ? kSparkAlphaExp
                                    : kDebrisAlphaExp;
-        const float alpha = std::pow(frac, exponent);
+        // M6.7 — photosensitive cap. Strictly render-side: pool_ /
+        // ttlTicks / rgb are unchanged, so commitHash is unaffected.
+        const float alphaCap =
+            access_.photosensitive ? kPhotosensitiveAlphaScale : 1.0f;
+        const float alpha = std::pow(frac, exponent) * alphaCap;
         const std::uint32_t a8 = static_cast<std::uint32_t>(
             std::clamp(alpha * 255.0f, 0.0f, 255.0f));
 

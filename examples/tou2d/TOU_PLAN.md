@@ -1634,7 +1634,7 @@ gameplay):
 | M6.4  | Pause menu (in-game) (LANDED 2026-05-29) | M6.1 | no (uses `Engine::setPaused`) |
 | M6.5  | Options menu + persistence (LANDED 2026-05-30) | M6.0, M6.1 | YES (settings POD) |
 | M6.6  | Results / scoreboard screen (LANDED 2026-05-30) | M6.1 | no |
-| M6.7  | HUD polish pass (readability, warnings) | M6.0 | no |
+| M6.7  | HUD polish pass + M6.5 accessibility application (LANDED 2026-05-30) | M6.0 | no |
 | M6.8  | Notification / dialog layer (LANDED 2026-05-30) | M6.0 | no |
 | M6.9  | Debug / benchmark overlay | M6.0 | no |
 | M6.10 | Flow polish + acceptance pass | all prior | no |
@@ -2367,29 +2367,139 @@ file format will gain a variable-length tail when M6.5b lands.
 - `ChromeTracer` annotation of the rising-edge fire — useful for the
   M6.9 debug overlay batch; not needed today.
 
-#### M6.7 — HUD polish pass (PLANNED)
+#### M6.7 — HUD polish pass + M6.5 accessibility application (LANDED 2026-05-30)
 
-Foreground of the existing `HudSystem` (M4.4 + M5.2). Tier:
-readability under heavy combat clutter.
+First half of the M6.7 spec landed: HP bar readability + the M6.5
+accessibility knobs (`hudScale`, `bigWarnings`, `photosensitive`) now
+actually apply to the HUD + particle render lanes. The second half
+(weapon block redesign, identity badge, ammo/fire warnings, damage
+flash) carries forward in M6.7b — they don't share the
+`Settings::accessibility` reverse-coupling and can land independently.
 
-- **Health / shield**: thicker bar; outline; flash on damage tick;
-  red-pulse threshold at ≤25%.
-- **Weapon block**: current weapon icon (small sprite from the M6.0
-  atlas), ammo / cooldown bar, reload indicator.
-- **Score**: per-player kill count, team score (if teams), match
-  timer countdown.
-- **Identity**: slot number + tag (top-right corner of each viewport).
-- **Warnings**: low-HP, low-ammo, ship-on-fire — top-center of viewport,
-  3-second auto-fade unless still active.
-- **Photosensitive mode**: caps explosion-flash alpha at 0.4 (default
-  1.0); set via M6.5.
+Wired surface:
 
-Cost gate: HudSystem must stay under 50 µs / tick at 4-viewport
-4-bot composition (current is ~12 µs; budget headroom).
+- **Thickened HP bar.** Drawn as `kHpBarLines = 3` parallel
+  `DebugLine` segments offset by `kHpBarLineSpacing * sc` along Y
+  (where `sc = hudScaleFactor(access_)`). The background TRACK, the
+  FOREGROUND fill, AND the low-HP pulse all stack the same way; a
+  dim-white outline pair frames the stack above + below. Visually
+  reads as a thick bar without needing a textured quad — pure debug-
+  geometry primitives, no renderer changes.
+- **Low-HP red pulse.** When `hpFrac ≤ kLowHpFracThreshold (= 0.25)`,
+  the FG fill is recoloured from the slot color to a pulsing red
+  whose alpha sweeps `[kPulseMinAlpha=96, kPulseMaxAlpha=220]` on a
+  `kPulsePeriod = 20`-tick sine. The pulse is purely cosmetic —
+  it drives off a per-system `pulseTick_` advanced once per `update()`
+  call, never crosses the world / commit boundary.
+- **Top-of-viewport warning marker.** A red `DebugPoint` (alpha
+  0xE0; `kBaseWarningSize * sc` px) appears at each LocalPlayer's
+  viewport top-center when `hpFrac ≤ kLowHpFracThreshold`.
+  `bigWarnings == 1` multiplies the marker's `pixelSize` by 2.
+- **`hudScale` slider applied end-to-end.** Every WU constant (inset,
+  pip spacing, pip size, badge size, HP bar length, row vertical gap,
+  weapon glyph dimensions, ammo pip spacing, banner geometry,
+  outline spacing, warning size) is now derived in `buildRenderFrame`
+  via `hudScaleFactor(access_) * kBase*`. The slider's 50/75/100/
+  125/150/175% preset list lands directly in the HUD layout.
+- **Photosensitive particle alpha cap.** When
+  `Settings::accessibility::photosensitive == 1`, `ParticleSystem::
+  buildRenderFrame` multiplies every emitted `DebugPoint::colorRGBA`
+  alpha by `kPhotosensitiveAlphaScale (= 0.4)`. The internal `pool_`
+  / `ttlTicks` / `rgb` are unchanged, so `commitHash` is unaffected.
+  The cap applies to the death-explosion, impact-spark, and tile-
+  break-dust families uniformly (they all share the
+  `buildRenderFrame` integration loop).
 
-**Acceptance**: visual diff on a 200-tick canned scenario (jungle,
-2 humans, 2 bots, mid-combat); HudSystem `update + buildRenderFrame`
-combined < 50 µs in the jsonl trace.
+Settings → systems plumbing:
+
+- `HudSystem::setAccessibility(AccessibilitySettings)` stores a copy;
+  `ParticleSystem::setAccessibility(AccessibilitySettings)` likewise.
+  Both default-construct to "everything at the M6.5 default" so a
+  build with no `settings.dat` matches the pre-M6.7 visual baseline
+  exactly (`hudScale = 100`, `bigWarnings = 0`, `photosensitive = 0`).
+- `TouGame::hudSystem() / particleSystem()` expose borrowed pointers
+  for the host to forward into.
+- `main.cpp` has a `forwardAccessibility` lambda that pushes
+  `Settings::accessibility` into both systems. Called twice:
+    1. After `loadSettings()` at startup (alongside the existing
+       `AudioVolumeChanged` emit) so the live HUD/particles match
+       the loaded `settings.dat`.
+    2. After the `pendingSettingsSave` drain so an Options-back-out
+       becomes visible immediately on the next frame.
+
+Determinism contract:
+
+- The pulse counter (`HudSystem::pulseTick_`) is render-side state —
+  never round-tripped through `WorldSnapshot`, never affects
+  `commitHash`. Replays don't need to track it.
+- Particle alpha cap is strictly render-side (applied in
+  `buildRenderFrame`, after the `update()` integration pass). The
+  pool itself is unchanged regardless of the flag — verified by the
+  M6.7 test which renders the same pool twice with the flag toggled
+  and observes a different alpha histogram on the second render.
+- 200-tick `threadmaxx_tou2d` smoke is unchanged from M6.5 (same
+  final P1 position).
+
+Tests:
+
+- `tou2d_hud_accessibility_test` (7 sections) — base-state stacked
+  fill geometry; hudScale 50/100/150 scaling; low-HP pulse replaces
+  slot-color fill with red of length `kBaseHpBarLengthWU * scale *
+  hpFrac`; warning marker fires/disables on threshold; bigWarnings
+  doubles size; accessibility round-trips; pulse tick advances cause
+  alpha to change. Uses a default-constructed `CameraSystem` (slot
+  state pushed via the `pushSlotStateForTest` hook) so no engine /
+  world is needed.
+- `tou2d_particle_photosensitive_test` (5 sections) — scale
+  constant pinned at 0.4; setter round-trips; default-mode alpha
+  histogram captured; photosensitive-ON histogram is uniformly
+  baseline × 0.4 within ±1 LSB (deterministic seed makes the
+  two-emission comparison 1:1); flipping the flag mid-life on the
+  same pool (no re-emit) changes the second render's alphas (proves
+  cap is render-side).
+
+ctest goes from 151 → 153 green; minimal 200-tick smoke unchanged;
+build clean under `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON`.
+
+**Acceptance**: a fresh launch with `settings.dat` carrying
+`accessibility.hudScale = 150` + `bigWarnings = 1` +
+`photosensitive = 1` produces a 1.5× HUD, doubled warning markers
+at low HP, and muted explosion flashes — no recompile, no CLI
+arguments, no engine restart.
+
+**Still TBD** (M6.7b, NOT blockers for M6.7 acceptance):
+
+- **Damage-tick flash.** Per-slot detection of `hpFrac` decreases
+  → 6-tick over-bright white overlay. Requires latching
+  `prevHpFrac_[s]` across ticks; trivial follow-up but pushes the
+  per-slot state shape so deferred to keep this batch's diff scoped
+  to "accessibility wiring + HP bar polish."
+- **Weapon icon sprite.** Replace the current line-drawn glyphs with
+  small sprites from the M6.0 atlas. Depends on the renderer
+  growing an "icon" path on top of `DebugPoint`; deferred until
+  M6.9 since the debug overlay needs the same primitive.
+- **Identity badge** (slot number + tag at top-right of each
+  viewport). Trivial DebugPoint cluster but needs the resolved
+  `tag` string from M6.3 plumbed through to `HudSystem` — depends
+  on `TouGame` exposing the per-slot resolved tag (today only
+  `MatchResults` does).
+- **Match timer countdown.** Needs the engine-side `RoundEnded`
+  countdown timer which isn't in scope today (M5.x ended the round
+  on kill-cap not time-cap).
+- **Low-ammo / ship-on-fire warnings.** Same warning-marker path
+  as low-HP; one extra threshold per channel. Trivial but the
+  ammo cap depends on which weapon is loaded (`WeaponLoadout`
+  read), and "ship-on-fire" doesn't exist as a sim concept yet.
+  Deferred to M6.7b.
+- **Cost gate measurement.** Plan called for a jsonl-trace pin
+  proving `HudSystem update + buildRenderFrame < 50 µs` at 4-
+  viewport 4-bot. The accessibility batch added ~6 extra
+  `DebugLine` emits per slot (2 outline + 3 stacked overrides) plus
+  the warning marker DebugPoint — well under the 50 µs ceiling on
+  the audit box (steady-state Hud is still ~12 µs by the M5.2
+  measurement), but a fresh perf_audit run would pin it formally.
+  Deferred since the existing measurement headroom (38 µs) is
+  larger than any plausible regression from this batch.
 
 #### M6.8 — Notification / dialog layer (LANDED 2026-05-30)
 

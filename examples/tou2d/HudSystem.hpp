@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DemoTypes.hpp"
+#include "Settings.hpp"
 
 #include <threadmaxx/System.hpp>
 
@@ -59,7 +60,30 @@ public:
         winnerKills_ = winnerKills;
     }
 
+    /// M6.7 — accessibility hookup. Caller forwards a copy of the
+    /// current `Settings::accessibility` from UISystem; `hudScale`
+    /// rescales every WU constant in `buildRenderFrame`, `bigWarnings`
+    /// doubles the low-HP warning marker, `photosensitive` / `screenShake`
+    /// stored for downstream lookups (only `bigWarnings` and `hudScale`
+    /// affect HUD geometry today).
+    void setAccessibility(AccessibilitySettings a) noexcept { access_ = a; }
+    AccessibilitySettings accessibility() const noexcept { return access_; }
+
+    /// @internal Test hook: inject a per-slot snapshot directly without
+    /// stepping the engine. The accessibility test pushes synthesized
+    /// `SlotState` values and inspects what `buildRenderFrame` emits.
+    void pushSlotStateForTest(std::uint8_t slot, bool present, bool alive,
+                              float hpFrac, std::uint32_t kills) noexcept;
+
+    /// @internal Test hook: advance the cosmetic pulse counter without
+    /// running `update()` (the low-HP red pulse drives off this tick).
+    void advancePulseForTest(std::uint32_t ticks) noexcept;
+
     static constexpr std::uint32_t kMaxScorePips = 16;
+
+    /// HP threshold below which the HUD pulses red + the warning marker
+    /// fires. Exposed for tests.
+    static constexpr float kLowHpFracThreshold = 0.25f;
 
 private:
     struct SlotState {
@@ -82,6 +106,8 @@ private:
     std::shared_ptr<std::atomic<bool>> roundEnded_;
     const std::uint8_t*           winnerSlot_  = nullptr;
     const std::uint16_t*          winnerKills_ = nullptr;
+    AccessibilitySettings         access_{};
+    std::uint32_t                 pulseTick_ = 0;
 };
 
 } // namespace tou2d

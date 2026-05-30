@@ -276,6 +276,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // this tick, integrate next tick.
     auto particles         = std::make_unique<ParticleSystem>();
     auto* particlesPtr     = particles.get();
+    particles_             = particlesPtr;          // M6.7 — host forwards Settings::accessibility here
     bulletShip   ->setParticleSystem(particlesPtr);
     bulletTerrain->setParticleSystem(particlesPtr);
     shipLife     ->setParticleSystem(particlesPtr);
@@ -288,6 +289,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     repairPickup_   = repairPickupPtr;
     auto hud        = std::make_unique<HudSystem>(ids_, camera_);
     hud->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
+    hud_ = hud.get();                                  // M6.7 — host forwards Settings::accessibility here
     // M6.8 — toast / notification layer. Subscribes to UIToast on
     // registration; renders severity-tinted strips per slot using
     // camera_'s followCenter + orthoHalfH so each human's stack
@@ -439,6 +441,8 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     repairPickup_  = nullptr;
     input_         = nullptr;
     ui_            = nullptr;
+    hud_           = nullptr;
+    particles_     = nullptr;
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {

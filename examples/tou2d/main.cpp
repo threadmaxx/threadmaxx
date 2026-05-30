@@ -11,6 +11,8 @@
 #include "MatchSetup.hpp"
 #include "ProceduralLevel.hpp"
 #include "Replay.hpp"
+#include "HudSystem.hpp"
+#include "ParticleSystem.hpp"
 #include "SpriteCompositor.hpp"
 #include "Settings.hpp"
 #include "TouGame.hpp"
@@ -496,7 +498,14 @@ int main(int argc, char** argv) {
     // version mismatch → defaults stand (Settings's default-ctor is
     // the same as a fresh install). Emits an `AudioVolumeChanged` once
     // so AudioSystem applies the loaded volumes (default 80/80/80 if
-    // no file).
+    // no file). M6.7 — additionally forwards
+    // `Settings::accessibility` into HudSystem + ParticleSystem so the
+    // hudScale slider + photosensitive flash cap apply immediately on
+    // launch (and again on every Options-back-out save below).
+    const auto forwardAccessibility = [&](const tou2d::AccessibilitySettings& a) {
+        if (auto* hud = game.hudSystem())       hud->setAccessibility(a);
+        if (auto* parts = game.particleSystem()) parts->setAccessibility(a);
+    };
     {
         tou2d::Settings settings{};
         const auto sPath = tou2d::defaultSettingsPath();
@@ -508,6 +517,7 @@ int main(int argc, char** argv) {
         if (game.uiSystem()) {
             game.uiSystem()->setSettings(settings);
         }
+        forwardAccessibility(settings.accessibility);
         engine.events<tou2d::AudioVolumeChanged>().emit(
             tou2d::AudioVolumeChanged{
                 settings.audio.master,
@@ -1211,6 +1221,10 @@ int main(int argc, char** argv) {
                     ok ? "saved" : "save FAILED",
                     sPath.empty() ? "no XDG_CONFIG_HOME/HOME"
                                   : sPath.string().c_str());
+                // M6.7 — propagate fresh `accessibility` into the render
+                // systems so the back-out becomes visible immediately on
+                // the next frame, regardless of save outcome.
+                forwardAccessibility(ui->settings().accessibility);
                 ui->clearPendingSettingsSave();
             }
         }

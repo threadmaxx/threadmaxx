@@ -452,4 +452,55 @@ if (TARGET tou2d_core)
     endif()
     add_test(NAME tou2d_options_screen_test
              COMMAND tou2d_options_screen_test)
+
+    # tou2d_hud_accessibility_test — M6.7 contract pin. HudSystem's
+    # `setAccessibility(AccessibilitySettings)` plumbing:
+    #   * hudScale rescales HP-bar length end-to-end (50/100/150%);
+    #   * low-HP red pulse fires at hpFrac == kLowHpFracThreshold and
+    #     below (replaces the stacked-line fill color);
+    #   * top-of-viewport warning marker fires at the same threshold
+    #     and doubles in size when bigWarnings == 1;
+    #   * bar is drawn as 3 stacked lines + outline pair (5 lines for
+    #     the background track + outline; +3 for the fill when alive).
+    add_executable(tou2d_hud_accessibility_test
+        tou2d_hud_accessibility_test.cpp)
+    target_link_libraries(tou2d_hud_accessibility_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_hud_accessibility_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_hud_accessibility_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_hud_accessibility_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_hud_accessibility_test
+             COMMAND tou2d_hud_accessibility_test)
+
+    # tou2d_particle_photosensitive_test — M6.7 contract pin.
+    # `ParticleSystem::setAccessibility` flips a render-only alpha cap
+    # (= 0.4×) on `buildRenderFrame`'s emitted DebugPoint alphas; the
+    # internal pool is unchanged (commitHash-safe). Test emits a
+    # death-explosion burst, then renders twice (cap off / on) and
+    # verifies the alpha histogram is uniformly multiplied.
+    add_executable(tou2d_particle_photosensitive_test
+        tou2d_particle_photosensitive_test.cpp)
+    target_link_libraries(tou2d_particle_photosensitive_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_particle_photosensitive_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_particle_photosensitive_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_particle_photosensitive_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_particle_photosensitive_test
+             COMMAND tou2d_particle_photosensitive_test)
 endif()

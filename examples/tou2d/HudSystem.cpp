@@ -9,6 +9,7 @@
 #include <threadmaxx/render/RenderFrameBuilder.hpp>
 
 #include <algorithm>
+#include <cmath>
 
 namespace tou2d {
 
@@ -23,38 +24,81 @@ constexpr std::array<std::uint32_t, 4> kSlotColors = {
     0xFF00FFFFu,  // P4 yellow
 };
 
-// Inset from each viewport corner, in world units (the camera's ortho
-// half-height is 160; 12 wu ≈ 7.5% of half-height).
-constexpr float kInsetWU       = 14.0f;
-constexpr float kPipSpacing    = 4.5f;     // horizontal gap between score pips
-constexpr float kPipSize       = 4.0f;     // pixel radius
-constexpr float kBadgeSize     = 10.0f;    // bigger pixel point for slot badge
-constexpr float kHpBarLengthWU = 56.0f;    // full HP = this length
-constexpr float kRowVerticalWU = 8.0f;     // vertical gap between badge / pip row / HP bar
+// Base WU constants (at hudScale = 100). M6.7: every call site reads
+// these through `scaled(s, sc)` so the accessibility hudScale slider
+// (50..200%) rescales the entire HUD without recompiling.
+constexpr float kBaseInsetWU       = 14.0f;
+constexpr float kBasePipSpacing    = 4.5f;     // horizontal gap between score pips
+constexpr float kBasePipSize       = 4.0f;     // pixel radius
+constexpr float kBaseBadgeSize     = 10.0f;    // bigger pixel point for slot badge
+constexpr float kBaseHpBarLengthWU = 56.0f;    // full HP = this length
+constexpr float kBaseRowVerticalWU = 8.0f;     // vertical gap between badge / pip row / HP bar
 
 // M4.2 — ammo strip + winner banner constants.
-constexpr float kAmmoPipSize     = 2.6f;   // smaller than score pips
-constexpr float kAmmoPipSpacing  = 3.4f;   // tighter than score pips
-constexpr float kAmmoRowGapWU    = 6.0f;   // gap below HP bar
-constexpr float kAmmoTrackAlpha8 = 56.0f;  // dim placeholder for empty mag slots
-// M4.4 — weapon glyph fits in this much horizontal space, drawn before
-// the ammo pip strip so the player can read at a glance which weapon
-// the strip refers to. Pips are offset by this amount in the `dir`
-// direction; the glyph itself anchors at the row origin.
-constexpr float kWeaponGlyphWidthWU = 7.0f;
-constexpr float kWeaponGlyphHeightWU = 3.0f;
-constexpr std::uint32_t kBannerWhite  = 0xFFFFFFFFu;
-constexpr float kBannerHalfWidthWU    = 90.0f;
-constexpr float kBannerHalfHeightWU   = 22.0f;
-constexpr float kBannerBadgeSize      = 14.0f;
-constexpr float kBannerKillsPipSize   = 5.0f;
+constexpr float kBaseAmmoPipSize     = 2.6f;   // smaller than score pips
+constexpr float kBaseAmmoPipSpacing  = 3.4f;   // tighter than score pips
+constexpr float kBaseAmmoRowGapWU    = 6.0f;   // gap below HP bar
+constexpr float kAmmoTrackAlpha8     = 56.0f;  // dim placeholder for empty mag slots
+constexpr float kBaseWeaponGlyphWidthWU  = 7.0f;
+constexpr float kBaseWeaponGlyphHeightWU = 3.0f;
+constexpr std::uint32_t kBannerWhite      = 0xFFFFFFFFu;
+constexpr float kBaseBannerHalfWidthWU    = 90.0f;
+constexpr float kBaseBannerHalfHeightWU   = 22.0f;
+constexpr float kBaseBannerBadgeSize      = 14.0f;
+constexpr float kBaseBannerKillsPipSize   = 5.0f;
+
+// M6.7 — HP bar thickening: the bar is drawn as a stack of `kHpBarLines`
+// parallel DebugLine segments offset by `kHpBarLineSpacing` along Y so
+// it visually reads as a thick bar without needing a textured quad.
+constexpr int   kHpBarLines       = 3;
+constexpr float kHpBarLineSpacing = 0.55f;  // wu between stacked lines
+// M6.7 — low-HP red overlay. The pulse fires per HUD tick; alpha runs
+// between [kPulseMinAlpha, kPulseMaxAlpha] on a `kPulsePeriod`-tick sine.
+constexpr std::uint32_t kLowHpRed  = 0x000000FFu;  // RGB only; alpha filled in
+constexpr float kPulseMinAlpha = 96.0f;
+constexpr float kPulseMaxAlpha = 220.0f;
+constexpr float kPulsePeriod   = 20.0f;
+// M6.7 — top-of-viewport low-HP warning marker. Anchored a small
+// fraction of `halfH` below the top edge so it sits inside the cull rect.
+constexpr float kWarningTopInsetFrac = 0.08f;
+constexpr float kBaseWarningSize     = 8.0f;
+constexpr float kBigWarningMultiplier = 2.0f;
+
+// M6.7 — single-source-of-truth for hudScale: a no-op at 100%, lerps to
+// 50..200% via integer percent. Each base-WU constant funnels through
+// this so the entire layout scales uniformly without touching call
+// sites individually.
+inline float hudScaleFactor(const AccessibilitySettings& a) noexcept {
+    // Clamp defensively (0 / >255 yield degenerate layouts).
+    const std::uint8_t pct = a.hudScale == 0 ? std::uint8_t{100} : a.hudScale;
+    return static_cast<float>(pct) / 100.0f;
+}
 
 } // namespace
 
 HudSystem::HudSystem(UserComponentIds ids, const CameraSystem* camera) noexcept
     : ids_(ids), camera_(camera) {}
 
+void HudSystem::pushSlotStateForTest(std::uint8_t slot, bool present, bool alive,
+                                     float hpFrac, std::uint32_t kills) noexcept {
+    if (slot >= slots_.size()) return;
+    auto& s = slots_[slot];
+    s.present = present;
+    s.alive   = alive;
+    s.hpFrac  = std::clamp(hpFrac, 0.0f, 1.0f);
+    s.kills   = kills;
+}
+
+void HudSystem::advancePulseForTest(std::uint32_t ticks) noexcept {
+    pulseTick_ += ticks;
+}
+
 void HudSystem::update(threadmaxx::SystemContext& ctx) {
+    // M6.7 — cosmetic pulse tick for the low-HP overlay. Advances every
+    // step regardless of accessibility/alive state — render-side reads
+    // `pulseTick_` to drive the sine.
+    ++pulseTick_;
+
     const auto idsLp   = ids_.localPlayer;
     const auto idsShip = ids_.ship;
     const auto idsLd   = ids_.loadout;
@@ -114,6 +158,24 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     const float halfH  = camera_->effectiveOrthoHalfH();
     const float halfW  = halfH * camera_->viewportAspect();
     const std::uint8_t numHumans = camera_->numHumans();
+
+    // M6.7 — accessibility-driven scale. Every WU constant in this
+    // function reads through `sc` so the entire HUD lives at one of
+    // 50/75/100/125/150/175/200% uniformly. PixelSize follows the same
+    // factor — a 75% HUD is both narrower and made of smaller dots.
+    const float sc = hudScaleFactor(access_);
+    const float kInsetWU       = kBaseInsetWU       * sc;
+    const float kPipSpacing    = kBasePipSpacing    * sc;
+    const float kPipSize       = kBasePipSize       * sc;
+    const float kBadgeSize     = kBaseBadgeSize     * sc;
+    const float kHpBarLengthWU = kBaseHpBarLengthWU * sc;
+    const float kRowVerticalWU = kBaseRowVerticalWU * sc;
+    const float kAmmoPipSize    = kBaseAmmoPipSize    * sc;
+    const float kAmmoPipSpacing = kBaseAmmoPipSpacing * sc;
+    const float kAmmoRowGapWU   = kBaseAmmoRowGapWU   * sc;
+    const float kWeaponGlyphWidthWU  = kBaseWeaponGlyphWidthWU  * sc;
+    const float kWeaponGlyphHeightWU = kBaseWeaponGlyphHeightWU * sc;
+    const float barLineSpacing       = kHpBarLineSpacing        * sc;
 
     // M5.1 — per-viewport HUD: each human renders only their own
     // badge/HP/ammo, anchored to the TOP-LEFT corner of THAT human's
@@ -189,20 +251,82 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             continue;   // skip HP bar + ammo strips for this slot
         }
 
+        // M6.7 — thickened HP bar. Stacks `kHpBarLines` parallel
+        // DebugLine segments along Y; the outer pair are dim-white
+        // "outline" strokes that frame the colored bar so it pops
+        // against arbitrary terrain colors.
+        const auto emitStackedLine = [&](float ax, float bx, float yMid,
+                                         std::uint32_t col) {
+            for (int i = 0; i < kHpBarLines; ++i) {
+                const float dy =
+                    (static_cast<float>(i) -
+                     0.5f * static_cast<float>(kHpBarLines - 1)) *
+                    barLineSpacing;
+                threadmaxx::DebugLine ln{};
+                ln.a         = {ax, yMid + dy, 0.0f};
+                ln.b         = {bx, yMid + dy, 0.0f};
+                ln.colorRGBA = col;
+                b.addDebugLine(ln);
+            }
+        };
+        // Background track (dim gray, full bar length).
+        emitStackedLine(barStart, barEnd, barY, 0x40808080u);
+        // Outline strokes above + below the stack — frame the bar.
+        const float outlineDy =
+            barLineSpacing * (0.5f * static_cast<float>(kHpBarLines - 1) + 1.0f);
         {
-            threadmaxx::DebugLine bg{};
-            bg.a         = {barStart, barY, 0.0f};
-            bg.b         = {barEnd,   barY, 0.0f};
-            bg.colorRGBA = 0x40808080u;  // dim gray track
-            b.addDebugLine(bg);
+            threadmaxx::DebugLine top{};
+            top.a         = {barStart, barY + outlineDy, 0.0f};
+            top.b         = {barEnd,   barY + outlineDy, 0.0f};
+            top.colorRGBA = 0x60FFFFFFu;
+            b.addDebugLine(top);
+            threadmaxx::DebugLine bot{};
+            bot.a         = {barStart, barY - outlineDy, 0.0f};
+            bot.b         = {barEnd,   barY - outlineDy, 0.0f};
+            bot.colorRGBA = 0x60FFFFFFu;
+            b.addDebugLine(bot);
         }
         if (state.hpFrac > 0.0f) {
             const float fillEnd = cornerX + dir * (kHpBarLengthWU * state.hpFrac);
-            threadmaxx::DebugLine fg{};
-            fg.a         = {barStart, barY, 0.0f};
-            fg.b         = {fillEnd,  barY, 0.0f};
-            fg.colorRGBA = color;
-            b.addDebugLine(fg);
+            // M6.7 — low-HP red pulse. Below the threshold, the colored
+            // fill is replaced by a pulsing red so the player has a
+            // peripheral cue independent of slot color (P1 red could
+            // otherwise mask its own low-HP signal).
+            std::uint32_t fillColor = color;
+            if (state.hpFrac <= kLowHpFracThreshold) {
+                const float phase =
+                    static_cast<float>(pulseTick_) * (6.2831853f / kPulsePeriod);
+                // sin -> [-1, 1] -> remap to [kPulseMinAlpha, kPulseMaxAlpha].
+                const float a01 = 0.5f * (std::sin(phase) + 1.0f);
+                const float a8f =
+                    kPulseMinAlpha + a01 * (kPulseMaxAlpha - kPulseMinAlpha);
+                const std::uint32_t a8 = static_cast<std::uint32_t>(
+                    std::clamp(a8f, 0.0f, 255.0f));
+                fillColor = kLowHpRed | (a8 << 24);
+            }
+            emitStackedLine(barStart, fillEnd, barY, fillColor);
+        }
+
+        // M6.7 — top-of-viewport warning marker. Mirrors the low-HP
+        // condition; doubles in size when `bigWarnings` is on. Anchored
+        // a small fraction of `halfH` below the top edge so it sits in
+        // the cull rect regardless of HUD scale.
+        if (state.hpFrac > 0.0f && state.hpFrac <= kLowHpFracThreshold) {
+            const float markerPxBase  = kBaseWarningSize * sc;
+            const float markerPx      =
+                access_.bigWarnings ? markerPxBase * kBigWarningMultiplier
+                                    : markerPxBase;
+            threadmaxx::DebugPoint dp{};
+            dp.position  = {
+                center.x,
+                center.y + halfH * (1.0f - kWarningTopInsetFrac),
+                0.0f,
+            };
+            // Solid red, same fixed color as the low-HP pulse track —
+            // skip the pulse to keep the marker as a steady warning.
+            dp.colorRGBA = 0xE00000FFu;
+            dp.pixelSize = markerPx;
+            b.addDebugPoint(dp);
         }
 
         // ---- Weapon glyph + ammo strip --------------------------------
@@ -336,6 +460,10 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         // see it through their own viewport if it crosses their world
         // rect (close-by humans during the round will share visibility).
         const threadmaxx::Vec3 bannerCenter = camera_->followCenter(0);
+        const float kBannerHalfWidthWU  = kBaseBannerHalfWidthWU  * sc;
+        const float kBannerHalfHeightWU = kBaseBannerHalfHeightWU * sc;
+        const float kBannerBadgeSize    = kBaseBannerBadgeSize    * sc;
+        const float kBannerKillsPipSize = kBaseBannerKillsPipSize * sc;
         const float minX = bannerCenter.x - kBannerHalfWidthWU;
         const float maxX = bannerCenter.x + kBannerHalfWidthWU;
         const float minY = bannerCenter.y - kBannerHalfHeightWU;

@@ -23,7 +23,9 @@ namespace tou2d {
 
 class BulletTerrainSystem;
 class CameraSystem;
+class HudSystem;
 class InputSystem;
+class ParticleSystem;
 class UISystem;
 class RepairPickupSystem;
 class TerrainCollisionSystem;
@@ -149,6 +151,14 @@ public:
     /// after teardown.
     UISystem*     uiSystem()     noexcept { return ui_; }
 
+    /// M6.7 — borrowed pointers used by the host to forward newly-loaded
+    /// or newly-saved `AccessibilitySettings` into the render-side
+    /// systems that consume them (HUD scale + warning markers /
+    /// photosensitive particle alpha cap). Valid only between `onSetup`
+    /// and `onTeardown`.
+    HudSystem*       hudSystem()      noexcept { return hud_; }
+    ParticleSystem*  particleSystem() noexcept { return particles_; }
+
     /// Handle of P1's ship — host-side smoke tests use this to verify
     /// final position. Valid only between onSetup and onTeardown.
     threadmaxx::EntityHandle playerShip() const noexcept {
@@ -207,6 +217,8 @@ private:
     RepairPickupSystem*      repairPickup_   = nullptr;   // borrowed
     InputSystem*             input_          = nullptr;   // borrowed
     UISystem*                ui_             = nullptr;   // M6.0b — borrowed; engine owns
+    HudSystem*               hud_            = nullptr;   // M6.7 — borrowed
+    ParticleSystem*          particles_      = nullptr;   // M6.7 — borrowed
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for
     // playerShip() (smoke-test position log) and onTeardown bookkeeping.

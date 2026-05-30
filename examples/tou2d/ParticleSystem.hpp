@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Settings.hpp"
+
 #include <threadmaxx/System.hpp>
 
 #include <array>
@@ -61,6 +63,19 @@ public:
     /// darker than the surviving rock around it.
     void emitTileBreakDust (float x, float y);
 
+    /// M6.7 — accessibility hookup. When `photosensitive == 1`, every
+    /// particle's emit alpha is multiplied by `kPhotosensitiveAlphaScale`
+    /// (= 0.4) in `buildRenderFrame` so the explosion / spark / dust
+    /// flashes read as muted. `update()` is unaffected — the cap is
+    /// strictly render-side, so determinism (commitHash, replay) is
+    /// preserved.
+    void setAccessibility(AccessibilitySettings a) noexcept { access_ = a; }
+    AccessibilitySettings accessibility() const noexcept { return access_; }
+
+    /// Photosensitive-mode alpha cap. Public so tests can pin the exact
+    /// scale used.
+    static constexpr float kPhotosensitiveAlphaScale = 0.4f;
+
 private:
     enum class Kind : std::uint8_t {
         Debris = 0,  ///< outward fly + falling gravity + fast fade
@@ -89,6 +104,7 @@ private:
     std::array<Particle, kMaxParticles> pool_{};
     std::uint32_t                       head_ = 0;
     std::mt19937                        rng_{0xFEEDBEEFu};
+    AccessibilitySettings               access_{};
 };
 
 } // namespace tou2d
