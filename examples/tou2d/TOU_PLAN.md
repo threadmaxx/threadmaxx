@@ -1637,6 +1637,7 @@ gameplay):
 | M6.7  | HUD polish pass + M6.5 accessibility application (LANDED 2026-05-30) | M6.0 | no |
 | M6.8  | Notification / dialog layer (LANDED 2026-05-30) | M6.0 | no |
 | M6.9  | Debug / benchmark overlay (LANDED 2026-05-30) | M6.0 | no |
+| M6.9b | Overlay completeness pass — game-state rows + render budget (LANDED 2026-05-30) | M6.9 | no |
 | M6.10 | Flow polish + acceptance pass (LANDED 2026-05-30) | all prior | no |
 
 #### M6.0 — Engine prereqs (font + UI compositor + key-action map)
@@ -2648,20 +2649,58 @@ the `commitHash` stream. The F3 rising edge is dispatched outside
 - [x] 200-tick `threadmaxx_minimal` smoke unchanged
       (`[ConsoleRenderer] shutdown after 201 frames`).
 
-**Still TBD** (the M6.9 spec listed several rows that need game-side
-state the overlay doesn't see today; deferred to a future M6.9b):
+**M6.9b — landed 2026-05-30 (overlay completeness pass)**
 
-- Projectile count, active particle count, terrain block count
-  (need `Ship` / `Bullet` / `TerrainGrid` accessors on `TouGame`
-  or per-system stat accumulators).
-- Active camera mode / viewport count (CameraSystem doesn't expose
-  the mode enum yet — only `numHumans()`).
-- Current benchmark preset (no preset enum is plumbed; comes with
-  `M6.5 Benchmark` if that lands).
-- World seed (`ProceduralLevel` seed / `"imported:<name>"`) — needs
-  a tiny accessor on `TouGame`.
-- Sub-150-µs render budget formal measurement gate (`SystemStats::
-  buildRenderFrameSeconds` is available; benchmark to come).
+Four of the five M6.9 "still TBD" rows landed; the fifth (benchmark
+preset) is genuinely upstream of work that doesn't exist yet.
+
+- **Projectile / particle / terrain counts** — `ProjectileSystem::
+  aliveBullets()` (snapshot of in-flight bullets at the start of the
+  projectile wave; `lastBulletCount_` accumulated in the chunk walk),
+  `ParticleSystem::aliveCount()` (scans the 256-entry pool for
+  `ttlTicks > 0`; ~256 ns), `TerrainGrid::solidCellCount()` (linear
+  scan over `attr` for non-Air; ~10 µs on the largest demo level —
+  fine for an opt-in overlay).
+- **Camera mode + viewport count** — `CameraSystem::modeLabel()`
+  returns `"1H"` / `"2H"` / `"3H"` / `"4H"`; viewport count == the
+  existing `numHumans()` (one viewport per local human). The humans
+  row now reads `humans=N mode=NH (slot count)` and a new
+  `viewports=N (NH)` row appears when game stats are populated.
+- **World seed** — `TouGame::worldSeedDescriptor()` returns
+  `"gen:0x<seed>"` when the procedural generator is active,
+  `"imported:<basename>"` when `--level` is set, `"synthetic"` for
+  the default arena. Emitted as the `seed=...` overlay row.
+- **Sub-150-µs render budget gate** — overlay aggregates
+  `SystemStats::buildRenderFrameSeconds` across every system in the
+  snapshot, emits `rfb=NN.Nus / 150us budget`, colors the row pale
+  red (0xFFFF6666) when the total exceeds 150 µs (otherwise pale
+  green / `kRowColor`). `DebugOverlaySystem::kRenderFrameBudgetUs` is
+  exposed for tests.
+
+**Plumbing path**: `DebugOverlaySystem::setGameStats(DebugGameStats)`
+is the host-pushed sink. main.cpp rebuilds the POD each frame from
+the per-system accessors (cheap when invisible; the setter is a few
+u32 stores + two `string::assign`s) and calls the setter just after
+the F3 toggle pump. Tests inject the same POD directly. Until
+`setGameStats` is called, the new game-state rows are suppressed
+(the original engine telemetry rows still fire — backwards-compat
+with M6.9's test posture).
+
+**Still genuinely deferred**:
+
+- **Benchmark preset** — no preset enum is plumbed yet; this is
+  upstream of an M6.5-Benchmark sub-screen feature that's listed as
+  "spec only" in the M6.5 batch entry. When that lands, the overlay
+  reads it via a new `MatchSetup::benchPresetIndex` field; mechanism
+  is a no-op until then.
+
+**Tests** — `tests/tou2d_debug_overlay_test.cpp` gains two new
+sections (#7 game-state rows + #8 rfb budget row with color flip).
+Cases 1-6 from M6.9 unchanged. Switched the overlay's
+`buildRenderFrame` row push to use the existing producer-owned
+`addDebugText(DebugText)` path with an upfront `rowStorage_` reserve
+sized for the worst case (13 rows: 5 fixed + 1 humans + 1 rfb +
+4 game-state + 3 top-N).
 
 #### M6.10 — Flow polish + acceptance pass (LANDED 2026-05-30)
 

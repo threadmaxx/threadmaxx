@@ -76,6 +76,17 @@ public:
     /// scale used.
     static constexpr float kPhotosensitiveAlphaScale = 0.4f;
 
+    /// M6.9b — count of active particles in the round-robin pool
+    /// (`ttlTicks > 0`). Scanned on demand; cheap (`kMaxParticles = 256`,
+    /// ~256 ns at typical cache hit rates). Used by the F3 overlay.
+    std::size_t aliveCount() const noexcept {
+        std::size_t n = 0;
+        for (const auto& p : pool_) {
+            if (p.ttlTicks > 0) ++n;
+        }
+        return n;
+    }
+
 private:
     enum class Kind : std::uint8_t {
         Debris = 0,  ///< outward fly + falling gravity + fast fade

@@ -276,6 +276,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto homing        = std::make_unique<BulletHomingSystem>(ids_);
     auto projectile    = std::make_unique<ProjectileSystem>(ids_);
     auto* projectilePtr = projectile.get();
+    projectile_         = projectilePtr;  // M6.9b — overlay sources bullet count via this borrow
     auto bulletShip        = std::make_unique<BulletShipCollisionSystem>(ids_, &engine);
     bulletShip->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
     bulletShip->setMatchMode(&matchMode_);
@@ -469,6 +470,27 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     particles_     = nullptr;
     debugOverlay_  = nullptr;
     toasts_        = nullptr;
+    projectile_    = nullptr;
+}
+
+std::string TouGame::worldSeedDescriptor() const {
+    if (genConfig_.has_value()) {
+        // ProceduralLevelConfig::seed is a u32 — render as 0xHHHHHHHH.
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "gen:0x%08x",
+                      static_cast<unsigned>(genConfig_->seed));
+        return buf;
+    }
+    if (!levelDir_.empty()) {
+        // Prefer the last path component; trailing-slash paths return an
+        // empty filename, so fall back to the parent's filename then to
+        // the whole string.
+        std::string slug = levelDir_.filename().string();
+        if (slug.empty()) slug = levelDir_.parent_path().filename().string();
+        if (slug.empty()) slug = levelDir_.string();
+        return "imported:" + slug;
+    }
+    return "synthetic";
 }
 
 void TouGame::setTileDestroyCallback(TileDestroyCallback cb) {

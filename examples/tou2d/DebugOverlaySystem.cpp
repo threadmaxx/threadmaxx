@@ -46,6 +46,16 @@ void DebugOverlaySystem::setTestSnapshot(
     hasTestSnapshot_ = true;
 }
 
+void DebugOverlaySystem::setGameStats(const DebugGameStats& g) {
+    gameAliveBullets_   = g.aliveBullets;
+    gameAliveParticles_ = g.aliveParticles;
+    gameSolidCells_     = g.solidTerrainCells;
+    gameViewports_      = g.viewportCount;
+    gameCameraMode_.assign(g.cameraMode);
+    gameWorldSeed_.assign(g.worldSeed);
+    hasGameStats_       = true;
+}
+
 void DebugOverlaySystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     if (!visible_) return;
 
@@ -82,13 +92,17 @@ void DebugOverlaySystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     const float yTop  = center.y + halfH * kTopInsetFracOfHalfH;
 
     rowStorage_.clear();
-    // Tight upper bound: kTopSystemRows + 5 fixed rows + 1 slack.
-    rowStorage_.reserve(kTopSystemRows + 6);
+    // Upper bound: 5 fixed + 1 humans + 1 rfb + 4 game-state +
+    // kTopSystemRows + 1 slack. Reserve up front so the strings'
+    // data pointers stay valid for the rest of the call (the producer-
+    // owned `addDebugText(DebugText)` path takes a borrowed string_view).
+    rowStorage_.reserve(kTopSystemRows + 12);
 
+    int nextRow = 0;
     const auto pushRow =
-        [&](int rowIndex, std::uint32_t color, std::string s) {
+        [&](std::uint32_t color, std::string s) {
             const float y = yTop -
-                static_cast<float>(rowIndex) * kRowSpacingWU;
+                static_cast<float>(nextRow++) * kRowSpacingWU;
             rowStorage_.emplace_back(std::move(s));
             threadmaxx::DebugText t{};
             t.position  = {xLeft, y, 0.0f};
@@ -97,25 +111,25 @@ void DebugOverlaySystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             b.addDebugText(t);
         };
 
-    char buf[96];
+    char buf[128];
 
-    // Row 0 — FPS / ms.
+    // Row — FPS / ms.
     const double avgStep = engineStats.avgStepSeconds;
     const double fps = (avgStep > 0.0) ? (1.0 / avgStep) : 0.0;
     std::snprintf(buf, sizeof(buf),
                   "FPS %5.1f (%5.2fms)", fps, avgStep * 1000.0);
-    pushRow(0, kHeaderColor, buf);
+    pushRow(kHeaderColor, buf);
 
-    // Row 1 — tick / commitHash / workers.
+    // Row — tick / commitHash / workers.
     std::snprintf(buf, sizeof(buf),
                   "tick=%llu hash=%08llx workers=%u",
                   static_cast<unsigned long long>(engineStats.tick),
                   static_cast<unsigned long long>(
                       engineStats.commitHash & 0xFFFFFFFFull),
                   static_cast<unsigned>(jobStats.workerCount));
-    pushRow(1, kRowColor, buf);
+    pushRow(kRowColor, buf);
 
-    // Row 2 — entity count / cmds / jobs.
+    // Row — entity count / cmds / jobs.
     std::snprintf(buf, sizeof(buf),
                   "entities=%llu cmds/step=%llu jobs/step=%llu",
                   static_cast<unsigned long long>(engineStats.aliveEntities),
@@ -123,24 +137,67 @@ void DebugOverlaySystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                       engineStats.commandsCommittedLastStep),
                   static_cast<unsigned long long>(
                       engineStats.jobsSubmittedLastStep));
-    pushRow(2, kRowColor, buf);
+    pushRow(kRowColor, buf);
 
-    // Row 3 — commit + render breakdown (microseconds).
+    // Row — commit + render breakdown (microseconds).
     std::snprintf(buf, sizeof(buf),
                   "commit=%5.1fus render=%5.1fus",
                   engineStats.commitDurationSeconds * 1e6,
                   engineStats.engineBuildRenderFrameSeconds * 1e6);
-    pushRow(3, kRowColor, buf);
+    pushRow(kRowColor, buf);
 
-    // Row 4 — human / bot slot count, sourced from the borrowed camera.
+    // M6.9b — Row — buildRenderFrame budget gate. Sum SystemStats::
+    // buildRenderFrameSeconds across every system in the snapshot;
+    // color the row red when the total exceeds 150 µs so a regression
+    // is immediately visible on the F3 overlay.
+    double rfbSumUs = 0.0;
+    for (const auto& s : systemStats) {
+        rfbSumUs += s.buildRenderFrameSeconds * 1e6;
+    }
+    const std::uint32_t rfbColor =
+        rfbSumUs > kRenderFrameBudgetUs ? 0xFFFF6666u   // pale red
+                                        : kRowColor;
+    std::snprintf(buf, sizeof(buf),
+                  "rfb=%5.1fus / %3.0fus budget",
+                  rfbSumUs, kRenderFrameBudgetUs);
+    pushRow(rfbColor, buf);
+
+    // Row — human / bot slot count + camera-mode label.
     if (camera_) {
         std::snprintf(buf, sizeof(buf),
-                      "humans=%u (slot count)",
-                      static_cast<unsigned>(camera_->numHumans()));
-        pushRow(4, kRowColor, buf);
+                      "humans=%u mode=%s (slot count)",
+                      static_cast<unsigned>(camera_->numHumans()),
+                      camera_->modeLabel());
+        pushRow(kRowColor, buf);
     }
 
-    // Rows 5+ — top-N systems by avgUpdateSeconds.
+    // M6.9b — Game-state rows. Only fire when the host has called
+    // `setGameStats` at least once (test paths without a wired host
+    // suppress these rows entirely).
+    if (hasGameStats_) {
+        std::snprintf(buf, sizeof(buf),
+                      "bullets=%u particles=%u",
+                      static_cast<unsigned>(gameAliveBullets_),
+                      static_cast<unsigned>(gameAliveParticles_));
+        pushRow(kRowColor, buf);
+        std::snprintf(buf, sizeof(buf),
+                      "terrain=%u solid cells",
+                      static_cast<unsigned>(gameSolidCells_));
+        pushRow(kRowColor, buf);
+        std::snprintf(buf, sizeof(buf),
+                      "viewports=%u (%.*s)",
+                      static_cast<unsigned>(gameViewports_),
+                      static_cast<int>(gameCameraMode_.size()),
+                      gameCameraMode_.data());
+        pushRow(kRowColor, buf);
+        std::snprintf(buf, sizeof(buf),
+                      "seed=%.*s",
+                      static_cast<int>(gameWorldSeed_.size()),
+                      gameWorldSeed_.data());
+        pushRow(kRowColor, buf);
+    }
+
+    // Rows — top-N systems by avgUpdateSeconds.
     if (!systemStats.empty()) {
         std::array<std::size_t, kTopSystemRows> topIdx{};
         std::size_t topCount = 0;
@@ -159,7 +216,6 @@ void DebugOverlaySystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                 if (topCount < topIdx.size()) ++topCount;
             }
         }
-        const int firstRow = camera_ ? 5 : 4;
         for (std::size_t k = 0; k < topCount; ++k) {
             const auto& s = systemStats[topIdx[k]];
             std::snprintf(buf, sizeof(buf),
@@ -167,7 +223,7 @@ void DebugOverlaySystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                           k + 1,
                           s.name ? s.name : "(unnamed)",
                           s.avgUpdateSeconds * 1e6);
-            pushRow(firstRow + static_cast<int>(k), kRowColor, buf);
+            pushRow(kRowColor, buf);
         }
     }
 }

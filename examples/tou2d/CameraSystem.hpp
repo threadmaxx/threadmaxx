@@ -53,6 +53,20 @@ public:
     }
     std::uint8_t numHumans() const noexcept { return numHumans_; }
 
+    /// M6.9b — short layout label for the F3 overlay. Mirrors the layout
+    /// enum hinted at in the M6.9 spec: 1H = full, 2H = side-by-side,
+    /// 3H / 4H = 2×2 grid. Numeric: viewport count == numHumans (one
+    /// viewport per human; bots share); cheaper than a separate getter.
+    const char* modeLabel() const noexcept {
+        switch (numHumans_) {
+            case 1: return "1H";
+            case 2: return "2H";
+            case 3: return "3H";
+            case 4: return "4H";
+            default: return "0H";
+        }
+    }
+
     /// Latched at the end of `update()`. Readable by HudSystem so the
     /// HUD anchors to each human's view-corner without recomputing.
     threadmaxx::Vec3 followCenter(std::uint8_t humanSlot) const noexcept {

@@ -14,6 +14,7 @@ void ProjectileSystem::update(threadmaxx::SystemContext& ctx) {
 
     const float dt = static_cast<float>(ctx.dt());
 
+    std::uint32_t aliveBeforeWave = 0;
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& cb) {
         const auto& view = ctx.worldView();
         for (const auto* chunkPtr : view.chunks()) {
@@ -28,6 +29,7 @@ void ProjectileSystem::update(threadmaxx::SystemContext& ctx) {
             const auto& positions  = chunk.transforms;
             const auto& velocities = chunk.velocities;
             const std::size_t n    = entities.size();
+            aliveBeforeWave += static_cast<std::uint32_t>(n);
 
             for (std::size_t row = 0; row < n; ++row) {
                 Bullet blt = blSpan[row];
@@ -61,6 +63,7 @@ void ProjectileSystem::update(threadmaxx::SystemContext& ctx) {
             }
         }
     });
+    lastBulletCount_ = aliveBeforeWave;
 }
 
 } // namespace tou2d

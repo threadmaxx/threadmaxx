@@ -27,6 +27,7 @@ class DebugOverlaySystem;
 class HudSystem;
 class InputSystem;
 class ParticleSystem;
+class ProjectileSystem;
 class UISystem;
 class RepairPickupSystem;
 class TerrainCollisionSystem;
@@ -173,6 +174,19 @@ public:
     /// `onSetup` and `onTeardown`.
     ToastRenderSystem* toastSystem() noexcept { return toasts_; }
 
+    /// M6.9b — borrowed pointer to the projectile integrator. Host
+    /// (main.cpp) calls `aliveBullets()` once per frame to feed the F3
+    /// overlay. Valid only between `onSetup` and `onTeardown`.
+    ProjectileSystem* projectileSystem() noexcept { return projectile_; }
+
+    /// M6.9b — short label for the world's seed source, used by the F3
+    /// overlay. Returns `"imported:<basename>"` when an external `.lev`
+    /// directory drives the level, `"gen:<seed>"` when the procedural
+    /// generator is active, or `"synthetic"` for the default arena
+    /// fallback. Borrowed pointer rules apply — call between onSetup and
+    /// onTeardown (`levelDir_` / `genConfig_` are not mutated mid-run).
+    std::string worldSeedDescriptor() const;
+
     /// Handle of P1's ship — host-side smoke tests use this to verify
     /// final position. Valid only between onSetup and onTeardown.
     threadmaxx::EntityHandle playerShip() const noexcept {
@@ -235,6 +249,7 @@ private:
     ParticleSystem*          particles_      = nullptr;   // M6.7 — borrowed
     DebugOverlaySystem*      debugOverlay_   = nullptr;   // M6.9 — borrowed
     ToastRenderSystem*       toasts_         = nullptr;   // Batch-A §3 — borrowed
+    ProjectileSystem*        projectile_     = nullptr;   // M6.9b — borrowed (bullet count)
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for
     // playerShip() (smoke-test position log) and onTeardown bookkeeping.

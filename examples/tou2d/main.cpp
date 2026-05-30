@@ -14,6 +14,7 @@
 #include "Replay.hpp"
 #include "HudSystem.hpp"
 #include "ParticleSystem.hpp"
+#include "ProjectileSystem.hpp"
 #include "SpriteCompositor.hpp"
 #include "Settings.hpp"
 #include "ToastRenderSystem.hpp"
@@ -1098,6 +1099,29 @@ int main(int argc, char** argv) {
                     "[tou2d] F3 debug overlay: %s\n",
                     dbg->visible() ? "on" : "off");
             }
+        }
+        // M6.9b — feed game-side counts into the F3 overlay each frame.
+        // Cheap when invisible (the setter is a few u32 stores + two
+        // string assigns); only the overlay's `buildRenderFrame` reads
+        // them, and that's a no-op when off.
+        if (auto* dbg = game.debugOverlaySystem()) {
+            tou2d::DebugGameStats g{};
+            if (auto* proj = game.projectileSystem()) {
+                g.aliveBullets = proj->aliveBullets();
+            }
+            if (auto* parts = game.particleSystem()) {
+                g.aliveParticles =
+                    static_cast<std::uint32_t>(parts->aliveCount());
+            }
+            g.solidTerrainCells =
+                static_cast<std::uint32_t>(game.terrainGrid().solidCellCount());
+            if (auto* cam = game.cameraSystem()) {
+                g.viewportCount = cam->numHumans();
+                g.cameraMode    = cam->modeLabel();
+            }
+            const std::string seed = game.worldSeedDescriptor();
+            g.worldSeed = seed;  // copied via assign() inside setGameStats
+            dbg->setGameStats(g);
         }
         // M6.1 — pump UI key edges + dispatch when a menu is up. Drives
         // moveFocus / acceptFocused on UiUp / UiDown / UiAccept.

@@ -745,6 +745,19 @@ struct TerrainGrid {
         hp[i]   = 0;
         attr[i] = Attribute::Air;
     }
+
+    /// M6.9b — count non-Air cells (Solid + Repair). Used by the F3
+    /// overlay to show how many destructible blocks remain on the level.
+    /// O(cellsX * cellsY); the overlay is opt-in so the scan cost only
+    /// fires when visible (largest demo level is 144 KiB; a linear scan
+    /// hits ~10 µs which is dwarfed by the buildRenderFrame budget).
+    std::size_t solidCellCount() const noexcept {
+        std::size_t n = 0;
+        for (Attribute a : attr) {
+            if (a != Attribute::Air) ++n;
+        }
+        return n;
+    }
 };
 
 /// Pick a random `Attribute::Air` cell from `grid`, convert to world

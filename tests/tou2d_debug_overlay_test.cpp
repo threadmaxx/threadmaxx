@@ -226,5 +226,99 @@ int main() {
         CHECK_EQ(rb.debugText().size(), std::size_t{0});
     }
 
+    // ---- 7. M6.9b — game-state rows fire only after setGameStats ---
+    {
+        CameraSystem cam(ids);
+        cam.setNumHumans(3);
+        DebugOverlaySystem dbg(/*engine=*/nullptr, &cam);
+        dbg.setVisible(true);
+
+        threadmaxx::EngineStats es{};
+        es.avgStepSeconds = 1.0 / 60.0;
+        threadmaxx::JobSystemStats js{};
+        js.workerCount = 4;
+        dbg.setTestSnapshot(es, {}, js);
+
+        // Without setGameStats: telemetry rows fire, but no game rows.
+        {
+            threadmaxx::RenderFrameBuilder rb;
+            dbg.buildRenderFrame(rb);
+            CHECK(anyTextContains(rb, "FPS"));
+            CHECK(!anyTextContains(rb, "bullets="));
+            CHECK(!anyTextContains(rb, "particles="));
+            CHECK(!anyTextContains(rb, "terrain="));
+            CHECK(!anyTextContains(rb, "seed="));
+            // viewport count is in the same row as humans=; mode label
+            // is the new addition — confirm it lands on the humans row.
+            CHECK(anyTextContains(rb, "humans=3"));
+            CHECK(anyTextContains(rb, "mode=3H"));
+        }
+
+        // Push game stats — rows now appear.
+        tou2d::DebugGameStats g{};
+        g.aliveBullets       = 42;
+        g.aliveParticles     = 17;
+        g.solidTerrainCells  = 1234;
+        g.viewportCount      = 3;
+        g.cameraMode         = "3H";
+        g.worldSeed          = "gen:0xdeadbeef";
+        dbg.setGameStats(g);
+
+        threadmaxx::RenderFrameBuilder rb;
+        dbg.buildRenderFrame(rb);
+        CHECK(anyTextContains(rb, "bullets=42"));
+        CHECK(anyTextContains(rb, "particles=17"));
+        CHECK(anyTextContains(rb, "terrain=1234"));
+        CHECK(anyTextContains(rb, "viewports=3"));
+        CHECK(anyTextContains(rb, "seed=gen:0xdeadbeef"));
+    }
+
+    // ---- 8. M6.9b — buildRenderFrame budget row + color flip -------
+    {
+        CameraSystem cam(ids);
+        DebugOverlaySystem dbg(/*engine=*/nullptr, &cam);
+        dbg.setVisible(true);
+
+        threadmaxx::EngineStats es{};
+        es.avgStepSeconds = 1.0 / 60.0;
+        threadmaxx::JobSystemStats js{};
+        js.workerCount = 1;
+
+        // Three systems summing to 100 µs — UNDER the 150 µs gate.
+        threadmaxx::SystemStats a{}; a.name = "a";
+        a.buildRenderFrameSeconds = 30e-6;
+        threadmaxx::SystemStats b{}; b.name = "b";
+        b.buildRenderFrameSeconds = 40e-6;
+        threadmaxx::SystemStats c{}; c.name = "c";
+        c.buildRenderFrameSeconds = 30e-6;
+        std::vector<threadmaxx::SystemStats> sysUnder{a, b, c};
+        dbg.setTestSnapshot(es, sysUnder, js);
+
+        threadmaxx::RenderFrameBuilder rbUnder;
+        dbg.buildRenderFrame(rbUnder);
+        const auto* rfbU = findContaining(rbUnder, "rfb=");
+        CHECK(rfbU != nullptr);
+        // Total = 100 µs against 150 µs gate; substring "100.0us" + "150"
+        CHECK(rfbU->text.find("100.0us") != std::string_view::npos);
+        CHECK(rfbU->text.find("150")     != std::string_view::npos);
+        // Under-budget color = kRowColor (pale green 0xFFCCFFCC).
+        CHECK_EQ(rfbU->colorRGBA, 0xFFCCFFCCu);
+
+        // Push past the budget: 80 + 80 + 30 = 190 µs.
+        a.buildRenderFrameSeconds = 80e-6;
+        b.buildRenderFrameSeconds = 80e-6;
+        c.buildRenderFrameSeconds = 30e-6;
+        std::vector<threadmaxx::SystemStats> sysOver{a, b, c};
+        dbg.setTestSnapshot(es, sysOver, js);
+
+        threadmaxx::RenderFrameBuilder rbOver;
+        dbg.buildRenderFrame(rbOver);
+        const auto* rfbO = findContaining(rbOver, "rfb=");
+        CHECK(rfbO != nullptr);
+        CHECK(rfbO->text.find("190.0us") != std::string_view::npos);
+        // Over-budget color = pale red 0xFFFF6666.
+        CHECK_EQ(rfbO->colorRGBA, 0xFFFF6666u);
+    }
+
     EXIT_WITH_RESULT();
 }

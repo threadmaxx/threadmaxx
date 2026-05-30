@@ -4,6 +4,8 @@
 
 #include <threadmaxx/System.hpp>
 
+#include <cstdint>
+
 namespace tou2d {
 
 /// Integrates Bullet kinematics: position += velocity * dt; ttl -= dt;
@@ -49,13 +51,21 @@ public:
         levelActive_ = (maxX > minX) && (maxY > minY);
     }
 
+    /// M6.9b — snapshot of in-flight bullet rows visited during the
+    /// most recent `update()`. Sampled before TTL-expiry / OOB destroys
+    /// for the tick, so this is "alive at start of projectile wave".
+    /// Read by the F3 overlay; sim-thread serialized so plain int is
+    /// sufficient.
+    std::uint32_t aliveBullets() const noexcept { return lastBulletCount_; }
+
 private:
-    UserComponentIds ids_;
-    float            levelMinX_   = 0.0f;
-    float            levelMinY_   = 0.0f;
-    float            levelMaxX_   = 0.0f;
-    float            levelMaxY_   = 0.0f;
-    bool             levelActive_ = false;
+    UserComponentIds      ids_;
+    float                 levelMinX_        = 0.0f;
+    float                 levelMinY_        = 0.0f;
+    float                 levelMaxX_        = 0.0f;
+    float                 levelMaxY_        = 0.0f;
+    bool                  levelActive_      = false;
+    std::uint32_t         lastBulletCount_  = 0;  // M6.9b — overlay surface
 };
 
 } // namespace tou2d
