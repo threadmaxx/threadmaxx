@@ -21,6 +21,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -203,6 +204,20 @@ struct VulkanRenderer::Impl {
         std::vector<float>     debugPointVerts;
         std::uint32_t          debugLineCount  = 0;
         std::uint32_t          debugPointCount = 0;
+
+        // M7.2 — per-camera debug primitive ranges. The upload groups
+        // vertices by camera (a primitive with cameraMask covering N
+        // cameras lands in N contiguous regions), so each `recordCamera`
+        // draws ONLY its own slice with `firstVertex = lineFirst[i] * 2`,
+        // `vertexCount = lineCount[i] * 2`. Index is camera position in
+        // `RenderFrame::cameras`, which matches the cameraMask bit.
+        // Sized to the engine's `kMaxCameras = 32` cap; cameraCount > 32
+        // is clamped upstream in the render loop (line ~1271).
+        static constexpr std::size_t kMaxCameras = 32;
+        std::array<std::uint32_t, kMaxCameras> debugLinePerCameraFirst{};
+        std::array<std::uint32_t, kMaxCameras> debugLinePerCameraCount{};
+        std::array<std::uint32_t, kMaxCameras> debugPointPerCameraFirst{};
+        std::array<std::uint32_t, kMaxCameras> debugPointPerCameraCount{};
 
         // 2026-05-23 — auto-instance lane (`RenderFrame::instances`)
         // pack-once cache. The lane has no per-camera filter (the
@@ -1414,54 +1429,105 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
         // endpoint, which dominated submitFrame at high line counts.
         pf.debugLineCount  = 0;
         pf.debugPointCount = 0;
-        if (!frame.debugLines.empty()) {
+        pf.debugLinePerCameraFirst.fill(0u);
+        pf.debugLinePerCameraCount.fill(0u);
+        pf.debugPointPerCameraFirst.fill(0u);
+        pf.debugPointPerCameraCount.fill(0u);
+
+        // M7.2 — group debug vertices per camera so each `recordCamera`
+        // draws ONLY the primitives whose `cameraMask` matches its
+        // camera index. A primitive with mask = 0xFFFFFFFFu (the default)
+        // is duplicated into every camera's region; per-slot HUD
+        // primitives (mask = 1u << slot) land in exactly one region.
+        // The K-way duplication of shared primitives is fine at typical
+        // HUD line counts (~10²); if a workload pushes that to ~10⁶,
+        // switch to a per-vertex mask attribute + shader cull instead.
+        if (!frame.debugLines.empty() && cameraCount > 0) {
             const std::size_t nLines = frame.debugLines.size();
-            pf.debugLineVerts.resize(nLines * 14u);  // 2 endpoints × (3 pos + 4 col)
+            std::size_t totalLines = 0;
+            for (std::size_t cam = 0; cam < cameraCount; ++cam) {
+                const std::uint32_t bit = 1u << cam;
+                for (std::size_t li = 0; li < nLines; ++li) {
+                    if (frame.debugLines[li].cameraMask & bit) ++totalLines;
+                }
+            }
+            pf.debugLineVerts.resize(totalLines * 14u);  // 2 endpoints × (3 pos + 4 col)
             float* dst = pf.debugLineVerts.data();
-            for (std::size_t li = 0; li < nLines; ++li) {
-                const auto& l = frame.debugLines[li];
-                float col[4];
-                unpackRGBA(l.colorRGBA, col);
-                dst[ 0] = l.a.x; dst[ 1] = l.a.y; dst[ 2] = l.a.z;
-                dst[ 3] = col[0]; dst[ 4] = col[1]; dst[ 5] = col[2]; dst[ 6] = col[3];
-                dst[ 7] = l.b.x; dst[ 8] = l.b.y; dst[ 9] = l.b.z;
-                dst[10] = col[0]; dst[11] = col[1]; dst[12] = col[2]; dst[13] = col[3];
-                dst += 14;
+            std::uint32_t cursorLines = 0;
+            for (std::size_t cam = 0; cam < cameraCount; ++cam) {
+                const std::uint32_t bit = 1u << cam;
+                pf.debugLinePerCameraFirst[cam] = cursorLines;
+                std::uint32_t camCount = 0;
+                for (std::size_t li = 0; li < nLines; ++li) {
+                    const auto& l = frame.debugLines[li];
+                    if ((l.cameraMask & bit) == 0u) continue;
+                    float col[4];
+                    unpackRGBA(l.colorRGBA, col);
+                    dst[ 0] = l.a.x; dst[ 1] = l.a.y; dst[ 2] = l.a.z;
+                    dst[ 3] = col[0]; dst[ 4] = col[1]; dst[ 5] = col[2]; dst[ 6] = col[3];
+                    dst[ 7] = l.b.x; dst[ 8] = l.b.y; dst[ 9] = l.b.z;
+                    dst[10] = col[0]; dst[11] = col[1]; dst[12] = col[2]; dst[13] = col[3];
+                    dst += 14;
+                    ++camCount;
+                }
+                pf.debugLinePerCameraCount[cam] = camCount;
+                cursorLines += camCount;
             }
-            const VkDeviceSize bytes =
-                static_cast<VkDeviceSize>(pf.debugLineVerts.size()) * sizeof(float);
-            ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                         pf.debugLineBuffer, pf.debugLineMemory,
-                         pf.debugLineCapacity);
-            void* p = nullptr;
-            VK_CHECK(vkMapMemory(ctx.device(), pf.debugLineMemory, 0, bytes, 0, &p));
-            std::memcpy(p, pf.debugLineVerts.data(), bytes);
-            vkUnmapMemory(ctx.device(), pf.debugLineMemory);
-            pf.debugLineCount = static_cast<std::uint32_t>(nLines);
+            if (totalLines > 0) {
+                const VkDeviceSize bytes =
+                    static_cast<VkDeviceSize>(pf.debugLineVerts.size()) * sizeof(float);
+                ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                             pf.debugLineBuffer, pf.debugLineMemory,
+                             pf.debugLineCapacity);
+                void* p = nullptr;
+                VK_CHECK(vkMapMemory(ctx.device(), pf.debugLineMemory, 0, bytes, 0, &p));
+                std::memcpy(p, pf.debugLineVerts.data(), bytes);
+                vkUnmapMemory(ctx.device(), pf.debugLineMemory);
+            }
+            pf.debugLineCount = static_cast<std::uint32_t>(totalLines);
         }
-        if (!frame.debugPoints.empty()) {
+        if (!frame.debugPoints.empty() && cameraCount > 0) {
             const std::size_t nPts = frame.debugPoints.size();
-            pf.debugPointVerts.resize(nPts * 8u);
-            float* dst = pf.debugPointVerts.data();
-            for (std::size_t pi = 0; pi < nPts; ++pi) {
-                const auto& pt = frame.debugPoints[pi];
-                float col[4];
-                unpackRGBA(pt.colorRGBA, col);
-                dst[0] = pt.position.x; dst[1] = pt.position.y; dst[2] = pt.position.z;
-                dst[3] = col[0]; dst[4] = col[1]; dst[5] = col[2]; dst[6] = col[3];
-                dst[7] = pt.pixelSize;
-                dst += 8;
+            std::size_t totalPts = 0;
+            for (std::size_t cam = 0; cam < cameraCount; ++cam) {
+                const std::uint32_t bit = 1u << cam;
+                for (std::size_t pi = 0; pi < nPts; ++pi) {
+                    if (frame.debugPoints[pi].cameraMask & bit) ++totalPts;
+                }
             }
-            const VkDeviceSize bytes =
-                static_cast<VkDeviceSize>(pf.debugPointVerts.size()) * sizeof(float);
-            ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                         pf.debugPointBuffer, pf.debugPointMemory,
-                         pf.debugPointCapacity);
-            void* p = nullptr;
-            VK_CHECK(vkMapMemory(ctx.device(), pf.debugPointMemory, 0, bytes, 0, &p));
-            std::memcpy(p, pf.debugPointVerts.data(), bytes);
-            vkUnmapMemory(ctx.device(), pf.debugPointMemory);
-            pf.debugPointCount = static_cast<std::uint32_t>(nPts);
+            pf.debugPointVerts.resize(totalPts * 8u);
+            float* dst = pf.debugPointVerts.data();
+            std::uint32_t cursorPts = 0;
+            for (std::size_t cam = 0; cam < cameraCount; ++cam) {
+                const std::uint32_t bit = 1u << cam;
+                pf.debugPointPerCameraFirst[cam] = cursorPts;
+                std::uint32_t camCount = 0;
+                for (std::size_t pi = 0; pi < nPts; ++pi) {
+                    const auto& pt = frame.debugPoints[pi];
+                    if ((pt.cameraMask & bit) == 0u) continue;
+                    float col[4];
+                    unpackRGBA(pt.colorRGBA, col);
+                    dst[0] = pt.position.x; dst[1] = pt.position.y; dst[2] = pt.position.z;
+                    dst[3] = col[0]; dst[4] = col[1]; dst[5] = col[2]; dst[6] = col[3];
+                    dst[7] = pt.pixelSize;
+                    dst += 8;
+                    ++camCount;
+                }
+                pf.debugPointPerCameraCount[cam] = camCount;
+                cursorPts += camCount;
+            }
+            if (totalPts > 0) {
+                const VkDeviceSize bytes =
+                    static_cast<VkDeviceSize>(pf.debugPointVerts.size()) * sizeof(float);
+                ensureBuffer(pf, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                             pf.debugPointBuffer, pf.debugPointMemory,
+                             pf.debugPointCapacity);
+                void* p = nullptr;
+                VK_CHECK(vkMapMemory(ctx.device(), pf.debugPointMemory, 0, bytes, 0, &p));
+                std::memcpy(p, pf.debugPointVerts.data(), bytes);
+                vkUnmapMemory(ctx.device(), pf.debugPointMemory);
+            }
+            pf.debugPointCount = static_cast<std::uint32_t>(totalPts);
         }
 
         if (profileEnabled) {
@@ -1753,29 +1819,38 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
         }
     }
 
-    // ---- Debug lines / points (single shared pass) --------------------------
-    // 2026-05-20 — CPU vertex packing + upload happens once in
-    // recordFrame; here we just bind + draw against the shared buffer.
-    if (pf.debugLineCount > 0) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.debugLinePipe());
-        DebugPushConstants pc = {};
-        std::memcpy(pc.viewProj, vp, sizeof(vp));
-        vkCmdPushConstants(cmd, pipes.debugLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
-        VkDeviceSize off = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &pf.debugLineBuffer, &off);
-        vkCmdDraw(cmd, pf.debugLineCount * 2u, 1, 0, 0);
-    }
+    // ---- Debug lines / points (per-camera slice) ----------------------------
+    // M7.2 — recordFrame groups vertices by camera; each `recordCamera`
+    // draws ONLY the primitives whose `cameraMask` had this camera's
+    // bit set. `cameraIndex` ≥ 32 cannot match any mask bit (the
+    // engine's documented `kMaxCameras = 32`).
+    const std::size_t camSlot = static_cast<std::size_t>(cameraIndex);
+    if (camSlot < PerFrame::kMaxCameras) {
+        const std::uint32_t lineFirst = pf.debugLinePerCameraFirst[camSlot];
+        const std::uint32_t lineCount = pf.debugLinePerCameraCount[camSlot];
+        if (lineCount > 0 && pf.debugLineBuffer != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.debugLinePipe());
+            DebugPushConstants pc = {};
+            std::memcpy(pc.viewProj, vp, sizeof(vp));
+            vkCmdPushConstants(cmd, pipes.debugLayout(),
+                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+            VkDeviceSize off = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &pf.debugLineBuffer, &off);
+            vkCmdDraw(cmd, lineCount * 2u, 1, lineFirst * 2u, 0);
+        }
 
-    if (pf.debugPointCount > 0) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.debugPointPipe());
-        DebugPushConstants pc = {};
-        std::memcpy(pc.viewProj, vp, sizeof(vp));
-        vkCmdPushConstants(cmd, pipes.debugLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
-        VkDeviceSize off = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &pf.debugPointBuffer, &off);
-        vkCmdDraw(cmd, pf.debugPointCount, 1, 0, 0);
+        const std::uint32_t ptFirst = pf.debugPointPerCameraFirst[camSlot];
+        const std::uint32_t ptCount = pf.debugPointPerCameraCount[camSlot];
+        if (ptCount > 0 && pf.debugPointBuffer != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes.debugPointPipe());
+            DebugPushConstants pc = {};
+            std::memcpy(pc.viewProj, vp, sizeof(vp));
+            vkCmdPushConstants(cmd, pipes.debugLayout(),
+                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+            VkDeviceSize off = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &pf.debugPointBuffer, &off);
+            vkCmdDraw(cmd, ptCount, 1, ptFirst, 0);
+        }
     }
 
     // ---- Foreground sprite layer (per-camera) -------------------------------

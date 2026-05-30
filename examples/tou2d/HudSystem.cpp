@@ -180,17 +180,23 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
     // M5.1 — per-viewport HUD: each human renders only their own
     // badge/HP/ammo, anchored to the TOP-LEFT corner of THAT human's
     // viewport (in world space, relative to their own camera's follow
-    // center). Bots are never iterated. The HUD lives in world-space
-    // debug geometry, so it appears in every camera whose frustum
-    // contains the anchor point — in practice each human's anchor is
-    // beyond the other humans' view rect except in heavy close combat
-    // (acceptable v1 limitation; documented in TOU_PLAN.md M5.1).
+    // center). Bots are never iterated.
+    //
+    // M7.2 — per-slot HUD primitives carry `cameraMask = (1u << s)`,
+    // so the Vulkan renderer draws them ONLY in slot `s`'s camera
+    // pass. CameraSystem registers cameras in slot order
+    // (RenderFrame::cameras[i] == slot i's camera), so the bit→camera
+    // mapping is direct. Pre-M7.2 the HUD lived at default
+    // (all-ones) and would appear in every camera whose frustum
+    // contained the anchor point — close-combat overlap was the
+    // visible symptom this batch closes.
     for (std::uint8_t s = 0; s < numHumans; ++s) {
         if (!slots_[s].present) continue;
         const auto&    state = slots_[s];
         const std::uint32_t color =
             state.alive ? kSlotColors[s]
                         : (kSlotColors[s] & 0x00FFFFFFu) | 0x40000000u;  // dim when dead
+        const std::uint32_t slotCameraMask = (1u << s);
 
         const threadmaxx::Vec3 center = camera_->followCenter(s);
 
@@ -204,9 +210,10 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         // ---- Badge point (slot indicator) ------------------------------
         {
             threadmaxx::DebugPoint dp{};
-            dp.position  = {cornerX, cornerY, 0.0f};
-            dp.colorRGBA = color;
-            dp.pixelSize = kBadgeSize;
+            dp.position   = {cornerX, cornerY, 0.0f};
+            dp.colorRGBA  = color;
+            dp.pixelSize  = kBadgeSize;
+            dp.cameraMask = slotCameraMask;
             b.addDebugPoint(dp);
         }
 
@@ -215,13 +222,14 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             std::min<std::uint32_t>(state.kills, kMaxScorePips);
         for (std::uint32_t i = 0; i < pips; ++i) {
             threadmaxx::DebugPoint dp{};
-            dp.position  = {
+            dp.position   = {
                 cornerX + dir * (kBadgeSize * 0.4f + static_cast<float>(i + 1) * kPipSpacing),
                 cornerY,
                 0.0f,
             };
-            dp.colorRGBA = color;
-            dp.pixelSize = kPipSize;
+            dp.colorRGBA  = color;
+            dp.pixelSize  = kPipSize;
+            dp.cameraMask = slotCameraMask;
             b.addDebugPoint(dp);
         }
 
@@ -239,14 +247,16 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             const float xHalfH = kRowVerticalWU * 1.5f;
             const std::uint32_t xColor = (kSlotColors[s] & 0x00FFFFFFu) | 0xC0000000u;
             threadmaxx::DebugLine d1{};
-            d1.a         = {barStart, barY + xHalfH, 0.0f};
-            d1.b         = {barEnd,   barY - xHalfH, 0.0f};
-            d1.colorRGBA = xColor;
+            d1.a          = {barStart, barY + xHalfH, 0.0f};
+            d1.b          = {barEnd,   barY - xHalfH, 0.0f};
+            d1.colorRGBA  = xColor;
+            d1.cameraMask = slotCameraMask;
             b.addDebugLine(d1);
             threadmaxx::DebugLine d2{};
-            d2.a         = {barStart, barY - xHalfH, 0.0f};
-            d2.b         = {barEnd,   barY + xHalfH, 0.0f};
-            d2.colorRGBA = xColor;
+            d2.a          = {barStart, barY - xHalfH, 0.0f};
+            d2.b          = {barEnd,   barY + xHalfH, 0.0f};
+            d2.colorRGBA  = xColor;
+            d2.cameraMask = slotCameraMask;
             b.addDebugLine(d2);
             continue;   // skip HP bar + ammo strips for this slot
         }
@@ -263,9 +273,10 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                      0.5f * static_cast<float>(kHpBarLines - 1)) *
                     barLineSpacing;
                 threadmaxx::DebugLine ln{};
-                ln.a         = {ax, yMid + dy, 0.0f};
-                ln.b         = {bx, yMid + dy, 0.0f};
-                ln.colorRGBA = col;
+                ln.a          = {ax, yMid + dy, 0.0f};
+                ln.b          = {bx, yMid + dy, 0.0f};
+                ln.colorRGBA  = col;
+                ln.cameraMask = slotCameraMask;
                 b.addDebugLine(ln);
             }
         };
@@ -276,14 +287,16 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             barLineSpacing * (0.5f * static_cast<float>(kHpBarLines - 1) + 1.0f);
         {
             threadmaxx::DebugLine top{};
-            top.a         = {barStart, barY + outlineDy, 0.0f};
-            top.b         = {barEnd,   barY + outlineDy, 0.0f};
-            top.colorRGBA = 0x60FFFFFFu;
+            top.a          = {barStart, barY + outlineDy, 0.0f};
+            top.b          = {barEnd,   barY + outlineDy, 0.0f};
+            top.colorRGBA  = 0x60FFFFFFu;
+            top.cameraMask = slotCameraMask;
             b.addDebugLine(top);
             threadmaxx::DebugLine bot{};
-            bot.a         = {barStart, barY - outlineDy, 0.0f};
-            bot.b         = {barEnd,   barY - outlineDy, 0.0f};
-            bot.colorRGBA = 0x60FFFFFFu;
+            bot.a          = {barStart, barY - outlineDy, 0.0f};
+            bot.b          = {barEnd,   barY - outlineDy, 0.0f};
+            bot.colorRGBA  = 0x60FFFFFFu;
+            bot.cameraMask = slotCameraMask;
             b.addDebugLine(bot);
         }
         if (state.hpFrac > 0.0f) {
@@ -317,15 +330,16 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                 access_.bigWarnings ? markerPxBase * kBigWarningMultiplier
                                     : markerPxBase;
             threadmaxx::DebugPoint dp{};
-            dp.position  = {
+            dp.position   = {
                 center.x,
                 center.y + halfH * (1.0f - kWarningTopInsetFrac),
                 0.0f,
             };
             // Solid red, same fixed color as the low-HP pulse track —
             // skip the pulse to keep the marker as a steady warning.
-            dp.colorRGBA = 0xE00000FFu;
-            dp.pixelSize = markerPx;
+            dp.colorRGBA  = 0xE00000FFu;
+            dp.pixelSize  = markerPx;
+            dp.cameraMask = slotCameraMask;
             b.addDebugPoint(dp);
         }
 
@@ -351,9 +365,10 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
             if (weaponKind == 0) {
                 // Dumbfire — single forward bar.
                 threadmaxx::DebugLine ln{};
-                ln.a         = {gxStart, rowY, 0.0f};
-                ln.b         = {gxEnd,   rowY, 0.0f};
-                ln.colorRGBA = glyphColor;
+                ln.a          = {gxStart, rowY, 0.0f};
+                ln.b          = {gxEnd,   rowY, 0.0f};
+                ln.colorRGBA  = glyphColor;
+                ln.cameraMask = slotCameraMask;
                 b.addDebugLine(ln);
             } else {
                 // Spread — three ticks fanning ±kSpreadAngle around
@@ -364,19 +379,22 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                 const float tipUp  = gxEnd - dir * 1.0f;  // slight pull-back so the
                 const float tipDn  = gxEnd - dir * 1.0f;  // outer ticks read distinct
                 threadmaxx::DebugLine mid{};
-                mid.a         = {gxStart, rowY, 0.0f};
-                mid.b         = {tipMid,  rowY, 0.0f};
-                mid.colorRGBA = glyphColor;
+                mid.a          = {gxStart, rowY, 0.0f};
+                mid.b          = {tipMid,  rowY, 0.0f};
+                mid.colorRGBA  = glyphColor;
+                mid.cameraMask = slotCameraMask;
                 b.addDebugLine(mid);
                 threadmaxx::DebugLine up{};
-                up.a         = {gxStart, rowY, 0.0f};
-                up.b         = {tipUp,   rowY + kWeaponGlyphHeightWU, 0.0f};
-                up.colorRGBA = glyphColor;
+                up.a          = {gxStart, rowY, 0.0f};
+                up.b          = {tipUp,   rowY + kWeaponGlyphHeightWU, 0.0f};
+                up.colorRGBA  = glyphColor;
+                up.cameraMask = slotCameraMask;
                 b.addDebugLine(up);
                 threadmaxx::DebugLine dn{};
-                dn.a         = {gxStart, rowY, 0.0f};
-                dn.b         = {tipDn,   rowY - kWeaponGlyphHeightWU, 0.0f};
-                dn.colorRGBA = glyphColor;
+                dn.a          = {gxStart, rowY, 0.0f};
+                dn.b          = {tipDn,   rowY - kWeaponGlyphHeightWU, 0.0f};
+                dn.colorRGBA  = glyphColor;
+                dn.cameraMask = slotCameraMask;
                 b.addDebugLine(dn);
             }
         };
@@ -410,8 +428,9 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                                      kAmmoPipSize * 0.5f +
                                      static_cast<float>(i) * kAmmoPipSpacing);
                 threadmaxx::DebugPoint dp{};
-                dp.position  = {px, rowY, 0.0f};
-                dp.pixelSize = kAmmoPipSize;
+                dp.position   = {px, rowY, 0.0f};
+                dp.pixelSize  = kAmmoPipSize;
+                dp.cameraMask = slotCameraMask;
                 if (reloadIn > 0) {
                     // Reload in progress — paint every slot at low
                     // alpha so the row reads as "occupied but not

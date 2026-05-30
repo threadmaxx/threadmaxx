@@ -2866,27 +2866,46 @@ out-of-radius / inside-radius / multiple-tile-nearest-wins paths,
 plus sanity bounds on the two M7.1 constants. ctest 154/154 green;
 200-tick smoke clean.
 
-**M7.2 — Per-camera HUD ownership (engine-side primitive change)**
+**M7.2 — Per-camera HUD ownership — LANDED 2026-05-30**
 
-`DebugLine` / `DebugPoint` don't carry a `cameraMask` field, so
-HudSystem's per-slot HUD anchored to that slot's world-space
-follow-center is currently visible from every camera whose frustum
-contains the anchor point (the existing HudSystem comment calls
-this "acceptable v1 limitation"). Real fix touches the engine:
+Pre-M7.2 the per-slot HUD lived in world-space debug geometry
+without a per-camera filter, so every primitive showed up in every
+camera whose frustum contained its anchor point. Close-combat
+overlap was the visible symptom. M7.2 closes the hole by adding
+`cameraMask` to the engine's render contract.
 
-- Add `uint32_t cameraMask = 0xFFFFFFFFu` to `DebugLine` and
-  `DebugPoint` in `include/threadmaxx/render/DebugGeometry.hpp`.
-- Plumb through Vulkan renderer's debug-pass: it already iterates
-  cameras and emits one draw per camera per debug primitive;
-  filter by `(cameraMask >> cameraIndex) & 1`.
-- Update HudSystem to set `cameraMask = (1u << slot)` on every
-  per-slot primitive it emits. Shared overlays (winner banner)
-  stay at all-ones.
-- Migration risk: defaults to 0xFFFFFFFFu so existing callers see
-  no change. Bump CLAUDE.md's render-contract note.
+1. **Engine-side (M7.2.a).** `DebugLine` and `DebugPoint` in
+   `include/threadmaxx/render/DebugGeometry.hpp` gain a public
+   `std::uint32_t cameraMask = 0xFFFFFFFFu` field. Bit `k` ↔
+   `RenderFrame::cameras[k]`; default all-ones = "visible from
+   every camera" → backward compatible with every pre-M7.2 caller.
+   32-bit width matches the engine's `kMaxCameras = 32` cap.
+2. **Vulkan renderer (M7.2.b).** `recordFrame` now groups debug
+   vertices per camera index: a primitive with mask covering N
+   cameras is emitted into N contiguous regions of the shared
+   vertex buffer, tracked by per-camera `(firstVertex, count)`
+   ranges on `PerFrame`. `recordCamera` draws only its own range
+   via `vkCmdDraw(.., firstVertex = first[i] * 2, .., count[i])`.
+   The K-way duplication of shared (all-ones) primitives is fine
+   at typical HUD line counts (10²); a per-vertex attribute +
+   shader-cull path is documented as the escape valve if a future
+   workload pushes it to 10⁶.
+3. **HudSystem (M7.2.c).** Every per-slot primitive in the
+   `for (s = 0; s < numHumans; ++s)` loop now sets
+   `cameraMask = (1u << s)`. CameraSystem registers cameras in
+   slot order (`RenderFrame::cameras[i]` IS slot `i`'s camera),
+   so the bit-to-camera mapping is direct. The winner banner
+   (drawn once, anchored at slot 0's follow center) stays at the
+   default `0xFFFFFFFFu` so every camera that overlaps it still
+   sees it — that's the desired end-of-round behavior.
 
-Test pin: contract test asserting that a per-slot debug line with
-`cameraMask = (1u << 0)` doesn't appear in camera 1's pass.
+Test pin: `debug_camera_mask_test` (M7.2.d). Asserts default-
+construction sentinels, FIFO ordering across mixed-mask emits,
+and the publish-cycle round-trip (per-system builder → engine
+merge → `RenderFrame` span). Docs updated: CLAUDE.md render-
+contract section, `doc/render_contract.md` "Per-camera debug
+geometry" subsection, `tests/COVERAGE_AUDIT.md` coverage row.
+ctest 155/155 green; 200-tick smoke clean.
 
 **M7.3 — Visual polish (ParticleSystem)**
 
@@ -2997,9 +3016,9 @@ Mirror the M6.10 acceptance checklist for the M7 batches:
 
 #### M7 — Engine-side prereqs
 
-| Item | Why deferred to M7 (not done inline) |
+| Item | Status |
 |---|---|
-| `cameraMask` on `DebugLine` / `DebugPoint` | M7.2 prereq; touches public render header + Vulkan renderer pass + CLAUDE.md render-contract note |
+| `cameraMask` on `DebugLine` / `DebugPoint` | LANDED 2026-05-30 as part of M7.2 |
 | New `Pickup` user component + `PickupKind` enum | M7.5 prereq; sized as part of the split |
 | New terrain `Attribute::Water` enum value | M7.6 prereq; same patch as the buoyancy math |
 

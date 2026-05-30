@@ -14,6 +14,14 @@ struct DebugLine {
     /// Packed `0xAABBGGRR`. The renderer is free to convert to its
     /// native color space.
     std::uint32_t colorRGBA = 0xFFFFFFFFu;
+    /// Per-camera visibility mask, bit `i` ↔ `RenderFrame::cameras[i]`.
+    /// `0xFFFFFFFFu` (default) ⇒ every camera draws this primitive;
+    /// `(1u << k)` ⇒ only camera `k`. Cameras beyond bit 31 (the
+    /// `kMaxCameras = 32` cap) cannot mask. Renderers that do not
+    /// support per-camera filtering MUST treat any non-zero mask as
+    /// "visible" so the default fields-uninitialised path stays
+    /// renderer-neutral.
+    std::uint32_t cameraMask = 0xFFFFFFFFu;
 };
 
 /// One world-space debug point with on-screen pixel size.
@@ -22,6 +30,10 @@ struct DebugPoint {
     std::uint32_t colorRGBA = 0xFFFFFFFFu;
     /// Pixel radius hint; renderers may round / clamp.
     float pixelSize = 4.0f;
+    /// Per-camera visibility mask; see @ref DebugLine::cameraMask for
+    /// semantics. Default `0xFFFFFFFFu` keeps pre-M7.2 callers visible
+    /// from every camera.
+    std::uint32_t cameraMask = 0xFFFFFFFFu;
 };
 
 /// One piece of world-anchored debug text. The string is borrowed from

@@ -236,6 +236,7 @@ real regressions. They are still listed below for completeness.
 
 ## render/DebugGeometry.hpp
 - ✓ `DebugLine` / `DebugPoint` / `DebugText` — `render_passes_test.cpp`, `debug_text_owning_test.cpp`
+- ✓ `DebugLine::cameraMask` / `DebugPoint::cameraMask` (M7.2) — `debug_camera_mask_test.cpp` pins default `0xFFFFFFFFu`, FIFO ordering across mixed-mask emits, and the publish-cycle round-trip (per-system builder → engine merge → `RenderFrame` span). Pre-M7.2 callers that never touch the field rely on the default for "visible from every camera"; the test exercises both explicit-mask and default-mask emits in the same frame.
 
 ## render/DrawItem.hpp
 - ✓ `DrawItem` + `MaterialOverride` — `visibility_culling_test.cpp`, `instance_buffer_layout_test.cpp`, `render_passes_test.cpp`
@@ -299,7 +300,7 @@ real regressions. They are still listed below for completeness.
 | version.hpp | 2 | 2 | 0 | 0 |
 | World.hpp | ~20 | 16 | 1 (4 missing batch-5 `tryGetX`) | 1 (`ArchetypeLocation::valid`) |
 | render/Camera.hpp | 2 | 1 | 1 (`Viewport`) | 0 |
-| render/DebugGeometry.hpp | 3 | 3 | 0 | 0 |
+| render/DebugGeometry.hpp | 5 | 5 | 0 | 0 |
 | render/DrawItem.hpp | 5 | 1 (DrawItem) | 1 (`MeshSkinnedRef`) | 3 (`MaterialOverride`/`AnimationPoseRef`/phantoms) |
 | render/InstanceBufferLayout.hpp | 3 | 3 | 0 | 0 |
 | render/Light.hpp | 2 | 1 | 0 | 1 (`LightType` switched) |

@@ -134,6 +134,37 @@ emit — better expressed as the few lines inside your own
 Renderers that want fancier culling (occlusion queries, hierarchical
 Z, portal-based) layer it on top of `cameraMask`.
 
+### Per-camera debug geometry (M7.2)
+
+`DebugLine` and `DebugPoint` carry the same kind of mask as `DrawItem`:
+
+```cpp
+struct DebugLine {
+    Vec3 a;
+    Vec3 b;
+    std::uint32_t colorRGBA  = 0xFFFFFFFFu;
+    std::uint32_t cameraMask = 0xFFFFFFFFu;  // bit k ↔ RenderFrame::cameras[k]
+};
+```
+
+Default `cameraMask = 0xFFFFFFFFu` keeps every primitive visible from
+every camera — the pre-M7.2 behavior. A producer that wants a HUD
+overlay drawn only in slot `k`'s viewport sets
+`primitive.cameraMask = (1u << k)` before pushing it to the builder.
+
+**Renderer contract:**
+- Renderers that support per-camera filtering MUST honor the mask
+  (e.g. the reference Vulkan renderer groups vertices per-camera in
+  `recordFrame` and draws only the matching slice in `recordCamera`).
+- Renderers that don't filter MUST still treat any non-zero mask as
+  "visible" so the all-ones default is renderer-neutral.
+- A mask of `0u` means "draw on no camera" — the primitive is
+  silently dropped end-to-end.
+
+`DebugText` does not (yet) carry a mask; producers who need per-camera
+text can emit one `DebugText` per camera with positions remapped to
+each viewport.
+
 ## Instance buffer layout
 
 ```cpp

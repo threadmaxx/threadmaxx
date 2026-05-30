@@ -81,6 +81,7 @@ set(THREADMAXX_TESTS
     renderer_resize_test
     resource_handle_indirection_test
     debug_text_owning_test
+    debug_camera_mask_test
     build_render_frame_seconds_test
     render_pass_ordering_test
     render_frame_interpolation_test
