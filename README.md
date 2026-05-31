@@ -85,11 +85,60 @@ F1 toggle Chrome-trace capture, F5 quick-save, F9 diagnose save.
 | `THREADMAXX_BUILD_BENCHMARKS` | `OFF` | Builds `bench/` binaries (run by hand; not in CTest) |
 | `THREADMAXX_BUILD_LONG_SOAK` | `OFF` | Builds `tests/concurrency_soak_long.cpp` (~5-6 min runtime) |
 | `THREADMAXX_WARNINGS_AS_ERRORS` | `OFF` | Promotes `-Wsign-conversion -Wconversion -Wshadow -Wold-style-cast` to errors. The project compiles clean under it — keep it that way. |
+| `THREADMAXX_BUILD_SIMD` | `ON` | Builds the header-only `threadmaxx::simd` sibling library and includes it in the install set. |
+| `THREADMAXX_INSTALL` | `ON` when top-level, `OFF` when `add_subdirectory`'d | Generates the `install(...)` rules (headers, static lib, package config). |
+
+## Install
+
+After building, install to the system prefix or a custom location:
+
+```sh
+cmake --install build                              # default prefix (/usr/local on Linux)
+cmake --install build --prefix /opt/threadmaxx     # custom prefix
+```
+
+What lands in the install tree:
+
+- `<prefix>/include/threadmaxx/…` — every public core header.
+- `<prefix>/include/threadmaxx_simd/…` — sibling SIMD headers (when
+  `THREADMAXX_BUILD_SIMD=ON`, the default).
+- `<prefix>/lib/libthreadmaxx.a` — the static core library.
+- `<prefix>/lib/cmake/threadmaxx/{threadmaxxConfig,threadmaxxConfigVersion,threadmaxxTargets}.cmake`
+  — package config + exported targets.
+
+The SIMD library is header-only, so the install only adds its headers and
+exports its `INTERFACE` target — no extra `.a` file.
+
+### Consume from another project
+
+After installing, downstream `CMakeLists.txt` finds and links:
+
+```cmake
+find_package(threadmaxx 1.2 CONFIG REQUIRED)
+target_link_libraries(my_game PRIVATE threadmaxx::threadmaxx)
+
+# Optional sibling SIMD library — present when SIMD was built+installed:
+if (TARGET threadmaxx::simd)
+    target_link_libraries(my_game PRIVATE threadmaxx::simd)
+endif()
+```
+
+If you installed to a non-default prefix:
+
+```sh
+cmake -DCMAKE_PREFIX_PATH=/opt/threadmaxx -S . -B build
+# or, more targeted:
+cmake -Dthreadmaxx_DIR=/opt/threadmaxx/lib/cmake/threadmaxx -S . -B build
+```
+
+The package config re-finds the one external dependency (`Threads`) for
+you, so consumers don't have to.
 
 ## A minimal game
 
-Drop the engine into your CMake project and link the `threadmaxx::threadmaxx`
-target:
+Drop the engine into your CMake project — either install it and
+`find_package(threadmaxx CONFIG REQUIRED)` (see [Install](#install)) or
+vendor the source and use `add_subdirectory`:
 
 ```cmake
 add_subdirectory(threadmaxx)

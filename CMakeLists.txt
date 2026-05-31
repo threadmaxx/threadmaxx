@@ -184,6 +184,21 @@ if (THREADMAXX_INSTALL)
         FILES_MATCHING PATTERN "*.hpp"
     )
 
+    # Sibling SIMD library — header-only INTERFACE target. Only exported
+    # when THREADMAXX_BUILD_SIMD is ON; otherwise the threadmaxx package
+    # ships without it and `if (TARGET threadmaxx::simd)` is the
+    # downstream probe.
+    if (THREADMAXX_BUILD_SIMD)
+        install(TARGETS threadmaxx_simd
+            EXPORT threadmaxxTargets
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_simd
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
     install(EXPORT threadmaxxTargets
         FILE threadmaxxTargets.cmake
         NAMESPACE threadmaxx::

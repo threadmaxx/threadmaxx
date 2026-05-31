@@ -17,4 +17,12 @@ find_dependency(Threads)
 
 include("${CMAKE_CURRENT_LIST_DIR}/threadmaxxTargets.cmake")
 
+# Sibling SIMD library — only present when THREADMAXX_BUILD_SIMD was
+# ON at install time. The export uses the literal target name
+# (`threadmaxx::threadmaxx_simd`); add the short `threadmaxx::simd`
+# alias so downstream code can use the same name as in-tree builds.
+if (TARGET threadmaxx::threadmaxx_simd AND NOT TARGET threadmaxx::simd)
+    add_library(threadmaxx::simd ALIAS threadmaxx::threadmaxx_simd)
+endif()
+
 check_required_components(threadmaxx)
