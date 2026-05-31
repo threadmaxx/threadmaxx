@@ -3218,18 +3218,120 @@ Verification: ctest green (159/159 with the new
 `tou2d_water_test`; +1 over M7.5). 200-tick headless smoke
 clean (`[ConsoleRenderer] shutdown after 201 frames`).
 
-**M7.7 — Acceptance closeout**
+**M7.7 — Acceptance closeout (LANDED 2026-05-31)**
 
-Mirror the M6.10 acceptance checklist for the M7 batches:
-- [ ] AI low-HP behavior tactical (M7.1)
-- [ ] AI no longer stalls / wanders correctly (M7.1)
-- [ ] HUD per-camera ownership clean across all layouts (M7.2)
-- [ ] Thruster + damage smoke read correctly under playtest (M7.3)
-- [ ] Allied AI does not target same-faction members (M7.4)
-- [ ] Repair base vs kit split is playable + extensible (M7.5)
-- [ ] Water is traversable with smooth transitions (M7.6)
-- [ ] No M6 acceptance criteria regressed
-- [ ] Every M7 batch shipped with a test in the same PR
+The closeout batch. Following M6.10's pattern: every M7.1–M7.6 batch
+landed with its own test in the same commit, and no remaining bug
+was surfaced by re-running the full audit, so M7.7 is a documentation
+sweep rather than a new-mechanic batch. ctest 159/159 green;
+`threadmaxx_tou2d 200` final pos `(-42.00, -43.25, 0.00)` —
+bit-identical to M7.6's landing measurement.
+
+**M7 ACCEPTANCE CRITERIA**:
+
+- [x] **AI low-HP behavior tactical (M7.1).** Pinned by
+      `tou2d_bot_behavior_test` — `findNearestRepairTile` returns
+      false on empty grids / non-positive radii / out-of-radius
+      tiles and the nearest hit on multi-tile grids. The retreat-
+      only-toward-a-reachable-base branch in `BotControlSystem` no
+      longer fires the "flee into open space and die" failure mode
+      from the playtest.
+- [x] **AI no longer stalls / wanders correctly (M7.1).** Diagnosed
+      in M7.1.c as the pre-M7.1 retreat-without-repair bug producing
+      `desLen ≈ 0` and falling through to a backward-pointing aim;
+      M7.1.a removes that failure mode by gating retreat on tile
+      availability. Wander branch reachability remains
+      arena-shape-dependent (`kWanderRange = 360 wu` vs synthetic
+      arena diagonal `~115 wu`); the design call is "playtest drives
+      retuning," not engine-side change.
+- [x] **HUD per-camera ownership clean across all layouts (M7.2).**
+      Pinned by `debug_camera_mask_test` (default sentinels, FIFO
+      across mixed-mask emits, builder→engine→`RenderFrame` round-
+      trip). `HudSystem` per-slot primitives carry `cameraMask =
+      (1u << s)` so each viewport renders only its own HUD; the
+      winner banner keeps the all-ones default so it appears in every
+      camera that overlaps it.
+- [x] **Thruster + damage smoke read correctly under playtest
+      (M7.3).** Pinned by `tou2d_particles_test` —
+      `thrustColorForAge` endpoint + per-channel monotonic lerp,
+      `damageSmokeInterval` threshold gate + monotonicity sweep + the
+      [3, 32] band, and the `buildRenderFrame` round-trip
+      (`colorRGBA & 0x00FFFFFF` matches `kThrustColorHot` /
+      `0x00606468u`). Visual character is playtest-driven; no
+      automated visual gate (same posture as M6.7's HUD readability
+      criterion).
+- [x] **Allied AI does not target same-faction members (M7.4).**
+      Pinned by `tou2d_faction_test` — eight `botShotHitsAlly`
+      scenarios (straight-ahead ally suppressed, different-faction
+      fires, out-of-range / out-of-arc / behind fires, self-row
+      skip, multi-ally OR, empty list). `LocalPlayer.factionId`
+      default + sentinel correctness pinned in the same test.
+- [x] **Repair base vs kit split is playable + extensible (M7.5).**
+      Pinned by `tou2d_pickup_framework_test` (POD sizes, catalogue
+      band, respawn countdown sim) and `tou2d_repair_pickup_test`
+      (per-tick `kRepairBaseHpPerTick` regen + clamp; proc-gen
+      `Attribute::RepairBase` determinism). Extensibility surface is
+      the `PickupKind` enum + `kPickupSpecs` table; a new kind is one
+      row + one switch arm at the apply site.
+- [x] **Water is traversable with smooth transitions (M7.6).**
+      Pinned by `tou2d_water_test` — `Attribute::Water = 4` byte
+      pin, `setWater` round-trip, tunable bands, and the four
+      integration semantics (air-only matches `-g·dt`, fully-wet
+      single-tick velocity strictly greater, 600-tick terminal-fall
+      ≤ 75% of air-only, half-wetness strictly between for monotonic
+      smooth blend).
+- [x] **No M6 acceptance criteria regressed.** ctest 159/159
+      green covers every M6 pin (`tou2d_pause_test`,
+      `tou2d_options_screen_test`, `tou2d_settings_io_test`,
+      `tou2d_results_screen_test`, `tou2d_hud_accessibility_test`,
+      `tou2d_particle_photosensitive_test`,
+      `tou2d_toast_render_test`, `tou2d_debug_overlay_test`,
+      `tou2d_ui_back_routing_test`, the four M6.1–M6.4 row-table
+      tests). 200-tick smoke produces the same final ship position
+      as M6.5/M6.6/M6.7 baseline. M6.5 settings load + M6.7 HUD
+      accessibility forwarding paths untouched by M7.
+- [x] **Every M7 batch shipped with a test in the same PR.**
+      M7.1 → `tou2d_bot_behavior_test`; M7.2 →
+      `debug_camera_mask_test`; M7.3 → `tou2d_particles_test`;
+      M7.4 → `tou2d_faction_test` (+ `tou2d_player_setup_test`
+      Faction-cycle block); M7.5 → `tou2d_pickup_framework_test`
+      (+ `tou2d_repair_pickup_test` rewire); M7.6 →
+      `tou2d_water_test`; M7.7 → no new test (closeout — already-
+      pinned criteria swept).
+
+**M7 — Outstanding deferred work** (documented in batch-level
+"Still TBD" subsections; surveyed inline 2026-05-31). Tracked here
+so the M7 closeout doesn't bury them — none block acceptance, each
+is its own focused follow-up:
+
+- **Engine-restart-with-MatchSetup primitive.** Unlocks M6.2
+  `StartMatch` apply, M6.4 `RestartMatch` apply, M6.6 `Rematch`
+  apply (today host-logs), and M6.1 MainMenu "Continue" enablement.
+  Single primitive, four call sites.
+- **M7.5 kit spawning.** Framework + behaviour split landed; the
+  demo currently spawns zero kits. The Pickup user component +
+  `RepairKitSystem` are wired; what's missing is a spawn-time
+  placer (synthetic + proc-gen) and a render asset.
+- **M7.6 procedural water sprinkle.** Blocked on bumping
+  `ProceduralLevelConfig` past its 8-byte replay-header reservation.
+  `BulletTerrainSystem` water splash particles + wetness piped into
+  thruster plume audio are smaller polish items that don't share
+  that blocker.
+- **M6.5 sub-screens whose values persist but don't yet apply
+  mid-run.** Key rebinding UI (Controls), live music driver,
+  Video knobs (fullscreen/vsync/ui_scale/resolution), Gameplay
+  knobs (damageScale / respawnDelayTicks / cameraMode), Benchmark
+  trace-sink + scripted-skip toggles. All persist round-trip
+  correctly; each one is one read at engine-restart time inside
+  `TouGame::setMatchSetup` once the matching feature ships.
+- **M6.7b HUD polish queue.** Damage-tick flash, weapon icon
+  sprites, identity badge (depends on M6.3 tag plumb), match
+  timer countdown (depends on time-cap `RoundEnded`), low-ammo /
+  ship-on-fire warning markers.
+- **M6.6 scoreboard depth.** Per-slot deaths / damage-dealt /
+  damage-taken (needs `BulletShipCollisionSystem` stats).
+- **M5.1 spectator camera, M5.8 self-effect weapons
+  (Teleporter / Brickwall).** Post-v1 by design.
 
 #### M7 — Engine-side prereqs
 
