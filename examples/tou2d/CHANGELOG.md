@@ -11,6 +11,76 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ---
 
+## Post-M7 — playtest extensions
+
+### B2 — `.lev` `/KEY value` blob decoder + section3 round-2 RE (2026-05-31)
+Reverse-engineered the per-level game-design parameters embedded in
+the `.lev` container. Layout fully mapped at offset 0x122..0x1B8 (see
+`TOU_RE.md` § "section3 — partial decode" for the byte-level table)
+and validated bit-identically against all 4 shipped levels'
+`makelev/<Stem>.txt` sidecars. Parser landed as a hermetic header
+(`LevConfig.hpp`) + parser wired into `tou2d_import_lev`; the
+generated `config.txt` now carries `waterc`, `gravity`,
+`resistance`, `colldamage`, `bouncing`, `ambient`, `parallaxat`,
+`gglevel`, `ggtheme`, `ggshape`, `repair`, `stuffd`, `signd`,
+`randomseed` — no more hand-editing for original-physics fidelity.
+
+`section3.bin` further explored: (value, count) pair format
+confirmed, `(0xFF, 0xFF)` terminator confirmed, `(v, 0)` compact
+short-form for single cells confirmed, high-nibble subtype + low-
+nibble class taxonomy mapped. Value `0x03` = Air confirmed via
+top-row alignment with `Jungle.tga`. Decoder still parked at
+~63% structural match; the JPEG fallback handles gameplay so
+this is post-v1 polish.
+
+20-byte record payload (12-byte tail beyond x,y) examined across
+all 4 levels: payload bytes 5..11 are always zero; bytes 0..4 vary
+in a small enumeration that looks like a (team, kind, sub-kind)
+tuple. All record positions verified to land on Air pixels — they
+are spawn points / POIs.
+
+Test: `tou2d_lev_config_test` (synthetic-bytes parser pin across
+shipped-byte values, theme-string NUL semantics, randomSeed
+endianness, buffer-too-short rejection). Verified the synthetic
+encoder reproduces jungle.lev's `[0x122, 0x1B8)` bytes with zero
+diffs. ctest 161/161 green.
+
+### B1 — imported-level menu picker + JPEG-derived attribute fallback (2026-05-31)
+Closes the "menu has no directory enumerator" gap on the MatchSetup
+screen. `LevelEnumerator` scans `<assets>/levels/*` for valid imported
+level dirs (`attribute.tga` OR `visual.jpg` present), sorted by name.
+`MatchSetup` gains an `importedLevelIdx: u8` field (0xFF = synthetic
+fallback) consuming one of the existing `_pad` bytes — POD size
+unchanged. New `MatchSetupKnob::ImportedLevel` row sits at MatchSetup
+index 5 between `UseGen` and `GenSeed`; empty enumeration formats as
+`"(no levels)"` and cycling is a no-op. Host (main.cpp) enumerates at
+startup, passes names to `UISystem::setImportedLevels`, and resolves
+picked-idx → path at `restartMatch` time before `setLevelDir`.
+
+`tou2d_import_lev` learned a JPEG-derived `attribute.tga` fallback —
+when no sibling `makelev/<Stem>.tga` exists (the case for desert /
+minibase / woods on a vanilla TOU install) it decodes `visual.jpg` and
+emits a binary Air/Solid TGA via luminance threshold (BT.601, Y ≥ 64).
+All 4 shipped `.lev`s now produce a loadable `attribute.tga` after
+import. `LevelLoader` learned the same fallback in-process for drop-in
+levels that ship only `visual.jpg`.
+
+`section3.bin` (the original RLE attribute map) further reverse-
+engineered — header layout (u32 record_count + 20-byte entity records)
+confirmed across all 4 levels; RLE stream confirmed at 2× downsample of
+the visual JPG resolution; full decoder parked at a 50% structural-
+match milestone in favor of shipping the JPEG fallback. Findings
+pinned in `TOU_RE.md` § 3 + § 6.
+
+`assets/*` + `examples/*/assets/` covered by `.gitignore` — imported
+levels are drop-in only, no redistribution from our side.
+
+Tests: `tou2d_level_picker_test` (LevelEnumerator sort+filter, UISystem
+Level scroller domain across empty / populated / shrink-revalidate
+states, LevelLoader JPEG fallback grid build, reject-on-empty-dir);
+existing `tou2d_match_setup_test` + `tou2d_player_setup_test` updated
+to the 14-row layout. ctest 160/160 green.
+
 ## M7 — Polish pass + playtest debt (COMPLETE)
 
 ### M7.7 — Acceptance closeout (2026-05-31)

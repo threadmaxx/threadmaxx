@@ -62,6 +62,12 @@ static_assert(sizeof(PlayerSlotSetup) == 8,
 /// existing `slot % 4` pattern in TouGame.
 inline constexpr std::size_t kMatchSetupSlotCount = 4;
 
+/// 2026-05-31 — sentinel for `MatchSetup::importedLevelIdx` meaning
+/// "no level picked" / synthetic-arena fallback. Indices `[0, N)` map
+/// into the host's enumerated `assets/levels/*` list (see
+/// `LevelEnumerator.hpp`); `kImportedLevelNone` is a permanent reserve.
+inline constexpr std::uint8_t kImportedLevelNone = 0xFFu;
+
 /// All knobs needed to start a match. Field defaults match the M5.1
 /// CLI defaults so a default-constructed `MatchSetup` reproduces the
 /// "no CLI args" gameplay shape (1 human + 3 bots, deathmatch, spread
@@ -81,12 +87,20 @@ struct MatchSetup {
     SpecialKind   specialKind = SpecialKind::Spread;
 
     /// When `useGen == true`, `genCfg` carries the procedural generator
-    /// settings. When `false`, the host falls back to either an imported
-    /// `levelDir` (CLI-only path) or the synthetic arena. The menu's
-    /// MatchSetup screen toggles `useGen` only — `levelDir` is CLI-only
-    /// because the menu has no directory enumerator.
+    /// settings. When `false`, the host first tries the imported level
+    /// selected by `importedLevelIdx`, then falls back to the synthetic
+    /// arena.
     bool                  useGen = false;
-    std::uint8_t          _pad[3] = {};
+
+    /// 2026-05-31 — menu picks one of the enumerated `assets/levels/*`
+    /// imported dirs. `0xFF` (`kImportedLevelNone`) means "no imported
+    /// level selected" — synthetic arena fallback. Any other value
+    /// indexes the host-supplied enumeration list (sorted by name); the
+    /// host resolves index → path before calling `TouGame::setLevelDir`
+    /// at match-start time. The CLI's `--level <path>` still wins when
+    /// set; this knob is ignored on CLI-direct-jump runs.
+    std::uint8_t          importedLevelIdx = 0xFFu;
+    std::uint8_t          _pad[2] = {};
     ProceduralLevelConfig genCfg{};
 
     /// M6.3 — per-slot overrides; default = all-sentinel = CLI auto-cycle.

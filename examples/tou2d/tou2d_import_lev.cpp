@@ -21,6 +21,12 @@
 // Standalone — no engine deps; no Vulkan. Safe to build without GLFW
 // or the renderer.
 
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_STATIC
+#include <stb/stb_image.h>
+
+#include "LevConfig.hpp"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -40,8 +46,13 @@ struct LevHeader {
     std::uint32_t jpegStart;    // 0x16
     std::uint32_t jpegEnd;      // 0x1A
     std::uint32_t section3Start;// 0x1E
-    std::string   author;       // 0x22, 32 bytes ASCII zero-padded
+    std::string   author;       // 0x22, 128 bytes ASCII NUL-padded
+    std::string   email;        // 0xA2, 128 bytes ASCII NUL-padded
 };
+
+// LevConfig + parseLevConfig live in LevConfig.hpp so tests can pin
+// the format without linking the importer. See TOU_RE.md
+// "section3 — partial decode" for the layout table.
 
 bool readFile(const fs::path& p, std::vector<std::uint8_t>& out) {
     std::ifstream f(p, std::ios::binary);
@@ -83,11 +94,17 @@ bool parseHeader(std::span<const std::uint8_t> data, LevHeader& hdr) {
         return false;
     }
 
-    // Author: 32 bytes at offset 0x22, NUL-padded ASCII.
+    // Author: 128 bytes at offset 0x22, NUL-padded ASCII (Latin-1
+    // accents in the wild — see Jungle.lev's "Hannu Kankaanpää").
     const char* a = reinterpret_cast<const char*>(data.data() + 0x22);
     std::size_t alen = 0;
-    while (alen < 32 && a[alen] != '\0') ++alen;
+    while (alen < 128 && a[alen] != '\0') ++alen;
     hdr.author.assign(a, alen);
+    // Email: 128 bytes at offset 0xA2.
+    const char* e = reinterpret_cast<const char*>(data.data() + 0xA2);
+    std::size_t elen = 0;
+    while (elen < 128 && e[elen] != '\0') ++elen;
+    hdr.email.assign(e, elen);
     return true;
 }
 
@@ -184,9 +201,16 @@ int main(int argc, char** argv) {
     decodeJpegSofDimensions(jpeg1, v1w, v1h);
     decodeJpegSofDimensions(jpeg2, v2w, v2h);
 
-    // config.txt — only the fields we trust today. Section-3 decoding
-    // (attribute width/height/cells) is intentionally omitted until
-    // M2.6 is unparked.
+    // Parse the per-level /KEY blob (0x122..0x1B8). Layout fully
+    // mapped against the 4 shipped originals on 2026-05-31; see
+    // TOU_RE.md "/KEY value blob" for the exact field offsets.
+    tou2d::LevConfig lvc{};
+    const bool gotCfg = tou2d::parseLevConfig(data, lvc);
+
+    // config.txt — decoded /KEY value parameters + import metadata.
+    // Loader code consumes section3.bin / attribute.tga directly;
+    // this file is human-readable and forms the basis for hand-
+    // editable knob overrides.
     {
         std::ofstream cfg(outDir / "config.txt");
         if (!cfg) {
@@ -196,10 +220,33 @@ int main(int argc, char** argv) {
         cfg << "# tou2d Tier-1 import of " << inputPath.filename().string() << '\n';
         cfg << "name = "       << stem      << '\n';
         cfg << "author = "     << hdr.author<< '\n';
+        cfg << "email = "      << hdr.email << '\n';
         cfg << "visual_jpg_size = "    << v1w << 'x' << v1h << '\n';
         cfg << "parallax_jpg_size = "  << v2w << 'x' << v2h << '\n';
         cfg << "section3_bytes = "     << sect3.size() << '\n';
         cfg << "config_block_bytes = " << configBlock.size() << '\n';
+        if (gotCfg) {
+            cfg << "# --- decoded /KEY value parameters ---\n";
+            cfg << "para = "        << (lvc.para        ? "yes" : "no") << '\n';
+            cfg << "civil = "       << +lvc.civil       << '\n';
+            cfg << "bomb = "        << +lvc.bomb        << '\n';
+            cfg << "waterc = "      << +lvc.watercR << ',' << +lvc.watercG
+                                    << ',' << +lvc.watercB << '\n';
+            cfg << "disablerun = "  << (lvc.disableRun  ? "yes" : "no") << '\n';
+            cfg << "gravity = "     << (lvc.gravity    * 10) << '\n';
+            cfg << "resistance = "  << (lvc.resistance * 10) << '\n';
+            cfg << "colldamage = "  << (lvc.collDamage * 10) << '\n';
+            cfg << "bouncing = "    << (lvc.bouncing   * 10) << '\n';
+            cfg << "ambient = "     << +lvc.ambient     << '\n';
+            cfg << "parallaxat = "  << +lvc.parallaxAt  << '\n';
+            cfg << "gglevel = "     << (lvc.ggLevel ? "yes" : "no") << '\n';
+            cfg << "ggtheme = "     << lvc.ggTheme      << '\n';
+            cfg << "ggshape = "     << (lvc.ggShape ? "yes" : "no") << '\n';
+            cfg << "repair = "      << +lvc.repair      << '\n';
+            cfg << "stuffd = "      << +lvc.stuffD      << '\n';
+            cfg << "signd = "       << +lvc.signD       << '\n';
+            cfg << "randomseed = "  << lvc.randomSeed   << '\n';
+        }
     }
 
     // Best-effort attribute.tga: copy from sibling makelev/<stem>.tga.
@@ -222,14 +269,67 @@ int main(int argc, char** argv) {
     tryCopyTga(makelev / (capStem + ".tga"));
     tryCopyTga(makelev / (stem + ".tga"));
 
+    // 2026-05-31 — JPEG-derived fallback. The original TOU install
+    // only ships `makelev/Jungle.tga`; the other 3 levels (desert,
+    // minibase, woods) have no sibling source TGA. Without a fallback
+    // those levels end up missing `attribute.tga` and the LevelLoader's
+    // TGA-only path bails before spawning any terrain. The fallback
+    // decodes the embedded visual.jpg and writes a binary Air/Solid
+    // TGA derived by luminance threshold — coarse but enough for the
+    // levels to LOAD; users who want full attribute fidelity should
+    // hand-paint a TGA into the output dir.
+    //
+    // Note: section3.bin IS the original attribute map (RLE-encoded;
+    // u32 record_count + N×20-byte entity records + (value, count)
+    // pairs at half visual JPG resolution). Decoding it is parked —
+    // see TOU_RE.md § 6 for the cracked subset.
+    bool deriveAttr = false;
+    if (!gotTga && !jpeg1.empty()) {
+        int w = 0, h = 0, ch = 0;
+        std::uint8_t* rgb = stbi_load_from_memory(
+            jpeg1.data(), static_cast<int>(jpeg1.size()),
+            &w, &h, &ch, 3);
+        if (rgb && w > 0 && h > 0) {
+            // Write 24-bit uncompressed TGA: 18-byte header + BGR rows.
+            std::vector<std::uint8_t> tga;
+            tga.reserve(18 + std::size_t(w) * h * 3);
+            tga.insert(tga.end(), {
+                0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                static_cast<std::uint8_t>(w & 0xFF),
+                static_cast<std::uint8_t>((w >> 8) & 0xFF),
+                static_cast<std::uint8_t>(h & 0xFF),
+                static_cast<std::uint8_t>((h >> 8) & 0xFF),
+                24, 0x20  // bpp=24, top-down
+            });
+            constexpr std::uint32_t kLumaThreshold = 64;
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const int i = (y * w + x) * 3;
+                    const std::uint32_t r = rgb[i];
+                    const std::uint32_t g = rgb[i + 1];
+                    const std::uint32_t b = rgb[i + 2];
+                    const std::uint32_t luma =
+                        (299u * r + 587u * g + 114u * b) / 1000u;
+                    const std::uint8_t v = (luma >= kLumaThreshold) ? 0xFFu : 0x00u;
+                    tga.push_back(v); tga.push_back(v); tga.push_back(v);
+                }
+            }
+            deriveAttr = writeFile(outDir / "attribute.tga", tga);
+        }
+        if (rgb) stbi_image_free(rgb);
+    }
+
     std::printf("[import_lev] %s -> %s\n", inputPath.string().c_str(),
                 outDir.string().c_str());
     std::printf("  visual:     %ux%u (%zu bytes)\n",
                 v1w, v1h, jpeg1.size());
     std::printf("  parallax:   %ux%u (%zu bytes)\n",
                 v2w, v2h, jpeg2.size());
-    std::printf("  section3:   %zu bytes (encoding unresolved — see TOU_PLAN.md M2.6)\n",
+    std::printf("  section3:   %zu bytes (RLE attribute map; decoder parked — see TOU_RE.md § 6)\n",
                 sect3.size());
-    std::printf("  attribute.tga: %s\n", gotTga ? "copied from sibling makelev/" : "not found");
+    std::printf("  attribute.tga: %s\n",
+                gotTga ? "copied from sibling makelev/"
+                : deriveAttr ? "derived from visual.jpg (coarse Air/Solid)"
+                : "not produced");
     return 0;
 }

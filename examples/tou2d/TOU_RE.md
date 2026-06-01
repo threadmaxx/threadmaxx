@@ -172,44 +172,196 @@ does:
 ### What's STILL not decoded
 
 The exact field layout between byte `0x14` and the start of the
-embedded JPEG (`~0x3be`) is **not fully decoded**. The `~0x2a8` of
-unknown bytes likely contain:
-- Width/height as 32-bit ints (probably near `0x15`).
-- The full `/KEY value` blob that the editor wrote (`/GRAVITY`,
-  `/RESISTANCE`, `/COLLDAMAGE`, `/BOUNCING`, `/WATERC`, `/AMBIENT`,
-  `/PARA`, `/CIVIL`, `/BOMB`, `/DISABLERUN` etc., per the editor
-  documentation in `makelev/Normal.txt`).
-- Possibly GG theme-procedural seed values when the level was
-  generator-produced (`/GGLEVEL`, `/GGTHEME`, `/STUFFD`, `/SIGND`,
-  `/RANDOMSEED`).
+embedded JPEG (`~0x3be`). **2026-05-31 round-2 RE: the `/KEY value`
+blob layout is now FULLY mapped** by cross-referencing each level's
+on-disk bytes against `makelev/<Stem>.txt`. Layout:
 
-**Practical impact**: importer currently outputs default-config
-sidecars; the user has to hand-edit `/GRAVITY` etc. if they want exact
-parity. Continuation work (decoding the per-level config blob) would
-let imported levels run with original physics knobs without manual
-editing.
+```
++0x0022..+0x00A2  /MAKER         char[128]  NUL-padded ASCII (Latin-1 ok)
++0x00A2..+0x0122  /EMAIL         char[128]  NUL-padded ASCII
++0x0122          /PARA           u8 bool   (00=no, 01=yes)
++0x0123          /CIVIL          u8        0..100
++0x0124          /BOMB           u8        0..100
++0x0125..+0x0128 /WATERC         u8[3]     R, G, B
++0x0128          /DISABLERUN     u8 bool
++0x0129          /GRAVITY        u8        ×10 (stored value 10 ⇔ 100 %)
++0x012A          /RESISTANCE     u8        ×10
++0x012B          /COLLDAMAGE     u8        ×10
++0x012C          /BOUNCING       u8        ×10
++0x012D          /AMBIENT        u8        ambient-sound id (0=none, 1=jungle, …)
++0x012E          /PARALLAXAT     u8
++0x012F          /GGLEVEL        u8 bool
++0x0130..+0x0140 /GGTHEME        char[16]  NUL-padded ASCII ("the earth", …)
++0x0140..+0x01B0 (reserved)      112 bytes  all-zero in every shipped level
++0x01B0          /GGSHAPE        u8 bool
++0x01B1          /REPAIR         u8
++0x01B2          /STUFFD         u8
++0x01B3          /SIGND          u8
++0x01B4..+0x01B6 (reserved)      2 bytes   zero in every shipped level
++0x01B6          /RANDOMSEED     u16 LE
++0x01B8..jpegStart (zero padding to JPEG #1)
+```
+
+Cross-check vs the 4 shipped levels (all parsed clean against their
+makelev `.txt` sidecars):
+
+| Field | Jungle | Desert | Minibase | Woods |
+|---|---|---|---|---|
+| /WATERC | 0,120,157 | 0,85,114 | 31,64,7 | 50,50,255 |
+| /DISABLERUN | yes | no | no | no |
+| /COLLDAMAGE | 50 | 100 | 100 | 100 |
+| /BOUNCING | 50 | 100 | 100 | 100 |
+| /AMBIENT | 1 | 0 | 0 | 0 |
+| /PARALLAXAT | 2 | 2 | 4 | 4 |
+| /GGTHEME | "the earth" (all) | | | |
+| /GGSHAPE / /REPAIR / /STUFFD / /SIGND / /RANDOMSEED | yes, 20, 20, 20, 54321 (all) | | | |
+
+**Practical impact**: `tou2d_import_lev` now writes a config.txt with
+the parsed physics knobs (water color, gravity, resistance, collision
+damage, bounce, parallax, ambient sound) so imported levels match the
+original feel without manual editing.
 
 ### Importer status (`tou2d_import_lev`)
 
-- Lands on JPEG extraction reliably across all 4 shipped levels.
-- TGA extraction is the **flaky path** — on a 2026-05-31 retest, the
-  importer ran clean on `jungle.lev` but the `attribute.tga` didn't get
-  created. Repro path + investigation is a continuation candidate.
-- Per-level config sidecar is default values, not extracted from the
-  binary blob.
+- **Decoded header** (2026-05-31 investigation): the binary header
+  carries three `u32 LE` offsets — `jpegStart` at `0x16`, `jpegEnd` at
+  `0x1A`, `section3Start` at `0x1E` — and an `author` string at `0x22`
+  (32 bytes NUL-padded). The container exposes TWO JPEGs (visual +
+  parallax) plus a `section3.bin` trailer.
+- **`attribute.tga` extraction strategy** — the importer first looks
+  for a sibling source TGA at `<install>/makelev/<Stem>.tga`. Only
+  `jungle.lev` ships one in a vanilla install; desert / minibase /
+  woods used to come up empty. **2026-05-31 fix**: a JPEG-derived
+  fallback now reads `visual.jpg` and emits a 24-bit uncompressed TGA
+  with a luminance threshold (Y ≥ 64 → Solid (white triple), else Air
+  (black)). All 4 levels now produce a valid `attribute.tga` post-
+  import.
+- **Per-level config sidecar** is default values, not extracted from
+  the binary blob. The `/KEY value` `/GRAVITY` etc. payload from
+  `makelev/Normal.txt` lives in the un-decoded bytes between `0x22`
+  and `jpegStart` (`~0x3BE` in `minibase.lev`); that's continuation
+  work below.
 
-Continuation work for `.lev` RE:
-1. **Re-confirm TGA extraction across all 4 levels**, find the
-   conditions under which `attribute.tga` doesn't get written. The TGA
-   header sniff (signature at byte after JPEG EOI) is the suspected
-   weak point.
-2. **Decode the `/KEY value` blob between `0x14` and the JPEG SOI**.
-   Probably most efficient: write a hex viewer that highlights
-   `printable-ASCII` runs preceded by `/`; visually walk through
-   `minibase.lev` looking for `/GRAVITY 100\n` etc.
-3. **Round-trip-test the 4 stock levels** through Tier 0 (drop the
-   importer output into `assets/levels/desert/`, load in tou2d, compare
-   against an in-game screenshot of the original).
+### section3 — partial decode (2026-05-31, expanded round-2)
+
+`section3.bin` is the original attribute map. Round-2 investigation
+nailed the format down further but stopped short of a bit-perfect
+decoder. What's confirmed:
+
+```
+offset 0x00         u32 LE record_count      (entity / point-of-interest count)
+offset 0x04         record_count × 20-byte records:
+                      u32 LE x        (image-pixel coord; in [0, image_w))
+                      u32 LE y        (image-pixel coord; in [0, image_h))
+                      12 bytes payload  (see "record payload" below)
+after records       RLE attribute stream
+final two bytes     0xFF 0xFF                (terminator)
+```
+
+**Record positions verified as in-Air spawn / POI sites** — every
+shipped record falls on an Air pixel (RGB ≤ ~80 luminance) of the
+visual JPG. desert (3 recs), jungle (1), minibase (6), woods (0).
+
+**Record payload (12 bytes)** — partial decode. Common forms across
+the shipped levels:
+- `02 03 03 00 00 00 …` (desert ×3, minibase[1] / [3]) — looks like a
+  "default spawn" template.
+- `01 03 01 03 01 00 …` (jungle's only rec) — different mix of small ints.
+- minibase carries variants `00 02 0e 03 …`, `01 01 01 03 01 01 …`,
+  `02 01 03 01 …`, `02 00 03 01 01 …`.
+- Bytes 5..11 are zero in every shipped record — high-byte padding.
+
+The non-zero prefix looks team-or-type-encoded but we can't ground
+the labels without TOU source. Best current guess: bytes 0–3 are a
+team/kind/style triple and byte 4 is a sub-flag.
+
+**RLE stream format (now confirmed)**:
+- Pairs of `(value:u8, count:u8)` — value byte first.
+- `count == 0` is the compact short-form for a 1-cell run (saves a byte
+  vs encoding `(v, 1)` in the rare cases where the encoder needs to
+  emit a single cell between longer runs).
+- `(0xFF, 0xFF)` at end of stream is the terminator.
+- Maximum-length runs of >255 cells are split into multiple pairs of
+  the same value (the tail of jungle is 12+ `(0x67, 0xFF)` pairs
+  followed by `(0x67, 0xF0)` and the terminator — totalling `12×255 +
+  240 = 3300` cells of value `0x67`).
+
+**Value-byte taxonomy**:
+The high nibble appears to be a sub-type / flag, the low nibble the
+primary attribute class. Observed byte values across all 4 levels are
+exactly `{0x00..0x0B, 0x10..0x13, 0x20..0x27, 0x2C..0x2F, 0x60..0x67}`
+plus `0xFF` for the terminator. Matches the `colors.png` legend's
+roughly-30 attribute kinds (Air, Normal land, Brickwall, Repair
+places per team, Water with direction & power 1/2, Air streams, etc.).
+The low-nibble alignment with the legend's grouping is consistent
+with: low 4 bits = base attribute class, high bits = variant (water
+direction × power, repair-team index, etc.).
+
+**Value 3 = Air confirmed**: in jungle the first 59 RLE pairs are
+`(0x03, 0xFF)` × 32 + `(0x03, …)`, totalling 15045 cells of value 3.
+The top 60 rows of the makelev TGA (top-down) are pure black (Air)
+= 30 rows at 2× downsample × 500 = 15000 cells. Match is ≤0.3% off
+on the leading air block — value 3 corresponds to the Air (transparent)
+class.
+
+**Cell count vs target grid**: decoded cell counts across all 4 levels
+sit at ~98% of `(W/2)×(H/2)`:
+
+| Level  | Cells | (W/2)×(H/2) | Markers (v,0) | Ratio |
+|---|---|---|---|---|
+| desert | 245233 | 247500 | 165 | 0.991 |
+| jungle | 266910 | 272500 | 1062 | 0.979 |
+| minibase | 137956 | 140000 | 153 | 0.985 |
+| woods | 285648 | 293000 | 5673 | 0.975 |
+
+This confirms section3 is at the **2× downsample** of the source TGA.
+Rendering jungle row-major at `W=500` produces a clearly recognisable
+jungle (air at top, vegetation in middle, water at bottom, purple
+swamp at the very bottom) but with a consistent left-ward shear —
+each "row" loses some cells relative to the previous. Rendering as
+column-major top-down gives the same level rotated 90° CCW, also
+with shear. Best structural alignment achieved is ~63%
+(section3-value → TGA-color majority match in row-major top-down).
+
+**What the decoder is still missing**: how to consume the
+`(v, 0)` markers correctly so the row stride lands exactly on the
+grid edge. Hypotheses tested and rejected:
+- `(v, 0)` = row terminator (zero cells): produces 1063 rows for
+  jungle when the target is 545 — wrong by ~2×.
+- `(v, 0)` = single cell of v: gives the closest cell totals but
+  leaves shear.
+- `(v, 0)` = fill remaining cells in row with v: blows up cell totals
+  by 4–5×.
+
+The shear suggests there's either a separate per-row width carried by
+the markers themselves, or the format has a column-major sub-stride I
+haven't isolated.
+
+**Why the decoder is parked**: the JPEG-derived fallback gets all 4
+levels playable, and the section3 decode buys attribute fidelity
+(water cells, repair pads embedded in the map, damaged-rubble states)
+on top — a 2nd-order improvement over already-playable levels. For the
+v1 level-picker workflow this is post-v1 polish.
+
+### Continuation work for `.lev` RE
+
+1. **Crack the section3 RLE row-stride mystery**. The cell stream
+   sits at 98% of the 2× downsample of the source TGA. The 2% gap +
+   shear correlates with the `(v, 0)` markers (1062 in jungle vs 545
+   expected rows) but no row-end / fill-row / single-cell hypothesis
+   makes the grid land exactly. Likely needs either TOU source or
+   a richer hex-level comparison against jungle's known TGA. Not
+   blocking: JPEG fallback gives playable levels.
+2. **Map record payload bytes 0..4 to a real schema**. Spawn-position
+   bytes look like a (team-id, kind, sub-kind, ...) tuple but the
+   ground truth requires either `toudoc_makelev.htm`'s entity-counts
+   tables or a controlled experiment (build a known-content `.lev`
+   via the original editor and diff).
+3. **Locate the `/RAINS`, `/PARALLAXSTREAM`, `/DESTROY`, `/TURRETD`
+   fields** — `Normal.txt` documents more keys than we mapped to the
+   binary. They might live in the 112-byte zero block at 0x140..0x1B0
+   when set by non-default editors. None of the 4 shipped originals
+   set them, so we have no positive samples.
 
 ---
 

@@ -186,6 +186,13 @@ constexpr MenuRow kMatchSetupRows[] = {
       MenuRowKind::Scroller, MatchSetupKnob::Special     },
     { "Procedural",        MenuAction::None,       true,
       MenuRowKind::Scroller, MatchSetupKnob::UseGen      },
+    // 2026-05-31 — imported-level picker. Always present in the row
+    // table; when no levels are enumerated the knob formatter prints
+    // "(no levels)" and the cycler is a no-op (domain size 1). The
+    // procedural toggle above wins at match-start time (TouGame's
+    // setMatchSetup checks `useGen` first).
+    { "Level",             MenuAction::None,       true,
+      MenuRowKind::Scroller, MatchSetupKnob::ImportedLevel },
     { "Gen seed",          MenuAction::None,       true,
       MenuRowKind::Scroller, MatchSetupKnob::GenSeed     },
     { "Gen size",          MenuAction::None,       true,
@@ -395,6 +402,14 @@ void UISystem::showResults(const MatchResults& r) noexcept {
     // setCurrent is a no-op if Results is already current — that's the
     // right behaviour (the snapshot was overwritten above).
     setCurrent(UIScreen::Results);
+}
+
+void UISystem::setImportedLevels(std::span<const std::string> names) noexcept {
+    importedLevels_.assign(names.begin(), names.end());
+    if (matchSetup_.importedLevelIdx != kImportedLevelNone &&
+        matchSetup_.importedLevelIdx >= importedLevels_.size()) {
+        matchSetup_.importedLevelIdx = kImportedLevelNone;
+    }
 }
 
 void UISystem::update(threadmaxx::SystemContext& ctx) {
@@ -901,6 +916,24 @@ void UISystem::cycleKnob_(MatchSetupKnob knob,
             s->factionId = factionFromIndex_(nxt);
             break;
         }
+        case MatchSetupKnob::ImportedLevel: {
+            // Cycle: 0..N-1 over enumerated levels, then a trailing
+            // `kImportedLevelNone` slot meaning "synthetic". Empty list
+            // collapses the domain to {None}.
+            const std::int64_t span =
+                static_cast<std::int64_t>(importedLevels_.size()) + 1;
+            const std::int64_t cur =
+                (matchSetup_.importedLevelIdx == kImportedLevelNone ||
+                 matchSetup_.importedLevelIdx >= importedLevels_.size())
+                    ? static_cast<std::int64_t>(importedLevels_.size())
+                    : static_cast<std::int64_t>(matchSetup_.importedLevelIdx);
+            const std::int64_t nxt = wrapInRange_(cur, delta, span);
+            matchSetup_.importedLevelIdx =
+                (nxt == static_cast<std::int64_t>(importedLevels_.size()))
+                    ? kImportedLevelNone
+                    : static_cast<std::uint8_t>(nxt);
+            break;
+        }
         case MatchSetupKnob::Count:
             break;
     }
@@ -1118,6 +1151,23 @@ std::size_t UISystem::formatKnobValue_(MatchSetupKnob knob,
                 // unambiguous; the cycle size matches kFactionCycleSize
                 // (Auto + 4 named) so f ∈ [0, 3] here in normal use.
                 n = std::snprintf(buf, bufN, "F%u", unsigned(f));
+            }
+            break;
+        }
+        case MatchSetupKnob::ImportedLevel: {
+            // Empty enumeration → static label so the row remains
+            // visually present (greyed via the row's `enabled` flag
+            // elsewhere).
+            if (importedLevels_.empty()) {
+                n = std::snprintf(buf, bufN, "(no levels)");
+                break;
+            }
+            if (matchSetup_.importedLevelIdx == kImportedLevelNone ||
+                matchSetup_.importedLevelIdx >= importedLevels_.size()) {
+                n = std::snprintf(buf, bufN, "(synthetic)");
+            } else {
+                n = std::snprintf(buf, bufN, "%s",
+                    importedLevels_[matchSetup_.importedLevelIdx].c_str());
             }
             break;
         }

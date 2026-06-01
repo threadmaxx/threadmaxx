@@ -392,6 +392,46 @@ if (TARGET tou2d_core)
     add_test(NAME tou2d_match_setup_test
              COMMAND tou2d_match_setup_test)
 
+    # 2026-05-31 — imported-level picker contract: LevelEnumerator
+    # sort+filter, UISystem Level scroller domain (empty / populated /
+    # shrink-revalidate), and LevelLoader JPEG-derived fallback.
+    add_executable(tou2d_level_picker_test
+        tou2d_level_picker_test.cpp)
+    target_link_libraries(tou2d_level_picker_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_level_picker_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_level_picker_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_level_picker_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_level_picker_test
+             COMMAND tou2d_level_picker_test)
+
+    # 2026-05-31 — .lev /KEY value blob layout. Hermetic synthetic-
+    # bytes parser pin; ties the offset table in TOU_RE.md to a build-
+    # time assertion so future format changes can't drift silently.
+    add_executable(tou2d_lev_config_test
+        tou2d_lev_config_test.cpp)
+    target_include_directories(tou2d_lev_config_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_lev_config_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_lev_config_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_lev_config_test
+             COMMAND tou2d_lev_config_test)
+
     # M6.4 — Pause screen row table, Resume/Restart/Return-to-main/
     # Quit accept dispatch, pending* flag stickiness + independence,
     # and MainMenu Continue-greyed posture (the placeholder for the

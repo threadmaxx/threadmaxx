@@ -1,8 +1,9 @@
 // tou2d_match_setup_test — M6.2 MatchSetup screen contract.
 //
 // Pins:
-//   * MatchSetup screen row table — 10 scroller rows in MatchSetupKnob
-//     order, then Players (M6.3) + Start + Back.
+//   * MatchSetup screen row table — 11 scroller rows in MatchSetupKnob
+//     order (10 original + ImportedLevel inserted at row 5 in 2026-05-31),
+//     then Players (M6.3) + Start + Back.
 //   * Constructing UISystem with UIScreen::MatchSetup lands focus on
 //     row 0 (Humans scroller).
 //   * cycleFocused(+1) on each scroller advances the bound knob; the
@@ -51,40 +52,42 @@ int main() {
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
         const auto rs = ui.currentRows();
-        // M6.3 — row 10 inserted: "Players...".
-        CHECK_EQ(rs.size(), std::size_t{13});
+        // 2026-05-31 — "Level" row inserted at index 5 (between UseGen
+        // and GenSeed); row count went 13 → 14.
+        CHECK_EQ(rs.size(), std::size_t{14});
 
-        // First 10 rows are scrollers in MatchSetupKnob order.
+        // First 11 rows are scrollers in MatchSetupKnob order.
         const MatchSetupKnob expected[] = {
             MatchSetupKnob::Humans,
             MatchSetupKnob::Bots,
             MatchSetupKnob::Mode,
             MatchSetupKnob::Special,
             MatchSetupKnob::UseGen,
+            MatchSetupKnob::ImportedLevel,
             MatchSetupKnob::GenSeed,
             MatchSetupKnob::GenLevel,
             MatchSetupKnob::GenDensity,
             MatchSetupKnob::GenPerim,
             MatchSetupKnob::RepairTiles,
         };
-        for (std::size_t i = 0; i < 10; ++i) {
+        for (std::size_t i = 0; i < 11; ++i) {
             CHECK(rs[i].kind == MenuRowKind::Scroller);
             CHECK(rs[i].scrollerKnob == expected[i]);
             CHECK(rs[i].enabled);
         }
 
-        // Trailing action rows.
-        CHECK(rs[10].kind == MenuRowKind::Action);
-        CHECK(rs[10].action == MenuAction::PlayerSetup);
-        CHECK(std::strcmp(rs[10].label, "Players...") == 0);
-
+        // Trailing action rows (shifted +1 by the Level insertion).
         CHECK(rs[11].kind == MenuRowKind::Action);
-        CHECK(rs[11].action == MenuAction::StartMatch);
-        CHECK(std::strcmp(rs[11].label, "Start match") == 0);
+        CHECK(rs[11].action == MenuAction::PlayerSetup);
+        CHECK(std::strcmp(rs[11].label, "Players...") == 0);
 
         CHECK(rs[12].kind == MenuRowKind::Action);
-        CHECK(rs[12].action == MenuAction::BackToMain);
-        CHECK(std::strcmp(rs[12].label, "Back") == 0);
+        CHECK(rs[12].action == MenuAction::StartMatch);
+        CHECK(std::strcmp(rs[12].label, "Start match") == 0);
+
+        CHECK(rs[13].kind == MenuRowKind::Action);
+        CHECK(rs[13].action == MenuAction::BackToMain);
+        CHECK(std::strcmp(rs[13].label, "Back") == 0);
 
         // Focus starts on the Humans scroller (first enabled row).
         CHECK_EQ(ui.focusIndex(), std::int32_t{0});
@@ -141,7 +144,14 @@ int main() {
         ui.cycleFocused(+1);
         CHECK(s.useGen);
 
-        // GenSeed (row 5) — cycles preset list.
+        // 2026-05-31 — Level (row 5) inserted; with no enumerated
+        // levels the domain is {None} and cycling is a no-op.
+        ui.moveFocus(+1);
+        CHECK_EQ(s.importedLevelIdx, tou2d::kImportedLevelNone);
+        ui.cycleFocused(+1);
+        CHECK_EQ(s.importedLevelIdx, tou2d::kImportedLevelNone);
+
+        // GenSeed (row 6 post-insertion) — cycles preset list.
         ui.moveFocus(+1);
         const std::uint32_t seedBefore = s.genCfg.seed;
         ui.cycleFocused(+1);
@@ -151,9 +161,10 @@ int main() {
     // ---- cycleFocused on Action rows is no-op ----------------------
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
-        // Jump to Start row (M6.3 — now index 11; Players took 10).
-        for (int i = 0; i < 11; ++i) ui.moveFocus(+1);
-        CHECK_EQ(ui.focusIndex(), std::int32_t{11});
+        // Jump to Start row (2026-05-31 — now index 12; Players took 11,
+        // Level row inserted at 5 shifts everything trailing by +1).
+        for (int i = 0; i < 12; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{12});
         const MatchSetup snap = ui.matchSetup();
         ui.cycleFocused(+1);
         CHECK(bytewiseEqual(snap, ui.matchSetup()));
@@ -164,7 +175,7 @@ int main() {
     // ---- Start accept: pendingStartMatch + dismiss menu ------------
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
-        for (int i = 0; i < 11; ++i) ui.moveFocus(+1);  // Start row (M6.3 — index 11)
+        for (int i = 0; i < 12; ++i) ui.moveFocus(+1);  // Start row (index 12)
         CHECK(!ui.pendingStartMatch());
         const MenuAction got = ui.acceptFocused();
         CHECK(got == MenuAction::StartMatch);
@@ -179,9 +190,9 @@ int main() {
     // ---- Back accept jumps to MainMenu + resets focus --------------
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
-        // Navigate to Back (M6.3 — now index 12).
-        for (int i = 0; i < 12; ++i) ui.moveFocus(+1);
-        CHECK_EQ(ui.focusIndex(), std::int32_t{12});
+        // Navigate to Back (2026-05-31 — now index 13).
+        for (int i = 0; i < 13; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{13});
         const MenuAction got = ui.acceptFocused();
         CHECK(got == MenuAction::BackToMain);
         CHECK(ui.current() == UIScreen::MainMenu);
@@ -213,14 +224,18 @@ int main() {
         // Row 2 = Mode scroller, default Deathmatch.
         ui.formatRow(2, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Mode: Deathmatch") == 0);
-        // Row 10 = Players... (Action; M6.3).
-        ui.formatRow(10, buf, sizeof(buf));
-        CHECK(std::strcmp(buf, "Players...") == 0);
-        // Row 11 = Start (Action).
+        // Row 5 = Level scroller; with no enumerated levels the value
+        // formatter prints the static "(no levels)" sentinel.
+        ui.formatRow(5, buf, sizeof(buf));
+        CHECK(std::strcmp(buf, "Level: (no levels)") == 0);
+        // Row 11 = Players... (Action; was 10 pre-Level-insertion).
         ui.formatRow(11, buf, sizeof(buf));
-        CHECK(std::strcmp(buf, "Start match") == 0);
-        // Row 12 = Back (Action).
+        CHECK(std::strcmp(buf, "Players...") == 0);
+        // Row 12 = Start (Action).
         ui.formatRow(12, buf, sizeof(buf));
+        CHECK(std::strcmp(buf, "Start match") == 0);
+        // Row 13 = Back (Action).
+        ui.formatRow(13, buf, sizeof(buf));
         CHECK(std::strcmp(buf, "Back") == 0);
         // Out-of-range row index yields empty string.
         ui.formatRow(99, buf, sizeof(buf));
@@ -263,18 +278,21 @@ int main() {
         // UseGen: row 4, Off → On: cycle +1.
         ui.moveFocus(+1);
         ui.cycleFocused(+1);
-        // GenSeed: row 5; default is 0 (index 0 in preset list); 42 is
+        // 2026-05-31 — Level: row 5 (inserted). No-op: empty enumeration
+        // means cycle stays at kImportedLevelNone == default.
+        ui.moveFocus(+1);
+        // GenSeed: row 6; default 0 (preset index 0); 42 is preset
         // index 3. Cycle +3.
         ui.moveFocus(+1);
         ui.cycleFocused(+3);
-        // GenLevel: row 6, default 2 (matches target) — no-op.
+        // GenLevel: row 7, default 2 (matches target) — no-op.
         ui.moveFocus(+1);
-        // GenDensity: row 7, default 50 → 70: +2 buckets of 10.
+        // GenDensity: row 8, default 50 → 70: +2 buckets of 10.
         ui.moveFocus(+1);
         ui.cycleFocused(+2);
-        // GenPerim: row 8, default On (matches target) — no-op.
+        // GenPerim: row 9, default On (matches target) — no-op.
         ui.moveFocus(+1);
-        // RepairTiles: row 9, default 0 → 12 = +3 buckets of 4.
+        // RepairTiles: row 10, default 0 → 12 = +3 buckets of 4.
         ui.moveFocus(+1);
         ui.cycleFocused(+3);
 

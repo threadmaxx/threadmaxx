@@ -52,6 +52,15 @@ when Vulkan 1.3 + GLFW + `glslc` aren't found — same gating as `rpg_demo`.
 | `--bots=M` | Number of AI ships (0..63). | `3` |
 | `--mode=<m>` | Match mode: `deathmatch` / `last-standing`. | `deathmatch` |
 | `--level <path>` | Imported level dir (Tier 0/1 output) or `synthetic`. | `synthetic` |
+
+The Match Setup menu also enumerates any imported level dirs found
+under `<assets>/levels/*` (`assets/levels/` at the repo root by
+default; override via `TOU2D_ASSETS=<dir>`). Drop in the output of
+`tou2d_import_lev <foo.lev> assets/levels/` and the new level shows up
+in the "Level" picker on the MatchSetup screen — generator off picks
+the imported level, generator on takes precedence. Imported level dirs
+are gitignored; they're user-supplied drop-ins, not redistributed from
+this repo.
 | `--ticks=N` | Bounded headless smoke. Exits after N ticks. | unbounded |
 
 The combined minimum is `humans + bots >= 2` — a match always has at least

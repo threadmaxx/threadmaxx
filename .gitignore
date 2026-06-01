@@ -15,9 +15,15 @@ TOU
 # original game's assets are NOT redistributable; not tracked in git.
 # `assets/*` (not `assets`) so per-subdir re-inclusion works for
 # the permissively-licensed M6.0 UI font (see exception below).
+# 2026-05-31 — imported levels at `assets/levels/<name>/` produced
+# by `tou2d_import_lev` are user-supplied drop-ins; same posture.
 assets/*
 # M6.0 — exception: the bundled UI font is permissively licensed
 # (DejaVu Sans Mono, Bitstream-Vera-derivative). Ships in-tree so a
 # fresh checkout has a default usable font without manual install.
 # Drop-in replaceable (see assets/ui/README.md).
 !assets/ui/
+# 2026-05-31 — same posture for any per-example `assets/` subdir, in
+# case a user runs the binary from `examples/tou2d/` and drops levels
+# there instead of the repo-root `assets/`.
+examples/*/assets/

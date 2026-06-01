@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <vector>
 
 namespace threadmaxx { class Engine; }
 
@@ -136,7 +138,13 @@ enum class MatchSetupKnob : std::uint8_t {
     /// index, which puts every slot in its own faction (default = pre-
     /// M7.4 free-for-all).
     SlotFaction  = 16,
-    Count        = 17,  ///< Sentinel (== number of scroller knob classes).
+    /// 2026-05-31 — imported-level picker. Cycles through the host-
+    /// supplied `EnumeratedLevel` list (set via
+    /// `UISystem::setImportedLevels`) plus a trailing "(synthetic)"
+    /// sentinel. The row is disabled when no levels are enumerated or
+    /// when `useGen == true` (procedural takes precedence).
+    ImportedLevel = 17,
+    Count        = 18,  ///< Sentinel (== number of scroller knob classes).
 };
 
 /// M6.5 — scroller knob identifier for Options sub-screens. Parallel
@@ -391,6 +399,21 @@ public:
     /// host emits `AudioVolumeChanged` once explicitly after seeding.
     void setSettings(const Settings& s) noexcept { settings_ = s; }
 
+    /// 2026-05-31 — supply the host's enumerated imported-level names
+    /// for the MatchSetup screen's Level picker. Pass the result of
+    /// `enumerateImportedLevels(...)` mapped to names; the UI only
+    /// needs names for display + the index-based MatchSetup field. An
+    /// empty span disables the Level row.
+    ///
+    /// Names are copied into UISystem-owned storage so the caller's
+    /// list can churn without affecting on-screen state. The current
+    /// `matchSetup_.importedLevelIdx` is clamped to the new list size
+    /// (anything past `names.size()` becomes `kImportedLevelNone`).
+    void setImportedLevels(std::span<const std::string> names) noexcept;
+    std::span<const std::string> importedLevels() const noexcept {
+        return { importedLevels_.data(), importedLevels_.size() };
+    }
+
     /// True after a back-out from `UIScreen::Options` (or from any
     /// Options sub-screen all the way out). Sticky; the host calls
     /// `saveSettings()` and then clears via `clearPendingSettingsSave()`.
@@ -433,6 +456,9 @@ private:
     MatchSetup          matchSetup_{};
     MatchResults        matchResults_{};
     Settings            settings_{};
+    /// 2026-05-31 — host-supplied enumerated imported-level names.
+    /// Default empty disables the Level row in MatchSetup.
+    std::vector<std::string> importedLevels_;
 };
 
 } // namespace tou2d

@@ -59,11 +59,13 @@ int main() {
     using tou2d::kMatchSetupSlotCount;
     using tou2d::kShipKindCount;
 
-    // ---- MatchSetup row 10 ("Players...") routes to PlayerSetup -----
+    // ---- MatchSetup "Players..." routes to PlayerSetup --------------
+    // 2026-05-31 — "Level" row inserted at index 5; "Players..." moved
+    // from row 10 to row 11.
     {
         UISystem ui(nullptr, UIScreen::MatchSetup);
-        for (int i = 0; i < 10; ++i) ui.moveFocus(+1);
-        CHECK_EQ(ui.focusIndex(), std::int32_t{10});
+        for (int i = 0; i < 11; ++i) ui.moveFocus(+1);
+        CHECK_EQ(ui.focusIndex(), std::int32_t{11});
         const MenuAction got = ui.acceptFocused();
         CHECK(got == MenuAction::PlayerSetup);
         CHECK(ui.current() == UIScreen::PlayerSetup);

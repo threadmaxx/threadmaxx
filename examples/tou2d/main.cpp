@@ -9,6 +9,7 @@
 #include "DebugOverlaySystem.hpp"
 #include "DemoTypes.hpp"
 #include "InputSystem.hpp"
+#include "LevelEnumerator.hpp"
 #include "MatchSetup.hpp"
 #include "ProceduralLevel.hpp"
 #include "Replay.hpp"
@@ -494,6 +495,29 @@ int main(int argc, char** argv) {
     // no-op'd.
     if (game.uiSystem()) {
         game.uiSystem()->matchSetup() = cliSetup;
+    }
+
+    // 2026-05-31 — enumerate `<assets>/levels/*` for the MatchSetup
+    // screen's Level picker. Cached path-and-name pairs survive across
+    // restarts; the UI gets just the names. Empty list collapses the
+    // Level row to "(no levels)". The host respects the picked index
+    // at `restartMatch` time below.
+    const std::filesystem::path assetsRoot = [&]() -> std::filesystem::path {
+        if (const char* env = std::getenv("TOU2D_ASSETS")) return env;
+        return "assets";
+    }();
+    std::vector<tou2d::EnumeratedLevel> enumeratedLevels =
+        tou2d::enumerateImportedLevels(assetsRoot);
+    {
+        std::vector<std::string> names;
+        names.reserve(enumeratedLevels.size());
+        for (const auto& e : enumeratedLevels) names.push_back(e.name);
+        if (game.uiSystem()) {
+            game.uiSystem()->setImportedLevels(
+                std::span<const std::string>{names.data(), names.size()});
+        }
+        std::printf("[tou2d] enumerated %zu imported level(s) under %s\n",
+                    names.size(), (assetsRoot / "levels").string().c_str());
     }
 
     // M6.5 — load persistent settings.dat (if present) and seed the
@@ -1015,14 +1039,26 @@ int main(int argc, char** argv) {
     // or the synthetic arena fallback.
     auto restartMatch = [&](const tou2d::MatchSetup& setup) {
         std::printf("[tou2d] restartMatch: humans=%u bots=%u mode=%u special=%u "
-                    "useGen=%u\n",
+                    "useGen=%u importedLevelIdx=%u\n",
                     unsigned(setup.numHumans), unsigned(setup.numBots),
                     unsigned(setup.matchMode), unsigned(setup.specialKind),
-                    unsigned(setup.useGen));
+                    unsigned(setup.useGen),
+                    unsigned(setup.importedLevelIdx));
         engine.shutdown();
-        game.setLevelDir({});
+        // 2026-05-31 — resolve the menu's picked imported level back
+        // to a path, so a menu-initiated restart can load assets/levels/*
+        // (procedural still wins when useGen=true). Idx out of range or
+        // = kImportedLevelNone falls through to the synthetic arena.
+        std::filesystem::path resolvedLevelDir;
+        if (!setup.useGen &&
+            setup.importedLevelIdx != tou2d::kImportedLevelNone &&
+            setup.importedLevelIdx < enumeratedLevels.size()) {
+            resolvedLevelDir =
+                enumeratedLevels[setup.importedLevelIdx].path;
+        }
+        game.setLevelDir(resolvedLevelDir);
         game.setMatchSetup(setup);
-        levelDir.clear();
+        levelDir = resolvedLevelDir.string();
         if (!engine.initialize(game)) {
             std::fprintf(stderr,
                 "[tou2d] engine.initialize failed during restart\n");
