@@ -194,6 +194,40 @@ public:
                                   float centerX = 0.0f,
                                   float centerY = 0.0f) noexcept;
 
+    /// 2026-06-01 — install a "sky" parallax texture rendered BEFORE the
+    /// background quad. Same RGBA8 layout + blocking-upload semantics as
+    /// `setBackgroundFromRgba`. The sky is placed via
+    /// `setSkyWorldExtent`; by sizing the sky quad larger than the level
+    /// extent (e.g. by the level's `parallaxat` multiplier), camera
+    /// traversal of the level only covers `1/multiplier` of the sky
+    /// image's UV range — yielding a naturally slower visual scroll
+    /// without per-frame updates.
+    ///
+    /// To make the sky visible *through* the level, callers must mark
+    /// Air pixels in the background texture with `alpha=0`; the sky
+    /// then shows through wherever the background's alpha is zero.
+    /// Reuses the background pipeline (same shader, same set layout,
+    /// straight-alpha blend) — one extra draw call per camera.
+    ///
+    /// Returns true on success; `rgba.empty()` (or zero extent) clears
+    /// the sky and disables the draw entirely.
+    /// @thread_safety not thread-safe; call from the sim / setup thread
+    ///                between frames. Blocks on `vkDeviceWaitIdle`.
+    bool setSkyFromRgba(std::span<const std::uint8_t> rgba,
+                        std::uint32_t                 width,
+                        std::uint32_t                 height);
+
+    /// 2026-06-01 — world-space placement of the sky quad. Centered on
+    /// (`centerX`, `centerY`) with half-extents (`halfW`, `halfH`). For
+    /// a level whose terrain spans `[-LhalfW, +LhalfW] × [-LhalfH, +LhalfH]`
+    /// and a `parallaxAt` multiplier `P` from the .lev config, pass
+    /// `halfW = LhalfW × P, halfH = LhalfH × P` so the camera's
+    /// traversal of the level walks `1/P` of the sky image — i.e. the
+    /// sky scrolls `P×` slower than the terrain.
+    void setSkyWorldExtent(float halfW, float halfH,
+                           float centerX = 0.0f,
+                           float centerY = 0.0f) noexcept;
+
     /// M6.0b — install a transparent UI overlay texture rendered ONCE
     /// per frame at screen-space NDC AFTER every per-camera pass (above
     /// background, opaque, debug, and foreground). Unlike background /

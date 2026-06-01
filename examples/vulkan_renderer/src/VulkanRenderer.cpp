@@ -153,6 +153,22 @@ struct VulkanRenderer::Impl {
     threadmaxx::ResourceHandle<Texture> uiOverlayTexture;
     bool                                uiOverlayEnabled        = false;
 
+    // 2026-06-01 — sky / parallax background. Twin of the background
+    // fields above; reuses the background pipeline + set layout. Drawn
+    // BEFORE the background quad in `recordCamera` so the bg's
+    // alpha-keyed Air pixels can let the sky show through. By the host
+    // sizing the world quad larger than the level extent (e.g. by the
+    // .lev `parallaxat` multiplier), the camera only ever sees a
+    // fraction of the sky image as it traverses the level — giving the
+    // visual parallax without per-frame updates.
+    VkDescriptorPool                    skyDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet                     skyDescriptorSet  = VK_NULL_HANDLE;
+    threadmaxx::ResourceHandle<Texture> skyTexture;
+    float                               skyWorldHalfW   = 1.0f;
+    float                               skyWorldHalfH   = 1.0f;
+    float                               skyWorldCenterX = 0.0f;
+    float                               skyWorldCenterY = 0.0f;
+
     // §3.11.2 batch D2 — per-camera slice into the pre-packed
     // instance buffer. §3.11 batch 9b.2b — the single
     // (offset, count) pair is now a list of per-meshId sub-slices.
@@ -465,6 +481,14 @@ void VulkanRenderer::shutdown() {
         impl_->uiOverlayDescriptorPool = VK_NULL_HANDLE;
         impl_->uiOverlayDescriptorSet  = VK_NULL_HANDLE;
     }
+    // 2026-06-01 — twin teardown for the sky parallax layer.
+    impl_->skyTexture.reset();
+    if (impl_->skyDescriptorPool) {
+        vkDestroyDescriptorPool(impl_->ctx.device(),
+                                impl_->skyDescriptorPool, nullptr);
+        impl_->skyDescriptorPool = VK_NULL_HANDLE;
+        impl_->skyDescriptorSet  = VK_NULL_HANDLE;
+    }
 
     impl_->cubeHandle.reset();
     impl_->destroyPerFrame();
@@ -659,6 +683,82 @@ bool VulkanRenderer::updateBackgroundRegion(std::uint32_t                 x,
     Texture* tex = const_cast<Texture*>(impl_->backgroundTexture.get());
     if (!tex || tex->image == VK_NULL_HANDLE) return false;
     return impl_->textureLoader->updateRgbaRegion(tex, x, y, w, h, rgba);
+}
+
+// ---------------------------------------------------------------------------
+// 2026-06-01 — sky parallax layer. Twin of the background path above; the
+// only differences are the variables (sky* fields) and the draw order
+// (BEFORE the background quad in `recordCamera`). Reuses the background
+// pipeline + set layout entirely — the alpha blend means the bg's
+// alpha=0 Air pixels let the sky show through cleanly.
+// ---------------------------------------------------------------------------
+
+void VulkanRenderer::setSkyWorldExtent(float halfW, float halfH,
+                                       float centerX, float centerY) noexcept {
+    if (halfW > 0.0f) impl_->skyWorldHalfW = halfW;
+    if (halfH > 0.0f) impl_->skyWorldHalfH = halfH;
+    impl_->skyWorldCenterX = centerX;
+    impl_->skyWorldCenterY = centerY;
+}
+
+bool VulkanRenderer::setSkyFromRgba(std::span<const std::uint8_t> rgba,
+                                    std::uint32_t                 width,
+                                    std::uint32_t                 height) {
+    if (!impl_->textureLoader || !impl_->engine) return false;
+
+    if (rgba.empty() || width == 0 || height == 0) {
+        if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+        impl_->skyTexture.reset();
+        impl_->skyDescriptorSet = VK_NULL_HANDLE;
+        return true;
+    }
+
+    auto handle = impl_->textureLoader->createFromRgba(*impl_->engine,
+                                                       width, height, rgba);
+    if (!handle.valid()) return false;
+
+    if (impl_->skyDescriptorPool == VK_NULL_HANDLE) {
+        VkDescriptorPoolSize poolSize = {};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pci = {};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets       = 1;
+        pci.poolSizeCount = 1;
+        pci.pPoolSizes    = &poolSize;
+        VK_CHECK(vkCreateDescriptorPool(impl_->ctx.device(), &pci, nullptr,
+                                        &impl_->skyDescriptorPool));
+    }
+
+    if (impl_->skyDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetLayout layout = impl_->pipes.backgroundSetLayout();
+        VkDescriptorSetAllocateInfo ai = {};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool     = impl_->skyDescriptorPool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts        = &layout;
+        VK_CHECK(vkAllocateDescriptorSets(impl_->ctx.device(), &ai,
+                                          &impl_->skyDescriptorSet));
+    }
+
+    if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+
+    const Texture* tex = handle.get();
+    VkDescriptorImageInfo ii = {};
+    ii.sampler     = tex->sampler;
+    ii.imageView   = tex->view;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet w = {};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = impl_->skyDescriptorSet;
+    w.dstBinding      = 0;
+    w.descriptorCount = 1;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo      = &ii;
+    vkUpdateDescriptorSets(impl_->ctx.device(), 1, &w, 0, nullptr);
+
+    impl_->skyTexture = std::move(handle);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1725,6 +1825,37 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
 
     (void)cameraIndex;
 
+    // ---- Sky / parallax quad (per-camera, drawn FIRST) -------------------
+    // 2026-06-01 — parallax background, drawn BEFORE the main background
+    // so the bg's alpha-keyed Air pixels can let it show through. Shares
+    // the background pipeline (same shader, same set layout); only the
+    // descriptor set + push-constant world rect differ. Quad is sized
+    // larger than the level extent so camera traversal covers a fraction
+    // of the sky image — yielding visual parallax with no per-frame
+    // state updates.
+    struct BgQuadPush {
+        float viewProj[16];
+        float worldRect[4];
+    };
+    if (skyDescriptorSet != VK_NULL_HANDLE &&
+        pipes.backgroundPipe() != VK_NULL_HANDLE) {
+        BgQuadPush push = {};
+        std::memcpy(push.viewProj, vp, sizeof(vp));
+        push.worldRect[0] = skyWorldCenterX;
+        push.worldRect[1] = skyWorldCenterY;
+        push.worldRect[2] = skyWorldHalfW;
+        push.worldRect[3] = skyWorldHalfH;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipes.backgroundPipe());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipes.backgroundLayout(), /*firstSet=*/0,
+                                1, &skyDescriptorSet, 0, nullptr);
+        vkCmdPushConstants(cmd, pipes.backgroundLayout(),
+                           VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
+    }
+
     // ---- Background quad (per-camera) ---------------------------------------
     // 2026-05-28 — moved INTO recordCamera so split-screen viewports
     // each get the world-anchored background sampled through their own
@@ -1733,10 +1864,7 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
     // behind the foreground sprites + opaque cubes).
     if (backgroundDescriptorSet != VK_NULL_HANDLE &&
         pipes.backgroundPipe()  != VK_NULL_HANDLE) {
-        struct BackgroundPush {
-            float viewProj[16];
-            float worldRect[4];
-        } push = {};
+        BgQuadPush push = {};
         std::memcpy(push.viewProj, vp, sizeof(vp));
         push.worldRect[0] = backgroundWorldCenterX;
         push.worldRect[1] = backgroundWorldCenterY;

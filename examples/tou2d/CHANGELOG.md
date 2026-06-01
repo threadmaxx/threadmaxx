@@ -13,6 +13,42 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### B3 — sky / parallax background layer (2026-06-01)
+The `.lev` container's second embedded JPEG (`parallax.jpg` — extracted
+since B1 but unused at runtime) now renders as a parallax sky behind
+the destructible terrain. The original TOU game composited this layer
+beneath the level art and scrolled it more slowly than the terrain to
+read as a distant background; matching that visual cue here.
+
+Implementation reuses the Vulkan renderer's background pipeline (same
+shader, same descriptor set layout, straight-alpha blend already on).
+New public surface on `VulkanRenderer`: `setSkyFromRgba` /
+`setSkyWorldExtent` — one extra descriptor pool + draw call per camera,
+nothing on the hot path.
+
+Slow-scroll comes from extent math, not per-frame state: the sky quad
+is sized `level extent × parallaxat` (centered on the same world origin
+as the bg). Camera traversal of the level then walks only `1/parallaxat`
+of the sky image's UV range — i.e. the sky scrolls `parallaxat×` slower
+than the terrain, automatically. Jungle (parallaxat=2) → ½ speed,
+Woods (parallaxat=4) → ¼ speed.
+
+The sky is revealed through the level's Air pixels: at level-load,
+`setupLevelGraphics` walks the attribute grid and punches alpha=0 in
+the background texture wherever the cell is `Attribute::Air`. The
+destruction painter is untouched — it writes alpha=255, so destroyed
+terrain stays opaque (rock void), not transparent (sky). Synthetic /
+procedural levels skip the sky path entirely (no `parallax.jpg`, no
+levelDir, no Air punch).
+
+`readParallaxAt(levelDir)` in `main.cpp` scans the imported
+`config.txt` for `parallaxat = N`; defaults to 2 (the common case)
+when missing or malformed; clamped to [1, 64].
+
+Verified by smoke run on imported jungle (`parallaxat=2`, sky=1),
+woods (`parallaxat=4`, sky=1), and `--gen` (sky=0). No new tests —
+the API is graphical and exercised by the existing smoke binary.
+
 ### B2 — `.lev` `/KEY value` blob decoder + section3 round-2 RE (2026-05-31)
 Reverse-engineered the per-level game-design parameters embedded in
 the `.lev` container. Layout fully mapped at offset 0x122..0x1B8 (see

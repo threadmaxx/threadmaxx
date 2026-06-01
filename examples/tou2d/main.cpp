@@ -45,6 +45,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -56,6 +57,32 @@ namespace {
 
 constexpr std::uint32_t kInitialWidth  = 1280;
 constexpr std::uint32_t kInitialHeight = 720;
+
+/// 2026-06-01 — parses `parallaxat = N` from `<levelDir>/config.txt`
+/// (written by `tou2d_import_lev`). Defaults to 2.0 when missing or
+/// malformed: matches three of the four shipped TOU levels (woods is
+/// the outlier at 4). The returned value is clamped to [1, 64] so a
+/// garbage config can't blow up the sky quad's world extent.
+float readParallaxAt(const std::filesystem::path& levelDir) {
+    constexpr float kDefault = 2.0f;
+    if (levelDir.empty()) return kDefault;
+    std::ifstream f(levelDir / "config.txt");
+    if (!f) return kDefault;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("parallaxat", 0) != 0) continue;
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        try {
+            const int n = std::stoi(line.substr(eq + 1));
+            if (n >= 1 && n <= 64) return static_cast<float>(n);
+        } catch (...) {
+            // fall through to default
+        }
+        break;
+    }
+    return kDefault;
+}
 
 /// 8-vertex / 36-index unit cube centered at the origin. Used as the
 /// renderer's default mesh — every ship instance draws this cube
@@ -974,6 +1001,34 @@ int main(int argc, char** argv) {
                         cellsX, cellsY, paddedW, paddedH);
         }
 
+        // 2026-06-01 — Air-pixel transparency for sky parallax. Walk
+        // the grid and set alpha=0 in bgPainter.pixels at every Air
+        // cell so the sky layer (installed below) shows through the
+        // gameplay plane. Skipped for synthesized fallback (no
+        // parallax.jpg → no sky to reveal; Air stays its dark teal).
+        // Destruction painter writes alpha=255 unconditionally so
+        // destroyed terrain remains opaque rather than punching a
+        // hole to the sky — correct behavior for blown-out rock.
+        if (bgFromJpg) {
+            const auto& grid = game.terrainGrid();
+            for (int py = 0; py < paddedH; ++py) {
+                const int imgCy      = py / tilePx;
+                const int worldCellY = halfY - imgCy;
+                for (int px = 0; px < paddedW; ++px) {
+                    const int imgCx      = px / tilePx;
+                    const int worldCellX = imgCx - halfX;
+                    if (grid.attrAt(worldCellX, worldCellY)
+                        == tou2d::Attribute::Air) {
+                        const std::size_t off =
+                            (static_cast<std::size_t>(py) *
+                             static_cast<std::size_t>(paddedW) +
+                             static_cast<std::size_t>(px)) * 4u;
+                        bgPainter.pixels[off + 3] = 0;
+                    }
+                }
+            }
+        }
+
         const bool ok = renderer->setBackgroundFromRgba(
             std::span<const std::uint8_t>(bgPainter.pixels.data(),
                                           bgPainter.pixels.size()),
@@ -1018,9 +1073,59 @@ int main(int argc, char** argv) {
             (maxWorldY - minWorldY) * 0.5f,
             (maxWorldX + minWorldX) * 0.5f,
             (maxWorldY + minWorldY) * 0.5f);
+
+        // 2026-06-01 — Sky / parallax layer. parallax.jpg is the
+        // .lev's second embedded JPEG; sized at level extent ×
+        // `parallaxat` so the camera's traversal walks `1/parallaxat`
+        // of the sky image's UV range — i.e. the sky scrolls
+        // `parallaxat×` slower than the terrain, giving the depth
+        // cue without any per-frame state updates. Skipped silently
+        // when there's no levelDir (procedural / synthetic) or the
+        // JPEG fails to decode; a no-op `setSkyFromRgba({}, 0, 0)`
+        // tail-call clears any stale sky from a previous match.
+        bool skyInstalled = false;
+        if (bgFromJpg && !levelDir.empty()) {
+            const float parallaxAt = readParallaxAt(levelDir);
+            const std::filesystem::path skyPath =
+                std::filesystem::path(levelDir) / "parallax.jpg";
+            int sw = 0, sh = 0, sn = 0;
+            if (stbi_uc* spix = stbi_load(skyPath.string().c_str(),
+                                          &sw, &sh, &sn, /*req_comp=*/4)) {
+                const std::size_t skyBytes =
+                    static_cast<std::size_t>(sw) *
+                    static_cast<std::size_t>(sh) * 4u;
+                skyInstalled = renderer->setSkyFromRgba(
+                    std::span<const std::uint8_t>(spix, skyBytes),
+                    static_cast<std::uint32_t>(sw),
+                    static_cast<std::uint32_t>(sh));
+                stbi_image_free(spix);
+                const float skyHalfW =
+                    (maxWorldX - minWorldX) * 0.5f * parallaxAt;
+                const float skyHalfH =
+                    (maxWorldY - minWorldY) * 0.5f * parallaxAt;
+                const float skyCx = (maxWorldX + minWorldX) * 0.5f;
+                const float skyCy = (maxWorldY + minWorldY) * 0.5f;
+                renderer->setSkyWorldExtent(skyHalfW, skyHalfH, skyCx, skyCy);
+                std::printf("[tou2d] sky parallax %s: %dx%d (parallaxat=%.1f) "
+                            "installed=%d\n",
+                            skyPath.string().c_str(), sw, sh,
+                            double(parallaxAt), int(skyInstalled));
+            } else {
+                std::fprintf(stderr,
+                    "[tou2d] sky parallax %s: stbi_load failed (%s) — "
+                    "skipping sky layer\n",
+                    skyPath.string().c_str(), stbi_failure_reason());
+            }
+        }
+        if (!skyInstalled) {
+            // Clear any sky carried over from a previous match (e.g.
+            // restart from imported -> synthetic).
+            renderer->setSkyFromRgba({}, 0, 0);
+        }
+
         std::printf("[tou2d] background installed=%d (jpg=%d) "
-                    "foreground installed=%d\n",
-                    int(ok), int(bgFromJpg), int(fgOk));
+                    "foreground installed=%d sky=%d\n",
+                    int(ok), int(bgFromJpg), int(fgOk), int(skyInstalled));
     };
     setupLevelGraphics();
 

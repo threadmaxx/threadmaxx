@@ -228,6 +228,15 @@ original feel without manual editing.
   `0x1A`, `section3Start` at `0x1E` — and an `author` string at `0x22`
   (32 bytes NUL-padded). The container exposes TWO JPEGs (visual +
   parallax) plus a `section3.bin` trailer.
+- **JPEG #2 = parallax sky** (confirmed 2026-06-01): the second JPEG
+  is a slow-scrolling sky / parallax background that the original game
+  composites BEHIND the destructible terrain, visible through Air
+  pixels. The `/PARALLAXAT` config field controls the depth (≥1) —
+  higher values yield slower visible scroll. tou2d renders it via the
+  Vulkan renderer's sky layer (B3); the parallax quad is sized at
+  `level extent × parallaxat` so camera traversal walks `1/parallaxat`
+  of the image's UV range, giving correct visible-speed parallax with
+  no per-frame state updates. Jungle/desert/minibase = 2, Woods = 4.
 - **`attribute.tga` extraction strategy** — the importer first looks
   for a sibling source TGA at `<install>/makelev/<Stem>.tga`. Only
   `jungle.lev` ships one in a vanilla install; desert / minibase /
