@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 + A2 landed (2026-06-07)**. A3–A8 are 📋 planned.
+Status: **A1 + A2 + A3 landed (2026-06-07)**. A4–A8 are 📋 planned.
 Sequencing follows the §9 "implementation order" of the design
 notes, regrouped into shippable units that each carry their own
 tests.
@@ -211,7 +211,7 @@ profiled bench shows the AoS path is the bottleneck.
   synchronization beyond standard slice partitioning — the same
   pattern simd's kernels already use.
 
-## Batch A3 — Graph + Animator + Clip/Output nodes
+## Batch A3 — Graph + Animator + Clip/Output nodes ✅ landed 2026-06-07
 
 **Goal**: minimal `AnimationGraph` with `Clip` and `Output` node
 types. `Animator::evaluate` walks the graph and produces a pose.
@@ -236,6 +236,101 @@ each frame; cache it later only after profiling.
 
 **Out of scope**: Blend1D/Blend2D (A4), IK node (A5), Layer node
 (A4 → can defer).
+
+### A3 retrospective (2026-06-07)
+
+- **Shipped**: new public `graph.hpp` (`NodeType` enum with every
+  future node kind declared, `GraphNodeId` with `kInvalidGraphNodeId`
+  sentinel, `ClipNode` / `OutputNode` payloads, `AnimationGraph`
+  class). New public `EvalContext` / `EvalResult` in `eval.hpp`,
+  Animator extended with `setGraph` / `evaluate` / `setParameter` /
+  `getParameter` / `nodeTime`. New `detail/graph_eval.hpp` with the
+  `stepClipNode` helper. New `src/threadmaxx_animation/GraphEval.cpp`
+  carrying both AnimationGraph method bodies and the Animator's
+  graph-mode impl. Umbrella include + CMake updated. Three new test
+  executables (`test_animation_graph_basic`,
+  `test_animation_graph_param`, `test_animation_graph_dirty`); full
+  ctest 170/170 green.
+- **AnimationGraph is one graph, not a manager**: DESIGN_NOTES §5.3
+  sketched a manager-style `AnimationGraph` that owns multiple
+  graphs by `GraphId`. We diverge — `AnimationGraph` is a single
+  graph. Rationale: A3's minimal Clip → Output topology is far
+  cleaner without the indirection, and the engine integration in
+  A7 will hand each agent its own graph pointer anyway (the
+  manager is just a registry the game owns; the engine-side
+  contract is "borrow a graph pointer"). The `GraphId` type is
+  still reserved in `types.hpp` for the day a registry-style
+  wrapper is wanted on top.
+- **Per-instance state lives on the Animator, not the graph**:
+  per-node playhead times and parameter overrides are
+  `std::vector<float>`s indexed by node id, owned by the Animator.
+  The bound `AnimationGraph` is logically `const` after
+  `setGraph` — it's just the immutable template. A7's batch
+  evaluation can spray N Animators across workers all pointing at
+  one graph with no synchronization on the graph side.
+- **Two-tier parameter resolution**: A Clip node has a default
+  `playbackRate` baked into the graph (`AnimationGraph::setParameter`
+  edits it). The Animator can override per-instance via
+  `Animator::setParameter`. `getParameter` falls back to the graph
+  default when no override is set. Override booleans live in
+  `nodePlaybackRateOverridden_` so the default→override→default
+  transitions work cleanly. Only `"playbackRate"` is recognized in
+  A3 — unknown names are silently ignored, which lets future
+  parameters land without breaking older callers.
+- **EvalResult::dirty contract**: dirty is `true` iff (first
+  evaluate after `setGraph`) OR (`ctx.dt != 0`) OR (any
+  `setParameter` recognized a name change since the last
+  evaluate). After a successful evaluate, both transient flags
+  reset. Unrecognized parameter names don't flip the bit (pinned
+  by `test_animation_graph_dirty` § 5).
+- **NodeType enum carries every future variant up front**: the
+  enum lists `Clip / Blend1D / Blend2D / Additive / Layer / IK /
+  Warping / Output` even though only Clip and Output are
+  implemented in A3. Switch statements on `NodeType` (currently
+  just two arms in `evaluateInto`) are missing-case-warnings
+  enforced via `-Wswitch` — A4/A5 batches will trigger compile
+  errors if they forget to handle a new node kind. The "relay
+  first input" fallthrough for unimplemented kinds is a
+  belt-and-suspenders fallback to keep partially-built graphs
+  from UB-ing if a forward-declared node accidentally lands in a
+  graph today.
+- **Recursive walk over Output → input**: A3's topology never
+  exceeds depth 2 (Output → Clip), so the recursive
+  `evaluateInto` walker is clearer than a topological-sort
+  preprocess. `jointCount()` is also a bounded-depth walk
+  (capped at 64 hops as a malformed-graph guard). A4 will revisit
+  when blend nodes introduce multi-input dispatch — that's the
+  natural point to introduce a real `topoOrder_` cache on the
+  graph.
+- **Event semantics carry over from A2**: each Clip node's event
+  collection runs through the same `detail::collectEvents` the
+  single-clip Animator uses, with the same wrap-aware semantics.
+  Events from all clip nodes accumulate into `EvalResult::firedEvents`
+  per-call. A4 blending will need a per-clip weight-gate (don't
+  fire events for a clip with weight==0), but A3's single Clip
+  source doesn't need it.
+- **Mode switch resets symmetrically**: `setClip(...)` clears
+  graph state and zeros all per-node playheads; `setGraph(...)`
+  clears clip state and zeros the single-clip playhead. Mixing
+  modes on one Animator is not supported by design (A2's
+  `samplePose` and A3's `evaluate` write into the same pose
+  buffer conceptually, but the playhead bookkeeping is fully
+  disjoint). Switching back and forth is safe and produces clean
+  zero-state, pinned by `test_animation_graph_basic` § 5.
+- **PoseBuffer auto-resizes**: `evaluate` calls `outPose.resize`
+  to match the graph's `jointCount()` if it doesn't already.
+  Keeps the per-frame call site short — caller doesn't have to
+  query joint count before each evaluate. The first allocation
+  is the only allocation; subsequent calls hit the steady-state
+  capacity.
+- **Soul check**: graph-mode hot path is one bounded recursion
+  (depth 2 today), one `stepClipNode` (`fmod` + linear keyframe
+  scan + per-joint copy), and one event collection. Zero heap
+  allocations after the first evaluate per Animator. The bound
+  AnimationGraph is read-only during evaluation, so A7 crowd
+  evaluation drops in with no further synchronization on the
+  graph side — exactly the chunk-friendly pattern the design
+  notes ask for.
 
 ## Batch A4 — Blend nodes + additive layers
 

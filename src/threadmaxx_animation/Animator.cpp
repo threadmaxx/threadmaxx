@@ -10,6 +10,15 @@ void Animator::setClip(const ClipDesc* clip) noexcept {
     clip_ = clip;
     time_ = 0.0f;
     pendingEvents_.clear();
+
+    // Switching to single-clip mode detaches any bound graph and zeros
+    // its per-node playhead state.
+    graph_ = nullptr;
+    nodeTimes_.clear();
+    nodePlaybackRate_.clear();
+    nodePlaybackRateOverridden_.clear();
+    firstEvalAfterSetGraph_ = false;
+    paramsChangedSinceLastEval_ = false;
 }
 
 void Animator::advance(float dt) noexcept {

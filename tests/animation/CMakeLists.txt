@@ -12,6 +12,9 @@ set(THREADMAXX_ANIMATION_TESTS
     test_animation_pose_math
     test_animation_clip_sampling
     test_animation_event_tracks
+    test_animation_graph_basic
+    test_animation_graph_param
+    test_animation_graph_dirty
 )
 
 foreach(test ${THREADMAXX_ANIMATION_TESTS})
