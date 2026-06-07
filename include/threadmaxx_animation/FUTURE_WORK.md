@@ -4,9 +4,10 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 landed (2026-06-07)**. A2–A8 are 📋 planned. Sequencing
-follows the §9 "implementation order" of the design notes, regrouped
-into shippable units that each carry their own tests.
+Status: **A1 + A2 landed (2026-06-07)**. A3–A8 are 📋 planned.
+Sequencing follows the §9 "implementation order" of the design
+notes, regrouped into shippable units that each carry their own
+tests.
 
 ## Conventions
 
@@ -136,7 +137,7 @@ evaluation (A7).
   `forEachChunk` integration in A7 can hand worker-private buffers
   in without a copy.
 
-## Batch A2 — Clip sampling + event tracks
+## Batch A2 — Clip sampling + event tracks ✅ landed 2026-06-07
 
 **Goal**: time-keyed sampling of a clip into a `PoseBuffer`. Looping,
 clamp-at-end, and event-track firing on time-window crossings.
@@ -162,6 +163,53 @@ Recommendation: start with per-clip uniformly-keyed
 profiled bench shows the AoS path is the bottleneck.
 
 **Out of scope**: graph (A3), additive layers (A4).
+
+### A2 retrospective (2026-06-07)
+
+- **Shipped**: `ClipDesc` gained `jointCount` + `keyframeTimes` +
+  flat AoS `keyframes` (`kf[k * jointCount + j]`); new
+  `detail/curve_eval.hpp` with `wrapTime` / `sampleClip` /
+  `collectEvents`; new public `eval.hpp` with the `Animator`
+  playhead; new `src/Animator.cpp`. Umbrella include now pulls in
+  `eval.hpp`. Public headers + sources listed in
+  `src/threadmaxx_animation/CMakeLists.txt`. Two new test executables
+  (`test_animation_clip_sampling`, `test_animation_event_tracks`)
+  wired into `tests/animation/CMakeLists.txt`. Full ctest 167/167
+  green.
+- **Event semantics**: events fire in the half-open window
+  `(lastTime, newTime]` on forward motion. Looping wrap fires the
+  tail window `(lastTime, duration]` plus the closed head window
+  `[0, newTime]` so an event keyed at exactly `t=0` fires once per
+  wrap (pinned by `test_animation_event_tracks` § 6). Backward
+  motion (`advance(-dt)`, `setTime(earlier)`) fires nothing — the
+  explicit-replay path the plan calls out is deliberately not
+  exposed yet; the absence of a `replayEvents(from, to)` method is
+  the contract for A2.
+- **`Animator::setClip` resets**: switching clips zeros the
+  playhead and drops pending events. Trading off a tiny ergonomic
+  loss (no "preserve state when switching") against a much simpler
+  invariant — A3's graph evaluation owns multi-clip blending, so
+  the single-clip Animator doesn't need to model clip handoff.
+- **Looping detection**: `advance` is the only path that sets the
+  `wrapped` flag. `setTime` normalizes the same way but never
+  flags a wrap → never fires events. This keeps "rewind via
+  setTime" symmetric with "rewind via negative dt".
+- **Zero-duration clip safety**: `wrapTime` short-circuits to 0,
+  `sampleClip` copies the first keyframe. `advance` early-returns
+  before any event scan. Pinned by
+  `test_animation_clip_sampling` § 7.
+- **No SoA refactor**: AoS won on plan-recommendation +
+  profile-when-it-bites. The flat keyframe vector hands a
+  `std::span<const JointPose>` straight into `detail::lerp_pose`,
+  so the A1.x SIMD blend kernel path is already the natural
+  upgrade — no API churn needed when it lands.
+- **Soul check**: `Animator::samplePose` is `const noexcept` and
+  writes into a caller-owned `PoseSpan`. `drainEvents` is the only
+  state mutator outside of `advance` / `setTime` / `setClip`. The
+  A7 crowd path can hand each worker its own private `Animator`
+  slice and a private `PoseBuffer` with no engine-side
+  synchronization beyond standard slice partitioning — the same
+  pattern simd's kernels already use.
 
 ## Batch A3 — Graph + Animator + Clip/Output nodes
 
