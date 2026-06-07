@@ -7,14 +7,34 @@
 
 #include <cmath>
 
-/// Stateless graph-walk helpers. A3 only models Clip → Output, so
-/// this is a thin layer over `detail::sampleClip`. A4+ adds Blend
-/// node helpers here.
-///
-/// The Animator owns per-node playhead state (node times + per-node
-/// playback-rate overrides). This namespace just operates on borrowed
-/// slices — the same pattern A7's batch evaluation will use.
+/// Stateless graph-walk helpers + per-node runtime state. The
+/// Animator owns a `std::vector<NodeRuntime>` parallel to the bound
+/// graph's nodes; this header defines the struct so blend-evaluator
+/// helpers in GraphEval.cpp can poke its fields without exposing a
+/// nested private type on `Animator`. The override-bit constants live
+/// next to it so the per-parameter override path is internally
+/// consistent.
 namespace threadmaxx::animation::detail {
+
+/// Per-node runtime: playhead time (Clip) + per-parameter override
+/// slots + override-bit mask. One entry per node in the bound graph;
+/// `overrideMask` bits track which parameters the Animator has been
+/// asked to override via `Animator::setParameter`.
+struct NodeRuntime {
+    float time = 0.0f;          // Clip playhead
+    float playbackRate = 1.0f;  // "playbackRate" override (Clip)
+    float param = 0.0f;         // "param" override (Blend1D)
+    float blendX = 0.0f;        // "x" override (Blend2D)
+    float blendY = 0.0f;        // "y" override (Blend2D)
+    float weight = 1.0f;        // "weight" override (Additive / Layer)
+    std::uint8_t overrideMask = 0;
+};
+
+inline constexpr std::uint8_t kRateOverride = 1u << 0;
+inline constexpr std::uint8_t kParamOverride = 1u << 1;
+inline constexpr std::uint8_t kXOverride = 1u << 2;
+inline constexpr std::uint8_t kYOverride = 1u << 3;
+inline constexpr std::uint8_t kWeightOverride = 1u << 4;
 
 /// Step one Clip node's playhead by `dt * effectiveRate` and write the
 /// sampled pose into `out`. Returns the post-step time. Looping /

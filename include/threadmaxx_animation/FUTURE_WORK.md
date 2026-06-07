@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 + A2 + A3 landed (2026-06-07)**. A4–A8 are 📋 planned.
+Status: **A1 + A2 + A3 + A4 landed (2026-06-07)**. A5–A8 are 📋 planned.
 Sequencing follows the §9 "implementation order" of the design
 notes, regrouped into shippable units that each carry their own
 tests.
@@ -332,7 +332,7 @@ each frame; cache it later only after profiling.
   graph side — exactly the chunk-friendly pattern the design
   notes ask for.
 
-## Batch A4 — Blend nodes + additive layers
+## Batch A4 — Blend nodes + additive layers ✅ landed 2026-06-07
 
 **Goal**: Blend1D and Blend2D nodes for locomotion-style transitions;
 Additive node for upper-body overlays; Layer node for masked
@@ -354,6 +354,109 @@ blending.
 the new node kinds.
 
 **Out of scope**: IK (A5).
+
+### A4 retrospective (2026-06-07)
+
+- **Shipped**: new public `blend.hpp` with `Blend1DNode` /
+  `Blend2DNode` / `AdditiveNode` / `LayerNode` POD payloads. `graph.hpp`
+  gained `addBlend1D` / `addBlend2D` / `addAdditive` / `addLayer` /
+  `setLayerMask` factory methods plus `blend1dNode` / `blend2dNode` /
+  `additiveNode` / `layerNode` typed accessors. `detail/pose_math.hpp`
+  gained `additive_pose` (TRS-aware additive composition) and
+  `mask_blend_pose` (per-joint mask-gated lerp). `detail/graph_eval.hpp`
+  now owns the `NodeRuntime` struct + per-parameter override-bit
+  constants. `GraphEval.cpp` extended `evaluateInto` with Blend1D /
+  Blend2D / Additive / Layer arms backed by a LIFO `ScratchPool` over
+  Animator-owned reusable PoseBuffers. Umbrella include + CMake +
+  4 new test executables; full ctest **174/174 green** (170 + 4).
+- **`NodeRuntime` is detail-namespace, not nested-private**: A3 had
+  three parallel vectors (`nodeTimes_`, `nodePlaybackRate_`,
+  `nodePlaybackRateOverridden_`); A4 grew that to 8+ parameters
+  (`param` / `x` / `y` / `weight` plus override flags). Refactored to
+  a single `std::vector<detail::NodeRuntime>` keyed by node id. The
+  struct lives in `detail/graph_eval.hpp` so the GraphEval helpers
+  can poke its fields directly without a `friend` declaration or
+  nested-private-type exposure on `Animator`. Public API stayed
+  byte-identical — `Animator::setParameter` / `getParameter` /
+  `nodeTime` carry the same signatures; only their bodies migrated to
+  read/write `NodeRuntime` fields.
+- **Two-tier parameter resolution scales naturally**: the same A3
+  pattern (graph default → per-Animator override, fall back through
+  the override-bit check) extended uncomplicatedly to four new
+  parameter names. The `withDefault` lambda in `getParameter`
+  centralizes the fallthrough so adding a fifth parameter is one
+  enum bit + one `if` arm. Recognized names by node kind:
+  Clip → `"playbackRate"`; Blend1D → `"param"`; Blend2D → `"x"`/`"y"`;
+  Additive/Layer → `"weight"`. Cross-kind names (e.g.
+  `setParameter(clipNode, "weight", v)`) are silently ignored, same
+  as A3's unknown-name policy.
+- **Blend2D uses inverse-distance weighting (IDW)**: each input's
+  weight is `1 / (d² + ε)` where `d` is the Euclidean distance from
+  the query point to the input's 2D position; the snap-eps path
+  collapses to a single sample when the query is exactly on top of an
+  authored point. Picked over barycentric (which needs an authored
+  triangulation) and bilinear (which assumes a regular grid) because
+  it accepts any point set the game ships. At the centroid of a
+  regular point set all distances are equal so weights are uniform
+  (test gate ✓). Bilinear's exactness at axis-aligned corners is
+  unavailable here — the centroid test is uniform-within-tolerance
+  rather than bit-exact. If a benched workload later cares about
+  exact bilinear, the right move is to bake the choice as a Blend2D
+  config flag, not to replace IDW.
+- **N-input blends accumulate weighted into `out`**: for Blend2D's
+  multi-input case the recursive walker would normally need N scratch
+  buffers (one per input). Instead the loop seeds `out` with the
+  first non-zero-weight input, then lerps subsequent inputs into
+  `out` with running normalized weight `w_i / (W_so_far + w_i)`.
+  After all inputs are folded in, `out` is the weight-sum-normalized
+  blend. One scratch buffer regardless of input count → bounded
+  scratch depth at evaluator runtime.
+- **`mask_blend_pose` handles short masks gracefully**: per-joint
+  flag `(i < mask.size()) && (mask[i] != 0)` so masks shorter than
+  the pose simply treat the un-described joints as unmasked. Lets
+  the Layer node ship before the skeleton is fully wired (mask
+  defaults to empty → Layer is a no-op, base relays through), and
+  matches the "default behavior is base-preserving" contract that
+  authoring tools assume.
+- **Additive scale composition is `base.S * lerp(1, delta.S, w)`**:
+  multiplicative — `base.S=(2,2,2)` and `delta.S=(1.5,1.5,1.5)` at
+  weight 1 yields `(3,3,3)` (pinned by test §5). The delta is
+  expected to be authored as a difference from a neutral pose;
+  treating a fully-baked clip as the delta produces
+  double-rotation/double-scale artifacts. This matches the standard
+  "additive bake" tooling convention.
+- **Additive rotation: `base.R * nlerp(identity, delta.R, w)`**:
+  sign-aligns `delta.R` against identity (negates if `delta.R.w < 0`)
+  so the shorter-arc rotation is taken when the delta authored
+  through the back hemisphere. Same nlerp instead of slerp tradeoff
+  as A1's `detail::lerp` — sufficient for delta-rotation magnitudes
+  the additive layer typically carries.
+- **`ScratchPool` is Animator-owned, LIFO, grows lazily**: the
+  recursive walker borrows a `std::vector<std::vector<JointPose>>&`
+  on the Animator (`scratchPosePool_`), pushes a buffer on every
+  `acquire(jointCount)`, releases LIFO. Reuse across ticks: zero
+  steady-state allocation once the pool has grown to the maximum
+  blend nesting depth × jointCount. Allocator pressure is bounded by
+  graph depth, not graph node count — a graph with 1000 nodes but
+  flat topology never pays for more than two scratch buffers.
+- **`evaluateInto` arm coverage is `-Wswitch`-safe**: every NodeType
+  is handled explicitly in `AnimationGraph::setParameter` /
+  `getParameter`; future Node kinds (`IK`, `Warping`) trigger compile
+  warnings when added. The `evaluateInto` fallthrough still relays
+  the first input for `IK` / `Warping` so A5/A6 stubs land cleanly
+  without breaking partial graphs.
+- **PoseBuffer auto-resize ⇒ caller sees one allocation**: the same
+  A3 contract holds — `evaluate` calls `outPose.resize(jc)` if
+  needed. Steady state is alloc-free in both the caller's PoseBuffer
+  and the Animator's scratch pool.
+- **Soul check**: graph-mode hot path is one bounded recursion
+  (depth = blend nesting), one `stepClipNode` per Clip leaf, IDW
+  weight computation only for Blend2D nodes (small vector, no
+  allocations after pool warm-up), and one `mask_blend_pose` per
+  Layer node. Zero heap allocations after the first evaluate per
+  Animator. A7's crowd evaluation still drops in unchanged: per-agent
+  Animator + per-agent PoseBuffer + per-agent ScratchPool, all
+  worker-private, zero engine-side synchronization on the graph.
 
 ## Batch A5 — IK constraints (FABRIK or CCD)
 

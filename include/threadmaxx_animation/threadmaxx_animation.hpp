@@ -7,6 +7,7 @@
 /// contract and may churn between batches; consumers should not
 /// include them directly.
 
+#include "threadmaxx_animation/blend.hpp"
 #include "threadmaxx_animation/clip.hpp"
 #include "threadmaxx_animation/eval.hpp"
 #include "threadmaxx_animation/graph.hpp"

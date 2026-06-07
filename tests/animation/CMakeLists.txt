@@ -15,6 +15,10 @@ set(THREADMAXX_ANIMATION_TESTS
     test_animation_graph_basic
     test_animation_graph_param
     test_animation_graph_dirty
+    test_animation_blend1d
+    test_animation_blend2d
+    test_animation_additive
+    test_animation_layer_mask
 )
 
 foreach(test ${THREADMAXX_ANIMATION_TESTS})

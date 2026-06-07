@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 /// Per-joint pose primitives used by clip sampling, blend nodes, and
@@ -119,6 +120,80 @@ inline void blend_pose_weighted(std::span<const JointPose> a,
                                 float weight,
                                 std::span<JointPose> out) noexcept {
     lerp_pose(a, b, weight, out);
+}
+
+/// Additive composition. `out[j] = base[j] +_TRS weight * delta[j]`:
+///   - translation = base.T + weight * delta.T
+///   - rotation    = base.R * nlerp(identity, delta.R, weight)
+///   - scale       = base.S ⊙ lerp((1,1,1), delta.S, weight)
+/// weight=0 ⇒ out == base; weight=1 ⇒ out is the base fully composed
+/// with the delta layer. `delta` is expected to be authored as a
+/// difference from a neutral pose; treating it as a fully-baked pose
+/// will produce double-rotation artifacts.
+inline void additive_pose(std::span<const JointPose> base,
+                          std::span<const JointPose> delta,
+                          float weight,
+                          std::span<JointPose> out) noexcept {
+    assert(base.size() == out.size());
+    assert(delta.size() == out.size());
+    const float oneMinus = 1.0f - weight;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const JointPose& b = base[i];
+        const JointPose& d = delta[i];
+        JointPose o;
+        o.translation = Vec3{
+            b.translation.x + weight * d.translation.x,
+            b.translation.y + weight * d.translation.y,
+            b.translation.z + weight * d.translation.z,
+        };
+        // nlerp(identity_quat, d.rotation, weight) — sign-aligns
+        // d.rotation against identity so the shorter arc is taken.
+        const float sign = (d.rotation.w < 0.0f) ? -1.0f : 1.0f;
+        Quat r{
+            weight * sign * d.rotation.x,
+            weight * sign * d.rotation.y,
+            weight * sign * d.rotation.z,
+            oneMinus * 1.0f + weight * sign * d.rotation.w,
+        };
+        const float n2 = r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w;
+        if (n2 > 0.0f) {
+            const float inv = 1.0f / std::sqrt(n2);
+            r.x *= inv; r.y *= inv; r.z *= inv; r.w *= inv;
+        }
+        o.rotation = qmul(b.rotation, r);
+        // Multiplicative scale: base.S * lerp(1, delta.S, weight)
+        const Vec3 s{
+            oneMinus * 1.0f + weight * d.scale.x,
+            oneMinus * 1.0f + weight * d.scale.y,
+            oneMinus * 1.0f + weight * d.scale.z,
+        };
+        o.scale = vmul(b.scale, s);
+        out[i] = o;
+    }
+}
+
+/// Masked-layer blend. For each joint `j`, if `mask[j] != 0`:
+///   out[j] = lerp(base[j], overlay[j], weight)
+/// otherwise:
+///   out[j] = base[j]
+/// `mask.size()` may be shorter than the pose — joints past the mask
+/// end are treated as unmasked (stay at base). Used by the Layer node
+/// for upper-body / face overlay on top of a full-body locomotion pose.
+inline void mask_blend_pose(std::span<const JointPose> base,
+                            std::span<const JointPose> overlay,
+                            std::span<const std::uint8_t> mask,
+                            float weight,
+                            std::span<JointPose> out) noexcept {
+    assert(base.size() == out.size());
+    assert(overlay.size() == out.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const bool inMask = (i < mask.size()) && (mask[i] != 0);
+        if (inMask) {
+            out[i] = lerp(base[i], overlay[i], weight);
+        } else {
+            out[i] = base[i];
+        }
+    }
 }
 
 } // namespace threadmaxx::animation::detail

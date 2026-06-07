@@ -6,6 +6,7 @@ set(THREADMAXX_ANIMATION_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/clip.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/registry.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/graph.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/blend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/eval.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/pose_math.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/curve_eval.hpp

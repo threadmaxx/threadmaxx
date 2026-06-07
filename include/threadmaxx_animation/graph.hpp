@@ -1,5 +1,6 @@
 #pragma once
 
+#include "threadmaxx_animation/blend.hpp"
 #include "threadmaxx_animation/clip.hpp"
 #include "threadmaxx_animation/types.hpp"
 
@@ -77,9 +78,36 @@ public:
     /// as the graph's evaluation root.
     GraphNodeId addOutput();
 
-    /// Connect `from`'s output to `to`'s input list. A3 only exercises
-    /// Output ← Clip; later batches add multi-input nodes
-    /// (Blend1D/Blend2D/Layer).
+    /// Add a 1D blend node. `thresholds` must be sorted ascending and
+    /// must have the same length as the eventual input list (added via
+    /// `connect`). The graph default `"param"` is 0.
+    GraphNodeId addBlend1D(std::span<const float> thresholds);
+
+    /// Add a 2D blend node. `positionsX[i]` / `positionsY[i]` is input
+    /// `i`'s blend-space coordinate. Both spans must have the same
+    /// length, matching the eventual input list. Graph defaults
+    /// `"x"` / `"y"` are 0.
+    GraphNodeId addBlend2D(std::span<const float> positionsX,
+                           std::span<const float> positionsY);
+
+    /// Add an Additive composition node. `inputs[0]` is base,
+    /// `inputs[1]` is the delta layer. Graph default `"weight"` is 1.
+    GraphNodeId addAdditive(float weight = 1.0f);
+
+    /// Add a masked-layer node. `inputs[0]` is base, `inputs[1]` is
+    /// overlay. Use `setLayerMask` to install the per-joint mask after
+    /// the joint count is known. Graph default `"weight"` is 1.
+    GraphNodeId addLayer(float weight = 1.0f);
+
+    /// Install the per-joint mask on a Layer node. `mask.size()` should
+    /// equal the skeleton's joint count; out-of-range joints (mask size
+    /// shorter than joint count) are treated as unmasked.
+    void setLayerMask(GraphNodeId node, std::span<const std::uint8_t> mask);
+
+    /// Connect `from`'s output to `to`'s input list. Multi-input nodes
+    /// (Blend1D/Blend2D/Additive/Layer) consume their inputs in
+    /// connection order — for Blend1D, that order must align with the
+    /// thresholds passed to `addBlend1D`.
     void connect(GraphNodeId from, GraphNodeId to);
 
     /// Pin the output node from which evaluation reads the final pose.
@@ -88,8 +116,13 @@ public:
 
     /// Per-node parameter on the graph default itself (the parameter
     /// the Animator falls back to when no instance override exists).
-    /// A3 understands `"playbackRate"` on Clip nodes; unknown names
-    /// are silently ignored.
+    /// Recognized names by node kind:
+    ///   - Clip:     `"playbackRate"`
+    ///   - Blend1D:  `"param"`
+    ///   - Blend2D:  `"x"`, `"y"`
+    ///   - Additive: `"weight"`
+    ///   - Layer:    `"weight"`
+    /// Unknown name/node combinations are silently ignored.
     void setParameter(GraphNodeId node, std::string_view name, float value);
     std::optional<float> getParameter(GraphNodeId node, std::string_view name) const;
 
@@ -100,6 +133,14 @@ public:
     /// reference a Clip node). The pointer is owned by the graph and
     /// stable for the graph's lifetime.
     const ClipNode* clipNode(GraphNodeId id) const noexcept;
+
+    /// Blend / Additive / Layer accessors. Each returns nullptr if
+    /// `id` doesn't reference the expected node kind. Pointers are
+    /// graph-owned and stable for the graph's lifetime.
+    const Blend1DNode* blend1dNode(GraphNodeId id) const noexcept;
+    const Blend2DNode* blend2dNode(GraphNodeId id) const noexcept;
+    const AdditiveNode* additiveNode(GraphNodeId id) const noexcept;
+    const LayerNode* layerNode(GraphNodeId id) const noexcept;
 
     /// Upstream connections to `id` (the set of nodes whose outputs
     /// flow into this node's inputs). A3's Output uses inputs[0].
@@ -113,7 +154,11 @@ public:
 private:
     struct Node {
         NodeType type{};
-        ClipNode clip{};  // valid iff type == NodeType::Clip
+        ClipNode clip{};         // valid iff type == NodeType::Clip
+        Blend1DNode blend1d{};   // valid iff type == NodeType::Blend1D
+        Blend2DNode blend2d{};   // valid iff type == NodeType::Blend2D
+        AdditiveNode additive{}; // valid iff type == NodeType::Additive
+        LayerNode layer{};       // valid iff type == NodeType::Layer
         std::vector<GraphNodeId> inputs;
     };
 

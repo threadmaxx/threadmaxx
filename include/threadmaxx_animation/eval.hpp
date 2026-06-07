@@ -1,6 +1,7 @@
 #pragma once
 
 #include "threadmaxx_animation/clip.hpp"
+#include "threadmaxx_animation/detail/graph_eval.hpp"
 #include "threadmaxx_animation/graph.hpp"
 #include "threadmaxx_animation/pose.hpp"
 
@@ -91,9 +92,15 @@ public:
     EvalResult evaluate(EvalContext ctx, PoseBuffer& outPose);
 
     /// Override the default parameter on a specific node, for this
-    /// Animator instance only (the bound graph stays immutable). A3
-    /// understands `"playbackRate"` on Clip nodes; unknown names are
-    /// silently ignored. Marks the next `evaluate` as dirty.
+    /// Animator instance only (the bound graph stays immutable).
+    /// Recognized parameter names by node kind:
+    ///   - Clip:     `"playbackRate"`
+    ///   - Blend1D:  `"param"`
+    ///   - Blend2D:  `"x"`, `"y"`
+    ///   - Additive: `"weight"`
+    ///   - Layer:    `"weight"`
+    /// Unknown names are silently ignored. Marks the next `evaluate`
+    /// as dirty.
     void setParameter(GraphNodeId node, std::string_view name, float value);
 
     /// Read-back of the per-node parameter override. Returns the graph
@@ -111,11 +118,18 @@ private:
     float time_ = 0.0f;
     std::vector<EventTrackEvent> pendingEvents_;
 
-    // Graph mode (A3) state.
+    // Graph mode (A3 + A4) state. Per-node runtime + override bits live
+    // in `detail::NodeRuntime` so the blend-evaluator helpers in
+    // GraphEval.cpp can poke its fields directly without exposing a
+    // nested private type on this class.
     const AnimationGraph* graph_ = nullptr;
-    std::vector<float> nodeTimes_;
-    std::vector<float> nodePlaybackRate_;  // per-node override; 1.0 = use graph default
-    std::vector<bool> nodePlaybackRateOverridden_;
+    std::vector<detail::NodeRuntime> nodeRuntime_;
+
+    // Per-Animator scratch pool for blend evaluation. Used as a LIFO
+    // stack during the recursive walk; resized lazily on first use,
+    // reused across ticks with zero steady-state allocation.
+    std::vector<std::vector<JointPose>> scratchPosePool_;
+
     bool firstEvalAfterSetGraph_ = false;
     bool paramsChangedSinceLastEval_ = false;
 };
