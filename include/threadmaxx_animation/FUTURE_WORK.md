@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 + A2 + A3 + A4 + A5 landed (2026-06-07)**. A6–A8 are 📋 planned.
+Status: **A1 + A2 + A3 + A4 + A5 + A6 landed (2026-06-07)**. A7–A8 are 📋 planned.
 Sequencing follows the §9 "implementation order" of the design
 notes, regrouped into shippable units that each carry their own
 tests.
@@ -588,7 +588,7 @@ analytical IK for specific rigs.
   the engine's tick budget at the chain sizes the design notes
   expect (2-6 joints per agent).
 
-## Batch A6 — Motion warping
+## Batch A6 — Motion warping ✅ landed 2026-06-07
 
 **Goal**: `applyWarp` for foot-placement / attack-alignment use
 cases. A `WarpRequest` morphs the root motion (or named joint
@@ -607,6 +607,94 @@ motion) from `from` to `to` over `[startTime, endTime]`.
 
 **Out of scope**: contact-IK during warping (would compose A5+A6;
 worth a future batch but not blocking).
+
+### A6 retrospective (2026-06-07)
+
+- **Shipped**: new public `warp.hpp` (`WarpRequest` / `WarpResult`
+  PODs + free function `applyWarp(PoseSpan, time, request)`). New
+  `src/threadmaxx_animation/Warp.cpp` with the additive-offset
+  implementation. Umbrella include + library CMake updated
+  (PUBLIC_HEADERS gains `warp.hpp`; SOURCES gains `Warp.cpp`). Three
+  new test executables (`test_animation_warp_root`,
+  `_window`, `_blend`) wired into `tests/animation/CMakeLists.txt`.
+  Full ctest **181/181 green** (178 + 3).
+- **API divergence from DESIGN_NOTES §5.6**: the design notes
+  sketched `void applyWarp(PoseSpan pose, const SkeletonDesc& skeleton,
+  const WarpRequest& request)` — signature implies the skeleton is
+  load-bearing and the caller doesn't supply a sample time. A6 ships
+  `WarpResult applyWarp(PoseSpan pose, float time, const WarpRequest&
+  request) noexcept` instead. Rationale: a time-windowed warp **needs**
+  the current sample time to compute the window alpha (`(time -
+  startTime) / (endTime - startTime)`); without it the function would
+  either need a stateful playhead (out of scope for a free helper) or
+  always apply the maximum offset (defeats the window contract).
+  Skeleton dropped because the v1.0 surface targets one joint by index
+  — no name-resolution path needs it. `WarpResult` (added field) lets
+  callers branch on "did the warp fire this tick" without
+  side-channeling through pose comparison.
+- **Additive offset, not absolute set**: the warp adds `(to - from) *
+  alpha * weight` to the joint's translation. `from` is the **authored**
+  position at `endTime` (the caller knows this — they just sampled the
+  clip and read it off, or computed it ahead of time). `to` is the
+  desired position. At alpha=1, weight=1: result = `authored + (to -
+  from)` — which equals `to` exactly when the caller has set `from =
+  authored`. This means the canonical foot-placement use case works
+  with `from = sampleClip(t=endTime).foot` and `to = ground-trace-hit`.
+  Alternative API choices considered + rejected:
+   - **Absolute-set semantics** (`pose.translation = lerp(authored, to,
+     alpha * weight)`): would require sampling the authored value
+     inside `applyWarp`, but the sampled pose IS the authored
+     translation at the current `time` — not the authored value at
+     `endTime`. Two different samples needed; complicates the contract.
+   - **Per-frame integrated offset** (track previous-tick warp
+     contribution, apply delta): stateful, defeats the noexcept free
+     function shape.
+  The additive form keeps the kernel stateless and the contract one
+  line. Caller's "sample clip → call applyWarp" pipeline stays clean.
+- **`jointIndex` defaults to 0 (root)**: matches the "root motion warp"
+  canonical use case from the design notes. Non-zero indices let the
+  same primitive serve foot-placement (warp the foot joint), hand-IK
+  alignment (warp the hand toward a target before IK refines), or any
+  other single-joint corrective offset. The "name lookup" path
+  (`namedJointMotion` per goal text) is deliberately deferred — game
+  code can do the lookup once at setup and feed the index to every
+  per-tick `applyWarp` call. Matches the small-public-surface
+  principle.
+- **Window contract — strict bracket inclusion**: `time < startTime` or
+  `time > endTime` is outside; equality at either edge counts as
+  inside. At `time == startTime` the warp applies with alpha=0 (no
+  offset, but `WarpResult::applied == true` so the caller's
+  bookkeeping is consistent). At `time == endTime` alpha=1 and the
+  full offset lands. Pinned by `test_animation_warp_window` § 3 (start
+  edge) and § 4 (end edge).
+- **Instantaneous-window special case**: `startTime == endTime ==
+  time` produces alpha=1 (single-point hit). Without the `span > 0`
+  branch, the divide would NaN; the branch defaults to 1. Useful for
+  callers who want "apply this warp at exactly this frame" without a
+  span. Pinned by `test_animation_warp_window` § 8.
+- **Degenerate-window guard**: `endTime < startTime` is rejected as a
+  no-op. Defensive — caller likely swapped the args; bailing is safer
+  than applying a negative alpha and producing garbage. Pinned by
+  `test_animation_warp_window` § 5.
+- **Out-of-range jointIndex is a no-op, not UB**: pose buffers can
+  resize between ticks (PoseBuffer auto-resizes during graph
+  evaluation), and a stale jointIndex from an earlier configuration
+  shouldn't crash the eval loop. Bounds check + early return.
+  `WarpResult::applied == false` so the caller can detect the
+  mismatch. Pinned by `test_animation_warp_window` § 6.
+- **Zero heap allocations**: `applyWarp` only touches three floats
+  inside the span. The `WarpResult` is a 2-field POD returned by
+  value. Steady state is allocation-free and `noexcept`. Crowd-eval
+  composition in A7 drops in unchanged — per-agent applyWarp call
+  fits inside the same chunked loop as `Animator::evaluate`.
+- **Soul check**: v1.0 ships only the single-joint translation warp.
+  Rotation warping, multi-joint warps, and contact-IK-during-warp
+  composition are explicit v1.x candidates (the FUTURE_WORK.md
+  "out of scope" stayed unchanged). The graph `NodeType::Warping`
+  slot in `graph.hpp` is still a deferred TODO — same pattern as
+  `NodeType::IK`. A graph Warping node would own multiple
+  `WarpRequest`s + per-clip event-driven start/end triggers, but the
+  position-space kernel itself is now in place.
 
 ## Batch A7 — Batch / crowd evaluation
 

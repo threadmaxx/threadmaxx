@@ -16,3 +16,4 @@
 #include "threadmaxx_animation/registry.hpp"
 #include "threadmaxx_animation/skeleton.hpp"
 #include "threadmaxx_animation/types.hpp"
+#include "threadmaxx_animation/warp.hpp"

@@ -23,6 +23,9 @@ set(THREADMAXX_ANIMATION_TESTS
     test_animation_ik_chain
     test_animation_ik_unreachable
     test_animation_ik_weight
+    test_animation_warp_root
+    test_animation_warp_window
+    test_animation_warp_blend
 )
 
 foreach(test ${THREADMAXX_ANIMATION_TESTS})

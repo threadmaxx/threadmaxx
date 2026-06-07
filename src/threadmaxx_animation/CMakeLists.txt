@@ -8,6 +8,7 @@ set(THREADMAXX_ANIMATION_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/graph.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/blend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/ik.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/warp.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/eval.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/pose_math.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/curve_eval.hpp
@@ -19,6 +20,7 @@ set(THREADMAXX_ANIMATION_SOURCES
     Animator.cpp
     GraphEval.cpp
     IK.cpp
+    Warp.cpp
 )
 
 add_library(threadmaxx_animation STATIC
