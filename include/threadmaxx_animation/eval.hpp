@@ -5,6 +5,8 @@
 #include "threadmaxx_animation/graph.hpp"
 #include "threadmaxx_animation/pose.hpp"
 
+#include <cstdint>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -133,5 +135,30 @@ private:
     bool firstEvalAfterSetGraph_ = false;
     bool paramsChangedSinceLastEval_ = false;
 };
+
+// === Crowd / batch evaluation (A7) ===
+
+/// Evaluate `animators[i]` into `outPoses[i]` for every `i` in
+/// `[0, animators.size())`. Sizes of `animators` and `outPoses` must
+/// match; if `outResults` is non-empty, its size must match too and
+/// per-agent `EvalResult`s are written into it; otherwise the per-agent
+/// results are discarded.
+///
+/// `skipMask`, if non-empty, must have the same size; `skipMask[i] != 0`
+/// marks an agent that is NOT evaluated this call — its previous-tick
+/// pose stays in `outPoses[i]` and (when present) `outResults[i]` is
+/// untouched. The mismatching-size case is undefined; the contract is
+/// caller-checked.
+///
+/// Thread-safety: the function is single-threaded over the slice. It is
+/// safe to call from a worker concurrently with OTHER calls on
+/// disjoint slices (one Animator must only be evaluated by one thread
+/// at a time). Engine integration partitions across workers via
+/// `forEachChunk` and feeds each worker its own slice.
+void evaluateBatch(std::span<Animator> animators,
+                   std::span<PoseBuffer> outPoses,
+                   EvalContext ctx,
+                   std::span<EvalResult> outResults = {},
+                   std::span<const std::uint8_t> skipMask = {});
 
 } // namespace threadmaxx::animation

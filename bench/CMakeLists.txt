@@ -53,6 +53,23 @@ endforeach()
 target_include_directories(terrain_query_bench PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/rpg_demo)
 
+# threadmaxx_animation A7 — crowd-evaluation throughput. Links the
+# sibling library directly; separated from the main bench list so it
+# doesn't compile when animation is disabled.
+if (TARGET threadmaxx::animation)
+    add_executable(animation_crowd_bench animation_crowd_bench.cpp)
+    target_link_libraries(animation_crowd_bench PRIVATE threadmaxx::animation)
+    set_target_properties(animation_crowd_bench PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(animation_crowd_bench PRIVATE
+            -Wall -Wextra -Wpedantic -O3)
+    endif()
+endif()
+
 # §S4 close-out — SIMD kernels bench. Separate from the core bench
 # list because it needs `-mavx2 -mfma` on x86_64 to actually exercise
 # the AVX2 path (the core library stays portable, so the AVX2 code

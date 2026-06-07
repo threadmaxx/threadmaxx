@@ -13,6 +13,7 @@ set(THREADMAXX_ANIMATION_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/pose_math.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/curve_eval.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/graph_eval.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/job_batch.hpp
 )
 
 set(THREADMAXX_ANIMATION_SOURCES
@@ -21,6 +22,7 @@ set(THREADMAXX_ANIMATION_SOURCES
     GraphEval.cpp
     IK.cpp
     Warp.cpp
+    Batch.cpp
 )
 
 add_library(threadmaxx_animation STATIC

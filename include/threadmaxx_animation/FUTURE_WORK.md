@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 + A2 + A3 + A4 + A5 + A6 landed (2026-06-07)**. A7–A8 are 📋 planned.
+Status: **A1 + A2 + A3 + A4 + A5 + A6 + A7 landed (2026-06-07)**. A8 is 📋 planned.
 Sequencing follows the §9 "implementation order" of the design
 notes, regrouped into shippable units that each carry their own
 tests.
@@ -696,7 +696,7 @@ worth a future batch but not blocking).
   `WarpRequest`s + per-clip event-driven start/end triggers, but the
   position-space kernel itself is now in place.
 
-## Batch A7 — Batch / crowd evaluation
+## Batch A7 — Batch / crowd evaluation ✅ landed 2026-06-07
 
 **Goal**: integrate with the engine's `forEachChunk<AnimationStateRef,
 Transform>` so many agents can be evaluated in parallel. Hand each
@@ -722,6 +722,160 @@ arena pattern.
 
 **Out of scope**: distributed crowd / LOD policies beyond simple
 skip-every-N (engine games own the policy).
+
+### A7 retrospective (2026-06-07)
+
+- **Shipped**: extension to `eval.hpp` with the public
+  `evaluateBatch(span<Animator>, span<PoseBuffer>, EvalContext,
+  span<EvalResult> = {}, span<const uint8_t> skipMask = {})` free
+  function. New detail header `detail/job_batch.hpp` with the
+  range-scoped `evaluateBatchRange(span<Animator>, span<PoseBuffer>,
+  begin, end, ctx, results, skipMask)` and the `PoseBufferPool` LIFO
+  scratch helper. New `src/threadmaxx_animation/Batch.cpp` trampolines
+  the public entry point through the detail range. Umbrella include +
+  library CMake updated (PUBLIC_HEADERS gains `detail/job_batch.hpp`;
+  SOURCES gains `Batch.cpp`). Three new test executables
+  (`test_animation_crowd_smoke`, `_lod`, `_pool`) wired into
+  `tests/animation/CMakeLists.txt`. New opt-in bench
+  `bench/animation_crowd_bench.cpp` gated on `TARGET threadmaxx::animation`
+  (and the existing `THREADMAXX_BUILD_BENCHMARKS=ON`). Full ctest
+  **184/184 green** (181 + 3).
+- **Library is single-threaded over a slice; engine owns the parallel
+  dispatch**: `evaluateBatch` is a serial for-loop. The thread-safety
+  contract is "one Animator may only be evaluated by one thread at a
+  time" — same as every other A1–A6 entry point. Engine integration
+  partitions agents across workers via `forEachChunk`; each worker
+  calls `evaluateBatchRange` on its slice. **No locking, no atomics
+  inside the library** — the per-agent Animator's playhead +
+  scratchPosePool are already private state, so worker isolation
+  drops in unchanged. This is the right boundary: the animation lib
+  doesn't need to know about the engine's thread pool, and the engine
+  doesn't need to know about the animation lib's internals.
+- **API divergence from DESIGN_NOTES §9 / plan goal text**: the goal
+  text says "integrate with the engine's `forEachChunk<AnimationStateRef,
+  Transform>` so many agents can be evaluated in parallel" — implies
+  the library exposes an engine-aware entry. We diverged: the library
+  ships a slice-based serial entry, and the `forEachChunk` integration
+  is a one-liner game-side wiring (`detail::evaluateBatchRange(...,
+  ctx.chunkBegin(), ctx.chunkEnd(), ...)`). Rationale: keeping the
+  sibling library `threadmaxx::threadmaxx`-free at link time means
+  game code that uses the animation lib WITHOUT the ECS (offline
+  tools, asset baking, headless validation) doesn't pay for the
+  engine binary. Mirrors the simd library's choice — it ships
+  primitives, the engine adopts them. The engine-side D-series RPG
+  demo integration (out of scope for A7 per the plan) will be the
+  forEachChunk wiring example.
+- **Skip mask is the LOD primitive**: `skipMask[i] != 0` → agent is
+  not evaluated this call; its previous pose stays in `outPoses[i]`
+  and its node times do NOT advance. Two important properties this
+  gives the game:
+   - **30 Hz half-rate sim**: flip a flag every other tick →
+     evaluate every other tick. Per-agent playhead deltas are
+     identical to a true 30 Hz tick stream because the engine still
+     supplies the full `EvalContext::dt`, but only every other call
+     consumes it. Pinned by `test_animation_crowd_lod` § 3 — 4 ticks
+     of `dt = 1/60s` with alternating all-skip / no-skip masks ends
+     with every agent at `nodeTime = 2 * dt`.
+   - **Distance-bucketed LOD**: the game sets bit by per-agent
+     camera distance; near agents tick every frame, far ones every
+     N. Library doesn't enforce a policy — the mask is just a bitmap
+     the caller fills. "skip-every-N is the policy" stays a game-side
+     decision (the explicit out-of-scope item from the plan).
+  Skipping does NOT mutate `outPoses[i]` — its size, contents, and
+  any prior `EvalResult` slot all stay untouched. Pinned by
+  `test_animation_crowd_lod` § 4 (skip a non-empty pose buffer for 5
+  ticks; bytes byte-identical after).
+- **Determinism across runs is byte-identical**: two passes of 256
+  agents × 8 ticks with the same EvalContext stream produce
+  byte-identical pose buffers per agent. Pinned by
+  `test_animation_crowd_smoke` § 1 (FNV-1a-64 hash over each
+  `JointPose` byte sequence — same hashes per (agent, tick)
+  coordinate across runs). This is the contract that lets the engine
+  integration confidently swap worker counts, partition strategies,
+  or chunk sizes — none of those knobs touch per-agent pose output.
+- **Slice partitioning byte-equivalence**: dispatching 256 agents as
+  a single `evaluateBatch` call vs four `evaluateBatchRange` calls
+  (lo, hi) = (0, 64), (64, 128), (128, 192), (192, 256) produces
+  byte-identical poses. Pinned by `test_animation_crowd_smoke` § 3
+  (8 ticks × 256 agents, FNV-1a hashes match per-(agent, tick)).
+  This is the "engine forEachChunk integration is safe" guarantee
+  — the library promises that no matter how the engine slices the
+  agent range, the output is the same as the serial baseline.
+- **`PoseBufferPool` is LIFO, not FIFO**: most-recently-released
+  buffer is the next one returned. Hot in cache, fast acquire. Not
+  thread-safe — one pool per worker is the only supported sharing
+  pattern. The engine integration pattern is documented as
+  "`std::vector<PoseBufferPool>` sized to `engine.workerCount()`,
+  index by worker id." `reserve(count, jointCount)` pre-grows so the
+  first few `acquire` calls hit the steady state immediately — the
+  intended call site is engine startup, sizing the pool to the peak
+  per-tick scratch depth a worker will see. Pinned by
+  `test_animation_crowd_pool` (LIFO order, resize-on-acquire,
+  steady-state size invariant).
+- **`outResults` is optional**: pass `std::span<EvalResult>{}` to
+  discard per-agent results. Useful for hot-path crowd ticks where
+  the game doesn't care about dirty flags or event lists (combat AI
+  with its own state) — `evaluate`'s by-value return is still paid
+  (the Animator constructs an EvalResult unconditionally), but the
+  copy into the caller's vector is skipped. Pinned by
+  `test_animation_crowd_smoke` § 5 (sentinel `dirty = false` stays
+  false after a no-results call).
+- **First-tick allocations vs steady state**: the first
+  `evaluateBatch` call against a fresh agent set pays the per-Animator
+  PoseBuffer resize (joints-vector allocation) and the per-Animator
+  scratchPosePool warm-up (lazy first-grow). All subsequent ticks
+  are allocation-free in steady state. The bench harness explicitly
+  burns one warm-up tick before the timed window to keep reported
+  numbers steady-state.
+- **Bench numbers (steady-state, scalar, single-threaded, -O3)**:
+   - 1k agents × 240 ticks → 0.118 ms/tick, **0.116 µs/agent**
+   - 8k agents × 60 ticks  → 0.962 ms/tick, **0.117 µs/agent**
+   - 32k agents × 30 ticks → 3.800 ms/tick, **0.116 µs/agent**
+
+  Linear scaling — per-agent cost is ~constant from 1k to 32k. The
+  per-agent work is one `stepClipNode` (fmod + linear keyframe scan +
+  three `JointPose` copies for the 3-joint test rig) and one
+  output-pose copy. The flat ~117 ns includes the variant `std::visit`
+  cost in `evaluateInto` and the per-Animator scratch-pool peek. The
+  bench is the floor any SIMD/parallel variant must beat. Linear
+  cost-vs-count is what lets the engine integration size its
+  forEachChunk grain (`preferredGrain()` ≈ `targetSubJobMicros /
+  perAgentMicros` = 200 / 0.117 ≈ 1700 agents per sub-job for the
+  default 200 µs target).
+- **`detail/job_batch.hpp` is header-only**: range loop is small
+  enough to inline. `PoseBufferPool` is also header-only — moves are
+  cheap, no virtual dispatch, no out-of-line definitions. Putting the
+  whole crowd-eval support layer in a single detail header keeps the
+  link surface unchanged (one new TU: `Batch.cpp`, which is a single
+  trampoline).
+- **Engine-integration sketch (not landed in A7)**: a future RPG-demo
+  batch would build the engine-side wiring like:
+  ```cpp
+  // Per-Engine setup
+  std::vector<PoseBufferPool> pools(engine.workerCount());
+  for (auto& p : pools) p.reserve(maxAgentsPerChunk, jointCount);
+
+  // Per-tick AnimationSystem::update
+  forEachChunk<AnimationStateRef, Transform>(ctx,
+    [&](std::size_t workerId, std::span<Animator> animators,
+        std::span<PoseBuffer> poses, std::span<const uint8_t> lod) {
+      detail::evaluateBatchRange(animators, poses,
+                                 0, animators.size(),
+                                 evalCtx, {}, lod);
+    });
+  ```
+  The pool plumbing only matters when game-side scratch buffers (IK
+  world positions, retargeted intermediate poses) are needed —
+  Animator-side scratch already lives on the Animator itself.
+- **Soul check**: zero heap allocations in steady state (per-Animator
+  PoseBuffer grown on tick 0; scratch pool grown on tick 0). The
+  library is single-threaded over a slice, slice-partitionable
+  byte-equivalently, and engine-agnostic at link time. LOD primitive
+  is one byte per agent — `skipMask[i] != 0` is the entire contract.
+  Crowd determinism is byte-identical across runs. The forEachChunk
+  integration drops in as a one-line range dispatch when the engine
+  side is ready; the library doesn't need any more API surface for
+  it.
 
 ## Batch A8 — Diagnostics + retarget + serialization
 
