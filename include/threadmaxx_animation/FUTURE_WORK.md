@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 + A2 + A3 + A4 landed (2026-06-07)**. A5–A8 are 📋 planned.
+Status: **A1 + A2 + A3 + A4 + A5 landed (2026-06-07)**. A6–A8 are 📋 planned.
 Sequencing follows the §9 "implementation order" of the design
 notes, regrouped into shippable units that each carry their own
 tests.
@@ -458,7 +458,7 @@ the new node kinds.
   Animator + per-agent PoseBuffer + per-agent ScratchPool, all
   worker-private, zero engine-side synchronization on the graph.
 
-## Batch A5 — IK constraints (FABRIK or CCD)
+## Batch A5 — IK constraints (FABRIK or CCD) ✅ landed 2026-06-07
 
 **Goal**: `solveIK` for 2-bone arm/leg chains plus a generic chain
 solver. FABRIK recommended — it's iterative, branchless, and
@@ -485,6 +485,108 @@ nature — tighten only if a profile reveals it matters.
 
 **Out of scope**: joint constraints (twist limits, hinge), full
 analytical IK for specific rigs.
+
+### A5 retrospective (2026-06-07)
+
+- **Shipped**: new public `ik.hpp` (`IKTarget` / `IKSolveResult` PODs +
+  `solveIK(std::span<Vec3>, const IKTarget&)` + analytical
+  `solve2BoneIK` helper). New `src/threadmaxx_animation/IK.cpp` with
+  the FABRIK forward/backward sweep, the unreachable-stretch path, and
+  the law-of-cosines 2-bone solver. Umbrella include + CMake updated
+  (PUBLIC_HEADERS gains `ik.hpp`; SOURCES gains `IK.cpp`). Four new
+  test executables (`test_animation_ik_2bone`, `_chain`,
+  `_unreachable`, `_weight`) wired into `tests/animation/CMakeLists.txt`.
+  Full ctest **178/178 green** (174 + 4).
+- **Position-space chain, not joint-space pose**: `solveIK` operates
+  over a `std::span<Vec3>` of world-space joint positions, not over
+  a `PoseSpan`. The caller is responsible for forward-kinematics
+  (local pose → world positions) and the inverse-mapping
+  (post-solve positions → per-joint rotations). Rationale: the
+  position-space solver is the load-bearing kernel; rotation
+  reconstruction is a separate concern that wants caller-controlled
+  policy (per-joint up-axis hints, twist preservation) which the
+  graph IK node will eventually own. A5's scope was the kernel; the
+  `NodeType::IK` slot in `graph.hpp` is still a deferred TODO.
+- **Bone lengths derived once, preserved through iterations**:
+  `solveIK` snapshots the input positions, computes pairwise bone
+  lengths, and then forces every forward/backward sweep to preserve
+  them. No caller-supplied "rest pose" / "rest lengths" parameter
+  — bone lengths are a property of the input chain. Keeps the API
+  small (one chain + one target) and matches the "feed me the
+  current pose's world positions" mental model.
+- **Unreachable case lays the chain along (target − root)**:
+  `rootToTarget > totalLength` is a single early-out that produces
+  the stretched-toward solution in O(n) without ever entering the
+  FABRIK loop. `converged = false`, `iterations = 0`,
+  `finalDistance = rootToTarget − totalLength`. The
+  off-axis-unreachable-target variant pinned this in
+  `test_animation_ik_unreachable` (target at (0, 100, 0) lays the
+  chain along +y). No NaN, no infinite loop.
+- **Folded case (target inside the dead zone) in 2-bone helper**:
+  `solve2BoneIK` short-circuits when `d ≤ |upper − lower|` by
+  placing the elbow at distance `upper` along the negative
+  shoulder→target axis. Avoids domain errors in the law-of-cosines
+  formula. FABRIK's iterative form handles this naturally — folded
+  targets are just very-bent targets — so the kernel solver doesn't
+  need a parallel branch.
+- **Weight blend is a post-solve lerp, NOT a bone-length-preserving
+  constrained intermediate pose**: when `target.weight < 1`, the
+  result is `lerp(original, solved, weight)` component-wise. Bone
+  lengths in the lerp'd output are NOT re-projected. Reason:
+  intermediate-weight IK is "pull the limb fractionally toward the
+  target," which is more useful as a corrective layer than a
+  constrained pose. Game-side code that wants constrained
+  intermediate poses can call `solveIK` with a near-target
+  intermediate target and weight=1.
+- **Convergence cap is conservative**: default `maxIterations = 16`
+  and `tolerance = 1e-3` chosen so FABRIK terminates fast in the
+  reachable common case (1-3 iterations for a typical limb chain).
+  The 5-joint chain test gate uses 50 iterations to leave headroom
+  for the looser tolerance; in practice it converges in well under
+  50 on the (2, 2, 0) target. The 1e-3 tolerance is the v1.0
+  contract; tighten only if a profile reveals the looseness matters.
+- **2-bone analytical helper is independent of FABRIK**: `solve2BoneIK`
+  takes the shoulder + wrist target + a pole hint + bone lengths and
+  returns the elbow position via the law of cosines. Used by the
+  test gate as the reference oracle for FABRIK's 2-bone solve, and
+  available to game code that wants the cheaper closed-form for
+  known-2-bone limb rigs (no iteration cost). The pole vector is
+  projected into the bend plane (perpendicular to shoulder→target)
+  to disambiguate the elbow's hemisphere. Pole collinear with the
+  axis falls back to a stable world-axis pick so the result stays
+  deterministic.
+- **`normalizeOr(v, fallback)`**: the tiny anonymous-namespace helper
+  returns `fallback` when `length(v) < 1e-8`. Used in both the
+  FABRIK sweeps and the 2-bone helper. Avoids NaN propagation in
+  the degenerate "two adjacent joints land at the same point" case
+  (theoretically impossible if bone lengths are preserved, but the
+  guard costs ~one float compare per call). Pinned by the off-axis
+  unreachable test where the initial chain is collinear with the
+  +x axis but the target is at +y=100 — the forward-pass
+  normalizations stay clean.
+- **Forward/backward sweep loop discipline**: forward pass walks
+  `i = n-1` down to `i = 1`, computing `positions[i-1]` from
+  `positions[i]`. Backward pass walks `i = 0` up to `i = n-2`,
+  computing `positions[i+1]` from `positions[i]`. Bone-length indexing
+  is `boneLengths[i-1]` in the forward pass and `boneLengths[i]` in
+  the backward pass — the two halves are not symmetric in indexing
+  but ARE symmetric in semantics (each pass anchors one end and
+  walks toward the other, placing each joint at its bone length from
+  the just-placed neighbor). Worth a re-read before refactoring.
+- **`IKTarget::rotation` is reserved, not applied**: the field
+  exists so v1.x can add end-effector rotation constraints without
+  an API break, but v1.0 does not enforce it. Documented in
+  `ik.hpp`. Authoring tools that hand IK targets to the engine can
+  populate it without breaking anything; the solver just ignores it.
+- **Soul check**: zero heap allocations in steady state once the
+  caller's `std::span<Vec3>` is filled. The single per-call
+  allocation is the `std::vector<Vec3> original` snapshot for the
+  weight blend — could be lifted into a caller-owned scratch buffer
+  in A7 when crowd evaluation lands (per-worker scratch arena, same
+  pattern as the A4 scratch pool). FABRIK's inner loop is branchless
+  except for the `normalizeOr` zero-check, fits comfortably inside
+  the engine's tick budget at the chain sizes the design notes
+  expect (2-6 joints per agent).
 
 ## Batch A6 — Motion warping
 

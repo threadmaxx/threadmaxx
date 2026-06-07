@@ -19,6 +19,10 @@ set(THREADMAXX_ANIMATION_TESTS
     test_animation_blend2d
     test_animation_additive
     test_animation_layer_mask
+    test_animation_ik_2bone
+    test_animation_ik_chain
+    test_animation_ik_unreachable
+    test_animation_ik_weight
 )
 
 foreach(test ${THREADMAXX_ANIMATION_TESTS})

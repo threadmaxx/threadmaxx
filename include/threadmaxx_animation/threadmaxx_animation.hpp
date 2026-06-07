@@ -11,6 +11,7 @@
 #include "threadmaxx_animation/clip.hpp"
 #include "threadmaxx_animation/eval.hpp"
 #include "threadmaxx_animation/graph.hpp"
+#include "threadmaxx_animation/ik.hpp"
 #include "threadmaxx_animation/pose.hpp"
 #include "threadmaxx_animation/registry.hpp"
 #include "threadmaxx_animation/skeleton.hpp"
