@@ -11,6 +11,7 @@ option(THREADMAXX_BUILD_EXAMPLES "Build the bundled minimal example" ON)
 option(THREADMAXX_BUILD_TESTS "Build and register the test suite" ON)
 option(THREADMAXX_BUILD_BENCHMARKS "Build the standalone benchmark binaries" OFF)
 option(THREADMAXX_BUILD_SIMD "Make the threadmaxx_simd header-only sibling library available" ON)
+option(THREADMAXX_BUILD_ANIMATION "Make the threadmaxx_animation sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -137,6 +138,21 @@ if (THREADMAXX_BUILD_SIMD)
 endif()
 
 # --------------------------------------------------------------------------
+# threadmaxx_animation — skeletal pose / clip / IK sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_ANIMATION=ON` (the default). Static
+# library — public headers under `include/threadmaxx_animation/`,
+# implementation under `src/threadmaxx_animation/`. The library
+# reuses the core's `Vec3` / `Quat` POD types and optionally borrows
+# from `threadmaxx::simd` for vectorized pose blending (v1.x). See
+# `include/threadmaxx_animation/DESIGN_NOTES.md` for the spec and
+# `FUTURE_WORK.md` for the batch plan.
+if (THREADMAXX_BUILD_ANIMATION)
+    add_subdirectory(src/threadmaxx_animation)
+endif()
+
+# --------------------------------------------------------------------------
 # Examples
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
@@ -194,6 +210,21 @@ if (THREADMAXX_INSTALL)
             INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         )
         install(DIRECTORY include/threadmaxx_simd
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling animation library — static. Same `if (TARGET
+    # threadmaxx::animation)` downstream probe.
+    if (THREADMAXX_BUILD_ANIMATION)
+        install(TARGETS threadmaxx_animation
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_animation
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
             FILES_MATCHING PATTERN "*.hpp"
         )

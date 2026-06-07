@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **not started**. All batches are 📋 planned. Sequencing
+Status: **A1 landed (2026-06-07)**. A2–A8 are 📋 planned. Sequencing
 follows the §9 "implementation order" of the design notes, regrouped
 into shippable units that each carry their own tests.
 
@@ -66,7 +66,7 @@ bench/
   animation_*.cpp            # opt-in via -DTHREADMAXX_BUILD_BENCHMARKS=ON
 ```
 
-## Batch A1 — Foundations (registry + pose math)
+## Batch A1 — Foundations (registry + pose math) ✅ landed 2026-06-07
 
 **Goal**: header-only skeleton/clip registry, a usable `PoseBuffer`,
 and the per-joint compose/blend primitives in `detail/pose_math.hpp`.
@@ -97,6 +97,44 @@ restructure internally.
 
 **Out of scope**: clip sampling (A2), graph (A3), IK (A5), batch
 evaluation (A7).
+
+### A1 retrospective (2026-06-07)
+
+- **Shipped**: `types.hpp`, `pose.hpp`, `skeleton.hpp`, `clip.hpp`,
+  `registry.hpp` (small plan extension — DESIGN_NOTES §5.1 puts
+  `AnimationRegistry` here without naming the header), umbrella
+  `threadmaxx_animation.hpp`, `detail/pose_math.hpp`,
+  `src/threadmaxx_animation/Registry.cpp`. Top-level CMake gains
+  `THREADMAXX_BUILD_ANIMATION` (default ON) + static lib
+  `threadmaxx::animation`. Install rules mirror simd.
+- **Mat4 deferral**: `Joint::bindLocal` is `JointPose`, not `Mat4`.
+  DESIGN_NOTES §4.1 specifies Mat4; we use the JointPose TRS form
+  for symmetry with the rest of the data model and to keep the lib
+  free of a Mat4 dependency until a real consumer (A5 IK, retarget)
+  asks for one. Documented in `skeleton.hpp`.
+- **Composition convention**: `detail::compose(parent, local)` is
+  the canonical skeletal-animation formula — full scale propagation
+  (componentwise) **diverges from** `HierarchySystem`'s default
+  `scale = local.scale`. Bone chains universally want
+  parent-scale-propagated children. Quat mul + `rotate(q, v)` match
+  HierarchySystem byte-for-byte so renderer-side composition stays
+  consistent.
+- **Re-exports**: `pose.hpp` aliases `threadmaxx::Vec3` / `Quat`
+  into the `threadmaxx::animation` namespace so consumers that
+  `using namespace threadmaxx::animation` see them without a
+  second using-decl.
+- **Skeleton id encoding**: low 32 bits = slot index, high 32 bits
+  = generation tag. Clip ids are bare slot indices in A1 (no clip
+  removal API yet — A2+ revisits if it lands).
+- **Test gate**: all four executables pass on first build under
+  `tests/animation/` (CTest names `animation.test_animation_*`).
+  Full ctest 165/165 green.
+- **Soul check**: zero allocation in the hot path (`PoseBuffer`
+  caller-owned), AoS POD chosen to match the SIMD library's
+  `simd_batchable<JointPose>` extension path (A1.x v1.x), span-based
+  kernel signatures (`std::span<JointPose>`) so the engine's
+  `forEachChunk` integration in A7 can hand worker-private buffers
+  in without a copy.
 
 ## Batch A2 — Clip sampling + event tracks
 

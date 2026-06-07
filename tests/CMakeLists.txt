@@ -168,6 +168,12 @@ if (TARGET threadmaxx::simd)
     add_subdirectory(simd)
 endif()
 
+# threadmaxx_animation sibling-library test suite (A1+). Lives in
+# `tests/animation/`. Skipped if the animation opt-in is off.
+if (TARGET threadmaxx::animation)
+    add_subdirectory(animation)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)
