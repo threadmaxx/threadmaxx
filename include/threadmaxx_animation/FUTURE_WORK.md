@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 + A2 + A3 + A4 + A5 + A6 + A7 landed (2026-06-07)**. A8 is 📋 planned.
+Status: **A1 + A2 + A3 + A4 + A5 + A6 + A7 + A8 landed (2026-06-07)** — v1.0 close-out batch shipped.
 Sequencing follows the §9 "implementation order" of the design
 notes, regrouped into shippable units that each carry their own
 tests.
@@ -877,7 +877,7 @@ skip-every-N (engine games own the policy).
   side is ready; the library doesn't need any more API surface for
   it.
 
-## Batch A8 — Diagnostics + retarget + serialization
+## Batch A8 — Diagnostics + retarget + serialization ✅ landed 2026-06-07
 
 **Goal**: round out the v1.0 surface. Pose validation diagnostics
 (NaN check, axis-flip check), basic skeleton retargeting for
@@ -901,6 +901,153 @@ asset save/load.
 
 **Out of scope**: cloth solver (out of scope for the entire library
 per design notes §1; we ship hook signatures only).
+
+### A8 retrospective (2026-06-07)
+
+- **Shipped**: four new public headers — `diagnostics.hpp` (POD
+  `PoseValidationReport` + `PoseIssue` bit-flag enum + `validatePose` /
+  `validateJoint` free functions, all header-only `noexcept`),
+  `retarget.hpp` (POD `RetargetMap` / `RetargetJointMapping` /
+  `RetargetChannels` + `buildRetargetMap` / `retargetPose`),
+  `serialization.hpp` (header-only `writeAnimationAssetBundle` /
+  `readAnimationAssetBundle` with `[magic 'AMTX' u32][version u32]`
+  header + `kAnimationAssetVersion = 1`), `cloth.hpp` (hook-only —
+  `ClothAttachmentPoint` / `ClothAttachmentSet` / `ClothSolverHooks` +
+  `updateCloth` no-op trampoline). One new TU: `src/Retarget.cpp`.
+  CMake + umbrella include updated. Three new test executables
+  (`test_animation_diagnostics`, `test_animation_retarget_smoke`,
+  `test_animation_serialization_roundtrip`). Full ctest
+  **187/187 green** in `build/` (184 + 3); animation suite 26/26
+  green in `build-werror/` under `-DTHREADMAXX_WARNINGS_AS_ERRORS=ON`
+  (`-Wsign-conversion -Wconversion -Wold-style-cast` clean).
+- **Diagnostics is bit-flag, not enum-class**: `PoseIssue` is a
+  bitset (`NanTranslation = 1 << 0`, `NanRotation = 1 << 1`,
+  `NanScale = 1 << 2`, `DenormalRotation = 1 << 3`,
+  `DegenerateScale = 1 << 4`). One joint can have multiple flags set
+  (NaN rotation + degenerate scale + zero translation all stack
+  cleanly). The `overall` field on `PoseValidationReport` is the
+  bitwise OR across every joint — a single `has(rep.overall, X)`
+  check is enough to ask "did anyone fail with X?". The `firstBadJoint`
+  / `badJointCount` fields are for the common "I want to log the
+  first bad joint" use case. Validation is single-pass O(n), zero
+  allocations, `noexcept` — the `validatePose` overloads for both
+  `std::span<const JointPose>` and `PoseSpan` route through the same
+  `detail::classifyJoint` inline helper.
+- **`DenormalRotation` threshold is `|q|² < 1e-6`** — captures the
+  "literal `Quat{0,0,0,0}`" failure mode that propagates as
+  `nan` through any subsequent `rotate(q, v)` operation. Doesn't
+  flag mildly-denormalized quats (`|q| ≈ 0.999`) which renormalize
+  fine in `detail::lerp`. Pinned by `test_animation_diagnostics` § 5.
+- **`DegenerateScale` covers both sign-flip AND zero-collapse**:
+  any scale axis `≤ 0` flags the joint. Catches authoring errors
+  (negative scale to "flip" a mesh — usually produces a CCW→CW
+  winding the renderer rejects) and arithmetic collapse (a noisy
+  weighted blend that accidentally lands at exactly 0). The "sign-
+  flip is a flag, not a fatal" framing lets game code decide
+  whether to clamp, halt, or just log — same as the rest of the
+  diagnostics surface.
+- **Retarget is name-matched, single-channel by default**:
+  `buildRetargetMap` walks both skeletons in `joints` index order,
+  emits one `(srcIndex, dstIndex)` mapping per name that exists in
+  both. O(N × M) brute-force lookup — fine for the 50-200 joint
+  skeletons typical in skeletal animation. A hash table would be
+  the obvious upgrade if a real workload says so. `RetargetChannels`
+  defaults to `copyRotation = true`, `copyTranslation = false`,
+  `copyScale = false` — the standard "share a clip across rigs
+  with different bone lengths" use case (translation is rig-local;
+  copying it across rigs would compress/stretch limbs). Game code
+  that wants bone-length-aware retarget (root-motion alignment)
+  flips `copyTranslation = true` and accepts the limb scaling, or
+  ships a custom post-process.
+- **`retargetPose` is stale-map safe**: any mapping that references
+  an index out of range of either pose is silently skipped. The
+  motivating case: an `AnimationGraph` reconfigured between ticks
+  with a now-stale `RetargetMap` cached in game code wouldn't crash
+  the eval loop — just produce a partial retarget. Pinned by
+  `test_animation_retarget_smoke` § 6. Same defensive posture as
+  the warp `jointIndex` bounds check in A6.
+- **Unmapped dest joints retain caller-seeded values**: dest joints
+  with no mapping in the map are NOT written to. The caller seeds
+  `dstPose` with the dest skeleton's bind-local pose (or the
+  previous tick's output for stateful chaining), then retarget
+  fills in the joints it knows. The "fully blank dest pose"
+  contract isn't promised — that's the caller's job. Pinned by
+  `test_animation_retarget_smoke` § 4 (sentinel quat at unmapped
+  spine joint survives the retarget).
+- **API divergence from DESIGN_NOTES §5.7**: design notes mention
+  axis remapping (different rest orientations between rigs) as part
+  of retargeting. A8 doesn't ship it — the v1.0 retarget assumes
+  the two skeletons share the same rest orientation per joint name.
+  Axis remap requires per-joint frame-of-reference math (rotate the
+  source rotation by `restA⁻¹ * restB`); deferred to v1.x because
+  the v1.0 use case (Mixamo / standard humanoid skeletons sharing a
+  pose convention) doesn't need it. Documented in `retarget.hpp`.
+- **Serialization is host-endian, byte-blob, magic+version-guarded**:
+  same caveat as the engine's `WorldSnapshot` — cross-arch transfer
+  is out of scope for v1.0. The format is `[magic 'AMTX' u32]
+  [version u32 = 1][skeletonCount u64](skeleton ...)*[clipCount u64]
+  (clip ...)*`. Per-skeleton: name string (u64-length-prefixed) +
+  joint count u64 + (joint ...)* + bindGlobal POD vec. Per-joint:
+  name string + parent i32 + bindLocal POD. Per-clip: name string +
+  duration f32 + looping u8 + event count u64 + (event ...)* +
+  jointCount u32 + keyframeTimes POD vec + keyframes POD vec.
+  Reader returns `std::optional<AnimationAssetBundle>` — `nullopt`
+  on magic mismatch, version mismatch, OR truncated input. Header-
+  only `detail::Reader` struct keeps the parsing tight; one
+  `std::memcpy` per blob, no per-field allocation outside the
+  string + vector resize they own.
+- **`AnimationAssetBundle` POD carries `std::vector<SkeletonDesc>`
+  + `std::vector<ClipDesc>`**: matches the typical bake-step output
+  shape (a baker dumps every clip + every skeleton it touched into
+  one cached blob). Empty-bundle round-trip is supported (just the
+  header + two zero counts) — pinned by
+  `test_animation_serialization_roundtrip` § 2. Determinism is
+  bit-identical across runs (same input → same byte stream) — pinned
+  by § 7. The 1-skeleton-1-clip round trip is § 1; multi-asset round
+  trip is § 3; bad magic / bad version / truncation are § 4, 5, 6.
+- **`kAnimationAssetVersion = 1`**: bumps on any field addition.
+  Reader rejects mismatched versions; there's no v0 to migrate
+  from, so version 1 is the floor. Following the engine's
+  `WorldSnapshot` pattern — v1 of the engine is the floor, no
+  legacy reader. When a v2 ships (e.g. per-channel SoA curves), the
+  v1.x batch that adds it must walk the format spec in the header
+  Doxygen and provide a v1→v2 migration helper.
+- **Cloth hooks ship without a solver — by design**: `cloth.hpp`
+  carries `ClothAttachmentPoint` + `ClothAttachmentSet` +
+  `ClothSolverHooks` PODs and one inline `updateCloth` trampoline
+  that no-ops when `hooks.update == nullptr`. Per `DESIGN_NOTES.md`
+  §1, the cloth solver lives in a future sibling library
+  (`threadmaxx_cloth`) — same boundary discipline as
+  `threadmaxx_navmesh` vs. `threadmaxx_physics`. The hooks exist so
+  game code can declare attachment points + a callback in one
+  place, and so the future cloth lib has a stable header to consume.
+  No new tests — the `updateCloth` null-callback no-op is
+  trivially correct by construction.
+- **CMake + umbrella include**: four new public headers and one
+  new TU added to `src/threadmaxx_animation/CMakeLists.txt`
+  (`THREADMAXX_ANIMATION_PUBLIC_HEADERS` + `THREADMAXX_ANIMATION_SOURCES`).
+  Three new test executables in `tests/animation/CMakeLists.txt`
+  (`THREADMAXX_ANIMATION_TESTS`). Umbrella `threadmaxx_animation.hpp`
+  re-exports all four new headers alphabetically.
+- **Soul check (v1.0 close-out)**: every batch A1–A8 has landed,
+  tested green, retrospective written. The v1.0 public surface is
+  what `threadmaxx_animation.hpp` re-exports — 14 headers
+  (alphabetically): blend / clip / cloth / diagnostics / eval /
+  graph / ik / pose / registry / retarget / serialization /
+  skeleton / types / warp. Steady-state hot path is allocation-free
+  (per-Animator PoseBuffer + scratchPosePool grown on tick 0;
+  diagnostic / retarget / serialization paths called outside the
+  hot loop). The library remains `threadmaxx::threadmaxx`-free at
+  link time for everything except `Registry.cpp` / `Animator.cpp` /
+  `GraphEval.cpp` / `IK.cpp` / `Warp.cpp` / `Batch.cpp` /
+  `Retarget.cpp` (all of which only reach into the core lib for the
+  `Vec3` / `Quat` re-exports — A1's choice). Offline tools / asset
+  bakers / headless validators can link `threadmaxx::animation`
+  alone. ✓ Every batch A1–A8 landed and tested. The "v1.0 close-out
+  criteria" checklist (RPG demo D14 wiring + version stamp +
+  USER_GUIDE / MAINTAINER_GUIDE docs + bench coverage) is the
+  remaining shippable work for an actual v1.0.0 tag, but the API
+  surface itself is complete.
 
 ## v1.0 close-out criteria
 

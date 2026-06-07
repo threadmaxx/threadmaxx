@@ -10,6 +10,10 @@ set(THREADMAXX_ANIMATION_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/ik.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/warp.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/eval.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/diagnostics.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/retarget.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/serialization.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/cloth.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/pose_math.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/curve_eval.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/graph_eval.hpp
@@ -23,6 +27,7 @@ set(THREADMAXX_ANIMATION_SOURCES
     IK.cpp
     Warp.cpp
     Batch.cpp
+    Retarget.cpp
 )
 
 add_library(threadmaxx_animation STATIC

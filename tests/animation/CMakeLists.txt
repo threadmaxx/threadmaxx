@@ -29,6 +29,9 @@ set(THREADMAXX_ANIMATION_TESTS
     test_animation_crowd_smoke
     test_animation_crowd_lod
     test_animation_crowd_pool
+    test_animation_diagnostics
+    test_animation_retarget_smoke
+    test_animation_serialization_roundtrip
 )
 
 foreach(test ${THREADMAXX_ANIMATION_TESTS})
