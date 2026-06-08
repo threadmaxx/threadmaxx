@@ -16,6 +16,9 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_body_lifecycle
     test_physics_body_kinematic_teleport
     test_physics_body_sync_batch
+    test_physics_step_linear
+    test_physics_step_angular
+    test_physics_step_determinism
 )
 
 foreach(test ${THREADMAXX_PHYSICS_TESTS})

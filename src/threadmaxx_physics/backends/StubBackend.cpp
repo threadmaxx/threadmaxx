@@ -1,6 +1,7 @@
 #include "threadmaxx_physics/stub_backend.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -13,15 +14,20 @@
 // distinguishable from any live world.
 //
 // P1 shipped the table machinery + create / destroy lifecycle plumbing.
-// P2 (this file) adds the shape registry refcount: every body and
-// every compound parent holds one reference on each shape it uses;
-// `destroyShape` is a deferred-destroy that flips `pendingDestroy` and
-// frees the slot only when the refcount falls to zero. Compound shapes
-// also propagate refcounts to their children, so freeing a compound
-// can cascade.
+// P2 added the shape registry refcount: every body and every compound
+// parent holds one reference on each shape it uses; `destroyShape` is
+// a deferred-destroy that flips `pendingDestroy` and frees the slot
+// only when the refcount falls to zero. Compound shapes also propagate
+// refcounts to their children, so freeing a compound can cascade.
 //
-// `stepWorld` is still a no-op for P2 — the kinematic integrator lands
-// in P4 (positions advance by `linearVelocity * dt`).
+// P3 added `getBodyState` / `setBodyTransform` for single-body read +
+// kinematic teleport.
+//
+// P4 (this file) wires `stepWorld` to a kinematic-only integrator:
+// every alive non-Static body advances by `linearVelocity * dt` and
+// composes a rotation built from `angularVelocity * dt` interpreted as
+// world-frame axis-angle. No collision, no gravity, no forces — those
+// belong to the real backend (P9). Static bodies are skipped.
 
 namespace threadmaxx::physics {
 
@@ -42,6 +48,49 @@ constexpr std::uint32_t slotOf(std::uint64_t handle) noexcept {
 
 constexpr std::uint32_t generationOf(std::uint64_t handle) noexcept {
     return static_cast<std::uint32_t>(handle >> 32);
+}
+
+// Hamilton-product quat multiplication: `out = a * b` with the
+// {x,y,z,w} = {xi,yj,zk,w} convention used throughout the engine.
+constexpr Quat quatMul(const Quat& a, const Quat& b) noexcept {
+    return Quat{
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+}
+
+// Compose `q` with a rotation built from world-frame angular velocity
+// `omega` (rad/s) over `dt` seconds, interpreted as axis-angle. Pure
+// kinematic integration — no precession, no damping. Returns `q`
+// unchanged when the resulting angle is below a sin/cos cutoff so we
+// avoid dividing by near-zero |omega|.
+inline Quat integrateAngular(const Quat& q, const Vec3& omega, float dt) noexcept {
+    const float magSq = omega.x * omega.x + omega.y * omega.y + omega.z * omega.z;
+    if (magSq <= 0.0f) {
+        return q;
+    }
+    const float mag = std::sqrt(magSq);
+    const float angle = mag * dt;
+    // Tiny rotations collapse to identity in float; skipping avoids the
+    // 1/mag divide and matches what a real backend would do at numerical
+    // dead-band.
+    constexpr float kAngleCutoff = 1e-7f;
+    if (angle < kAngleCutoff && angle > -kAngleCutoff) {
+        return q;
+    }
+    const float invMag = 1.0f / mag;
+    const float half = angle * 0.5f;
+    const float s = std::sin(half);
+    const float c = std::cos(half);
+    const Quat dq{
+        omega.x * invMag * s,
+        omega.y * invMag * s,
+        omega.z * invMag * s,
+        c,
+    };
+    return quatMul(dq, q);
 }
 
 struct ShapeSlot {
@@ -226,12 +275,23 @@ public:
         b->state.rotation = rotation;
     }
 
-    void stepWorld(PhysicsWorldId world, float /*dt*/) override {
-        // P2: stepWorld is still a no-op by design. P4 will integrate
-        // kinematic velocity into position. We still verify the world
-        // is valid so callers see the same lifecycle behavior as a
-        // real backend would.
-        (void)lookupWorld(world);
+    void stepWorld(PhysicsWorldId world, float dt) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return;
+        }
+        // Kinematic-only integrator: every non-Static alive body
+        // advances by velocity * dt. Velocities themselves are not
+        // damped or accelerated — a real backend's gravity / forces /
+        // collision response live in P9.
+        for (BodySlot& b : w->bodies) {
+            if (!b.alive || b.desc.type == BodyType::Static) {
+                continue;
+            }
+            b.state.position = b.state.position + b.state.linearVelocity * dt;
+            b.state.rotation = integrateAngular(
+                b.state.rotation, b.state.angularVelocity, dt);
+        }
     }
 
     void syncBodiesToGame(PhysicsWorldId world,
