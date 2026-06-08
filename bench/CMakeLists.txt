@@ -70,6 +70,23 @@ if (TARGET threadmaxx::animation)
     endif()
 endif()
 
+# threadmaxx_physics P9 — Jolt-backed rigid-body throughput. Gated on
+# Jolt availability (see src/threadmaxx_physics/CMakeLists.txt); when
+# Jolt is absent the bench target is silently not created.
+if (THREADMAXX_PHYSICS_HAS_JOLT)
+    add_executable(physics_jolt_bench physics_jolt_bench.cpp)
+    target_link_libraries(physics_jolt_bench PRIVATE threadmaxx::physics)
+    set_target_properties(physics_jolt_bench PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(physics_jolt_bench PRIVATE
+            -Wall -Wextra -Wpedantic -O3)
+    endif()
+endif()
+
 # §S4 close-out — SIMD kernels bench. Separate from the core bench
 # list because it needs `-mavx2 -mfma` on x86_64 to actually exercise
 # the AVX2 path (the core library stays portable, so the AVX2 code

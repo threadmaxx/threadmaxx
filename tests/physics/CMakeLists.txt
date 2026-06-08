@@ -36,6 +36,18 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_contact_stable
 )
 
+# Jolt-backed tests are only registered when the CMake gate found Jolt
+# (see src/threadmaxx_physics/CMakeLists.txt). Gate-off builds still
+# compile the JoltBackend.cpp stub but `makeJoltBackend()` returns
+# nullptr there — running the smoke/conformance tests in that mode
+# would fail to assert and waste CTest cycles, so we skip registration.
+if (THREADMAXX_PHYSICS_HAS_JOLT)
+    list(APPEND THREADMAXX_PHYSICS_TESTS
+        test_physics_jolt_smoke
+        test_physics_jolt_conformance
+    )
+endif()
+
 foreach(test ${THREADMAXX_PHYSICS_TESTS})
     add_executable(${test} ${test}.cpp)
     target_link_libraries(${test} PRIVATE threadmaxx::physics)

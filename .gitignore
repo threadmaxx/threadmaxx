@@ -6,6 +6,7 @@ build-tsan
 build-asan
 build-long-soak
 build-bench
+build-jolt
 bench/commit_pass_breakdown_baseline.jsonl
 bench/s5_breakdown*.jsonl
 Testing

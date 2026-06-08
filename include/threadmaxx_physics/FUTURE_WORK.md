@@ -4,10 +4,10 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **in progress**. P1 + P2 + P3 + P4 + P5 + P6 + P7 + P8 landed 2026-06-08.
-Remaining batch (P9) is 📋 planned. Sequencing follows the §8
-"implementation order" of the design notes, regrouped into shippable
-units that each carry their own tests.
+Status: **all batches landed**. P1 + P2 + P3 + P4 + P5 + P6 + P7 + P8 + P9
+landed 2026-06-08. v1.0 close-out has two remaining items (physics demo +
+USER_GUIDE / BACKEND_PORTING_GUIDE) tracked under "v1.0 close-out
+criteria" below; the version pin is held at v0.9.x until those land.
 
 ## Conventions
 
@@ -255,7 +255,7 @@ overlap-without-collision-response — Stub treats triggers as
 contact events with `impulse == 0`; real backend uses solver
 hooks).
 
-## Batch P9 — Jolt backend adapter
+## Batch P9 — Jolt backend adapter  ✅ landed 2026-06-08
 
 **Goal**: integrate the Jolt physics solver as the recommended
 real backend. CMake `find_package(Jolt)` gates it; missing →
@@ -286,18 +286,25 @@ batches if needed).
 
 ## v1.0 close-out criteria
 
-- ✓ Every batch P1–P9 landed and tested.
-- ✓ Stub backend passes all P1–P8 tests deterministically.
-- ✓ Jolt backend (when built) passes the conformance subset and
-  the smoke test.
-- ✓ End-to-end demo (lives in `examples/physics_demo/` or wired
+- ✅ Every batch P1–P9 landed and tested (P9 closed 2026-06-08).
+- ✅ Stub backend passes all P1–P8 tests deterministically.
+- ✅ Jolt backend (when built) passes the conformance subset and
+  the smoke test. Validated via opt-in
+  `-DTHREADMAXX_PHYSICS_FETCH_JOLT=ON` against pinned upstream
+  `v5.3.0`; bench (`physics_jolt_bench`) drops 1024 dynamic boxes
+  onto a static ground plate at 60 Hz (≈0.8 ms/tick avg,
+  single-threaded, on the dev box).
+- ⏳ End-to-end demo (lives in `examples/physics_demo/` or wired
   into RPG demo D17) shows a character controller walking around a
   Jolt-backed scene with ground + obstacles + a few dynamic boxes.
-- ✓ Docs: README, USER_GUIDE, MAINTAINER_GUIDE, plus a
+- ⏳ Docs: README, USER_GUIDE, MAINTAINER_GUIDE, plus a
   `BACKEND_PORTING_GUIDE.md` for future adapter authors.
-- ✓ ctest 100% on `build/` and `build-werror/`.
-- ✓ Version stamped at 1.0.0 in
-  `include/threadmaxx_physics/version.hpp`.
+- ✅ ctest 100% on `build/` (215/215) and `build-werror/` (28/28
+  physics) post-P9; Jolt-on build (`build-jolt/`) adds 2 gated
+  tests for 176/176 in its slimmer config.
+- ⏳ Version stamped at 1.0.0 in
+  `include/threadmaxx_physics/version.hpp`. Held until the demo +
+  docs items above land.
 
 ## v1.x candidate batches (not blocking v1.0)
 
