@@ -11,6 +11,7 @@
 #include "threadmaxx_physics/backend.hpp"
 #include "threadmaxx_physics/body.hpp"
 #include "threadmaxx_physics/config.hpp"
+#include "threadmaxx_physics/query.hpp"
 #include "threadmaxx_physics/shape.hpp"
 #include "threadmaxx_physics/step.hpp"
 #include "threadmaxx_physics/stub_backend.hpp"

@@ -48,6 +48,14 @@ struct BodyDesc {
 
     bool enableCCD{false};
     bool canSleep{true};
+
+    /// Collision layer index in `[0, 31]`. Queries (`raycast` / `sweep` /
+    /// `overlap`) carry a 32-bit `layerMask`; a body is considered iff
+    /// `(1u << layer) & layerMask != 0`. Default `0` puts every body in
+    /// layer 0 — combined with the default all-ones query mask, every
+    /// body is visible to every query unless the caller opts into
+    /// filtering.
+    std::uint32_t layer{0u};
 };
 
 /// Per-tick state read back from the backend after `stepWorld`. The

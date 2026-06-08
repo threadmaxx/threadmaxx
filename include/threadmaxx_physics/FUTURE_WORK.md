@@ -4,8 +4,8 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **in progress**. P1 + P2 + P3 + P4 landed 2026-06-08. Remaining
-batches (P5–P9) are 📋 planned. Sequencing follows the §8
+Status: **in progress**. P1 + P2 + P3 + P4 + P5 landed 2026-06-08.
+Remaining batches (P6–P9) are 📋 planned. Sequencing follows the §8
 "implementation order" of the design notes, regrouped into shippable
 units that each carry their own tests.
 
@@ -162,7 +162,7 @@ solver). Document those constraints prominently.
 **Out of scope**: gravity, collision response (Stub doesn't do
 either; real-backend P9 will).
 
-## Batch P5 — Queries (raycast / sweep / overlap)
+## Batch P5 — Queries (raycast / sweep / overlap)  ✅ landed 2026-06-08
 
 **Goal**: synchronous queries against the world. Stub answers
 queries against the kinematic body positions from P4 (no real

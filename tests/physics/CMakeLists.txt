@@ -19,6 +19,11 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_step_linear
     test_physics_step_angular
     test_physics_step_determinism
+    test_physics_raycast_hit
+    test_physics_raycast_miss
+    test_physics_raycast_layer_filter
+    test_physics_sweep_clear_path
+    test_physics_overlap
 )
 
 foreach(test ${THREADMAXX_PHYSICS_TESTS})

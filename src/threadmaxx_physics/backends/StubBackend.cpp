@@ -1,8 +1,11 @@
 #include "threadmaxx_physics/stub_backend.hpp"
 
+#include "threadmaxx_physics/query.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 // StubBackend — deterministic, no-real-physics IPhysicsBackend.
@@ -23,11 +26,18 @@
 // P3 added `getBodyState` / `setBodyTransform` for single-body read +
 // kinematic teleport.
 //
-// P4 (this file) wires `stepWorld` to a kinematic-only integrator:
-// every alive non-Static body advances by `linearVelocity * dt` and
-// composes a rotation built from `angularVelocity * dt` interpreted as
-// world-frame axis-angle. No collision, no gravity, no forces — those
-// belong to the real backend (P9). Static bodies are skipped.
+// P4 wired `stepWorld` to a kinematic-only integrator: every alive
+// non-Static body advances by `linearVelocity * dt` and composes a
+// rotation built from `angularVelocity * dt` interpreted as world-frame
+// axis-angle. No collision, no gravity, no forces — those belong to
+// the real backend (P9). Static bodies are skipped.
+//
+// P5 (this file) adds three synchronous queries against the kinematic
+// body positions: closest-hit raycast, closest-hit sphere sweep, and
+// sphere overlap. The stub answers all three against a per-body
+// world-space AABB — union of every attached shape's local-space AABB,
+// translated by the body's current position. Rotation is ignored at
+// the stub; real backends do the proper OBB/narrowphase.
 
 namespace threadmaxx::physics {
 
@@ -91,6 +101,101 @@ inline Quat integrateAngular(const Quat& q, const Vec3& omega, float dt) noexcep
         c,
     };
     return quatMul(dq, q);
+}
+
+// Layer filter helper: a body sits in layer N (single index 0..31);
+// queries pass a 32-bit mask. Body is considered iff the corresponding
+// bit is set in the mask. Out-of-range layer indices are clamped to
+// match no bits.
+constexpr bool layerMatches(std::uint32_t bodyLayer,
+                            std::uint32_t mask) noexcept {
+    if (bodyLayer >= 32u) {
+        return false;
+    }
+    return ((1u << bodyLayer) & mask) != 0u;
+}
+
+// Slab-method ray vs AABB. `aabb` is world-space; returns the entry
+// distance and which axis (0=X, 1=Y, 2=Z) produced it, plus the sign of
+// the face normal pointing back along the ray. Returns nullopt on miss
+// (entry > exit) or when the hit lies past `maxDistance` / behind the
+// origin.
+//
+// Parallel-axis case (|direction[i]| < eps): the ray must already lie
+// in the slab on that axis, otherwise miss.
+struct RayAabbHit {
+    float distance{};
+    int axis{};        // 0..2
+    float normalSign{}; // -1 means hit min face, +1 means hit max face
+};
+
+inline std::optional<RayAabbHit> rayVsAabb(const Vec3& origin,
+                                           const Vec3& direction,
+                                           float maxDistance,
+                                           const ShapeAabb& aabb) noexcept {
+    constexpr float kEps = 1e-7f;
+    float tNear = -std::numeric_limits<float>::infinity();
+    float tFar  =  std::numeric_limits<float>::infinity();
+    int   nearAxis = 0;
+    float nearSign = -1.0f;
+
+    const float o[3] = {origin.x, origin.y, origin.z};
+    const float d[3] = {direction.x, direction.y, direction.z};
+    const float mn[3] = {aabb.min.x, aabb.min.y, aabb.min.z};
+    const float mx[3] = {aabb.max.x, aabb.max.y, aabb.max.z};
+
+    for (int i = 0; i < 3; ++i) {
+        if (std::fabs(d[i]) < kEps) {
+            // Parallel: must lie inside the slab on this axis.
+            if (o[i] < mn[i] || o[i] > mx[i]) {
+                return std::nullopt;
+            }
+            continue;
+        }
+        float t1 = (mn[i] - o[i]) / d[i];
+        float t2 = (mx[i] - o[i]) / d[i];
+        // Track which face the entry came from before any swap so we
+        // can read the normal off the surviving plane.
+        float sign = -1.0f; // hit the min face
+        if (t1 > t2) {
+            std::swap(t1, t2);
+            sign = +1.0f;   // post-swap, the entry is the max face
+        }
+        if (t1 > tNear) {
+            tNear = t1;
+            nearAxis = i;
+            nearSign = sign;
+        }
+        if (t2 < tFar) {
+            tFar = t2;
+        }
+        if (tNear > tFar) {
+            return std::nullopt;
+        }
+    }
+
+    // Hit must be in front of the ray and within the requested length.
+    // Origin-inside (tNear < 0) is treated as a miss for raycast — the
+    // caller wants entry from outside.
+    if (tNear < 0.0f || tNear > maxDistance) {
+        return std::nullopt;
+    }
+    return RayAabbHit{tNear, nearAxis, nearSign};
+}
+
+// Distance from `point` to the closest point on `aabb`. Zero when the
+// point lies inside. Used by overlap and sphere-vs-AABB queries.
+inline float pointAabbDistanceSq(const Vec3& point, const ShapeAabb& aabb) noexcept {
+    float dx = 0.0f;
+    if (point.x < aabb.min.x) dx = aabb.min.x - point.x;
+    else if (point.x > aabb.max.x) dx = point.x - aabb.max.x;
+    float dy = 0.0f;
+    if (point.y < aabb.min.y) dy = aabb.min.y - point.y;
+    else if (point.y > aabb.max.y) dy = point.y - aabb.max.y;
+    float dz = 0.0f;
+    if (point.z < aabb.min.z) dz = aabb.min.z - point.z;
+    else if (point.z > aabb.max.z) dz = point.z - aabb.max.z;
+    return dx*dx + dy*dy + dz*dz;
 }
 
 struct ShapeSlot {
@@ -314,6 +419,147 @@ public:
         }
     }
 
+    std::optional<RaycastHit> raycast(PhysicsWorldId world,
+                                      const RaycastRequest& request) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return std::nullopt;
+        }
+
+        float bestT = std::numeric_limits<float>::infinity();
+        std::uint32_t bestSlot = 0;
+        int bestAxis = 0;
+        float bestSign = -1.0f;
+
+        for (std::uint32_t i = 1; i < w->bodies.size(); ++i) {
+            BodySlot& b = w->bodies[i];
+            if (!b.alive) {
+                continue;
+            }
+            if (!layerMatches(b.desc.layer, request.layerMask)) {
+                continue;
+            }
+            ShapeAabb aabb = computeBodyWorldAabb(b);
+            auto hit = rayVsAabb(request.origin, request.direction,
+                                 request.maxDistance, aabb);
+            if (!hit.has_value()) {
+                continue;
+            }
+            if (hit->distance < bestT) {
+                bestT = hit->distance;
+                bestSlot = i;
+                bestAxis = hit->axis;
+                bestSign = hit->normalSign;
+            }
+        }
+
+        if (bestSlot == 0) {
+            return std::nullopt;
+        }
+
+        RaycastHit out{};
+        out.body = BodyId{makeHandle(bestSlot, w->bodies[bestSlot].generation)};
+        out.distance = bestT;
+        out.position = request.origin + request.direction * bestT;
+        // Normal points back along the ray on the entry-face axis.
+        Vec3 n{};
+        if (bestAxis == 0) n.x = bestSign;
+        else if (bestAxis == 1) n.y = bestSign;
+        else n.z = bestSign;
+        out.normal = n;
+        return out;
+    }
+
+    std::optional<SweepHit> sweep(PhysicsWorldId world,
+                                  const SweepRequest& request) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return std::nullopt;
+        }
+        if (request.radius < 0.0f) {
+            return std::nullopt;
+        }
+
+        float bestT = std::numeric_limits<float>::infinity();
+        std::uint32_t bestSlot = 0;
+        int bestAxis = 0;
+        float bestSign = -1.0f;
+
+        for (std::uint32_t i = 1; i < w->bodies.size(); ++i) {
+            BodySlot& b = w->bodies[i];
+            if (!b.alive) {
+                continue;
+            }
+            if (!layerMatches(b.desc.layer, request.layerMask)) {
+                continue;
+            }
+            // Minkowski-sum a sphere of `radius` with the AABB by
+            // inflating each axis. Real backends do the proper round-
+            // corner GJK / capsule shrink; the stub's box approximation
+            // is conservative (overestimates hits at corners).
+            ShapeAabb aabb = computeBodyWorldAabb(b);
+            const float r = request.radius;
+            aabb.min.x -= r; aabb.min.y -= r; aabb.min.z -= r;
+            aabb.max.x += r; aabb.max.y += r; aabb.max.z += r;
+            auto hit = rayVsAabb(request.start, request.direction,
+                                 request.maxDistance, aabb);
+            if (!hit.has_value()) {
+                continue;
+            }
+            if (hit->distance < bestT) {
+                bestT = hit->distance;
+                bestSlot = i;
+                bestAxis = hit->axis;
+                bestSign = hit->normalSign;
+            }
+        }
+
+        if (bestSlot == 0) {
+            return std::nullopt;
+        }
+
+        SweepHit out{};
+        out.body = BodyId{makeHandle(bestSlot, w->bodies[bestSlot].generation)};
+        out.distance = bestT;
+        out.position = request.start + request.direction * bestT;
+        Vec3 n{};
+        if (bestAxis == 0) n.x = bestSign;
+        else if (bestAxis == 1) n.y = bestSign;
+        else n.z = bestSign;
+        out.normal = n;
+        return out;
+    }
+
+    void overlap(PhysicsWorldId world,
+                 const OverlapRequest& request,
+                 std::vector<BodyId>& outBodies) override {
+        outBodies.clear();
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return;
+        }
+        const float radSq = request.radius * request.radius;
+        for (std::uint32_t i = 1; i < w->bodies.size(); ++i) {
+            BodySlot& b = w->bodies[i];
+            if (!b.alive) {
+                continue;
+            }
+            if (!layerMatches(b.desc.layer, request.layerMask)) {
+                continue;
+            }
+            const ShapeAabb aabb = computeBodyWorldAabb(b);
+            const float dSq = pointAabbDistanceSq(request.center, aabb);
+            // dSq == 0 means the center lies inside the AABB; any
+            // non-zero `radius` strictly outside still hits when the
+            // closest-point distance falls within. radius=0 collapses
+            // to "is the center inside?".
+            if (dSq <= radSq) {
+                outBodies.push_back(
+                    BodyId{makeHandle(i, b.generation)});
+            }
+        }
+    }
+
 private:
     std::vector<WorldSlot> worlds_;
     std::vector<ShapeSlot> shapes_;
@@ -494,6 +740,43 @@ private:
             break; // handled by caller
         }
         return ShapeAabb{};
+    }
+
+    // World-space AABB of a body: union of every attached shape's
+    // local-space AABB, translated by the body's current position.
+    // Rotation is intentionally ignored at the stub (no OBB / true
+    // narrowphase); real backends do that work in P9. Bodies with no
+    // shapes degenerate to a zero-extent AABB at `state.position`,
+    // which still answers point-overlap and ray-hits-the-point.
+    ShapeAabb computeBodyWorldAabb(const BodySlot& b) {
+        ShapeAabb out{};
+        bool any = false;
+        for (ShapeId sid : b.shapes) {
+            ShapeSlot* s = lookupShape(sid);
+            if (s == nullptr) {
+                continue;
+            }
+            const ShapeAabb sa = computeAabb(s->desc);
+            if (!any) {
+                out = sa;
+                any = true;
+            } else {
+                out.min.x = std::min(out.min.x, sa.min.x);
+                out.min.y = std::min(out.min.y, sa.min.y);
+                out.min.z = std::min(out.min.z, sa.min.z);
+                out.max.x = std::max(out.max.x, sa.max.x);
+                out.max.y = std::max(out.max.y, sa.max.y);
+                out.max.z = std::max(out.max.z, sa.max.z);
+            }
+        }
+        if (!any) {
+            out.min = b.state.position;
+            out.max = b.state.position;
+            return out;
+        }
+        out.min = out.min + b.state.position;
+        out.max = out.max + b.state.position;
+        return out;
     }
 
     ShapeAabb computeAabb(const ShapeDesc& desc) {

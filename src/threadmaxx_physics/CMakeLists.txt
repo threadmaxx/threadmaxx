@@ -5,6 +5,7 @@ set(THREADMAXX_PHYSICS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/shape.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/backend.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/query.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/step.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/stub_backend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/sync.hpp

@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <span>
+#include <vector>
 
 /// Backend solver interface.
 ///
@@ -28,6 +29,15 @@
 /// calls into different methods unless the implementation explicitly
 /// documents otherwise. Game code calls into this from the sim thread.
 namespace threadmaxx::physics {
+
+// Forward declarations of P5 query PODs — defined in `query.hpp`. We
+// can't include it here without a cycle (query.hpp includes us); the
+// backend virtuals below only need the names.
+struct RaycastRequest;
+struct RaycastHit;
+struct SweepRequest;
+struct SweepHit;
+struct OverlapRequest;
 
 class IPhysicsBackend {
 public:
@@ -113,6 +123,27 @@ public:
     virtual void syncBodiesToGame(PhysicsWorldId world,
                                   std::span<const BodyId> bodies,
                                   std::span<BodyState> outStates) = 0;
+
+    /// Cast a closest-hit ray into `world`. Returns `nullopt` if the
+    /// ray misses every layer-matching body or if `world` is invalid.
+    /// `request.direction` is assumed unit-length.
+    virtual std::optional<RaycastHit> raycast(PhysicsWorldId world,
+                                              const RaycastRequest& request) = 0;
+
+    /// Cast a closest-hit sphere along `request.direction`. Backends
+    /// treat this as a raycast against each body's collision volume
+    /// inflated by `request.radius`. Returns `nullopt` on miss /
+    /// invalid world.
+    virtual std::optional<SweepHit> sweep(PhysicsWorldId world,
+                                          const SweepRequest& request) = 0;
+
+    /// Append every body whose collision volume overlaps the sphere at
+    /// `request.center` of `request.radius` to `outBodies`. `outBodies`
+    /// is cleared before population. No ordering guarantee. Layer-mask
+    /// filtered identically to `raycast` / `sweep`.
+    virtual void overlap(PhysicsWorldId world,
+                         const OverlapRequest& request,
+                         std::vector<BodyId>& outBodies) = 0;
 
 protected:
     IPhysicsBackend() = default;
