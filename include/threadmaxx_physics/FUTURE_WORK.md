@@ -4,8 +4,8 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **in progress**. P1 + P2 + P3 + P4 + P5 + P6 + P7 landed 2026-06-08.
-Remaining batches (P8–P9) are 📋 planned. Sequencing follows the §8
+Status: **in progress**. P1 + P2 + P3 + P4 + P5 + P6 + P7 + P8 landed 2026-06-08.
+Remaining batch (P9) is 📋 planned. Sequencing follows the §8
 "implementation order" of the design notes, regrouped into shippable
 units that each carry their own tests.
 
@@ -233,7 +233,7 @@ simple AABB-floor-and-AABB-obstacle fixture in the test harness.
 **Out of scope**: crouching, swimming, climbing — game-side state
 machines on top of the controller.
 
-## Batch P8 — Contact events
+## Batch P8 — Contact events  ✅ landed 2026-06-08
 
 **Goal**: begin/end contact callbacks. Stub fires synthetic events
 based on overlap state changes; real backend forwards solver

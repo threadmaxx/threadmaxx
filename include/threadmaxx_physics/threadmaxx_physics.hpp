@@ -13,6 +13,7 @@
 #include "threadmaxx_physics/character.hpp"
 #include "threadmaxx_physics/config.hpp"
 #include "threadmaxx_physics/constraints.hpp"
+#include "threadmaxx_physics/contact.hpp"
 #include "threadmaxx_physics/query.hpp"
 #include "threadmaxx_physics/shape.hpp"
 #include "threadmaxx_physics/step.hpp"

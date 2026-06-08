@@ -31,6 +31,9 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_character_step_up
     test_physics_character_slope_limit
     test_physics_character_grounded
+    test_physics_contact_begin
+    test_physics_contact_end
+    test_physics_contact_stable
 )
 
 foreach(test ${THREADMAXX_PHYSICS_TESTS})

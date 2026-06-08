@@ -5,6 +5,7 @@
 #include "threadmaxx_physics/shape.hpp"
 #include "threadmaxx_physics/types.hpp"
 
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
@@ -42,6 +43,15 @@ struct OverlapRequest;
 // Forward declaration of the P6 constraint POD — defined in
 // `constraints.hpp`. Same include-cycle reason as the query PODs.
 struct ConstraintDesc;
+
+// Forward declarations of the P8 contact event PODs — defined in
+// `contact.hpp`. `ContactCallback` is a `std::function` over a
+// reference-to-incomplete which is well-formed: the function signature
+// only needs ContactEvent's name, not its layout. Concrete contact-event
+// construction happens inside the backend implementation (StubBackend.cpp)
+// where the full `contact.hpp` header is included.
+struct ContactEvent;
+using ContactCallback = std::function<void(const ContactEvent&)>;
 
 class IPhysicsBackend {
 public:
@@ -171,6 +181,15 @@ public:
     /// backend calls.
     virtual std::optional<ConstraintDesc> getConstraint(PhysicsWorldId world,
                                                         JointId joint) = 0;
+
+    /// Install (or clear, when `callback` is empty) the per-world
+    /// contact callback fired on Begin/End overlap transitions. See
+    /// `contact.hpp` for the event semantics. The backend takes
+    /// ownership of the function object; replacing an installed
+    /// callback drops the previous one without firing synthetic events
+    /// for currently-active contacts.
+    virtual void setContactCallback(PhysicsWorldId world,
+                                    ContactCallback callback) = 0;
 
 protected:
     IPhysicsBackend() = default;

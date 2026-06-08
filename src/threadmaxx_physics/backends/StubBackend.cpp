@@ -1,12 +1,14 @@
 #include "threadmaxx_physics/stub_backend.hpp"
 
 #include "threadmaxx_physics/constraints.hpp"
+#include "threadmaxx_physics/contact.hpp"
 #include "threadmaxx_physics/query.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 // StubBackend — deterministic, no-real-physics IPhysicsBackend.
@@ -51,6 +53,21 @@
 // removed, even when host code forgets to release the handle. The
 // stub-side detection runs in `destroyBody` (sweep the constraint
 // table, mark every constraint touching the dying body as dead).
+//
+// P8 (this file) adds contact event detection. The world keeps a sorted
+// vector of currently-overlapping body pairs (canonicalized so
+// `pair.lo.value < pair.hi.value`). Every `stepWorld` recomputes the
+// pair set after integration via an all-pairs AABB overlap test and
+// diffs against the previous tick: pairs new this tick fire Begin,
+// pairs gone this tick fire End. Pairs present in both ticks are
+// silently kept (no Persist phase — game code that wants per-tick
+// contact processing can run `overlapBodies` on its own schedule).
+// `destroyBody` emits End events for every active pair touching the
+// dying body BEFORE bumping the generation, then removes those pairs
+// so the next `stepWorld` diff sees no spurious End. Layer filtering
+// is intentionally NOT applied at the stub — real backends use their
+// layer-pair matrix, and game code that needs layer awareness at the
+// stub can filter inside the callback.
 
 namespace threadmaxx::physics {
 
@@ -196,6 +213,28 @@ inline std::optional<RayAabbHit> rayVsAabb(const Vec3& origin,
     return RayAabbHit{tNear, nearAxis, nearSign};
 }
 
+// Test whether two world-space AABBs overlap (inclusive on the
+// boundary — touching faces count as overlap). Used by P8 contact
+// detection.
+constexpr bool aabbsOverlap(const ShapeAabb& a, const ShapeAabb& b) noexcept {
+    return a.min.x <= b.max.x && a.max.x >= b.min.x &&
+           a.min.y <= b.max.y && a.max.y >= b.min.y &&
+           a.min.z <= b.max.z && a.max.z >= b.min.z;
+}
+
+// Canonical contact pair (lo.value < hi.value) with lex ordering on
+// (lo, hi). Used to maintain the world's sorted active-pair set for
+// O(n) Begin/End diffing.
+struct ContactPair {
+    BodyId lo{};
+    BodyId hi{};
+};
+
+constexpr bool operator<(const ContactPair& a, const ContactPair& b) noexcept {
+    if (a.lo.value != b.lo.value) return a.lo.value < b.lo.value;
+    return a.hi.value < b.hi.value;
+}
+
 // Distance from `point` to the closest point on `aabb`. Zero when the
 // point lies inside. Used by overlap and sphere-vs-AABB queries.
 inline float pointAabbDistanceSq(const Vec3& point, const ShapeAabb& aabb) noexcept {
@@ -237,6 +276,12 @@ struct WorldSlot {
     PhysicsConfig config{};
     std::vector<BodySlot> bodies;
     std::vector<ConstraintSlot> constraints;
+    // P8 contact detection: callback installed via setContactCallback
+    // and the sorted vector of currently-overlapping pairs from the
+    // previous `stepWorld`. Both are reset by destroyWorld and lazily
+    // re-grown across world reuse.
+    ContactCallback contactCallback{};
+    std::vector<ContactPair> activeContacts{};
     std::uint32_t generation{};
     bool alive{};
 };
@@ -258,6 +303,8 @@ public:
         s.bodies.emplace_back(); // reserve body slot 0
         s.constraints.clear();
         s.constraints.emplace_back(); // reserve joint slot 0
+        s.contactCallback = ContactCallback{};
+        s.activeContacts.clear();
         s.alive = true;
         return PhysicsWorldId{makeHandle(slot, s.generation)};
     }
@@ -278,6 +325,8 @@ public:
         }
         w->bodies.clear();
         w->constraints.clear();
+        w->contactCallback = ContactCallback{};
+        w->activeContacts.clear();
         w->alive = false;
         ++w->generation;
     }
@@ -364,6 +413,29 @@ public:
         if (b == nullptr) {
             return;
         }
+        // P8: emit End events for every active contact pair touching
+        // the dying body BEFORE the generation bump so the callback
+        // observes the body's pre-destroy `BodyId`. Then drop those
+        // pairs from `activeContacts` so the next stepWorld diff
+        // doesn't fire a redundant End.
+        if (!w->activeContacts.empty()) {
+            auto pairTouchesBody = [body](const ContactPair& p) noexcept {
+                return p.lo == body || p.hi == body;
+            };
+            if (w->contactCallback) {
+                for (const ContactPair& p : w->activeContacts) {
+                    if (pairTouchesBody(p)) {
+                        ContactEvent ev{ContactPhase::End, p.lo, p.hi};
+                        w->contactCallback(ev);
+                    }
+                }
+            }
+            w->activeContacts.erase(
+                std::remove_if(w->activeContacts.begin(),
+                               w->activeContacts.end(),
+                               pairTouchesBody),
+                w->activeContacts.end());
+        }
         releaseBodyShapeRefs(*b);
         b->alive = false;
         ++b->generation;
@@ -435,6 +507,7 @@ public:
             b.state.rotation = integrateAngular(
                 b.state.rotation, b.state.angularVelocity, dt);
         }
+        detectContacts(*w);
     }
 
     void syncBodiesToGame(PhysicsWorldId world,
@@ -615,6 +688,15 @@ public:
             return std::nullopt;
         }
         return c->desc;
+    }
+
+    void setContactCallback(PhysicsWorldId world,
+                            ContactCallback callback) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return;
+        }
+        w->contactCallback = std::move(callback);
     }
 
     void overlap(PhysicsWorldId world,
@@ -892,6 +974,89 @@ private:
         out.min = out.min + b.state.position;
         out.max = out.max + b.state.position;
         return out;
+    }
+
+    // P8 contact detection: all-pairs AABB overlap test against the
+    // post-integration body positions, diffed against the prior tick's
+    // sorted active set. Begin fires for new pairs, End for departed
+    // pairs; persisting pairs are silently kept.
+    //
+    // Complexity is O(n²) over alive bodies — fine for the stub at
+    // gameplay-test cardinalities and the only path that doesn't need
+    // a broadphase. Real backends (P9) plug into the solver's own
+    // pair iterator.
+    void detectContacts(WorldSlot& w) {
+        std::vector<ContactPair> next;
+        // Precompute world AABBs once per body so the inner loop pays
+        // for it `n` times instead of `n²`.
+        const std::size_t bodyCount = w.bodies.size();
+        std::vector<ShapeAabb> aabbCache;
+        std::vector<BodyId> idCache;
+        aabbCache.reserve(bodyCount);
+        idCache.reserve(bodyCount);
+        for (std::uint32_t i = 0; i < bodyCount; ++i) {
+            const BodySlot& b = w.bodies[i];
+            if (!b.alive) {
+                aabbCache.emplace_back();
+                idCache.emplace_back();
+                continue;
+            }
+            aabbCache.push_back(computeBodyWorldAabb(b));
+            idCache.push_back(BodyId{makeHandle(i, b.generation)});
+        }
+        for (std::uint32_t i = 1; i < bodyCount; ++i) {
+            if (!w.bodies[i].alive) continue;
+            for (std::uint32_t j = i + 1; j < bodyCount; ++j) {
+                if (!w.bodies[j].alive) continue;
+                if (!aabbsOverlap(aabbCache[i], aabbCache[j])) continue;
+                ContactPair pair{idCache[i], idCache[j]};
+                if (pair.hi.value < pair.lo.value) {
+                    std::swap(pair.lo, pair.hi);
+                }
+                next.push_back(pair);
+            }
+        }
+        std::sort(next.begin(), next.end());
+        // Sorted merge-diff against the prior tick's active pairs:
+        // emit Begin for entries in `next` not in `activeContacts`,
+        // emit End for entries in `activeContacts` not in `next`.
+        const auto& prev = w.activeContacts;
+        std::size_t pi = 0;
+        std::size_t ni = 0;
+        const ContactCallback& cb = w.contactCallback;
+        while (pi < prev.size() && ni < next.size()) {
+            if (prev[pi] < next[ni]) {
+                if (cb) {
+                    ContactEvent ev{ContactPhase::End, prev[pi].lo, prev[pi].hi};
+                    cb(ev);
+                }
+                ++pi;
+            } else if (next[ni] < prev[pi]) {
+                if (cb) {
+                    ContactEvent ev{ContactPhase::Begin, next[ni].lo, next[ni].hi};
+                    cb(ev);
+                }
+                ++ni;
+            } else {
+                ++pi;
+                ++ni;
+            }
+        }
+        while (pi < prev.size()) {
+            if (cb) {
+                ContactEvent ev{ContactPhase::End, prev[pi].lo, prev[pi].hi};
+                cb(ev);
+            }
+            ++pi;
+        }
+        while (ni < next.size()) {
+            if (cb) {
+                ContactEvent ev{ContactPhase::Begin, next[ni].lo, next[ni].hi};
+                cb(ev);
+            }
+            ++ni;
+        }
+        w.activeContacts = std::move(next);
     }
 
     ShapeAabb computeAabb(const ShapeDesc& desc) {
