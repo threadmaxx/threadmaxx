@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **A1 + A2 + A3 + A4 + A5 + A6 + A7 + A8 landed (2026-06-07)** — v1.0 close-out batch shipped.
+Status: **v1.0.0 released (2026-06-08)** — A1 + A2 + A3 + A4 + A5 + A6 + A7 + A8 landed (2026-06-07); README / USER_GUIDE / MAINTAINER_GUIDE / CHANGELOG / version.hpp shipped on 2026-06-08. v1.0 close-out criteria complete.
 Sequencing follows the §9 "implementation order" of the design
 notes, regrouped into shippable units that each carry their own
 tests.

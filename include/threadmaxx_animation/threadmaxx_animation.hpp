@@ -20,4 +20,5 @@
 #include "threadmaxx_animation/serialization.hpp"
 #include "threadmaxx_animation/skeleton.hpp"
 #include "threadmaxx_animation/types.hpp"
+#include "threadmaxx_animation/version.hpp"
 #include "threadmaxx_animation/warp.hpp"
