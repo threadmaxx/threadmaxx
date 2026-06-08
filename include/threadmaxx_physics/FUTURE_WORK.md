@@ -4,9 +4,10 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **not started**. All batches are 📋 planned. Sequencing
-follows the §8 "implementation order" of the design notes,
-regrouped into shippable units that each carry their own tests.
+Status: **in progress**. P1 landed 2026-06-08. Remaining batches
+(P2–P9) are 📋 planned. Sequencing follows the §8 "implementation
+order" of the design notes, regrouped into shippable units that
+each carry their own tests.
 
 ## Conventions
 
@@ -61,7 +62,7 @@ bench/
   physics_*.cpp
 ```
 
-## Batch P1 — Foundations (types + IPhysicsBackend + StubBackend)
+## Batch P1 — Foundations (types + IPhysicsBackend + StubBackend)  ✅ landed 2026-06-08
 
 **Goal**: data model, backend contract, and a deterministic
 `StubBackend` that does no real physics but answers calls in a

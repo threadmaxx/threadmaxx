@@ -12,6 +12,7 @@ option(THREADMAXX_BUILD_TESTS "Build and register the test suite" ON)
 option(THREADMAXX_BUILD_BENCHMARKS "Build the standalone benchmark binaries" OFF)
 option(THREADMAXX_BUILD_SIMD "Make the threadmaxx_simd header-only sibling library available" ON)
 option(THREADMAXX_BUILD_ANIMATION "Make the threadmaxx_animation sibling library available" ON)
+option(THREADMAXX_BUILD_PHYSICS "Make the threadmaxx_physics sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -153,6 +154,22 @@ if (THREADMAXX_BUILD_ANIMATION)
 endif()
 
 # --------------------------------------------------------------------------
+# threadmaxx_physics — backend-adapter physics sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_PHYSICS=ON` (the default). Static
+# library — public headers under `include/threadmaxx_physics/`,
+# implementation under `src/threadmaxx_physics/`. v1.0 ships with the
+# bundled `StubBackend` (deterministic, no real physics) as the
+# documented null implementation; the Jolt adapter lands in batch P9
+# behind `find_package(Jolt)`. See
+# `include/threadmaxx_physics/DESIGN_NOTES.md` for the spec and
+# `FUTURE_WORK.md` for the batch plan.
+if (THREADMAXX_BUILD_PHYSICS)
+    add_subdirectory(src/threadmaxx_physics)
+endif()
+
+# --------------------------------------------------------------------------
 # Examples
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
@@ -225,6 +242,21 @@ if (THREADMAXX_INSTALL)
             INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         )
         install(DIRECTORY include/threadmaxx_animation
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling physics library — static. Same `if (TARGET
+    # threadmaxx::physics)` downstream probe.
+    if (THREADMAXX_BUILD_PHYSICS)
+        install(TARGETS threadmaxx_physics
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_physics
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
             FILES_MATCHING PATTERN "*.hpp"
         )

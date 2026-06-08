@@ -174,6 +174,12 @@ if (TARGET threadmaxx::animation)
     add_subdirectory(animation)
 endif()
 
+# threadmaxx_physics sibling-library test suite (P1+). Lives in
+# `tests/physics/`. Skipped if the physics opt-in is off.
+if (TARGET threadmaxx::physics)
+    add_subdirectory(physics)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)
