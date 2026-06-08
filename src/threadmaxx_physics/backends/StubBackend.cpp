@@ -192,6 +192,40 @@ public:
         ++b->generation;
     }
 
+    std::optional<BodyState> getBodyState(PhysicsWorldId world,
+                                          BodyId body) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return std::nullopt;
+        }
+        const BodySlot* b = lookupBody(*w, body);
+        if (b == nullptr) {
+            return std::nullopt;
+        }
+        return b->state;
+    }
+
+    void setBodyTransform(PhysicsWorldId world,
+                          BodyId body,
+                          const Vec3& position,
+                          const Quat& rotation) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return;
+        }
+        BodySlot* b = lookupBody(*w, body);
+        if (b == nullptr) {
+            return;
+        }
+        // Mirror the teleport into both the create-time desc and the
+        // live state so a subsequent `getBodyState` or syncBatch reads
+        // the updated pose and a re-create-from-desc starts there too.
+        b->desc.position = position;
+        b->desc.rotation = rotation;
+        b->state.position = position;
+        b->state.rotation = rotation;
+    }
+
     void stepWorld(PhysicsWorldId world, float /*dt*/) override {
         // P2: stepWorld is still a no-op by design. P4 will integrate
         // kinematic velocity into position. We still verify the world

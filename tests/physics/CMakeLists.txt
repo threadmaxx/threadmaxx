@@ -13,6 +13,9 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_shape_create
     test_physics_shape_share
     test_physics_shape_compound
+    test_physics_body_lifecycle
+    test_physics_body_kinematic_teleport
+    test_physics_body_sync_batch
 )
 
 foreach(test ${THREADMAXX_PHYSICS_TESTS})

@@ -81,6 +81,25 @@ public:
     /// the body.
     virtual void destroyBody(PhysicsWorldId world, BodyId body) = 0;
 
+    /// Look up the per-tick `BodyState` of a single body. Returns
+    /// `nullopt` if the id is invalid or refers to a body that has been
+    /// destroyed (including a stale generation on a recycled slot). The
+    /// state is a value copy — safe to keep after subsequent mutating
+    /// backend calls.
+    virtual std::optional<BodyState> getBodyState(PhysicsWorldId world,
+                                                  BodyId body) = 0;
+
+    /// Teleport a body to `(position, rotation)`. The backend writes
+    /// both the create-time descriptor (so a subsequent body re-spawn
+    /// from the desc starts at the new pose) and the live `BodyState`.
+    /// Intended for kinematic bodies and editor / cheat / respawn
+    /// flows; calling on a dynamic body skips physically-plausible
+    /// motion and may interpenetrate. No-op on an invalid id.
+    virtual void setBodyTransform(PhysicsWorldId world,
+                                  BodyId body,
+                                  const Vec3& position,
+                                  const Quat& rotation) = 0;
+
     /// Advance `world` by `dt` seconds. Backends may substep
     /// internally based on `PhysicsConfig::fixedTimestep` /
     /// `maxSubSteps`. P1 ships with the StubBackend as a no-op;

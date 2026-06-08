@@ -4,8 +4,8 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **in progress**. P1 + P2 landed 2026-06-08. Remaining
-batches (P3–P9) are 📋 planned. Sequencing follows the §8
+Status: **in progress**. P1 + P2 + P3 landed 2026-06-08. Remaining
+batches (P4–P9) are 📋 planned. Sequencing follows the §8
 "implementation order" of the design notes, regrouped into shippable
 units that each carry their own tests.
 
@@ -113,7 +113,7 @@ shapes through the backend; reference-count them across bodies.
 **Out of scope**: convex hull / mesh shape generation (game-side
 input format — game owns the cooking).
 
-## Batch P3 — Body create / destroy / state sync
+## Batch P3 — Body create / destroy / state sync  ✅ landed 2026-06-08
 
 **Goal**: `BodyId` lifecycle + `BodyState` read-back. With Stub
 this is just a memory-backed table; with real backends it's the
