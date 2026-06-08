@@ -1,5 +1,6 @@
 #include "threadmaxx_physics/stub_backend.hpp"
 
+#include "threadmaxx_physics/constraints.hpp"
 #include "threadmaxx_physics/query.hpp"
 
 #include <algorithm>
@@ -38,6 +39,18 @@
 // world-space AABB — union of every attached shape's local-space AABB,
 // translated by the body's current position. Rotation is ignored at
 // the stub; real backends do the proper OBB/narrowphase.
+//
+// P6 (this file) adds the constraint (joint) registry. Constraints are
+// scoped per-world (handles encode (generation, slot) the same way as
+// body / world / shape ids); the stub records the descriptor verbatim
+// but does NOT enforce the geometric relationship at `stepWorld` (no
+// solver). Destroying either coupled body invalidates the constraint —
+// `getConstraint` returns nullopt without the host having to call
+// `destroyConstraint` first. Matches the real-backend contract:
+// solver-owned constraints disappear when one of their bodies is
+// removed, even when host code forgets to release the handle. The
+// stub-side detection runs in `destroyBody` (sweep the constraint
+// table, mark every constraint touching the dying body as dead).
 
 namespace threadmaxx::physics {
 
@@ -214,9 +227,16 @@ struct BodySlot {
     bool alive{};
 };
 
+struct ConstraintSlot {
+    ConstraintDesc desc{};
+    std::uint32_t generation{};
+    bool alive{};
+};
+
 struct WorldSlot {
     PhysicsConfig config{};
     std::vector<BodySlot> bodies;
+    std::vector<ConstraintSlot> constraints;
     std::uint32_t generation{};
     bool alive{};
 };
@@ -236,6 +256,8 @@ public:
         s.config = config;
         s.bodies.clear();
         s.bodies.emplace_back(); // reserve body slot 0
+        s.constraints.clear();
+        s.constraints.emplace_back(); // reserve joint slot 0
         s.alive = true;
         return PhysicsWorldId{makeHandle(slot, s.generation)};
     }
@@ -255,6 +277,7 @@ public:
             body.alive = false;
         }
         w->bodies.clear();
+        w->constraints.clear();
         w->alive = false;
         ++w->generation;
     }
@@ -344,6 +367,21 @@ public:
         releaseBodyShapeRefs(*b);
         b->alive = false;
         ++b->generation;
+        // Any constraint that referenced this body is now stale —
+        // match the real-backend contract: solver-owned constraints
+        // disappear when one of their bodies is removed, even when
+        // host code forgets to release the handle. We mark the
+        // constraint slots dead in place (generation bump so any held
+        // `JointId` returns nullopt on subsequent lookups).
+        for (ConstraintSlot& c : w->constraints) {
+            if (!c.alive) {
+                continue;
+            }
+            if (c.desc.bodyA == body || c.desc.bodyB == body) {
+                c.alive = false;
+                ++c.generation;
+            }
+        }
     }
 
     std::optional<BodyState> getBodyState(PhysicsWorldId world,
@@ -530,6 +568,55 @@ public:
         return out;
     }
 
+    JointId createConstraint(PhysicsWorldId world,
+                             const ConstraintDesc& desc) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return JointId{};
+        }
+        // Reject self-constraints and stale body refs — a constraint
+        // between a body and itself is meaningless, and a stale body id
+        // would silently create a dead-on-arrival constraint.
+        if (desc.bodyA == desc.bodyB) {
+            return JointId{};
+        }
+        if (lookupBody(*w, desc.bodyA) == nullptr ||
+            lookupBody(*w, desc.bodyB) == nullptr) {
+            return JointId{};
+        }
+        const auto slot = allocConstraintSlot(*w);
+        ConstraintSlot& c = w->constraints[slot];
+        c.desc = desc;
+        c.alive = true;
+        return JointId{makeHandle(slot, c.generation)};
+    }
+
+    void destroyConstraint(PhysicsWorldId world, JointId joint) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return;
+        }
+        ConstraintSlot* c = lookupConstraint(*w, joint);
+        if (c == nullptr) {
+            return;
+        }
+        c->alive = false;
+        ++c->generation;
+    }
+
+    std::optional<ConstraintDesc> getConstraint(PhysicsWorldId world,
+                                                JointId joint) override {
+        WorldSlot* w = lookupWorld(world);
+        if (w == nullptr) {
+            return std::nullopt;
+        }
+        const ConstraintSlot* c = lookupConstraint(*w, joint);
+        if (c == nullptr) {
+            return std::nullopt;
+        }
+        return c->desc;
+    }
+
     void overlap(PhysicsWorldId world,
                  const OverlapRequest& request,
                  std::vector<BodyId>& outBodies) override {
@@ -603,6 +690,19 @@ private:
         return static_cast<std::uint32_t>(w.bodies.size() - 1);
     }
 
+    std::uint32_t allocConstraintSlot(WorldSlot& w) {
+        for (std::uint32_t i = 1; i < w.constraints.size(); ++i) {
+            if (!w.constraints[i].alive) {
+                ++w.constraints[i].generation;
+                return i;
+            }
+        }
+        w.constraints.emplace_back();
+        ConstraintSlot& s = w.constraints.back();
+        s.generation = 1;
+        return static_cast<std::uint32_t>(w.constraints.size() - 1);
+    }
+
     WorldSlot* lookupWorld(PhysicsWorldId world) {
         if (world.value == kInvalidSlot) {
             return nullptr;
@@ -631,6 +731,21 @@ private:
             return nullptr;
         }
         return &b;
+    }
+
+    ConstraintSlot* lookupConstraint(WorldSlot& w, JointId joint) {
+        if (joint.value == kInvalidSlot) {
+            return nullptr;
+        }
+        const std::uint32_t slot = slotOf(joint.value);
+        if (slot == 0 || slot >= w.constraints.size()) {
+            return nullptr;
+        }
+        ConstraintSlot& c = w.constraints[slot];
+        if (!c.alive || c.generation != generationOf(joint.value)) {
+            return nullptr;
+        }
+        return &c;
     }
 
     ShapeSlot* lookupShape(ShapeId shape) {

@@ -39,6 +39,10 @@ struct SweepRequest;
 struct SweepHit;
 struct OverlapRequest;
 
+// Forward declaration of the P6 constraint POD — defined in
+// `constraints.hpp`. Same include-cycle reason as the query PODs.
+struct ConstraintDesc;
+
 class IPhysicsBackend {
 public:
     virtual ~IPhysicsBackend() = default;
@@ -144,6 +148,29 @@ public:
     virtual void overlap(PhysicsWorldId world,
                          const OverlapRequest& request,
                          std::vector<BodyId>& outBodies) = 0;
+
+    /// Create a constraint (joint) between `desc.bodyA` and `desc.bodyB`
+    /// in `world`. Returns a non-zero `JointId` on success; returns a
+    /// zero id if `world` is invalid, either body id is stale, or both
+    /// ids name the same body. Backends copy the descriptor into
+    /// backend-owned storage. P6 ships the StubBackend implementation
+    /// (records only); the real solver hookup arrives with P9.
+    virtual JointId createConstraint(PhysicsWorldId world,
+                                     const ConstraintDesc& desc) = 0;
+
+    /// Tear down a constraint. Safe to call with a zero-valued id
+    /// (no-op) or with an id whose underlying constraint has already
+    /// been invalidated by one of its bodies being destroyed.
+    virtual void destroyConstraint(PhysicsWorldId world,
+                                   JointId joint) = 0;
+
+    /// Look up a constraint's descriptor. Returns `nullopt` if the id
+    /// is invalid, refers to a destroyed constraint, OR refers to a
+    /// constraint whose coupled body has been destroyed. The returned
+    /// value is a copy and is safe to keep after subsequent mutating
+    /// backend calls.
+    virtual std::optional<ConstraintDesc> getConstraint(PhysicsWorldId world,
+                                                        JointId joint) = 0;
 
 protected:
     IPhysicsBackend() = default;

@@ -24,6 +24,9 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_raycast_layer_filter
     test_physics_sweep_clear_path
     test_physics_overlap
+    test_physics_constraint_create
+    test_physics_constraint_destroy
+    test_physics_constraint_disable_self_collision
 )
 
 foreach(test ${THREADMAXX_PHYSICS_TESTS})
