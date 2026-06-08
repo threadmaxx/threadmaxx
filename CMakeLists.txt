@@ -178,6 +178,7 @@ if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/vulkan_renderer)
     add_subdirectory(examples/rpg_demo)
     add_subdirectory(examples/tou2d)
+    add_subdirectory(examples/physics_demo)
 endif()
 
 # --------------------------------------------------------------------------

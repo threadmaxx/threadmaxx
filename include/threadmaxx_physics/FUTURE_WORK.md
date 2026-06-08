@@ -4,10 +4,11 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **all batches landed**. P1 + P2 + P3 + P4 + P5 + P6 + P7 + P8 + P9
-landed 2026-06-08. v1.0 close-out has two remaining items (physics demo +
-USER_GUIDE / BACKEND_PORTING_GUIDE) tracked under "v1.0 close-out
-criteria" below; the version pin is held at v0.9.x until those land.
+Status: **v1.0.0 released (2026-06-08)** — P1 + P2 + P3 + P4 + P5 + P6 +
+P7 + P8 + P9 landed (2026-06-08); README / USER_GUIDE / MAINTAINER_GUIDE
+/ BACKEND_PORTING_GUIDE / CHANGELOG / version.hpp + the `examples/
+physics_demo/` end-to-end scene shipped same day. v1.0 close-out
+criteria complete.
 
 ## Conventions
 
@@ -294,17 +295,22 @@ batches if needed).
   `v5.3.0`; bench (`physics_jolt_bench`) drops 1024 dynamic boxes
   onto a static ground plate at 60 Hz (≈0.8 ms/tick avg,
   single-threaded, on the dev box).
-- ⏳ End-to-end demo (lives in `examples/physics_demo/` or wired
-  into RPG demo D17) shows a character controller walking around a
-  Jolt-backed scene with ground + obstacles + a few dynamic boxes.
-- ⏳ Docs: README, USER_GUIDE, MAINTAINER_GUIDE, plus a
-  `BACKEND_PORTING_GUIDE.md` for future adapter authors.
+- ✅ End-to-end demo at `examples/physics_demo/` (closed 2026-06-08).
+  Character controller walks across an obstacle course on a static
+  ground plate with dynamic boxes raining down and a contact-event
+  callback printing the begin / end stream. Prefers JoltBackend when
+  available, falls back to StubBackend automatically.
+- ✅ Docs: `README.md`, `USER_GUIDE.md`, `MAINTAINER_GUIDE.md`,
+  `BACKEND_PORTING_GUIDE.md`, `CHANGELOG.md` (all closed 2026-06-08).
+  The porting guide includes a 9-step recipe + an 11-item shipping
+  checklist for future Bullet / PhysX / custom adapters.
 - ✅ ctest 100% on `build/` (215/215) and `build-werror/` (28/28
   physics) post-P9; Jolt-on build (`build-jolt/`) adds 2 gated
   tests for 176/176 in its slimmer config.
-- ⏳ Version stamped at 1.0.0 in
-  `include/threadmaxx_physics/version.hpp`. Held until the demo +
-  docs items above land.
+- ✅ Version stamped at 1.0.0 in
+  `include/threadmaxx_physics/version.hpp` (closed 2026-06-08).
+  Macros + `version_string()` literal moved as one unit per the
+  semver discipline in `MAINTAINER_GUIDE.md`.
 
 ## v1.x candidate batches (not blocking v1.0)
 

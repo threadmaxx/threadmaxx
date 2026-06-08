@@ -21,3 +21,4 @@
 #include "threadmaxx_physics/stub_backend.hpp"
 #include "threadmaxx_physics/sync.hpp"
 #include "threadmaxx_physics/types.hpp"
+#include "threadmaxx_physics/version.hpp"

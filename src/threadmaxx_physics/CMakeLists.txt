@@ -13,6 +13,7 @@ set(THREADMAXX_PHYSICS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/step.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/stub_backend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/sync.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/version.hpp
 )
 
 set(THREADMAXX_PHYSICS_SOURCES
