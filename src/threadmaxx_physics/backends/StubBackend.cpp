@@ -1,5 +1,6 @@
 #include "threadmaxx_physics/stub_backend.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -7,13 +8,20 @@
 //
 // Worlds, shapes, and bodies live in flat slot tables guarded by
 // (generation, alive) so that stale ids never alias newly-allocated
-// slots. Ids encode `(slot << 32) | generation`; slot 0 is reserved
+// slots. Ids encode `(generation << 32) | slot`; slot 0 is reserved
 // for "invalid" so a default-constructed `PhysicsWorldId{}` is
 // distinguishable from any live world.
 //
-// P1 ships the table machinery + create / destroy lifecycle plumbing.
-// `stepWorld` is a no-op for P1 — the kinematic integrator lands in
-// P4 (positions advance by `linearVelocity * dt`).
+// P1 shipped the table machinery + create / destroy lifecycle plumbing.
+// P2 (this file) adds the shape registry refcount: every body and
+// every compound parent holds one reference on each shape it uses;
+// `destroyShape` is a deferred-destroy that flips `pendingDestroy` and
+// frees the slot only when the refcount falls to zero. Compound shapes
+// also propagate refcounts to their children, so freeing a compound
+// can cascade.
+//
+// `stepWorld` is still a no-op for P2 — the kinematic integrator lands
+// in P4 (positions advance by `linearVelocity * dt`).
 
 namespace threadmaxx::physics {
 
@@ -39,12 +47,15 @@ constexpr std::uint32_t generationOf(std::uint64_t handle) noexcept {
 struct ShapeSlot {
     ShapeDesc desc{};
     std::uint32_t generation{};
+    std::uint32_t refCount{};      // bodies + compound parents holding this shape
     bool alive{};
+    bool pendingDestroy{};         // destroyShape was called but refCount > 0
 };
 
 struct BodySlot {
     BodyDesc desc{};
     BodyState state{};
+    std::vector<ShapeId> shapes;   // shape refs to release on destroy
     std::uint32_t generation{};
     bool alive{};
 };
@@ -80,6 +91,15 @@ public:
         if (w == nullptr) {
             return;
         }
+        // Drop every alive body's shape references so deferred-destroy
+        // shapes can be freed.
+        for (BodySlot& body : w->bodies) {
+            if (!body.alive) {
+                continue;
+            }
+            releaseBodyShapeRefs(body);
+            body.alive = false;
+        }
         w->bodies.clear();
         w->alive = false;
         ++w->generation;
@@ -89,32 +109,49 @@ public:
         const auto slot = allocShapeSlot();
         ShapeSlot& s = shapes_[slot];
         s.desc = desc;
+        s.refCount = 0;
+        s.pendingDestroy = false;
         s.alive = true;
+        // Compound parents hold a reference on each child so the
+        // children outlive the original `createShape` caller's drop.
+        if (s.desc.type == ShapeType::Compound) {
+            for (ShapeId child : s.desc.children) {
+                incrementShapeRef(child);
+            }
+        }
         return ShapeId{makeHandle(slot, s.generation)};
     }
 
     void destroyShape(ShapeId shape) override {
-        if (shape.value == kInvalidSlot) {
+        ShapeSlot* s = lookupShape(shape);
+        if (s == nullptr) {
             return;
         }
-        const std::uint32_t slot = slotOf(shape.value);
-        if (slot >= shapes_.size()) {
-            return;
+        s->pendingDestroy = true;
+        if (s->refCount == 0) {
+            freeShape(slotOf(shape.value));
         }
-        ShapeSlot& s = shapes_[slot];
-        if (!s.alive || s.generation != generationOf(shape.value)) {
-            return;
+    }
+
+    const ShapeDesc* getShapeDesc(ShapeId shape) override {
+        ShapeSlot* s = lookupShape(shape);
+        if (s == nullptr) {
+            return nullptr;
         }
-        s.alive = false;
-        ++s.generation;
-        // Wipe heavy mesh / hull data; cooked backends would mirror this.
-        s.desc.vertices.clear();
-        s.desc.indices.clear();
+        return &s->desc;
+    }
+
+    std::optional<ShapeAabb> getShapeAabb(ShapeId shape) override {
+        ShapeSlot* s = lookupShape(shape);
+        if (s == nullptr) {
+            return std::nullopt;
+        }
+        return computeAabb(s->desc);
     }
 
     BodyId createBody(PhysicsWorldId world,
                       const BodyDesc& desc,
-                      std::span<const ShapeId> /*shapes*/) override {
+                      std::span<const ShapeId> shapes) override {
         WorldSlot* w = lookupWorld(world);
         if (w == nullptr) {
             return BodyId{};
@@ -126,6 +163,17 @@ public:
         b.state.rotation = desc.rotation;
         b.state.linearVelocity = desc.linearVelocity;
         b.state.angularVelocity = desc.angularVelocity;
+        // Bump refcounts and remember which shapes this body holds so
+        // `destroyBody` (and `destroyWorld`) can release them cleanly.
+        b.shapes.clear();
+        b.shapes.reserve(shapes.size());
+        for (ShapeId sid : shapes) {
+            if (lookupShape(sid) == nullptr) {
+                continue;
+            }
+            b.shapes.push_back(sid);
+            incrementShapeRef(sid);
+        }
         b.alive = true;
         return BodyId{makeHandle(slot, b.generation)};
     }
@@ -139,12 +187,13 @@ public:
         if (b == nullptr) {
             return;
         }
+        releaseBodyShapeRefs(*b);
         b->alive = false;
         ++b->generation;
     }
 
     void stepWorld(PhysicsWorldId world, float /*dt*/) override {
-        // P1: stepWorld is a no-op by design. P4 will integrate
+        // P2: stepWorld is still a no-op by design. P4 will integrate
         // kinematic velocity into position. We still verify the world
         // is valid so callers see the same lifecycle behavior as a
         // real backend would.
@@ -242,6 +291,145 @@ private:
             return nullptr;
         }
         return &b;
+    }
+
+    ShapeSlot* lookupShape(ShapeId shape) {
+        if (shape.value == kInvalidSlot) {
+            return nullptr;
+        }
+        const std::uint32_t slot = slotOf(shape.value);
+        if (slot == 0 || slot >= shapes_.size()) {
+            return nullptr;
+        }
+        ShapeSlot& s = shapes_[slot];
+        if (!s.alive || s.generation != generationOf(shape.value)) {
+            return nullptr;
+        }
+        return &s;
+    }
+
+    void incrementShapeRef(ShapeId shape) {
+        ShapeSlot* s = lookupShape(shape);
+        if (s == nullptr) {
+            return;
+        }
+        ++s->refCount;
+    }
+
+    void decrementShapeRef(ShapeId shape) {
+        ShapeSlot* s = lookupShape(shape);
+        if (s == nullptr || s->refCount == 0) {
+            return;
+        }
+        --s->refCount;
+        if (s->refCount == 0 && s->pendingDestroy) {
+            freeShape(slotOf(shape.value));
+        }
+    }
+
+    void releaseBodyShapeRefs(BodySlot& body) {
+        for (ShapeId sid : body.shapes) {
+            decrementShapeRef(sid);
+        }
+        body.shapes.clear();
+    }
+
+    // Actually free a shape slot — refCount must already be zero.
+    // For Compound shapes, child refs are decremented BEFORE the
+    // generation bump so cascaded `freeShape` calls see stable handles
+    // and don't double-free.
+    void freeShape(std::uint32_t slot) {
+        ShapeSlot& s = shapes_[slot];
+        if (!s.alive) {
+            return;
+        }
+        if (s.desc.type == ShapeType::Compound) {
+            // Snapshot the children — `decrementShapeRef` may cascade
+            // into another `freeShape` which mutates `shapes_` and
+            // could invalidate references into `s.desc.children` after
+            // the parent is wiped.
+            const std::vector<ShapeId> children = s.desc.children;
+            for (ShapeId child : children) {
+                decrementShapeRef(child);
+            }
+        }
+        s.alive = false;
+        s.refCount = 0;
+        s.pendingDestroy = false;
+        ++s.generation;
+        // Wipe heavy mesh / hull data; cooked backends would mirror this.
+        s.desc.vertices.clear();
+        s.desc.indices.clear();
+        s.desc.children.clear();
+    }
+
+    static ShapeAabb computeAabbPrimitive(const ShapeDesc& desc) {
+        switch (desc.type) {
+        case ShapeType::Box:
+            return ShapeAabb{
+                Vec3{-desc.halfExtents.x, -desc.halfExtents.y, -desc.halfExtents.z},
+                Vec3{ desc.halfExtents.x,  desc.halfExtents.y,  desc.halfExtents.z}};
+        case ShapeType::Sphere:
+            return ShapeAabb{
+                Vec3{-desc.radius, -desc.radius, -desc.radius},
+                Vec3{ desc.radius,  desc.radius,  desc.radius}};
+        case ShapeType::Capsule: {
+            const float halfH = desc.height * 0.5f + desc.radius;
+            return ShapeAabb{
+                Vec3{-desc.radius, -halfH, -desc.radius},
+                Vec3{ desc.radius,  halfH,  desc.radius}};
+        }
+        case ShapeType::ConvexHull:
+        case ShapeType::Mesh: {
+            if (desc.vertices.empty()) {
+                return ShapeAabb{};
+            }
+            Vec3 mn = desc.vertices[0];
+            Vec3 mx = desc.vertices[0];
+            for (const Vec3& v : desc.vertices) {
+                mn.x = std::min(mn.x, v.x);
+                mn.y = std::min(mn.y, v.y);
+                mn.z = std::min(mn.z, v.z);
+                mx.x = std::max(mx.x, v.x);
+                mx.y = std::max(mx.y, v.y);
+                mx.z = std::max(mx.z, v.z);
+            }
+            return ShapeAabb{mn, mx};
+        }
+        case ShapeType::Compound:
+            break; // handled by caller
+        }
+        return ShapeAabb{};
+    }
+
+    ShapeAabb computeAabb(const ShapeDesc& desc) {
+        if (desc.type != ShapeType::Compound) {
+            return computeAabbPrimitive(desc);
+        }
+        // Union of every still-alive child's AABB. Bounds are at the
+        // origin — per-child local transforms are deferred (see
+        // shape.hpp comment).
+        ShapeAabb out{};
+        bool first = true;
+        for (ShapeId child : desc.children) {
+            ShapeSlot* cs = lookupShape(child);
+            if (cs == nullptr) {
+                continue;
+            }
+            const ShapeAabb childAabb = computeAabb(cs->desc);
+            if (first) {
+                out = childAabb;
+                first = false;
+            } else {
+                out.min.x = std::min(out.min.x, childAabb.min.x);
+                out.min.y = std::min(out.min.y, childAabb.min.y);
+                out.min.z = std::min(out.min.z, childAabb.min.z);
+                out.max.x = std::max(out.max.x, childAabb.max.x);
+                out.max.y = std::max(out.max.y, childAabb.max.y);
+                out.max.z = std::max(out.max.z, childAabb.max.z);
+            }
+        }
+        return out;
     }
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "threadmaxx/Components.hpp"
+#include "threadmaxx_physics/types.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -38,8 +39,12 @@ enum class ShapeType : std::uint8_t {
 ///   oriented along local Y).
 /// - **ConvexHull** — `vertices` (point cloud; backend computes the hull).
 /// - **Mesh**       — `vertices` + `indices` (triangle list).
-/// - **Compound**   — composed of multiple primitives; the P2 batch
-///   adds the composition API.
+/// - **Compound**   — `children`: every entry is a previously-registered
+///   ShapeId; the backend increments each child's refcount on
+///   `createShape` so the parent keeps them alive. P2 ships
+///   union-of-children AABBs at the origin; per-child local transforms
+///   are deferred to a later batch (real backends need them for
+///   solver-level composition; tests don't yet exercise it).
 struct ShapeDesc {
     ShapeType type{ShapeType::Box};
 
@@ -49,6 +54,15 @@ struct ShapeDesc {
 
     std::vector<Vec3> vertices;
     std::vector<std::uint32_t> indices;
+    std::vector<ShapeId> children;
+};
+
+/// Local-space axis-aligned bounding box returned by
+/// `IPhysicsBackend::getShapeAabb`. Coordinates are in the shape's own
+/// frame — bodies apply their world transform on top.
+struct ShapeAabb {
+    Vec3 min{};
+    Vec3 max{};
 };
 
 } // namespace threadmaxx::physics

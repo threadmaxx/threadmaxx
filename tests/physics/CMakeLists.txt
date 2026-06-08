@@ -10,6 +10,9 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_stub_create_destroy
     test_physics_stub_step_noop
     test_physics_backend_conformance
+    test_physics_shape_create
+    test_physics_shape_share
+    test_physics_shape_compound
 )
 
 foreach(test ${THREADMAXX_PHYSICS_TESTS})

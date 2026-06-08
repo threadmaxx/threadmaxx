@@ -4,10 +4,10 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **in progress**. P1 landed 2026-06-08. Remaining batches
-(P2–P9) are 📋 planned. Sequencing follows the §8 "implementation
-order" of the design notes, regrouped into shippable units that
-each carry their own tests.
+Status: **in progress**. P1 + P2 landed 2026-06-08. Remaining
+batches (P3–P9) are 📋 planned. Sequencing follows the §8
+"implementation order" of the design notes, regrouped into shippable
+units that each carry their own tests.
 
 ## Conventions
 
@@ -92,7 +92,7 @@ specifies it; just enforce that signature.
 
 **Out of scope**: real stepping (P4), queries (P5).
 
-## Batch P2 — Shape registry
+## Batch P2 — Shape registry  ✅ landed 2026-06-08
 
 **Goal**: `ShapeId` lifecycle. Create box/sphere/capsule/mesh
 shapes through the backend; reference-count them across bodies.

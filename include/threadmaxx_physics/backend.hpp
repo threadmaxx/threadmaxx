@@ -5,6 +5,7 @@
 #include "threadmaxx_physics/shape.hpp"
 #include "threadmaxx_physics/types.hpp"
 
+#include <optional>
 #include <span>
 
 /// Backend solver interface.
@@ -42,14 +43,31 @@ public:
 
     /// Register a collider shape. Backends are free to cook /
     /// validate the source `ShapeDesc` and discard the input vectors
-    /// afterwards.
+    /// afterwards. For `ShapeType::Compound`, every entry in
+    /// `desc.children` is refcounted by the backend — the parent keeps
+    /// the children alive even if the caller drops their original
+    /// `createShape` references.
     virtual ShapeId createShape(const ShapeDesc& desc) = 0;
 
     /// Drop a registered shape. Bodies still referencing it must
-    /// continue to operate until they're destroyed themselves
-    /// (real backends defer the free until the last referent is gone;
-    /// the StubBackend mirrors that behavior).
+    /// continue to operate until they're destroyed themselves: this is
+    /// a deferred-destroy request. Real backends free the shape when
+    /// the last referent (body or compound parent) is gone; the
+    /// StubBackend mirrors that behavior. Calling `destroyShape` on a
+    /// shape with zero refcount frees it immediately.
     virtual void destroyShape(ShapeId shape) = 0;
+
+    /// Look up a shape's descriptor. Returns `nullptr` if the id is
+    /// invalid or refers to a shape that has been freed (including a
+    /// deferred-destroy that completed when its last referent went
+    /// away). The returned pointer is valid until the next mutating
+    /// backend call.
+    virtual const ShapeDesc* getShapeDesc(ShapeId shape) = 0;
+
+    /// Compute a shape's local-space axis-aligned bounding box. For
+    /// `Compound`, the AABB is the union of every still-alive child's
+    /// AABB. Returns `nullopt` if the id is invalid.
+    virtual std::optional<ShapeAabb> getShapeAabb(ShapeId shape) = 0;
 
     /// Create a rigid body in `world` from `desc`, attaching the
     /// supplied collider shapes. Returns a non-zero `BodyId` on
