@@ -10,6 +10,7 @@
 
 #include "threadmaxx_physics/backend.hpp"
 #include "threadmaxx_physics/body.hpp"
+#include "threadmaxx_physics/character.hpp"
 #include "threadmaxx_physics/config.hpp"
 #include "threadmaxx_physics/constraints.hpp"
 #include "threadmaxx_physics/query.hpp"

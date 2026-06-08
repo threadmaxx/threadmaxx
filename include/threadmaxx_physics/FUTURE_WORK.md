@@ -4,8 +4,8 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **in progress**. P1 + P2 + P3 + P4 + P5 + P6 landed 2026-06-08.
-Remaining batches (P7–P9) are 📋 planned. Sequencing follows the §8
+Status: **in progress**. P1 + P2 + P3 + P4 + P5 + P6 + P7 landed 2026-06-08.
+Remaining batches (P8–P9) are 📋 planned. Sequencing follows the §8
 "implementation order" of the design notes, regrouped into shippable
 units that each carry their own tests.
 
@@ -208,7 +208,7 @@ enforce them; real backend (P9) does the work.
 
 **Out of scope**: motorized constraints, soft-body constraints.
 
-## Batch P7 — Character controller
+## Batch P7 — Character controller  ✅ landed 2026-06-08
 
 **Goal**: capsule-based character controller with step-up, slope
 limit, and grounded-detect. Sits on top of the body / query APIs.

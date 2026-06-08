@@ -5,6 +5,7 @@ set(THREADMAXX_PHYSICS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/shape.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/backend.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/character.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/constraints.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/query.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/step.hpp
@@ -14,6 +15,7 @@ set(THREADMAXX_PHYSICS_PUBLIC_HEADERS
 
 set(THREADMAXX_PHYSICS_SOURCES
     backends/StubBackend.cpp
+    CharacterController.cpp
 )
 
 add_library(threadmaxx_physics STATIC

@@ -27,6 +27,10 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_constraint_create
     test_physics_constraint_destroy
     test_physics_constraint_disable_self_collision
+    test_physics_character_move_flat
+    test_physics_character_step_up
+    test_physics_character_slope_limit
+    test_physics_character_grounded
 )
 
 foreach(test ${THREADMAXX_PHYSICS_TESTS})
