@@ -11,6 +11,10 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_registry_invalid
     test_navmesh_tile_adjacency
     test_navmesh_tile_traversal
+    test_navmesh_astar_simple
+    test_navmesh_astar_unreachable
+    test_navmesh_astar_partial
+    test_navmesh_astar_area_mask
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})

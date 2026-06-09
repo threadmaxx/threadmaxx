@@ -4,11 +4,11 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N2 shipped (2026-06-09)** — cross-tile portal table + 4-tile
-L-shape fixture + walker; green on `build/` (220/220) and
-`build-werror/`. N3 → N9 remain 📋 planned. Sequencing follows the §10
-"implementation order" of the design notes, regrouped into shippable
-units that each carry their own tests.
+Status: **N3 shipped (2026-06-09)** — synchronous A* over polygon
+adjacency, area-mask filter, partial-path fallback; green on `build/`
+and `build-werror/` (9/9 navmesh tests). N4 → N9 remain 📋 planned.
+Sequencing follows the §10 "implementation order" of the design notes,
+regrouped into shippable units that each carry their own tests.
 
 ## Conventions
 
@@ -121,30 +121,46 @@ accessors. The fixture mesh from N1 grows from a single square to
 **Out of scope**: streaming load (v1.x), tile-level invalidation
 during edits (v1.x).
 
-## Batch N3 — Single-path A* over polygon adjacency
+## Batch N3 — Single-path A* over polygon adjacency — ✅ shipped 2026-06-09
 
 **Goal**: synchronous path query. `request()` returns a `PathId`,
-`tryGet()` returns a ready `PathResult` on the same tick (because
-the solve is synchronous in v1.0).
+`tryGet()` returns a ready `PathResult` on the same tick (because the
+solve is synchronous in v1.0).
 
-**Test gate**:
+**Test gate** (delivered):
 
 - `test_navmesh_astar_simple` — request a path across the L-shape
-  fixture; result has waypoints that walk through every required
-  polygon; cost equals sum of edge weights.
-- `test_navmesh_astar_unreachable` — start and goal in disconnected
-  islands → `success == false`.
-- `test_navmesh_astar_partial` — `allowPartial == true` returns a
-  best-effort path that ends at the nearest reachable polygon when
-  the goal is blocked.
-- `test_navmesh_astar_area_mask` — area-mask excluding water
-  forces a longer dry path.
+  fixture from T0 corner to T3 corner; corridor size = 7 polys, cost
+  = 6.0, waypoints `[start, edge-midpoints×6, goal]`. Same-poly query
+  degenerates to cost 0 + waypoints `[start, goal]`. `cancel` / `clear`
+  / `tryGet(unknown)` round-trip correctly.
+- `test_navmesh_astar_unreachable` — two-islands fixture, no portals;
+  `allowPartial == false` → `success == false`, empty corridor /
+  waypoints. Off-mesh start / goal + invalid ref each fail pre-solve
+  via `lastRequestStatus()`.
+- `test_navmesh_astar_partial` — same fixture with `allowPartial ==
+  true`: success=true, partial=true, corridor ends at the in-T0
+  polygon with smallest heuristic to the goal (T0:1, the +x neighbor).
+  Last waypoint anchors on that poly's centroid.
+- `test_navmesh_astar_area_mask` — 3×2 strip fixture with poly 1
+  tagged area 1 (water). All-mask: corridor `[0,1,2]` cost 2.0.
+  Mask `~(1<<1)`: corridor `[0,3,4,5,2]` cost 4.0.
 
-**Files**: `query.hpp`, `detail/a_star.hpp`,
-`src/PathQueryService.cpp` (synchronous mode).
+**Shipped**:
 
-**Risks**: A* heap allocation in the hot path. Use a reusable
-`detail::a_star::OpenSet` whose `clear()` preserves capacity.
+- `query.hpp` — `PathRequest` / `PathResult` (with `corridor` +
+  `partial`) / `PathQueryService` / `PathRequestStatus`.
+- `detail/a_star.hpp` — `NodeIndex` (tile-prefix-sum encode/decode),
+  `AStarOpenSet` (binary min-heap with lazy-decrement skip), reusable
+  `AStarState` scratch.
+- `src/PathQueryService.cpp` — synchronous solver: even-odd XZ
+  point-in-polygon locate, centroid-cost edges, euclidean heuristic,
+  area-mask filter, best-h fallback for partial, edge-midpoint
+  waypoint reconstruction (handles intra-tile + cross-tile portals).
+- Fixtures: `makeTwoDisconnectedTiles` (no portals — unreachable +
+  partial) and `makeAreaMaskStrip` (3×2 grid, poly 1 = water tag 1).
+- `Vec3` heuristic + cost are reused from the engine's `Components.hpp`
+  so the library still has zero new math dependencies.
 
 **Out of scope**: funnel smoothing (N4), async queries (N5).
 

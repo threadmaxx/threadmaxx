@@ -3,10 +3,12 @@ set(THREADMAXX_NAVMESH_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/mesh.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/query.hpp
 )
 
 set(THREADMAXX_NAVMESH_SOURCES
     NavMeshRegistry.cpp
+    PathQueryService.cpp
 )
 
 add_library(threadmaxx_navmesh STATIC

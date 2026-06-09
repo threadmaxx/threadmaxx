@@ -287,6 +287,174 @@ inline std::vector<unsigned char> make4TileLShape(
         reinterpret_cast<const unsigned char*>(view.data()) + view.size());
 }
 
+/// N3 fixture: two 2x2-quad tiles with no portal between them. T0 at
+/// origin, T1 far away at x=10. Used by the unreachable + partial path
+/// tests — A* from T0 cannot reach any T1 polygon.
+inline std::vector<unsigned char> makeTwoDisconnectedTiles(
+    std::uint32_t magic   = kNavMeshBlobMagic,
+    std::uint32_t version = kNavMeshBlobVersion,
+    const std::string& name = "two_islands") {
+
+    BlobBuilder b;
+    b.writeU32(magic);
+    b.writeU32(version);
+    b.writeString(name);
+    b.writeU32(2);  // tile count
+
+    auto writeTile = [&](NavTileId tileId, float originX, float originZ) {
+        std::vector<Vec3> verts;
+        verts.reserve(9);
+        for (int z = 0; z < 3; ++z) {
+            for (int x = 0; x < 3; ++x) {
+                verts.push_back(Vec3{
+                    originX + static_cast<float>(x), 0.0f,
+                    originZ + static_cast<float>(z)});
+            }
+        }
+        std::vector<NavPoly> polys;
+        std::vector<std::uint32_t> idx;
+        std::vector<std::uint32_t> neighbors;
+        polys.reserve(4);
+        idx.reserve(16);
+        neighbors.reserve(16);
+        auto vid = [](int x, int z) {
+            return static_cast<std::uint32_t>(z * 3 + x);
+        };
+        auto polyAt = [](int xx, int zz) {
+            if (xx < 0 || xx >= 2 || zz < 0 || zz >= 2)
+                return kInvalidPolyIndex;
+            return static_cast<std::uint32_t>(zz * 2 + xx);
+        };
+        for (int z = 0; z < 2; ++z) {
+            for (int x = 0; x < 2; ++x) {
+                NavPoly p;
+                p.indexStart = static_cast<std::uint32_t>(idx.size());
+                p.indexCount = 4;
+                p.areaTag = 0;
+                polys.push_back(p);
+
+                idx.push_back(vid(x,     z    ));
+                idx.push_back(vid(x + 1, z    ));
+                idx.push_back(vid(x + 1, z + 1));
+                idx.push_back(vid(x,     z + 1));
+
+                neighbors.push_back(polyAt(x,     z - 1));
+                neighbors.push_back(polyAt(x + 1, z    ));
+                neighbors.push_back(polyAt(x,     z + 1));
+                neighbors.push_back(polyAt(x - 1, z    ));
+            }
+        }
+
+        b.writeU32(tileId);
+        b.writeU32(static_cast<std::uint32_t>(verts.size()));
+        b.writeU32(static_cast<std::uint32_t>(polys.size()));
+        b.writeU32(static_cast<std::uint32_t>(idx.size()));
+        b.writeVec(verts);
+        b.writeVec(polys);
+        b.writeVec(idx);
+        b.writeVec(neighbors);
+    };
+
+    writeTile(/*tileId=*/0, /*originX=*/0.0f,  /*originZ=*/0.0f);
+    writeTile(/*tileId=*/1, /*originX=*/10.0f, /*originZ=*/0.0f);
+
+    // No portals — the tiles live on separate islands.
+    b.writeU32(0);
+
+    auto view = b.view();
+    return std::vector<unsigned char>(
+        reinterpret_cast<const unsigned char*>(view.data()),
+        reinterpret_cast<const unsigned char*>(view.data()) + view.size());
+}
+
+/// N3 fixture: one tile with a 3x2 quad grid where the bottom-middle
+/// polygon is tagged area 1 (water). Other polys are tagged area 0
+/// (dry). Used by the area-mask test — masking out area 1 forces the
+/// solver around the top row.
+///
+///   +-+-+-+
+///   |3|4|5|   z = 1..2, all tag 0 (dry)
+///   +-+-+-+
+///   |0|1|2|   z = 0..1, polys 0 + 2 dry, poly 1 water (tag 1)
+///   +-+-+-+
+///       x = 0..3
+inline std::vector<unsigned char> makeAreaMaskStrip(
+    std::uint32_t magic   = kNavMeshBlobMagic,
+    std::uint32_t version = kNavMeshBlobVersion,
+    const std::string& name = "area_mask_strip") {
+
+    BlobBuilder b;
+    b.writeU32(magic);
+    b.writeU32(version);
+    b.writeString(name);
+    b.writeU32(1);  // tile count
+
+    const std::uint32_t tileId = 0;
+
+    // 4x3 grid of vertices = 12 verts; 3x2 = 6 quad polys.
+    std::vector<Vec3> verts;
+    verts.reserve(12);
+    for (int z = 0; z < 3; ++z) {
+        for (int x = 0; x < 4; ++x) {
+            verts.push_back(Vec3{
+                static_cast<float>(x), 0.0f, static_cast<float>(z)});
+        }
+    }
+    std::vector<NavPoly> polys;
+    std::vector<std::uint32_t> idx;
+    std::vector<std::uint32_t> neighbors;
+    polys.reserve(6);
+    idx.reserve(24);
+    neighbors.reserve(24);
+    auto vid = [](int x, int z) {
+        return static_cast<std::uint32_t>(z * 4 + x);
+    };
+    auto polyAt = [](int xx, int zz) {
+        if (xx < 0 || xx >= 3 || zz < 0 || zz >= 2)
+            return kInvalidPolyIndex;
+        return static_cast<std::uint32_t>(zz * 3 + xx);
+    };
+    for (int z = 0; z < 2; ++z) {
+        for (int x = 0; x < 3; ++x) {
+            NavPoly p;
+            p.indexStart = static_cast<std::uint32_t>(idx.size());
+            p.indexCount = 4;
+            // Poly (1, 0) — the bottom-middle quad — is the water shortcut.
+            p.areaTag = (x == 1 && z == 0) ? std::uint16_t{1} : std::uint16_t{0};
+            polys.push_back(p);
+
+            idx.push_back(vid(x,     z    ));
+            idx.push_back(vid(x + 1, z    ));
+            idx.push_back(vid(x + 1, z + 1));
+            idx.push_back(vid(x,     z + 1));
+
+            // Edge convention identical to make16PolyFlatSquare:
+            //   edge 0 = -z, edge 1 = +x, edge 2 = +z, edge 3 = -x.
+            neighbors.push_back(polyAt(x,     z - 1));
+            neighbors.push_back(polyAt(x + 1, z    ));
+            neighbors.push_back(polyAt(x,     z + 1));
+            neighbors.push_back(polyAt(x - 1, z    ));
+        }
+    }
+
+    b.writeU32(tileId);
+    b.writeU32(static_cast<std::uint32_t>(verts.size()));
+    b.writeU32(static_cast<std::uint32_t>(polys.size()));
+    b.writeU32(static_cast<std::uint32_t>(idx.size()));
+    b.writeVec(verts);
+    b.writeVec(polys);
+    b.writeVec(idx);
+    b.writeVec(neighbors);
+
+    // No cross-tile portals — single tile.
+    b.writeU32(0);
+
+    auto view = b.view();
+    return std::vector<unsigned char>(
+        reinterpret_cast<const unsigned char*>(view.data()),
+        reinterpret_cast<const unsigned char*>(view.data()) + view.size());
+}
+
 /// Convert the unsigned-char vec back into a byte span the registry
 /// will accept. Lives next to `make16PolyFlatSquare` so tests don't
 /// have to cast.
