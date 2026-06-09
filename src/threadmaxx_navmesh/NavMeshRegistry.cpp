@@ -97,6 +97,38 @@ const NavTile* NavMesh::findTile(NavTileId id) const noexcept {
     return nullptr;
 }
 
+std::optional<std::size_t> NavMesh::tileIndex(NavTileId id) const noexcept {
+    for (std::size_t i = 0; i < tiles_.size(); ++i) {
+        if (tiles_[i].id == id) return i;
+    }
+    return std::nullopt;
+}
+
+std::span<const std::uint32_t> NavMesh::portalsForTile(NavTileId id) const noexcept {
+    const auto idx = tileIndex(id);
+    if (!idx) return {};
+    if (*idx >= portalsByTile_.size()) return {};
+    return portalsByTile_[*idx];
+}
+
+std::optional<NavMesh::CrossTileNeighbor> NavMesh::crossTileNeighbor(
+    NavTileId tileId, NavPolyId polyId, std::uint32_t edgeIdx) const noexcept {
+
+    const auto idx = tileIndex(tileId);
+    if (!idx) return std::nullopt;
+    if (*idx >= portalsByTile_.size()) return std::nullopt;
+    for (std::uint32_t pi : portalsByTile_[*idx]) {
+        const NavPortal& p = portals_[pi];
+        if (p.tileA == tileId && p.polyA == polyId && p.edgeA == edgeIdx) {
+            return CrossTileNeighbor{p.tileB, p.polyB, p.edgeB};
+        }
+        if (p.tileB == tileId && p.polyB == polyId && p.edgeB == edgeIdx) {
+            return CrossTileNeighbor{p.tileA, p.polyA, p.edgeA};
+        }
+    }
+    return std::nullopt;
+}
+
 // -- NavMeshRegistry::Impl ---------------------------------------------------
 
 struct NavMeshRegistry::Impl {
@@ -217,6 +249,50 @@ NavMeshRef NavMeshRegistry::load(std::span<const std::byte> bakedData) {
 
     mesh->polygonCount_ = polyTotal;
     mesh->vertexCount_ = vertTotal;
+
+    // -- v2: cross-tile portal table -----------------------------------------
+    std::uint32_t portalCount = 0;
+    if (!c.readU32(portalCount)) {
+        lastError_ = NavMeshLoadError::Truncated;
+        return {};
+    }
+    if (portalCount > kNavMeshMaxPortals) {
+        lastError_ = NavMeshLoadError::InvalidPortalCount;
+        return {};
+    }
+    if (!c.readVec(mesh->portals_, portalCount)) {
+        lastError_ = NavMeshLoadError::Truncated;
+        return {};
+    }
+    // Per-portal validation: tiles exist + differ, polys + edges in range.
+    mesh->portalsByTile_.assign(mesh->tiles_.size(), {});
+    for (std::uint32_t pi = 0; pi < portalCount; ++pi) {
+        const NavPortal& p = mesh->portals_[pi];
+        if (p.tileA == p.tileB) {
+            lastError_ = NavMeshLoadError::InvalidPortal;
+            return {};
+        }
+        const auto idxA = mesh->tileIndex(p.tileA);
+        const auto idxB = mesh->tileIndex(p.tileB);
+        if (!idxA || !idxB) {
+            lastError_ = NavMeshLoadError::InvalidPortal;
+            return {};
+        }
+        const NavTile& tA = mesh->tiles_[*idxA];
+        const NavTile& tB = mesh->tiles_[*idxB];
+        if (p.polyA >= tA.polygons.size() || p.polyB >= tB.polygons.size()) {
+            lastError_ = NavMeshLoadError::InvalidPortal;
+            return {};
+        }
+        const std::uint32_t edgesA = tA.polygons[p.polyA].indexCount;
+        const std::uint32_t edgesB = tB.polygons[p.polyB].indexCount;
+        if (p.edgeA >= edgesA || p.edgeB >= edgesB) {
+            lastError_ = NavMeshLoadError::InvalidPortal;
+            return {};
+        }
+        mesh->portalsByTile_[*idxA].push_back(pi);
+        mesh->portalsByTile_[*idxB].push_back(pi);
+    }
 
     std::lock_guard<std::mutex> g(impl_->mtx);
     std::size_t slotIdx;

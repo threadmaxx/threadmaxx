@@ -43,6 +43,25 @@ struct NavPoly {
 /// across that edge inside the same tile).
 inline constexpr std::uint32_t kInvalidPolyIndex = 0xFFFFFFFFu;
 
+/// Cross-tile portal — a single edge shared between two polygons that
+/// live in distinct tiles. Reciprocal: every portal is queryable from
+/// either side (A→B and B→A return matching neighbors).
+///
+/// The `edgeA` / `edgeB` fields index into the corresponding polygon's
+/// edge list, i.e. the segment from `vertexIndices[indexStart+edge]` to
+/// `vertexIndices[indexStart + ((edge+1) % indexCount)]`. The bake is
+/// responsible for ensuring the two endpoints coincide in world space;
+/// the runtime trusts the topology and validates only that the indices
+/// are in range.
+struct NavPortal {
+    NavTileId tileA{};
+    NavPolyId polyA{};
+    std::uint32_t edgeA{};
+    NavTileId tileB{};
+    NavPolyId polyB{};
+    std::uint32_t edgeB{};
+};
+
 /// One tile in the runtime navmesh. Tiles own their geometry; cross-
 /// tile adjacency lives at the mesh level (N2 work).
 struct NavTile {
@@ -106,6 +125,34 @@ public:
     /// Asset name carried in the blob header.
     const std::string& name() const noexcept { return name_; }
 
+    /// Flat span over every cross-tile portal in the mesh.
+    std::span<const NavPortal> portals() const noexcept { return portals_; }
+
+    /// Look up the array position of `id` inside `tiles()`. Linear scan
+    /// over the (small) tile list; `std::nullopt` if no tile carries the
+    /// requested id.
+    std::optional<std::size_t> tileIndex(NavTileId id) const noexcept;
+
+    /// Portal indices touching the tile with the given id (either side).
+    /// The result references `portals()` and stays valid until the
+    /// owning mesh is unloaded. Empty span when the tile id is unknown
+    /// or the tile has no cross-tile neighbors.
+    std::span<const std::uint32_t> portalsForTile(NavTileId id) const noexcept;
+
+    /// Cross-tile neighbor reachable through the given `(tile, poly,
+    /// edge)` triple. `std::nullopt` if the requested edge is not a
+    /// portal. The caller is expected to consult `NavTile::neighborPolys`
+    /// first for the intra-tile case.
+    struct CrossTileNeighbor {
+        NavTileId tileId;
+        NavPolyId polyId;
+        std::uint32_t edgeIdx;
+    };
+    std::optional<CrossTileNeighbor> crossTileNeighbor(
+        NavTileId tileId,
+        NavPolyId polyId,
+        std::uint32_t edgeIdx) const noexcept;
+
 private:
     friend class NavMeshRegistry;
 
@@ -113,6 +160,10 @@ private:
     std::vector<NavTile> tiles_;
     std::uint32_t polygonCount_{};
     std::uint32_t vertexCount_{};
+    std::vector<NavPortal> portals_;
+    /// `portalsByTile_[tileArrayIndex]` lists portals touching that
+    /// tile, both directions folded together.
+    std::vector<std::vector<std::uint32_t>> portalsByTile_;
 };
 
 /// Diagnostic reason a `load()` call failed. The enum value is
@@ -128,6 +179,9 @@ enum class NavMeshLoadError : std::uint8_t {
     InvalidPolyCount,   ///< A tile's polygon count exceeds
                         ///< `kNavMeshMaxPolysPerTile`.
     InvalidIndex,    ///< A polygon points past the tile's vertex pool.
+    InvalidPortalCount, ///< `portalCount` exceeds `kNavMeshMaxPortals`.
+    InvalidPortal,   ///< A portal references an unknown tile / poly /
+                     ///< edge, or links a tile to itself.
 };
 
 /// Owns every loaded navmesh asset. N1 only does `load` / `unload`;

@@ -16,9 +16,10 @@ namespace threadmaxx::navmesh {
 inline constexpr std::uint32_t kNavMeshBlobMagic = 0x584D564Eu;
 
 /// Binary format version. Bumped any time the on-disk layout changes
-/// in a way that breaks consumer-side load. v1 blobs from a future
-/// engine release are NOT loaded by an older runtime.
-inline constexpr std::uint32_t kNavMeshBlobVersion = 1u;
+/// in a way that breaks consumer-side load. v2 (N2) appended the
+/// cross-tile portal table after the per-tile section; v1 blobs are no
+/// longer loaded by the runtime.
+inline constexpr std::uint32_t kNavMeshBlobVersion = 2u;
 
 /// Maximum supported tile count per navmesh asset. Bounds the
 /// registry's per-load allocation cost; a load that claims more tiles
@@ -28,6 +29,11 @@ inline constexpr std::uint32_t kNavMeshMaxTiles = 65536u;
 /// Maximum supported polygon count per tile. Bounds the per-tile
 /// allocation; a tile header claiming more than this is rejected.
 inline constexpr std::uint32_t kNavMeshMaxPolysPerTile = 65535u;
+
+/// Maximum supported cross-tile portal count per navmesh asset. Each
+/// portal links one edge on each of two distinct tiles; the bake never
+/// emits self-portals.
+inline constexpr std::uint32_t kNavMeshMaxPortals = 1u << 20;
 
 /// Library-wide tolerances. None of the fields apply yet (N1 only
 /// loads — no queries), but the type lives next to the format

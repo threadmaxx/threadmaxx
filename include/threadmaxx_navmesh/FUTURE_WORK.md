@@ -4,11 +4,11 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N1 shipped (2026-06-09)** — registry + load/unload/validate
-green on `build/` and `build-werror/`. N2 → N9 remain 📋 planned.
-Sequencing follows the §10 "implementation order" of the design
-notes, regrouped into shippable units that each carry their own
-tests.
+Status: **N2 shipped (2026-06-09)** — cross-tile portal table + 4-tile
+L-shape fixture + walker; green on `build/` (220/220) and
+`build-werror/`. N3 → N9 remain 📋 planned. Sequencing follows the §10
+"implementation order" of the design notes, regrouped into shippable
+units that each carry their own tests.
 
 ## Conventions
 
@@ -89,21 +89,34 @@ version on load — same discipline as the engine's WorldSnapshot.
 
 **Out of scope**: A* (N3), tile-based streaming (deferred to v1.x).
 
-## Batch N2 — Tile model + adjacency
+## Batch N2 — Tile model + adjacency — ✅ shipped 2026-06-09
 
 **Goal**: per-tile polygon storage with adjacency + portal edges +
 area cost tags. Internal — exposed only through `NavMesh` const
 accessors. The fixture mesh from N1 grows from a single square to
 4 tiles arranged in an L-shape.
 
-**Test gate**:
+**Test gate** (delivered):
 
-- `test_navmesh_tile_adjacency` — every interior edge has a portal;
-  every border edge points to no neighbor.
-- `test_navmesh_tile_traversal` — a hand-written walker visits all
-  4 tiles starting from any polygon.
+- `test_navmesh_tile_adjacency` — every interior edge has a
+  reciprocal portal; every L-shape boundary edge resolves to neither
+  intra-tile neighbor nor cross-tile portal; `portalsForTile` counts
+  per-tile portal incidence.
+- `test_navmesh_tile_traversal` — a hand-written BFS walker seeded
+  from every `(tile, poly)` in the L-shape reaches all 16 polygons
+  across 4 tiles.
 
-**Files**: extension to `mesh.hpp`, `detail/bitset.hpp`.
+**Shipped**:
+
+- `NavPortal` POD + `NavMesh::portals()` / `tileIndex()` /
+  `portalsForTile()` / `crossTileNeighbor()` accessors.
+- `NavMeshLoadError::{InvalidPortalCount, InvalidPortal}` diagnostics.
+- v2 wire format (appends `[portalCount u32][NavPortal * N]`); v1
+  blobs no longer load (rejected as UnsupportedVersion).
+- `kNavMeshMaxPortals = 1 << 20` cap.
+- `detail/bitset.hpp` (walker scratch storage; ready for N3 A*).
+- `tests/navmesh/fixtures/blob_builder.hpp::make4TileLShape` —
+  canonical L-shape with 6 portals.
 
 **Out of scope**: streaming load (v1.x), tile-level invalidation
 during edits (v1.x).

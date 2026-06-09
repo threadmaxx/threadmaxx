@@ -9,6 +9,8 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_registry_load
     test_navmesh_registry_unload
     test_navmesh_registry_invalid
+    test_navmesh_tile_adjacency
+    test_navmesh_tile_traversal
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})
