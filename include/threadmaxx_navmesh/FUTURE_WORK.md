@@ -4,9 +4,11 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **not started**. All batches are 📋 planned. Sequencing
-follows the §10 "implementation order" of the design notes,
-regrouped into shippable units that each carry their own tests.
+Status: **N1 shipped (2026-06-09)** — registry + load/unload/validate
+green on `build/` and `build-werror/`. N2 → N9 remain 📋 planned.
+Sequencing follows the §10 "implementation order" of the design
+notes, regrouped into shippable units that each carry their own
+tests.
 
 ## Conventions
 
@@ -60,7 +62,7 @@ bench/
   navmesh_*.cpp
 ```
 
-## Batch N1 — Foundations (registry + mesh load)
+## Batch N1 — Foundations (registry + mesh load) — ✅ shipped 2026-06-09
 
 **Goal**: load a pre-baked navmesh blob into the registry,
 hand back a `NavMeshRef`. No queries yet — just the data model.

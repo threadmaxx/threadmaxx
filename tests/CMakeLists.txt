@@ -180,6 +180,12 @@ if (TARGET threadmaxx::physics)
     add_subdirectory(physics)
 endif()
 
+# threadmaxx_navmesh sibling-library test suite (N1+). Lives in
+# `tests/navmesh/`. Skipped if the navmesh opt-in is off.
+if (TARGET threadmaxx::navmesh)
+    add_subdirectory(navmesh)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)
