@@ -4,17 +4,14 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N9 shipped (2026-06-10)** — `bakeNavMesh()` consumes a
-triangle-direct soup (vertices + per-triangle area tags) and emits a
-v2 blob the runtime loads verbatim. Validation rejects empty input,
-out-of-range indices, repeated-vertex / collinear triangles, and
-non-manifold edges. CLI driver `threadmaxx_navmesh_bake` reads the
-text format from stdin / `--in` and writes the blob to stdout /
-`--out`. Green on `build/` (241/241) and `build-werror/` (26/26
-navmesh). v1.0 close-out criteria all met — see
-`§ v1.0 close-out`. Sequencing follows the §10 "implementation order"
-of the design notes, regrouped into shippable units that each carry
-their own tests.
+Status: **v1.0.0 released (2026-06-10)** — every batch N1–N9
+shipped; close-out artifacts (`version.hpp`, `README.md`,
+`USER_GUIDE.md`, `MAINTAINER_GUIDE.md`, `CHANGELOG.md`) landed
+in the same release commit. Green on `build/` (241/241) and
+`build-werror/` (26/26 navmesh). All six v1.0 close-out
+criteria are met — see `§ v1.0 close-out`. Sequencing follows
+the §10 "implementation order" of the design notes, regrouped
+into shippable units that each carry their own tests.
 
 ## Conventions
 
@@ -539,10 +536,12 @@ recommendation to ship triangle-direct first.
   for 100 agents → follow paths to completion.
 - ✓ Bench `navmesh_batch_bench.cpp` reports ≥10k path queries / sec
   on a 256-poly mesh, 4 workers.
-- ✓ Docs: README, USER_GUIDE, MAINTAINER_GUIDE.
+- ✓ Docs: `README.md`, `USER_GUIDE.md`, `MAINTAINER_GUIDE.md`,
+  `CHANGELOG.md` (all landed alongside the v1.0.0 release commit).
 - ✓ ctest 100% on `build/` and `build-werror/`.
 - ✓ Version stamped at 1.0.0 in
-  `include/threadmaxx_navmesh/version.hpp`.
+  `include/threadmaxx_navmesh/version.hpp` (re-exported by the
+  umbrella header).
 
 ## v1.x candidate batches (not blocking v1.0)
 

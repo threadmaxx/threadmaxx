@@ -18,3 +18,4 @@
 #include "threadmaxx_navmesh/query.hpp"
 #include "threadmaxx_navmesh/steering.hpp"
 #include "threadmaxx_navmesh/types.hpp"
+#include "threadmaxx_navmesh/version.hpp"
