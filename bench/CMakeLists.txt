@@ -53,6 +53,23 @@ endforeach()
 target_include_directories(terrain_query_bench PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/rpg_demo)
 
+# threadmaxx_navmesh N6 — batch path solver throughput. Links the
+# sibling library directly; separated from the main bench list so it
+# doesn't compile when navmesh is disabled.
+if (TARGET threadmaxx::navmesh)
+    add_executable(navmesh_batch_bench navmesh_batch_bench.cpp)
+    target_link_libraries(navmesh_batch_bench PRIVATE threadmaxx::navmesh)
+    set_target_properties(navmesh_batch_bench PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(navmesh_batch_bench PRIVATE
+            -Wall -Wextra -Wpedantic -O3)
+    endif()
+endif()
+
 # threadmaxx_animation A7 — crowd-evaluation throughput. Links the
 # sibling library directly; separated from the main bench list so it
 # doesn't compile when animation is disabled.

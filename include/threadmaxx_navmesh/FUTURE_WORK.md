@@ -4,15 +4,17 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N5 shipped (2026-06-10)** — `PathQueryService` now runs
-solves on an internal worker thread by default. `request()` enqueues
-after pre-validating start/goal locations (so `lastRequestStatus()`
-stays meaningful on return), `tryGet()` returns `nullopt` until the
-worker stores a result, and a new `wait(id, timeout)` blocks for
-sync-style callers. Green on `build/` (230/230) and `build-werror/`
-(15/15 navmesh). N6 → N9 remain 📋 planned. Sequencing follows the
-§10 "implementation order" of the design notes, regrouped into
-shippable units that each carry their own tests.
+Status: **N6 shipped (2026-06-10)** — `BatchPathSolver::solve` fans a
+list of `PathRequest` entries out over a persistent worker pool and
+returns results 1:1 in input order. Built on top of the shared
+`detail/solver.hpp` solver internals (extracted from
+`PathQueryService` so both surfaces share a single tested A* + funnel
+code path). Bench `navmesh_batch_bench` reports 251k qps at 4 workers
+on a 256-poly grid (vs the v1.0 close-out gate of ≥10k). Green on
+`build/` (232/232) and `build-werror/` (17/17 navmesh). N7 → N9 remain
+📋 planned. Sequencing follows the §10 "implementation order" of the
+design notes, regrouped into shippable units that each carry their
+own tests.
 
 ## Conventions
 
@@ -289,22 +291,70 @@ sharing if profiling shows two pools fighting for cores.
 
 **Out of scope**: batch solver (N6).
 
-## Batch N6 — Batch path solver
+## Batch N6 — Batch path solver — ✅ shipped 2026-06-10
 
 **Goal**: `BatchPathSolver::solve(BatchPathRequest)` for "100 NPCs
-all asking at once" cases. Internally parallelizes via the same
-worker pool as N5.
+all asking at once" cases. Internally parallelizes via a persistent
+worker pool of the same shape as N5 (per-worker scratch, condvar
+wake, atomic next-index dispatch); not literally sharing
+`PathQueryService`'s pool because the two services have independent
+lifetimes and the sibling lib stays decoupled from internal sharing
+contracts.
 
-**Test gate**:
+**Test gate** (delivered):
 
 - `test_navmesh_batch_correctness` — 64 (start, goal) pairs solved
-  via batch; each result matches the equivalent single-path query.
-- `test_navmesh_batch_determinism` — same input batch → same output
-  order across 2 runs.
-- `bench/navmesh_batch_bench.cpp` — 1k requests on a 256-polygon
-  mesh; report queries / second.
+  via batch (2 workers); each entry matches the result a fresh
+  synchronous `PathQueryService` produced for the same input. Also
+  pins the empty-batch fast path and the `workerThreads == 0`
+  in-line mode.
+- `test_navmesh_batch_determinism` — same input batch solved
+  back-to-back on one instance, then on a fresh 2-worker instance,
+  then on a 4-worker instance: byte-identical `cost`, `corridor`,
+  `waypoints` across all three runs. Determinism is structural —
+  each request is solved end-to-end on one worker scratch, so the
+  worker schedule never affects per-index output.
+- `bench/navmesh_batch_bench` — 1000 requests on a 16x16 (256-poly)
+  flat grid. Measured: 57k qps (sync), 116k (1 worker), 166k (2),
+  251k (4), 287k (8) on this box. Well above the v1.0 close-out
+  gate of ≥10k qps on a 256-poly mesh @ 4 workers. `--grid=N`
+  / `--requests=N` flags let the bench scale further.
 
-**Files**: `crowd.hpp`, `src/BatchPathSolver.cpp`, bench source.
+**Shipped**:
+
+- `include/threadmaxx_navmesh/crowd.hpp` — `BatchPathRequest`,
+  `BatchPathResult`, `BatchPathSolverConfig { workerThreads = 1 }`,
+  `BatchPathSolver` (non-movable, owns persistent worker pool).
+  `solve()` blocks until every entry has a result; the producer
+  thread participates so effective parallelism is
+  `workerThreads + 1`. Empty batch is a fast-path no-op.
+  `workerThreads == 0` runs every solve inline on the producer.
+- `include/threadmaxx_navmesh/detail/solver.hpp` +
+  `src/threadmaxx_navmesh/Solver.cpp` — extracted the shared solver
+  internals (`PolyLocation`, `SolverScratch`, `PreparedRequest`,
+  `locate()`, `solvePrepared()`) out of the N5 anonymous namespace
+  so both `PathQueryService` and `BatchPathSolver` consume one
+  tested A* + funnel pipeline. PathQueryService.cpp is now ~210
+  lines (down from ~547) and contains only the async-queue
+  machinery; correctness logic moved verbatim into Solver.cpp.
+- `src/threadmaxx_navmesh/BatchPathSolver.cpp` — persistent worker
+  pool with per-batch generation counter (`batchGen`), atomic
+  `nextIndex` work-steal dispatch, atomic `doneCount` barrier. The
+  producer publishes the batch under `mtx`, notifies all workers,
+  joins the work loop itself, then waits on `doneCv` until every
+  worker bumps `doneCount`. Worker scratch is per-thread, recycled
+  across batches.
+- Umbrella `threadmaxx_navmesh.hpp` now re-exports `crowd.hpp`.
+
+**Files**: `crowd.hpp`, `detail/solver.hpp` (new),
+`src/Solver.cpp` (new — extracted from PathQueryService),
+`src/PathQueryService.cpp` (refactored to use detail/solver.hpp),
+`src/BatchPathSolver.cpp` (new), `src/CMakeLists.txt` (new sources +
+header), `bench/navmesh_batch_bench.cpp` (new),
+`bench/CMakeLists.txt` (new opt-in target),
+`tests/navmesh/test_navmesh_batch_correctness.cpp` (new),
+`tests/navmesh/test_navmesh_batch_determinism.cpp` (new),
+`tests/navmesh/CMakeLists.txt` (modified).
 
 **Out of scope**: agent steering (N7).
 

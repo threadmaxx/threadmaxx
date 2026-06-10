@@ -11,6 +11,7 @@
 /// consume it.
 
 #include "threadmaxx_navmesh/config.hpp"
+#include "threadmaxx_navmesh/crowd.hpp"
 #include "threadmaxx_navmesh/mesh.hpp"
 #include "threadmaxx_navmesh/query.hpp"
 #include "threadmaxx_navmesh/types.hpp"

@@ -21,6 +21,8 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_query_async_smoke
     test_navmesh_query_cancel
     test_navmesh_query_clear
+    test_navmesh_batch_correctness
+    test_navmesh_batch_determinism
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})
