@@ -4,9 +4,9 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **not started**. All batches are 📋 planned. Sequencing
-follows the §8 "implementation order" of the design notes, regrouped
-into shippable units that each carry their own tests.
+Status: **AU1 shipped (2026-06-10)**. AU2-AU8 are 📋 planned.
+Sequencing follows the §8 "implementation order" of the design notes,
+regrouped into shippable units that each carry their own tests.
 
 ## Conventions
 
@@ -65,31 +65,47 @@ bench/
   audio_*.cpp
 ```
 
-## Batch AU1 — Foundations (types + buffers + loopback device)
+## Batch AU1 — Foundations (types + buffers + loopback device) ✅ landed 2026-06-10
 
 **Goal**: header-only types, audio buffer primitives, and a
 `LoopbackDevice` test backend that captures submitted mix buffers
 for assertion. No mixer yet — just the data model + the device
 contract being exercisable.
 
-**Test gate**:
+**Test gate** (all green on `build/` + `build-werror/`):
 
-- `test_audio_buffer` — `AudioSpan` / `ConstAudioSpan` round-trip
-  through frame-iteration; `framesToBytes(format, n)` is exact.
-- `test_audio_loopback_device` — initialize → submit 1024 frames of
+- ✅ `test_audio_buffer` — `AudioSpan` / `ConstAudioSpan` round-trip
+  through frame-iteration; `framesToBytes(format, n)` is exact across
+  mono / stereo / 5.1; `samplesIn` matches `frames × channels`.
+- ✅ `test_audio_loopback_device` — initialize → submit 1024 frames of
   stereo silence → shutdown; captured buffer length matches input;
-  format round-trips.
-- `test_audio_format` — channel layout to channel count mapping
-  (Mono=1, Stereo=2, Quad=4, FiveOne=6, SevenOne=8).
+  format round-trips; post-shutdown submit is a silent drop;
+  re-initialize succeeds with a different format; zero-channel and
+  zero-frame initialize rejected.
+- ✅ `test_audio_format` — channel layout to channel count mapping
+  (Mono=1, Stereo=2, Quad=4, FiveOne=6, SevenOne=8, Ambisonic=4);
+  `AudioFormat` and handle equality.
 
-**Files**: `types.hpp`, `buffer.hpp`, `device.hpp`, `config.hpp`,
-umbrella `threadmaxx_audio.hpp`, `src/backends/LoopbackDevice.cpp`,
-three tests.
+**Files landed**:
+- `include/threadmaxx_audio/types.hpp` — handles + `ChannelLayout`
+- `include/threadmaxx_audio/buffer.hpp` — `AudioFormat`,
+  `AudioSpan`, `ConstAudioSpan`, `framesToBytes`, `samplesIn`
+- `include/threadmaxx_audio/config.hpp` — `kDefaultSampleRate` /
+  `kDefaultBufferFrames` / `kDefaultMaxVoices` / `kMaxSendsPerVoice`
+- `include/threadmaxx_audio/device.hpp` — `IAudioDevice` interface
+- `include/threadmaxx_audio/loopback_device.hpp` — `LoopbackDevice`
+- `include/threadmaxx_audio/threadmaxx_audio.hpp` — umbrella
+- `src/threadmaxx_audio/backends/LoopbackDevice.cpp` — impl
+- `src/threadmaxx_audio/CMakeLists.txt` — static lib `threadmaxx::audio`
+- `tests/audio/CMakeLists.txt` + three `test_audio_*.cpp`
 
-**Risks**: choosing interleaved vs. planar storage for `AudioSpan`.
-Pick **interleaved** at this batch (matches almost every real
-device backend's submit format); planar conversions happen inside
-the DSP layer as needed.
+**Resolved decisions**:
+- Interleaved storage for `AudioSpan` (matches every real backend's
+  submit format); planar conversions happen inside the DSP layer
+  when needed.
+- Ambisonic = first-order (4 channels W,X,Y,Z); higher-order is v1.x.
+- LoopbackDevice silently drops post-shutdown submits and asserts on
+  format/frame-count mismatches against initialize parameters.
 
 **Out of scope**: actual mixing (AU2), real device backends (AU8).
 

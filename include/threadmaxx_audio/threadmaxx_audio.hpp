@@ -1,0 +1,13 @@
+#pragma once
+
+/// @file threadmaxx_audio.hpp
+/// @brief Umbrella include — pulls in every public AU1 header so consumers
+/// can `#include <threadmaxx_audio/threadmaxx_audio.hpp>` and use the whole
+/// surface in scope. Later batches (AU2-AU8) extend this header in lockstep
+/// with their public additions.
+
+#include "threadmaxx_audio/buffer.hpp"
+#include "threadmaxx_audio/config.hpp"
+#include "threadmaxx_audio/device.hpp"
+#include "threadmaxx_audio/loopback_device.hpp"
+#include "threadmaxx_audio/types.hpp"

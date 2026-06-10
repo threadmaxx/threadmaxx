@@ -14,6 +14,7 @@ option(THREADMAXX_BUILD_SIMD "Make the threadmaxx_simd header-only sibling libra
 option(THREADMAXX_BUILD_ANIMATION "Make the threadmaxx_animation sibling library available" ON)
 option(THREADMAXX_BUILD_PHYSICS "Make the threadmaxx_physics sibling library available" ON)
 option(THREADMAXX_BUILD_NAVMESH "Make the threadmaxx_navmesh sibling library available" ON)
+option(THREADMAXX_BUILD_AUDIO "Make the threadmaxx_audio sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -185,6 +186,21 @@ if (THREADMAXX_BUILD_NAVMESH)
 endif()
 
 # --------------------------------------------------------------------------
+# threadmaxx_audio — audio mixing + 3D audio sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_AUDIO=ON` (the default). Static library —
+# public headers under `include/threadmaxx_audio/`, implementation under
+# `src/threadmaxx_audio/` (platform backends under `backends/`). v1.0
+# sequences as AU1 → AU8 per `include/threadmaxx_audio/FUTURE_WORK.md`. No
+# engine dependency at link time (header-only POD math; the engine reuses
+# this library, not the other way around). See
+# `include/threadmaxx_audio/DESIGN_NOTES.md` for the spec.
+if (THREADMAXX_BUILD_AUDIO)
+    add_subdirectory(src/threadmaxx_audio)
+endif()
+
+# --------------------------------------------------------------------------
 # Examples
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
@@ -289,6 +305,21 @@ if (THREADMAXX_INSTALL)
             INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         )
         install(DIRECTORY include/threadmaxx_navmesh
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling audio library — static. Same `if (TARGET threadmaxx::audio)`
+    # downstream probe.
+    if (THREADMAXX_BUILD_AUDIO)
+        install(TARGETS threadmaxx_audio
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_audio
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
             FILES_MATCHING PATTERN "*.hpp"
         )
