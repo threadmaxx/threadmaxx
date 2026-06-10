@@ -1,6 +1,7 @@
 #include "threadmaxx_navmesh/query.hpp"
 
 #include "threadmaxx_navmesh/detail/a_star.hpp"
+#include "threadmaxx_navmesh/detail/funnel.hpp"
 #include "threadmaxx_navmesh/mesh.hpp"
 
 #include "threadmaxx/Components.hpp"
@@ -38,19 +39,6 @@ Vec3 polygonCentroid(const NavTile& tile, NavPolyId polyId) {
     }
     const float inv = 1.0f / static_cast<float>(p.indexCount);
     return Vec3{sum.x * inv, sum.y * inv, sum.z * inv};
-}
-
-Vec3 edgeMidpoint(const NavTile& tile, NavPolyId polyId,
-                  std::uint32_t edgeIdx) {
-    const NavPoly& p = tile.polygons[polyId];
-    const std::size_t baseIdx = std::size_t{p.indexStart};
-    const std::uint32_t va =
-        tile.vertexIndices[baseIdx + edgeIdx];
-    const std::uint32_t vb =
-        tile.vertexIndices[baseIdx + ((edgeIdx + 1u) % p.indexCount)];
-    const Vec3& a = tile.vertices[va];
-    const Vec3& b = tile.vertices[vb];
-    return Vec3{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, (a.z + b.z) * 0.5f};
 }
 
 /// 2D point-in-polygon (XZ plane) — even-odd ray test casting +X.
@@ -141,10 +129,11 @@ struct PathQueryService::Impl {
     std::unordered_map<PathId, PathResult> results;
     PathId nextId{1};
 
-    // Reusable A* scratch — single-threaded by API contract in v1.0.
+    // Reusable A* + funnel scratch — single-threaded by API contract in v1.0.
     detail::AStarState state;
     detail::NodeIndex nodeIndex;
     std::vector<Vec3> centroids;
+    std::vector<detail::FunnelPortal> portalBuf;
 
     explicit Impl(const NavMeshRegistry& r) : reg(r) {}
 };
@@ -301,36 +290,54 @@ PathId PathQueryService::request(const PathRequest& req) {
         if (!std::isfinite(result.cost)) result.cost = 0.0f;
 
         result.corridor.reserve(corridorNodes.size());
-        result.waypoints.reserve(corridorNodes.size() + 1u);
-        result.waypoints.push_back(req.start);
-
         for (std::size_t i = 0; i < corridorNodes.size(); ++i) {
             std::uint32_t curTileIdx;
             NavPolyId curPolyId;
             impl_->nodeIndex.decode(corridorNodes[i], curTileIdx, curPolyId);
             result.corridor.push_back(PathResult::CorridorEntry{
                 mesh->tiles()[curTileIdx].id, curPolyId});
-            if (i + 1u < corridorNodes.size()) {
-                std::uint32_t nextTileIdx;
-                NavPolyId nextPolyId;
-                impl_->nodeIndex.decode(
-                    corridorNodes[i + 1u], nextTileIdx, nextPolyId);
-                const std::uint32_t edge = findEdgeTo(
-                    *mesh, curTileIdx, curPolyId, nextTileIdx, nextPolyId);
-                if (edge != kInvalidPolyIndex) {
-                    result.waypoints.push_back(edgeMidpoint(
-                        mesh->tiles()[curTileIdx], curPolyId, edge));
-                }
-            }
         }
 
-        if (reachedGoal) {
-            result.waypoints.push_back(req.goal);
-        } else {
-            // Partial — anchor on the end polygon's centroid so the
-            // consumer has a stable hand-off point.
-            result.waypoints.push_back(impl_->centroids[endNode]);
+        // Build the portal sequence for funnel smoothing. Partial paths
+        // anchor the final portal on the closest-reachable centroid so
+        // the consumer still gets a stable hand-off point.
+        const Vec3 endPoint = reachedGoal
+            ? req.goal
+            : impl_->centroids[endNode];
+
+        impl_->portalBuf.clear();
+        impl_->portalBuf.reserve(corridorNodes.size() + 1u);
+        impl_->portalBuf.push_back(
+            detail::FunnelPortal{req.start, req.start});
+
+        for (std::size_t i = 0; i + 1u < corridorNodes.size(); ++i) {
+            std::uint32_t curTileIdx;
+            NavPolyId curPolyId;
+            impl_->nodeIndex.decode(corridorNodes[i], curTileIdx, curPolyId);
+            std::uint32_t nextTileIdx;
+            NavPolyId nextPolyId;
+            impl_->nodeIndex.decode(
+                corridorNodes[i + 1u], nextTileIdx, nextPolyId);
+            const std::uint32_t edge = findEdgeTo(
+                *mesh, curTileIdx, curPolyId, nextTileIdx, nextPolyId);
+            if (edge == kInvalidPolyIndex) continue;
+            const NavTile& tile = mesh->tiles()[curTileIdx];
+            const NavPoly& p = tile.polygons[curPolyId];
+            const std::size_t baseIdx = std::size_t{p.indexStart};
+            const std::uint32_t vaIdx =
+                tile.vertexIndices[baseIdx + edge];
+            const std::uint32_t vbIdx = tile.vertexIndices[
+                baseIdx + ((edge + 1u) % p.indexCount)];
+            // LEFT = v[(e+1)%n], RIGHT = v[e] — matches the funnel's
+            // sign convention (see detail/funnel.hpp).
+            impl_->portalBuf.push_back(detail::FunnelPortal{
+                tile.vertices[vbIdx], tile.vertices[vaIdx]});
         }
+
+        impl_->portalBuf.push_back(
+            detail::FunnelPortal{endPoint, endPoint});
+
+        detail::stringPullFunnel(impl_->portalBuf, result.waypoints);
     }
 
     PathId id;

@@ -4,11 +4,14 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N3 shipped (2026-06-09)** — synchronous A* over polygon
-adjacency, area-mask filter, partial-path fallback; green on `build/`
-and `build-werror/` (9/9 navmesh tests). N4 → N9 remain 📋 planned.
-Sequencing follows the §10 "implementation order" of the design notes,
-regrouped into shippable units that each carry their own tests.
+Status: **N4 shipped (2026-06-10)** — Simple Stupid Funnel smoothing
+on top of the N3 corridor. `PathResult::waypoints` is now the smoothed
+walking path (`[start, ..., end]`) rather than the polygon-edge
+midpoint zig-zag; the polygon corridor still rides in `corridor`.
+Green on `build/` and `build-werror/` (12/12 navmesh tests). N5 → N9
+remain 📋 planned. Sequencing follows the §10 "implementation order"
+of the design notes, regrouped into shippable units that each carry
+their own tests.
 
 ## Conventions
 
@@ -164,23 +167,62 @@ solve is synchronous in v1.0).
 
 **Out of scope**: funnel smoothing (N4), async queries (N5).
 
-## Batch N4 — Funnel smoothing
+## Batch N4 — Funnel smoothing — ✅ shipped 2026-06-10
 
 **Goal**: convert the polygon-corridor output of A* into a
 waypoint list via the Simple Stupid Funnel algorithm. Drops the
 zig-zag that polygon-center routes produce.
 
-**Test gate**:
+**Test gate** (delivered):
 
-- `test_navmesh_funnel_straight` — straight-line goal across 5
-  aligned polygons produces 2 waypoints (start + goal), not 5.
-- `test_navmesh_funnel_corner` — L-shaped corridor produces 3
-  waypoints (start + corner + goal).
-- `test_navmesh_funnel_pinch` — narrow portal forces a waypoint at
-  the portal-edge midpoint.
+- `test_navmesh_funnel_straight` — straight-line corridor across
+  the 16-poly flat square (4 polys, cost 3.0) smooths to `[start,
+  goal]`.
+- `test_navmesh_funnel_corner` — hand-built L-shaped portal
+  sequence drives `stringPullFunnel` directly. Asymmetric goal
+  forces a pinch at the inner corner; expected output
+  `[start, (1, 0, 1), goal]`. Also covers a straight 2-portal
+  subcase. Direct unit test bypasses A* so the assertion is
+  independent of tiebreaker.
+- `test_navmesh_funnel_pinch` — area-mask strip with water
+  masked: corridor `[0, 3, 4, 5, 2]` (cost 4.0) smooths to
+  `[start, (1, 0, 1), (2, 0, 1), goal]` — two corner pinches
+  bracketing the bypass.
 
-**Files**: `detail/funnel.hpp`, extension to
-`src/PathQueryService.cpp`.
+**Shipped**:
+
+- `detail/funnel.hpp` — header-only Simple Stupid Funnel
+  implementation. `FunnelPortal {left, right}` POD,
+  `cross2D` / `vequalXZ` helpers, `stringPullFunnel(portals, out)`
+  entry point. Uses standard CCW-positive cross product
+  (`(b.x-a.x)*(c.z-a.z) - (c.x-a.x)*(b.z-a.z)`); portal
+  convention `LEFT = v[(e+1) % n], RIGHT = v[e]` matches our
+  CCW-from-above polygons. Always emits `[start, end]` (the
+  `size() == 1` guard handles same-poly degeneracy) and dedups a
+  pinch-at-goal corner so the final waypoint is never duplicated.
+- `src/PathQueryService.cpp` — `request()` now builds the portal
+  sequence from the A* corridor (start/end portals book-ending
+  inter-poly portals, each derived via `findEdgeTo` + the FROM
+  poly's vertex order) and runs `stringPullFunnel` into
+  `result.waypoints`. The polygon `corridor` shape is unchanged
+  from N3.
+- `Impl::portalBuf` — reused scratch vector, preserves capacity
+  across solves.
+
+**Note on the v1.0 contract**: `waypoints` is now the smoothed
+walking path. Pre-N4 callers that relied on the edge-midpoint
+spacing of v0.x must compute their own midpoints from `corridor`.
+The existing N3 tests were updated in the same batch: the
+L-shape "simple" test now asserts the loose contract
+`2 ≤ waypoints.size() ≤ corridor.size() + 1` since funnel output
+depends on which equal-cost corridor A* picked.
+
+**Files**: `include/threadmaxx_navmesh/detail/funnel.hpp` (new),
+`src/threadmaxx_navmesh/PathQueryService.cpp` (modified),
+`tests/navmesh/test_navmesh_funnel_*.cpp` (3 new), three N3
+tests updated for the smoothed-waypoints contract,
+`include/threadmaxx_navmesh/threadmaxx_navmesh.hpp` unchanged
+(the umbrella already pulled `query.hpp`).
 
 **Out of scope**: agent-radius-aware path corridor shrinking (N7).
 

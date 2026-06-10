@@ -15,6 +15,9 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_astar_unreachable
     test_navmesh_astar_partial
     test_navmesh_astar_area_mask
+    test_navmesh_funnel_straight
+    test_navmesh_funnel_corner
+    test_navmesh_funnel_pinch
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})

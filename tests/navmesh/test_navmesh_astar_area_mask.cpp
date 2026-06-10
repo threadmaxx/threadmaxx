@@ -78,8 +78,22 @@ int main() {
         CHECK_EQ(c.tileId, NavTileId{0});
     }
 
-    // The dry corridor has 5 polys → 6 waypoints (start + 4 midpoints + goal).
-    CHECK_EQ(dry->waypoints.size(), std::size_t{6});
+    // N4 funnel smoothing collapses the detour around the water poly to
+    // `[start, (1,0,1), (2,0,1), goal]` — two pinch corners at the
+    // inner edges of the bypass.
+    CHECK_EQ(dry->waypoints.size(), std::size_t{4});
+    CHECK(nearly(dry->waypoints[1].x, 1.0f));
+    CHECK(nearly(dry->waypoints[1].z, 1.0f));
+    CHECK(nearly(dry->waypoints[2].x, 2.0f));
+    CHECK(nearly(dry->waypoints[2].z, 1.0f));
+
+    // The unobstructed shortcut path (water allowed) smooths to a
+    // straight shot — start sits in poly 0, goal in poly 2 with the
+    // water poly 1 between them, but the full strip is convex so the
+    // funnel collapses to `[start, goal]`.
+    CHECK_EQ(open->waypoints.size(), std::size_t{2});
+    CHECK(nearly(open->waypoints.front().x, req.start.x));
+    CHECK(nearly(open->waypoints.back().x, req.goal.x));
 
     EXIT_WITH_RESULT();
 }

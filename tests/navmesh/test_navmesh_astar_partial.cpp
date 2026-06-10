@@ -59,11 +59,12 @@ int main() {
     CHECK_EQ(res->corridor.size(), std::size_t{2});
     CHECK(nearly(res->cost, 1.0f));
 
-    // Waypoints: start + 1 midpoint + end-anchor (centroid of T0:1).
-    CHECK_EQ(res->waypoints.size(), std::size_t{3});
+    // After N4 funnel smoothing the two-poly corridor collapses to a
+    // straight shot: `[start, end-anchor]`. The end-anchor is still the
+    // partial endpoint — T0:1 centroid (1.5, 0, 0.5).
+    CHECK_EQ(res->waypoints.size(), std::size_t{2});
     CHECK(nearly(res->waypoints.front().x, req.start.x));
     CHECK(nearly(res->waypoints.front().z, req.start.z));
-    // Final waypoint is the partial endpoint — T0:1 centroid (1.5, 0, 0.5).
     CHECK(nearly(res->waypoints.back().x, 1.5f));
     CHECK(nearly(res->waypoints.back().z, 0.5f));
 
