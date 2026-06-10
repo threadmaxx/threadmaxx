@@ -14,4 +14,5 @@
 #include "threadmaxx_navmesh/crowd.hpp"
 #include "threadmaxx_navmesh/mesh.hpp"
 #include "threadmaxx_navmesh/query.hpp"
+#include "threadmaxx_navmesh/steering.hpp"
 #include "threadmaxx_navmesh/types.hpp"

@@ -23,6 +23,9 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_query_clear
     test_navmesh_batch_correctness
     test_navmesh_batch_determinism
+    test_navmesh_follow_straight
+    test_navmesh_follow_corner
+    test_navmesh_follow_finished
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})

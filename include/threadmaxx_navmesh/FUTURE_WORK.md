@@ -4,14 +4,12 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N6 shipped (2026-06-10)** — `BatchPathSolver::solve` fans a
-list of `PathRequest` entries out over a persistent worker pool and
-returns results 1:1 in input order. Built on top of the shared
-`detail/solver.hpp` solver internals (extracted from
-`PathQueryService` so both surfaces share a single tested A* + funnel
-code path). Bench `navmesh_batch_bench` reports 251k qps at 4 workers
-on a 256-poly grid (vs the v1.0 close-out gate of ≥10k). Green on
-`build/` (232/232) and `build-werror/` (17/17 navmesh). N7 → N9 remain
+Status: **N7 shipped (2026-06-10)** — `followPath(in) -> out` turns a
+funnel-smoothed waypoint list plus the agent's `(position, velocity)`
+into a `desiredVelocity` under an acceleration cap, with arrival
+detection against a configurable `arrivalRadius`. Header-only
+`steering.hpp`; pure function, safe to call from any thread. Green on
+`build/` (235/235) and `build-werror/` (20/20 navmesh). N8 → N9 remain
 📋 planned. Sequencing follows the §10 "implementation order" of the
 design notes, regrouped into shippable units that each carry their
 own tests.
@@ -358,28 +356,63 @@ header), `bench/navmesh_batch_bench.cpp` (new),
 
 **Out of scope**: agent steering (N7).
 
-## Batch N7 — Steering + corridor following
+## Batch N7 — Steering + corridor following — ✅ shipped 2026-06-10
 
 **Goal**: `followPath` turns a waypoint list + agent state into a
 `desiredVelocity`. Used by game-side movement to actually
 navigate the path.
 
-**Test gate**:
+**Test gate** (delivered):
 
-- `test_navmesh_follow_straight` — agent following a straight
-  corridor produces velocity along the corridor direction at
-  `maxSpeed`.
-- `test_navmesh_follow_corner` — corridor with a 90° turn produces
-  velocity that smoothly transitions; the test asserts the
-  velocity-direction first derivative magnitude stays under a
-  configured limit.
-- `test_navmesh_follow_finished` — agent within `arrivalRadius` of
-  the final waypoint reports `finished == true`.
+- `test_navmesh_follow_straight` — agent on a single +x segment
+  with zero initial velocity. The first call lifts speed by exactly
+  `maxAcceleration*dt` along +x; iterated 100 ticks at `maxSpeed=4`,
+  `maxAccel=20`, `dt=1/60` the speed saturates at `maxSpeed` and
+  the direction stays `(1, 0, 0)`. Also pins the acceleration cap:
+  `|Δv| ≤ maxAcceleration*dt` on every step.
+- `test_navmesh_follow_corner` — L-shaped corridor (10m +x, then
+  10m +z). Sim across the corner up to 1200 ticks; at every step
+  the angle between consecutive `desiredVelocity` vectors stays
+  within `1.5 × asin(maxAccel*dt / maxSpeed)` (the steady-state
+  angular bound, with safety margin to absorb the speed dip at the
+  corner). Also asserts the segment cursor advances past the
+  corner and the agent eventually reaches `finished`.
+- `test_navmesh_follow_finished` — four cases: on-the-goal flips
+  `finished = true` with zero output velocity; XZ distance under
+  `arrivalRadius` (with non-trivial y offset) reports finished
+  too; outside the radius reports finished false with a non-zero
+  steering velocity; a degenerate single-waypoint corridor reports
+  finished unconditionally.
 
-**Files**: `steering.hpp`. Header-only.
+**Shipped**:
+
+- `include/threadmaxx_navmesh/steering.hpp` — header-only N7
+  surface. `FollowPathInput { corridor (span<const Vec3>),
+  currentPosition, currentVelocity, maxSpeed, maxAcceleration,
+  arrivalRadius, dt, segmentIndex }`; `FollowPathOutput
+  { desiredVelocity, nextTarget, segmentIndex, finished }`;
+  `followPath(in) -> out` pure function. The model is
+  acceleration-limited: desired velocity = unit-direction-to-target
+  * maxSpeed, then the per-tick velocity delta is clamped to
+  `maxAcceleration * dt`. At steady state this caps the angular
+  rate at `maxAcceleration / maxSpeed`. The segment cursor is
+  caller-persisted; the function walks it forward whenever the
+  agent's projection onto the current segment passes `t == 1`.
+  Steering is XZ-planar — y is ignored on input, forced to 0 on
+  output. Arrival is a straight XZ-distance check against
+  `arrivalRadius`; passing flips `finished` and zeros the output
+  velocity. The function takes no locks, allocates nothing, and
+  is safe to call concurrently from any thread.
+- Umbrella header now re-exports `steering.hpp`.
+
+**Files**: `include/threadmaxx_navmesh/steering.hpp` (new),
+`include/threadmaxx_navmesh/threadmaxx_navmesh.hpp` (modified),
+`tests/navmesh/test_navmesh_follow_straight.cpp`,
+`test_navmesh_follow_corner.cpp`, `test_navmesh_follow_finished.cpp`
+(new), `tests/navmesh/CMakeLists.txt` (modified).
 
 **Out of scope**: local avoidance / RVO (v1.x), crowd density
-fields (v1.x).
+fields (v1.x), agent-radius-aware corridor shrink (v1.x).
 
 ## Batch N8 — Dynamic obstacle overlay
 
