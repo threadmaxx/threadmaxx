@@ -16,6 +16,7 @@
 
 #include "threadmaxx_audio/clip.hpp"
 #include "threadmaxx_audio/detail/voice_allocator.hpp"
+#include "threadmaxx_audio/stream.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -44,6 +45,12 @@ struct BusEntry {
     BusDesc       desc{};
 };
 
+struct StreamEntry {
+    bool                          alive      = false;
+    std::uint32_t                 generation = 0;
+    std::unique_ptr<IAudioStream> stream;
+};
+
 SoundId encodeSoundId(std::uint32_t slot, std::uint32_t generation) noexcept {
     return SoundId{ (static_cast<std::uint64_t>(generation) << 32) | static_cast<std::uint64_t>(slot) };
 }
@@ -64,6 +71,16 @@ bool decodeBusId(BusId id, std::uint32_t cap, std::uint32_t& slot, std::uint32_t
     return slot < cap;
 }
 
+StreamId encodeStreamId(std::uint32_t slot, std::uint32_t generation) noexcept {
+    return StreamId{ (static_cast<std::uint64_t>(generation) << 32) | static_cast<std::uint64_t>(slot) };
+}
+bool decodeStreamId(StreamId id, std::uint32_t cap, std::uint32_t& slot, std::uint32_t& gen) noexcept {
+    if (id.value == 0) return false;
+    slot = static_cast<std::uint32_t>(id.value & 0xFFFFFFFFu);
+    gen  = static_cast<std::uint32_t>(id.value >> 32);
+    return slot < cap;
+}
+
 } // namespace
 
 struct AudioMixer::Impl {
@@ -75,15 +92,18 @@ struct AudioMixer::Impl {
 
     std::vector<ClipEntry>        clips;
     std::vector<BusEntry>         buses;
+    std::vector<StreamEntry>      streams;
 
     detail::VoiceAllocator        voices;
     std::uint64_t                 tickCounter        = 0;
     std::uint32_t                 droppedVoicesTotal = 0;
+    std::uint32_t                 underrunsTotal     = 0;
 
     // bus 0 (master) accumulator is masterBuffer. Bus i (i>=1) lives at
     // busBuffer[(i - 1) * samplesPerBus .. ].
     std::vector<float>            masterBuffer;
     std::vector<float>            busBuffer;
+    std::vector<float>            streamScratch;  // AU3 — per-call stream read target
 
     [[nodiscard]] std::size_t samplesPerBus() const noexcept {
         return bufferFrames * static_cast<std::size_t>(format.channels);
@@ -118,13 +138,21 @@ bool AudioMixer::initialize(const AudioFormat& format, std::size_t bufferFrames)
     impl_->buses[0].generation = 1;
     impl_->buses[0].desc       = BusDesc{};
 
+    impl_->streams.clear();
+    impl_->streams.resize(impl_->config.maxStreams);
+
     impl_->voices.initialize(impl_->config.maxVoices);
     impl_->tickCounter        = 0;
     impl_->droppedVoicesTotal = 0;
+    impl_->underrunsTotal     = 0;
 
     const std::size_t spb = impl_->samplesPerBus();
     impl_->masterBuffer.assign(spb, 0.0f);
     impl_->busBuffer.assign(spb * (impl_->config.maxBuses > 0 ? impl_->config.maxBuses - 1u : 0u), 0.0f);
+    // Stream scratch sized for the largest plausible per-stream channel count
+    // (8 — matches 7.1 surround). Bigger streams down-mix during channel
+    // adaptation; smaller streams write fewer samples.
+    impl_->streamScratch.assign(bufferFrames * 8u, 0.0f);
 
     impl_->initialized = true;
     return true;
@@ -135,8 +163,10 @@ void AudioMixer::shutdown() {
     impl_->voices.shutdown();
     impl_->clips.clear();
     impl_->buses.clear();
+    impl_->streams.clear();
     impl_->masterBuffer.clear();
     impl_->busBuffer.clear();
+    impl_->streamScratch.clear();
     impl_->device->shutdown();
     impl_->initialized = false;
     impl_->bufferFrames = 0;
@@ -180,6 +210,38 @@ bool AudioMixer::isValidClip(SoundId id) const noexcept {
     std::uint32_t slot = 0, gen = 0;
     if (!decodeSoundId(id, static_cast<std::uint32_t>(impl_->clips.size()), slot, gen)) return false;
     const auto& e = impl_->clips[slot];
+    return e.alive && e.generation == gen;
+}
+
+StreamId AudioMixer::addStream(std::unique_ptr<IAudioStream> stream) {
+    if (!impl_ || !stream) return StreamId{0};
+    for (std::uint32_t i = 0; i < impl_->streams.size(); ++i) {
+        if (!impl_->streams[i].alive) {
+            ++impl_->streams[i].generation;
+            impl_->streams[i].alive  = true;
+            impl_->streams[i].stream = std::move(stream);
+            return encodeStreamId(i, impl_->streams[i].generation);
+        }
+    }
+    return StreamId{0};
+}
+
+void AudioMixer::removeStream(StreamId id) {
+    if (!impl_) return;
+    std::uint32_t slot = 0, gen = 0;
+    if (!decodeStreamId(id, static_cast<std::uint32_t>(impl_->streams.size()), slot, gen)) return;
+    auto& e = impl_->streams[slot];
+    if (!e.alive || e.generation != gen) return;
+    e.alive = false;
+    ++e.generation;
+    e.stream.reset();
+}
+
+bool AudioMixer::isValidStream(StreamId id) const noexcept {
+    if (!impl_) return false;
+    std::uint32_t slot = 0, gen = 0;
+    if (!decodeStreamId(id, static_cast<std::uint32_t>(impl_->streams.size()), slot, gen)) return false;
+    const auto& e = impl_->streams[slot];
     return e.alive && e.generation == gen;
 }
 
@@ -251,7 +313,13 @@ bool AudioMixer::isValidBus(BusId id) const noexcept {
 
 VoiceId AudioMixer::play(const VoiceDesc& desc) {
     if (!impl_ || !impl_->initialized) return VoiceId{0};
-    if (!isValidClip(desc.sound)) return VoiceId{0};
+
+    const bool wantStream = desc.stream.value != 0;
+    if (wantStream) {
+        if (!isValidStream(desc.stream)) return VoiceId{0};
+    } else {
+        if (!isValidClip(desc.sound)) return VoiceId{0};
+    }
 
     bool stolen = false;
     const std::uint32_t slotIdx = impl_->voices.allocate(impl_->tickCounter, stolen);
@@ -259,6 +327,8 @@ VoiceId AudioMixer::play(const VoiceDesc& desc) {
 
     auto& s          = impl_->voices.slot(slotIdx);
     s.sound          = desc.sound;
+    s.stream         = desc.stream;
+    s.isStream       = wantStream;
     // Resolve bus: explicit BusId{0} or invalid bus falls back to master.
     s.bus            = (desc.bus.value == 0 || !isValidBus(desc.bus)) ? masterBus() : desc.bus;
     s.gainDb         = desc.gainDb;
@@ -284,11 +354,43 @@ bool AudioMixer::isPlaying(VoiceId voice) const noexcept {
 
 namespace {
 
+// Mix `frames` of interleaved float source at `src` (with `srcChans` channels)
+// into `dst` (with `busChans` channels), applying `linearGain`. Handles mono
+// → stereo dup and matching/mismatched channel counts via the same channel
+// adaptation policy as the clip path.
+inline void mixFramesIntoBus(const float* src, std::uint8_t srcChans,
+                             float* dst, std::uint8_t busChans,
+                             std::size_t frames, float linearGain) noexcept {
+    if (srcChans == 0 || busChans == 0 || src == nullptr || dst == nullptr) return;
+    if (srcChans == busChans) {
+        for (std::size_t i = 0; i < frames; ++i) {
+            const float* s = src + i * srcChans;
+            float* d       = dst + i * busChans;
+            for (std::uint8_t c = 0; c < busChans; ++c) d[c] += s[c] * linearGain;
+        }
+    } else if (srcChans == 1 && busChans >= 2) {
+        for (std::size_t i = 0; i < frames; ++i) {
+            const float s = src[i] * linearGain;
+            float* d      = dst + i * busChans;
+            for (std::uint8_t c = 0; c < busChans; ++c) d[c] += s;
+        }
+    } else {
+        for (std::size_t i = 0; i < frames; ++i) {
+            const float* s = src + i * srcChans;
+            float mono = 0.0f;
+            for (std::uint8_t c = 0; c < srcChans; ++c) mono += s[c];
+            mono = (mono / static_cast<float>(srcChans)) * linearGain;
+            float* d = dst + i * busChans;
+            for (std::uint8_t c = 0; c < busChans; ++c) d[c] += mono;
+        }
+    }
+}
+
 // Mix `bufferFrames` of `clip` starting at `v.playheadFrames` into `dst`.
 // Returns true when the voice should stop (clip exhausted, non-looping).
-bool mixVoiceInto(detail::VoiceSlot& v, const Clip& clip,
-                  float* dst, std::size_t bufferFrames,
-                  std::uint8_t busChans) noexcept {
+bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
+                      float* dst, std::size_t bufferFrames,
+                      std::uint8_t busChans) noexcept {
     const std::size_t clipFrames = clip.frames();
     const std::uint8_t clipChans = clip.format.channels;
     if (clipFrames == 0 || clipChans == 0 || busChans == 0) return true;
@@ -308,24 +410,75 @@ bool mixVoiceInto(detail::VoiceSlot& v, const Clip& clip,
         }
         const float* src = clip.samples.data() + f * clipChans;
         float* d         = dst + i * busChans;
-
-        if (clipChans == busChans) {
-            for (std::uint8_t c = 0; c < busChans; ++c) d[c] += src[c] * linearGain;
-        } else if (clipChans == 1 && busChans >= 2) {
-            const float s = src[0] * linearGain;
-            for (std::uint8_t c = 0; c < busChans; ++c) d[c] += s;
-        } else {
-            // Down-mix clip to mono, then fan out.
-            float mono = 0.0f;
-            for (std::uint8_t c = 0; c < clipChans; ++c) mono += src[c];
-            mono = (mono / static_cast<float>(clipChans)) * linearGain;
-            for (std::uint8_t c = 0; c < busChans; ++c) d[c] += mono;
-        }
+        mixFramesIntoBus(src, clipChans, d, busChans, 1u, linearGain);
     }
 
     v.playheadFrames += bufferFrames;
     if (!v.looping && v.playheadFrames >= clipFrames) reachedEnd = true;
     return reachedEnd;
+}
+
+// Mix `bufferFrames` of stream output into `dst`. `scratch` is a per-mixer
+// pre-allocated buffer of at least `bufferFrames * srcChans` floats. Returns
+// `stop = true` when the voice should stop. `underran = true` when the
+// stream returned short while NOT finished (true producer underrun). EOF on
+// looping voices triggers a transparent rewind and a follow-up read for the
+// missing tail; only an actual underrun (or zero-progress rewind) leaves
+// silence in the buffer.
+struct StreamMixResult {
+    bool stop      = false;
+    bool underran  = false;
+};
+StreamMixResult mixStreamVoiceInto(detail::VoiceSlot& v, IAudioStream& stream,
+                                   float* dst, std::size_t bufferFrames,
+                                   std::uint8_t busChans,
+                                   float* scratch, std::size_t scratchCapFrames) noexcept {
+    StreamMixResult result{};
+    const AudioFormat sfmt = stream.format();
+    const std::uint8_t srcChans = sfmt.channels;
+    if (srcChans == 0 || scratchCapFrames < bufferFrames) {
+        result.stop = true;
+        return result;
+    }
+    const float linearGain = dbToLinear(v.gainDb);
+
+    // Clear scratch — short reads / underruns leave the tail at zero,
+    // which is silence in the mix.
+    const std::size_t scratchSamples = bufferFrames * srcChans;
+    for (std::size_t i = 0; i < scratchSamples; ++i) scratch[i] = 0.0f;
+
+    AudioSpan initialSpan{ scratch, bufferFrames, sfmt };
+    std::size_t totalRead = stream.read(initialSpan);
+    if (totalRead > bufferFrames) totalRead = bufferFrames; // defensive
+
+    // EOF + looping: rewind and read the tail. Iterate to handle a stream
+    // shorter than one mix call (every read after rewind returns < tail).
+    while (totalRead < bufferFrames && stream.finished() && v.looping) {
+        stream.rewind();
+        AudioSpan tail{
+            scratch + totalRead * srcChans,
+            bufferFrames - totalRead,
+            sfmt
+        };
+        const std::size_t more = stream.read(tail);
+        if (more == 0) break; // empty stream — avoid infinite loop
+        totalRead += more;
+        if (totalRead > bufferFrames) totalRead = bufferFrames;
+    }
+
+    if (totalRead < bufferFrames) {
+        if (!stream.finished()) {
+            // Producer underrun: tail stays silent, bump counter.
+            result.underran = true;
+        } else if (!v.looping) {
+            // Non-looping stream ran out — stop after mixing what we got.
+            result.stop = true;
+        }
+    }
+
+    mixFramesIntoBus(scratch, srcChans, dst, busChans, totalRead, linearGain);
+    v.playheadFrames += totalRead;
+    return result;
 }
 
 } // namespace
@@ -344,6 +497,36 @@ void AudioMixer::mix() {
         auto& v = impl_->voices.slot(i);
         if (!v.alive) continue;
 
+        // Resolve bus first — same for clip and stream voices.
+        std::uint32_t busSlot = 0, busGen = 0;
+        if (!decodeBusId(v.bus, static_cast<std::uint32_t>(impl_->buses.size()), busSlot, busGen)
+            || !impl_->buses[busSlot].alive
+            || impl_->buses[busSlot].generation != busGen) {
+            busSlot = 0; // fall back to master
+        }
+        float* dst = (busSlot == 0)
+                     ? impl_->masterBuffer.data()
+                     : impl_->busBuffer.data() + (static_cast<std::size_t>(busSlot) - 1u) * spb;
+
+        if (v.isStream) {
+            std::uint32_t streamSlot = 0, streamGen = 0;
+            if (!decodeStreamId(v.stream, static_cast<std::uint32_t>(impl_->streams.size()), streamSlot, streamGen)
+                || !impl_->streams[streamSlot].alive
+                || impl_->streams[streamSlot].generation != streamGen
+                || !impl_->streams[streamSlot].stream) {
+                impl_->voices.free(i);
+                continue;
+            }
+            IAudioStream& stream = *impl_->streams[streamSlot].stream;
+            const StreamMixResult r = mixStreamVoiceInto(
+                v, stream, dst, impl_->bufferFrames, channels,
+                impl_->streamScratch.data(),
+                impl_->streamScratch.size() / 8u);
+            if (r.underran) ++impl_->underrunsTotal;
+            if (r.stop) impl_->voices.free(i);
+            continue;
+        }
+
         std::uint32_t clipSlot = 0, clipGen = 0;
         if (!decodeSoundId(v.sound, static_cast<std::uint32_t>(impl_->clips.size()), clipSlot, clipGen)
             || !impl_->clips[clipSlot].alive
@@ -353,18 +536,7 @@ void AudioMixer::mix() {
         }
         const Clip& clip = impl_->clips[clipSlot].clip;
 
-        std::uint32_t busSlot = 0, busGen = 0;
-        if (!decodeBusId(v.bus, static_cast<std::uint32_t>(impl_->buses.size()), busSlot, busGen)
-            || !impl_->buses[busSlot].alive
-            || impl_->buses[busSlot].generation != busGen) {
-            busSlot = 0; // fall back to master
-        }
-
-        float* dst = (busSlot == 0)
-                     ? impl_->masterBuffer.data()
-                     : impl_->busBuffer.data() + (static_cast<std::size_t>(busSlot) - 1u) * spb;
-
-        const bool stop = mixVoiceInto(v, clip, dst, impl_->bufferFrames, channels);
+        const bool stop = mixClipVoiceInto(v, clip, dst, impl_->bufferFrames, channels);
         if (stop) impl_->voices.free(i);
     }
 
@@ -408,7 +580,7 @@ MixerStats AudioMixer::stats() const noexcept {
     out.activeVoices    = impl_->voices.activeCount();
     out.allocatedVoices = impl_->voices.capacity();
     out.droppedVoices   = impl_->droppedVoicesTotal;
-    out.underruns       = 0;
+    out.underruns       = impl_->underrunsTotal;
     return out;
 }
 

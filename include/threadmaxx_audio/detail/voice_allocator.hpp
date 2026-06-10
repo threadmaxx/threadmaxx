@@ -25,9 +25,11 @@ struct VoiceSlot {
     std::uint64_t playheadFrames = 0;
 
     SoundId       sound{};
+    StreamId      stream{};      ///< AU3 — non-zero means this is a stream voice.
     BusId         bus{};
     float         gainDb         = 0.0f;
     bool          looping        = false;
+    bool          isStream       = false;
 };
 
 class VoiceAllocator {

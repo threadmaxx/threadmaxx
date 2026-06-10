@@ -26,13 +26,15 @@ struct BusDesc {
     bool  solo   = false;
 };
 
-/// Settings handed to `AudioMixer::play()`. AU2 fields only — 3D position
-/// and sends arrive in later batches.
+/// Settings handed to `AudioMixer::play()`. Set exactly one of `sound` /
+/// `stream` to identify the source; the other field must be a default-zero
+/// handle. 3D position and sends arrive in later batches.
 struct VoiceDesc {
-    SoundId sound{};
-    BusId   bus{};               ///< Defaults to the master bus.
-    float   gainDb  = 0.0f;
-    bool    looping = false;
+    SoundId  sound{};
+    StreamId stream{};            ///< AU3 — if non-zero, takes precedence over `sound`.
+    BusId    bus{};               ///< Defaults to the master bus.
+    float    gainDb  = 0.0f;
+    bool     looping = false;
 };
 
 } // namespace threadmaxx::audio

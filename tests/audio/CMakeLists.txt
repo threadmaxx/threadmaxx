@@ -13,6 +13,10 @@ set(THREADMAXX_AUDIO_TESTS
     test_audio_mixer_solo
     test_audio_mixer_voice_stealing
     test_audio_mixer_no_allocations
+    test_audio_stream_basic
+    test_audio_stream_rewind
+    test_audio_stream_underrun
+    test_audio_stream_loop
 )
 
 foreach(test ${THREADMAXX_AUDIO_TESTS})

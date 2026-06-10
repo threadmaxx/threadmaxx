@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1-AU2 shipped (2026-06-10)**. AU3-AU8 are 📋 planned.
+Status: **AU1-AU3 shipped (2026-06-10)**. AU4-AU8 are 📋 planned.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -167,33 +167,58 @@ stealing policy.
 
 **Out of scope**: streaming (AU3), 3D (AU4).
 
-## Batch AU3 — Streaming audio
+## Batch AU3 — Streaming audio ✅ landed 2026-06-10
 
-**Goal**: `IAudioStream` interface and the ring-buffer pump that
-feeds streamed voices. Test with a synthetic noise stream that
-yields known bytes.
+**Goal**: `IAudioStream` interface and the mixer's streaming voice
+path, fed by synthetic test streams that yield known bytes.
 
-**Test gate**:
+**Test gate** (all green on `build/` + `build-werror/`):
 
-- `test_audio_stream_basic` — register a noise stream, play it,
-  mix 10 seconds at 48kHz; sample counts match.
-- `test_audio_stream_rewind` — `rewind()` resets read cursor;
-  `finished()` is false after rewind.
-- `test_audio_stream_underrun` — synthetic stream that returns
-  fewer frames than requested triggers `MixerStats::underruns++`
-  and the mixer emits silence for the missing frames.
-- `test_audio_stream_loop` — looping stream wraps cleanly at
-  end-of-stream without dropping samples.
+- ✅ `test_audio_stream_basic` — register an infinite noise stream,
+  play it, mix 10 seconds at 48kHz; stream cursor matches
+  `calls × bufferFrames`; peak above silence; no underruns.
+- ✅ `test_audio_stream_rewind` — finite 1024-frame stream consumed
+  by two mix calls, voice auto-stops on the next; `rewind()`
+  resets cursor and clears `finished()`; re-play after rewind
+  works cleanly.
+- ✅ `test_audio_stream_underrun` — `StarvedStream` returns half
+  the requested frames per call; underrun counter bumps once per
+  short read; first half of captured buffer holds the producer's
+  payload, second half is silence; voice keeps playing.
+- ✅ `test_audio_stream_loop` — looping voice on a 384-frame stream
+  with 256-frame mixer: rewind happens transparently inside the
+  mix call, no zero-filled tail, no underruns counted.
 
-**Files**: `stream.hpp`, `detail/ring_buffer.hpp`, extension to
-`src/AudioMixer.cpp`.
+**Files landed**:
+- `include/threadmaxx_audio/stream.hpp` — `IAudioStream` interface
+  + `NoiseStream` + `StarvedStream` test producers
+- `VoiceDesc` / `VoiceSlot` gained `StreamId stream{}` +
+  `bool isStream` for stream-vs-clip dispatch
+- `AudioMixer` gained `addStream` / `removeStream` /
+  `isValidStream`; `AudioMixerConfig::maxStreams = 16`
+- `mix()` factored a shared `mixFramesIntoBus` helper and added
+  the stream voice path with transparent rewind on looping +
+  underrun-fill behavior
+- `MixerStats::underruns` is now wired
+- four `tests/audio/test_audio_stream_*.cpp`
 
-**Risks**: producer/consumer threading. Spec the stream as
-read-on-mixer-thread for v1.0; threaded prefetch is v1.x.
+**Resolved decisions**:
+- Streams are read-on-mixer-thread for v1.0 — threaded prefetch
+  is v1.x territory.
+- A stream may be shared across voices only with explicit
+  game-side ownership; the mixer doesn't guard against concurrent
+  reads on the same stream (one voice per stream is the
+  recommended pattern).
+- EOF + looping: the mixer rewinds inside the read path so the
+  output buffer is contiguous; producer underrun (short read
+  WITHOUT `finished()`) fills the tail with silence and increments
+  the counter.
+- Stream channel adaptation uses the same down-mix / mono-fanout
+  policy as clips.
 
 **Out of scope**: codec decoders (Ogg/FLAC/Opus). Game-side
 responsibility — this library exposes the stream interface and
-ships a synthetic noise stream for tests, not real decoders.
+ships synthetic test streams, not real decoders.
 
 ## Batch AU4 — 3D spatialization
 

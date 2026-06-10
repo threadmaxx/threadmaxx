@@ -19,6 +19,8 @@
 #include <memory>
 #include <span>
 
+namespace threadmaxx::audio { class IAudioStream; }
+
 namespace threadmaxx::audio {
 
 /// Runtime mixer counters. AU2 populates `activeVoices` / `allocatedVoices`
@@ -37,9 +39,10 @@ struct MixerStats {
 /// Construction-time mixer settings. Bus and voice capacity are fixed at
 /// `initialize()`; both feed into the pre-allocation of every hot-path buffer.
 struct AudioMixerConfig {
-    std::uint32_t maxVoices = kDefaultMaxVoices;
-    std::uint32_t maxBuses  = 16;
-    std::uint32_t maxClips  = 256;
+    std::uint32_t maxVoices  = kDefaultMaxVoices;
+    std::uint32_t maxBuses   = 16;
+    std::uint32_t maxClips   = 256;
+    std::uint32_t maxStreams = 16;
 };
 
 class AudioMixer {
@@ -75,6 +78,13 @@ public:
     [[nodiscard]] SoundId addClip(std::span<const float> samples, AudioFormat format);
     void removeClip(SoundId id);
     [[nodiscard]] bool isValidClip(SoundId id) const noexcept;
+
+    /// Register a streaming source. The mixer takes ownership; the stream's
+    /// `read()` runs on the mix thread. Returns `StreamId{0}` if the stream
+    /// table is full.
+    [[nodiscard]] StreamId addStream(std::unique_ptr<IAudioStream> stream);
+    void removeStream(StreamId id);
+    [[nodiscard]] bool isValidStream(StreamId id) const noexcept;
 
     /// The implicit master bus. Always alive, can have gain/mute but is
     /// never affected by solo logic (it's the output node).
