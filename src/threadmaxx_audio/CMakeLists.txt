@@ -1,13 +1,19 @@
 set(THREADMAXX_AUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/threadmaxx_audio.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/buffer.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/clip.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/device.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/loopback_device.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/mixer.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/types.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/voice.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/detail/voice_allocator.hpp
 )
 
 set(THREADMAXX_AUDIO_SOURCES
+    AudioMixer.cpp
+    VoiceAllocator.cpp
     backends/LoopbackDevice.cpp
 )
 

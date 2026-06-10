@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1 shipped (2026-06-10)**. AU2-AU8 are 📋 planned.
+Status: **AU1-AU2 shipped (2026-06-10)**. AU3-AU8 are 📋 planned.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -109,32 +109,61 @@ contract being exercisable.
 
 **Out of scope**: actual mixing (AU2), real device backends (AU8).
 
-## Batch AU2 — Bus graph + voice playback + mixing
+## Batch AU2 — Bus graph + voice playback + mixing ✅ landed 2026-06-10
 
 **Goal**: a usable mono/stereo mixer. Create buses, route voices
 to buses, mix per-frame into the device. Voice allocator with
 stealing policy.
 
-**Test gate**:
+**Test gate** (all green on `build/` + `build-werror/`):
 
-- `test_audio_mixer_one_shot` — register a 1-second sine clip,
+- ✅ `test_audio_mixer_one_shot` — register a 1-second sine clip,
   `play()` returns a `VoiceId`, mix N frames; LoopbackDevice
-  captures audible output above silence.
-- `test_audio_mixer_bus_routing` — voice routed to a muted bus
-  produces silence; un-mute resumes audible output.
-- `test_audio_mixer_solo` — soloing bus A silences bus B.
-- `test_audio_mixer_voice_stealing` — exhausting the voice pool
+  captures audible output above silence; non-looping voice
+  auto-frees its slot at clip end.
+- ✅ `test_audio_mixer_bus_routing` — voice routed to a muted bus
+  produces silence; un-mute resumes audible output; -20dB bus
+  gain attenuates by ~10×.
+- ✅ `test_audio_mixer_solo` — soloing bus A silences bus B;
+  soloing both restores full mix; un-soloing both returns to
+  normal mix.
+- ✅ `test_audio_mixer_voice_stealing` — exhausting the voice pool
   with `MaxVoices=8` plus a 9th play() steals the oldest;
-  `MixerStats::droppedVoices` increments.
-- `test_audio_mixer_no_allocations` — under a tracking allocator,
-  100 mix-cycles after warmup produce zero allocations.
+  `MixerStats::droppedVoices` increments; stolen `VoiceId`
+  decodes as stale; stopping a voice frees its slot without
+  triggering steal.
+- ✅ `test_audio_mixer_no_allocations` — under a tracking allocator
+  (global `operator new` override), 100 mix-cycles after warmup
+  produce zero allocations.
 
-**Files**: `mixer.hpp`, `voice.hpp`, `detail/voice_allocator.hpp`,
-`src/AudioMixer.cpp`, `src/VoiceAllocator.cpp`.
+**Files landed**:
+- `include/threadmaxx_audio/voice.hpp` — `BusDesc`, `VoiceDesc`,
+  `VoiceState`
+- `include/threadmaxx_audio/clip.hpp` — `Clip` POD (interleaved
+  PCM)
+- `include/threadmaxx_audio/mixer.hpp` — `AudioMixer`,
+  `AudioMixerConfig`, `MixerStats`
+- `include/threadmaxx_audio/detail/voice_allocator.hpp` —
+  `VoiceAllocator` + `VoiceSlot`
+- `src/threadmaxx_audio/AudioMixer.cpp`
+- `src/threadmaxx_audio/VoiceAllocator.cpp`
+- `LoopbackDevice` got `setCaptureEnabled()` /
+  `droppedSubmits()` so the no-alloc test can suppress
+  capture-time `emplace_back` after warmup
+- five `tests/audio/test_audio_mixer_*.cpp`
 
-**Risks**: the no-allocations test is the contract — if a future
-batch adds a hidden alloc (e.g., `std::function` capture), this
-test catches it.
+**Resolved decisions**:
+- Master bus is bus slot 0 — always alive, never destroyable,
+  can carry gain/mute but not solo (it's the output node).
+- Voice → bus routing falls back to master when the requested
+  bus is `BusId{0}` or has been destroyed.
+- Voice stealing picks the lowest-`startTick` slot (oldest);
+  generation bump invalidates both the stolen `VoiceId` and any
+  prior reference to the slot.
+- Mono clip → stereo bus duplicates to L+R; matching counts copy
+  through; mismatched counts down-mix to mono then fan out.
+- `VoiceId` / `BusId` / `SoundId` encoding: low 32 bits = slot
+  index, high 32 bits = generation. `…Id{0}` reserved as invalid.
 
 **Out of scope**: streaming (AU3), 3D (AU4).
 

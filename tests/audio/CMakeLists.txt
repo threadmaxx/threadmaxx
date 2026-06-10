@@ -8,6 +8,11 @@ set(THREADMAXX_AUDIO_TESTS
     test_audio_format
     test_audio_buffer
     test_audio_loopback_device
+    test_audio_mixer_one_shot
+    test_audio_mixer_bus_routing
+    test_audio_mixer_solo
+    test_audio_mixer_voice_stealing
+    test_audio_mixer_no_allocations
 )
 
 foreach(test ${THREADMAXX_AUDIO_TESTS})

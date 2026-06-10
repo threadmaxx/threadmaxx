@@ -42,10 +42,23 @@ public:
     /// Drop every captured buffer. Initialization state is preserved.
     void clearCaptured() noexcept { captured_.clear(); }
 
+    /// Toggle per-submit capture. AU2 introduces this so the no-allocations
+    /// test can suppress the per-submit `emplace_back` after warmup; default
+    /// stays `true` so AU1 contract is unchanged.
+    void setCaptureEnabled(bool enabled) noexcept { captureEnabled_ = enabled; }
+    [[nodiscard]] bool captureEnabled() const noexcept { return captureEnabled_; }
+
+    /// Count of submits received while capture was disabled. Lets the
+    /// no-allocations test verify mix() actually ran without paying for the
+    /// captured-buffer heap traffic.
+    [[nodiscard]] std::size_t droppedSubmits() const noexcept { return droppedSubmits_; }
+
 private:
     AudioFormat                       format_{};
-    std::size_t                       bufferFrames_ = 0;
-    bool                              initialized_  = false;
+    std::size_t                       bufferFrames_   = 0;
+    bool                              initialized_    = false;
+    bool                              captureEnabled_ = true;
+    std::size_t                       droppedSubmits_ = 0;
     std::vector<std::vector<float>>   captured_;
 };
 

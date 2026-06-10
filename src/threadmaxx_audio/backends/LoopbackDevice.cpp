@@ -24,9 +24,10 @@ bool LoopbackDevice::initialize(const AudioFormat& format, std::size_t bufferFra
 }
 
 void LoopbackDevice::shutdown() {
-    initialized_  = false;
-    bufferFrames_ = 0;
-    format_       = AudioFormat{};
+    initialized_    = false;
+    bufferFrames_   = 0;
+    format_         = AudioFormat{};
+    droppedSubmits_ = 0;
 }
 
 void LoopbackDevice::submit(ConstAudioSpan mixBuffer) {
@@ -35,6 +36,11 @@ void LoopbackDevice::submit(ConstAudioSpan mixBuffer) {
     }
     assert(mixBuffer.format == format_ && "submit format mismatches initialize format");
     assert(mixBuffer.frames == bufferFrames_ && "submit frame count mismatches bufferFrames");
+
+    if (!captureEnabled_) {
+        ++droppedSubmits_;
+        return;
+    }
 
     const std::size_t sampleCount = samplesIn(mixBuffer.format, mixBuffer.frames);
     captured_.emplace_back();
