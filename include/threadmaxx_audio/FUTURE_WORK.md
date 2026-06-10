@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1-AU3 shipped (2026-06-10)**. AU4-AU8 are 📋 planned.
+Status: **AU1-AU4 shipped (2026-06-10)**. AU5-AU8 are 📋 planned.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -220,30 +220,59 @@ path, fed by synthetic test streams that yield known bytes.
 responsibility — this library exposes the stream interface and
 ships synthetic test streams, not real decoders.
 
-## Batch AU4 — 3D spatialization
+## Batch AU4 — 3D spatialization ✅ landed 2026-06-10
 
 **Goal**: listener / emitter state, distance attenuation, stereo
-panning by listener-relative angle. Doppler optional.
+panning by listener-relative angle, and Doppler pitch shift.
 
-**Test gate**:
+**Test gate** (all green on `build/` + `build-werror/`):
 
-- `test_audio_spatial_attenuation` — emitter at `maxDistance`
-  produces silence; at `minDistance` produces full gain; midpoint
-  follows the configured curve.
-- `test_audio_spatial_pan` — emitter directly to listener's left
-  produces left-heavy mix; directly behind produces equal-power
-  pan with a documented "behind" attenuation.
-- `test_audio_spatial_doppler` — relative velocity along the
-  listener-emitter axis shifts pitch by the expected factor (test
-  with a known sine clip; FFT peak detection verifies).
-- `test_audio_spatial_multiple_listeners` — two listeners get
-  independent attenuation/pan (use case: split-screen).
+- ✅ `test_audio_spatial_attenuation` — `Linear` model: emitter at
+  `minDistance` → full gain; at midpoint → ~0.5; at and beyond
+  `maxDistance` → silence.
+- ✅ `test_audio_spatial_pan` — emitter to listener's left → L-only
+  output; to the right → R-only; directly in front → equal-power
+  center; directly behind → equal-power center with documented
+  ~0.7× behind attenuation.
+- ✅ `test_audio_spatial_doppler` — zero-crossing counts on a 440 Hz
+  sine confirm pitch shift: stationary matches expected count to
+  within 10; listener at +34.3 m/s towards emitter raises the
+  count by 5-15%; listener moving away drops it by 5-15%.
+- ✅ `test_audio_spatial_multiple_listeners` — two listeners each
+  produce independent attenuation: same emitter, voice on L1 →
+  audible, voice on L2 (far) → silent; moving L2 close → audible.
 
-**Files**: `spatial.hpp`, `detail/pan_law.hpp`,
-`src/Spatializer.cpp`, extension to mixer.
+**Files landed**:
+- `include/threadmaxx_audio/spatial.hpp` — `Vec3`,
+  `AttenuationModel`, `ListenerDesc`, `EmitterDesc`,
+  `kSpeedOfSound = 343.0f`
+- `include/threadmaxx_audio/detail/pan_law.hpp` — header-only
+  spatializer math: `computeAttenuation` + `computeSpatial` +
+  Vec3 helpers; produces `SpatialResult { gainL, gainR,
+  pitchShift }`
+- `AudioMixer` gained `createListener` / `destroyListener` /
+  `setListener` / `isValidListener` plus `setEmitter` /
+  `clearEmitter`; `AudioMixerConfig::maxListeners = 4`
+- `VoiceSlot` gained `isSpatial` + `listener` + `emitter` +
+  `playheadFrames` widened to `double` (Doppler needs fractional
+  cursor advance)
+- Mixer `mix()` dispatches spatial clip voices through
+  `mixSpatialClipVoiceInto` (mono down-mix + L/R apply + pitch-
+  shifted source read)
+- four `tests/audio/test_audio_spatial_*.cpp`
 
-**Risks**: Doppler done wrong sounds terrible; gate it behind a
-config flag (`dopplerFactor=0` disables) so games can opt out.
+**Resolved decisions**:
+- Right-handed +Z-forward / +Y-up coordinate system;
+  `right = up × forward`.
+- Equal-power pan via `(panX + 1) · π/4` → cos / sin.
+- Behind attenuation linear in `frontness`: 1.0 in front, 0.7 when
+  fully behind.
+- Doppler formula `f' = f · (c + v_listener_toward) /
+  (c + v_emitter_away)`; `dopplerFactor=0` disables; pitch shift
+  clamped at ≥ 0.01 to guard against pathological velocities.
+- Clip voices can be spatial; stream voices stay non-spatial in
+  v1.0 (extension hook is there if needed). Channel layouts other
+  than stereo bus get the L/R sum spread evenly.
 
 **Out of scope**: HRTF / binaural rendering (v1.x), reverb
 (v1.x), occlusion (v1.x).

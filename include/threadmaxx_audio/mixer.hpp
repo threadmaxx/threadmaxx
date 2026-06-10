@@ -11,6 +11,7 @@
 #include "threadmaxx_audio/buffer.hpp"
 #include "threadmaxx_audio/config.hpp"
 #include "threadmaxx_audio/device.hpp"
+#include "threadmaxx_audio/spatial.hpp"
 #include "threadmaxx_audio/types.hpp"
 #include "threadmaxx_audio/voice.hpp"
 
@@ -39,10 +40,11 @@ struct MixerStats {
 /// Construction-time mixer settings. Bus and voice capacity are fixed at
 /// `initialize()`; both feed into the pre-allocation of every hot-path buffer.
 struct AudioMixerConfig {
-    std::uint32_t maxVoices  = kDefaultMaxVoices;
-    std::uint32_t maxBuses   = 16;
-    std::uint32_t maxClips   = 256;
-    std::uint32_t maxStreams = 16;
+    std::uint32_t maxVoices    = kDefaultMaxVoices;
+    std::uint32_t maxBuses     = 16;
+    std::uint32_t maxClips     = 256;
+    std::uint32_t maxStreams   = 16;
+    std::uint32_t maxListeners = 4;
 };
 
 class AudioMixer {
@@ -105,6 +107,23 @@ public:
     [[nodiscard]] VoiceId play(const VoiceDesc& desc);
     void stop(VoiceId voice);
     [[nodiscard]] bool isPlaying(VoiceId voice) const noexcept;
+
+    /// AU4 — register a 3D listener. Returns `ListenerId{0}` if the table is
+    /// full. The pose is consumed by the spatializer of any voice
+    /// `setEmitter`-attached to this listener.
+    [[nodiscard]] ListenerId createListener(const ListenerDesc& desc);
+    void destroyListener(ListenerId id);
+    void setListener(ListenerId id, const ListenerDesc& desc);
+    [[nodiscard]] bool isValidListener(ListenerId id) const noexcept;
+
+    /// Attach a 3D emitter to a live voice, tying it to a listener for
+    /// spatialization. The voice becomes spatial — its source is down-mixed
+    /// to mono and pan/attenuation/Doppler are applied per-frame against the
+    /// listener's pose. No-op if voice or listener is invalid.
+    void setEmitter(VoiceId voice, ListenerId listener, const EmitterDesc& desc);
+    /// Revert a voice to non-spatial playback. No-op if the voice isn't
+    /// spatial or doesn't exist.
+    void clearEmitter(VoiceId voice);
 
     /// Generate exactly `bufferFrames()` frames of mixed output and submit
     /// to the device. Zero-alloc after `initialize()`. No-op if the mixer

@@ -12,6 +12,7 @@
 #include "threadmaxx_audio/device.hpp"
 #include "threadmaxx_audio/loopback_device.hpp"
 #include "threadmaxx_audio/mixer.hpp"
+#include "threadmaxx_audio/spatial.hpp"
 #include "threadmaxx_audio/stream.hpp"
 #include "threadmaxx_audio/types.hpp"
 #include "threadmaxx_audio/voice.hpp"

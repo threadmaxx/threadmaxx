@@ -15,6 +15,7 @@
 #include "threadmaxx_audio/mixer.hpp"
 
 #include "threadmaxx_audio/clip.hpp"
+#include "threadmaxx_audio/detail/pan_law.hpp"
 #include "threadmaxx_audio/detail/voice_allocator.hpp"
 #include "threadmaxx_audio/stream.hpp"
 
@@ -51,6 +52,12 @@ struct StreamEntry {
     std::unique_ptr<IAudioStream> stream;
 };
 
+struct ListenerEntry {
+    bool          alive      = false;
+    std::uint32_t generation = 0;
+    ListenerDesc  desc{};
+};
+
 SoundId encodeSoundId(std::uint32_t slot, std::uint32_t generation) noexcept {
     return SoundId{ (static_cast<std::uint64_t>(generation) << 32) | static_cast<std::uint64_t>(slot) };
 }
@@ -81,6 +88,16 @@ bool decodeStreamId(StreamId id, std::uint32_t cap, std::uint32_t& slot, std::ui
     return slot < cap;
 }
 
+ListenerId encodeListenerId(std::uint32_t slot, std::uint32_t generation) noexcept {
+    return ListenerId{ (static_cast<std::uint64_t>(generation) << 32) | static_cast<std::uint64_t>(slot) };
+}
+bool decodeListenerId(ListenerId id, std::uint32_t cap, std::uint32_t& slot, std::uint32_t& gen) noexcept {
+    if (id.value == 0) return false;
+    slot = static_cast<std::uint32_t>(id.value & 0xFFFFFFFFu);
+    gen  = static_cast<std::uint32_t>(id.value >> 32);
+    return slot < cap;
+}
+
 } // namespace
 
 struct AudioMixer::Impl {
@@ -93,6 +110,7 @@ struct AudioMixer::Impl {
     std::vector<ClipEntry>        clips;
     std::vector<BusEntry>         buses;
     std::vector<StreamEntry>      streams;
+    std::vector<ListenerEntry>    listeners;
 
     detail::VoiceAllocator        voices;
     std::uint64_t                 tickCounter        = 0;
@@ -141,6 +159,8 @@ bool AudioMixer::initialize(const AudioFormat& format, std::size_t bufferFrames)
     impl_->streams.clear();
     impl_->streams.resize(impl_->config.maxStreams);
 
+    impl_->listeners.assign(impl_->config.maxListeners, ListenerEntry{});
+
     impl_->voices.initialize(impl_->config.maxVoices);
     impl_->tickCounter        = 0;
     impl_->droppedVoicesTotal = 0;
@@ -164,6 +184,7 @@ void AudioMixer::shutdown() {
     impl_->clips.clear();
     impl_->buses.clear();
     impl_->streams.clear();
+    impl_->listeners.clear();
     impl_->masterBuffer.clear();
     impl_->busBuffer.clear();
     impl_->streamScratch.clear();
@@ -243,6 +264,68 @@ bool AudioMixer::isValidStream(StreamId id) const noexcept {
     if (!decodeStreamId(id, static_cast<std::uint32_t>(impl_->streams.size()), slot, gen)) return false;
     const auto& e = impl_->streams[slot];
     return e.alive && e.generation == gen;
+}
+
+ListenerId AudioMixer::createListener(const ListenerDesc& desc) {
+    if (!impl_) return ListenerId{0};
+    for (std::uint32_t i = 0; i < impl_->listeners.size(); ++i) {
+        if (!impl_->listeners[i].alive) {
+            ++impl_->listeners[i].generation;
+            impl_->listeners[i].alive = true;
+            impl_->listeners[i].desc  = desc;
+            return encodeListenerId(i, impl_->listeners[i].generation);
+        }
+    }
+    return ListenerId{0};
+}
+
+void AudioMixer::destroyListener(ListenerId id) {
+    if (!impl_) return;
+    std::uint32_t slot = 0, gen = 0;
+    if (!decodeListenerId(id, static_cast<std::uint32_t>(impl_->listeners.size()), slot, gen)) return;
+    auto& e = impl_->listeners[slot];
+    if (!e.alive || e.generation != gen) return;
+    e.alive = false;
+    ++e.generation;
+    e.desc = ListenerDesc{};
+}
+
+void AudioMixer::setListener(ListenerId id, const ListenerDesc& desc) {
+    if (!impl_) return;
+    std::uint32_t slot = 0, gen = 0;
+    if (!decodeListenerId(id, static_cast<std::uint32_t>(impl_->listeners.size()), slot, gen)) return;
+    auto& e = impl_->listeners[slot];
+    if (!e.alive || e.generation != gen) return;
+    e.desc = desc;
+}
+
+bool AudioMixer::isValidListener(ListenerId id) const noexcept {
+    if (!impl_) return false;
+    std::uint32_t slot = 0, gen = 0;
+    if (!decodeListenerId(id, static_cast<std::uint32_t>(impl_->listeners.size()), slot, gen)) return false;
+    const auto& e = impl_->listeners[slot];
+    return e.alive && e.generation == gen;
+}
+
+void AudioMixer::setEmitter(VoiceId voice, ListenerId listener, const EmitterDesc& desc) {
+    if (!impl_) return;
+    std::uint32_t vslot = 0;
+    if (!impl_->voices.decode(voice, vslot)) return;
+    if (!isValidListener(listener)) return;
+    auto& v       = impl_->voices.slot(vslot);
+    v.isSpatial   = true;
+    v.listener    = listener;
+    v.emitter     = desc;
+}
+
+void AudioMixer::clearEmitter(VoiceId voice) {
+    if (!impl_) return;
+    std::uint32_t vslot = 0;
+    if (!impl_->voices.decode(voice, vslot)) return;
+    auto& v       = impl_->voices.slot(vslot);
+    v.isSpatial   = false;
+    v.listener    = ListenerId{0};
+    v.emitter     = EmitterDesc{};
 }
 
 BusId AudioMixer::masterBus() const noexcept {
@@ -333,7 +416,10 @@ VoiceId AudioMixer::play(const VoiceDesc& desc) {
     s.bus            = (desc.bus.value == 0 || !isValidBus(desc.bus)) ? masterBus() : desc.bus;
     s.gainDb         = desc.gainDb;
     s.looping        = desc.looping;
-    s.playheadFrames = 0;
+    s.playheadFrames = 0.0;
+    s.isSpatial      = false;
+    s.listener       = ListenerId{0};
+    s.emitter        = EmitterDesc{};
 
     ++impl_->tickCounter;
     return impl_->voices.encode(slotIdx);
@@ -388,6 +474,8 @@ inline void mixFramesIntoBus(const float* src, std::uint8_t srcChans,
 
 // Mix `bufferFrames` of `clip` starting at `v.playheadFrames` into `dst`.
 // Returns true when the voice should stop (clip exhausted, non-looping).
+// Non-spatial: integer frame advance — `playheadFrames` is `double` but
+// always holds integer values on this path.
 bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
                       float* dst, std::size_t bufferFrames,
                       std::uint8_t busChans) noexcept {
@@ -397,9 +485,10 @@ bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
 
     const float linearGain = dbToLinear(v.gainDb);
     bool reachedEnd = false;
+    const std::uint64_t startFrame = static_cast<std::uint64_t>(v.playheadFrames);
 
     for (std::size_t i = 0; i < bufferFrames; ++i) {
-        std::uint64_t f = v.playheadFrames + i;
+        std::uint64_t f = startFrame + i;
         if (f >= clipFrames) {
             if (v.looping) {
                 f = f % clipFrames;
@@ -413,8 +502,56 @@ bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
         mixFramesIntoBus(src, clipChans, d, busChans, 1u, linearGain);
     }
 
-    v.playheadFrames += bufferFrames;
-    if (!v.looping && v.playheadFrames >= clipFrames) reachedEnd = true;
+    v.playheadFrames += static_cast<double>(bufferFrames);
+    if (!v.looping && v.playheadFrames >= static_cast<double>(clipFrames)) reachedEnd = true;
+    return reachedEnd;
+}
+
+// AU4 — spatial clip path. Down-mixes the clip frame to mono, then writes
+// L/R via the spatializer's `gainL`/`gainR`. Source cursor advances by
+// `sr.pitchShift` per output frame, so a clip's effective pitch shifts with
+// Doppler.
+bool mixSpatialClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
+                             float* dst, std::size_t bufferFrames,
+                             std::uint8_t busChans,
+                             const detail::SpatialResult& sr) noexcept {
+    const std::size_t clipFrames = clip.frames();
+    const std::uint8_t clipChans = clip.format.channels;
+    if (clipFrames == 0 || clipChans == 0 || busChans == 0) return true;
+
+    bool reachedEnd = false;
+    const double pitch = static_cast<double>(sr.pitchShift);
+    const double startPos = v.playheadFrames;
+
+    for (std::size_t i = 0; i < bufferFrames; ++i) {
+        const double posD = startPos + static_cast<double>(i) * pitch;
+        std::uint64_t f = static_cast<std::uint64_t>(posD);
+        if (f >= clipFrames) {
+            if (v.looping) {
+                f = f % clipFrames;
+            } else {
+                reachedEnd = true;
+                break;
+            }
+        }
+        const float* src = clip.samples.data() + f * clipChans;
+        float mono = 0.0f;
+        for (std::uint8_t c = 0; c < clipChans; ++c) mono += src[c];
+        mono /= static_cast<float>(clipChans);
+
+        float* d = dst + i * busChans;
+        if (busChans >= 2) {
+            d[0] += mono * sr.gainL;
+            d[1] += mono * sr.gainR;
+            const float fillRest = mono * (sr.gainL + sr.gainR) * 0.5f;
+            for (std::uint8_t c = 2; c < busChans; ++c) d[c] += fillRest;
+        } else {
+            d[0] += mono * (sr.gainL + sr.gainR) * 0.5f;
+        }
+    }
+
+    v.playheadFrames += static_cast<double>(bufferFrames) * pitch;
+    if (!v.looping && v.playheadFrames >= static_cast<double>(clipFrames)) reachedEnd = true;
     return reachedEnd;
 }
 
@@ -477,7 +614,7 @@ StreamMixResult mixStreamVoiceInto(detail::VoiceSlot& v, IAudioStream& stream,
     }
 
     mixFramesIntoBus(scratch, srcChans, dst, busChans, totalRead, linearGain);
-    v.playheadFrames += totalRead;
+    v.playheadFrames += static_cast<double>(totalRead);
     return result;
 }
 
@@ -535,6 +672,26 @@ void AudioMixer::mix() {
             continue;
         }
         const Clip& clip = impl_->clips[clipSlot].clip;
+
+        if (v.isSpatial) {
+            // Resolve listener; fall back to non-spatial mix on stale.
+            std::uint32_t lslot = 0, lgen = 0;
+            if (decodeListenerId(v.listener, static_cast<std::uint32_t>(impl_->listeners.size()), lslot, lgen)
+                && impl_->listeners[lslot].alive
+                && impl_->listeners[lslot].generation == lgen) {
+                const auto& listenerDesc = impl_->listeners[lslot].desc;
+                const float linearVoiceGain = dbToLinear(v.gainDb);
+                const detail::SpatialResult sr =
+                    detail::computeSpatial(listenerDesc, v.emitter, linearVoiceGain);
+                const bool stop = mixSpatialClipVoiceInto(
+                    v, clip, dst, impl_->bufferFrames, channels, sr);
+                if (stop) impl_->voices.free(i);
+                continue;
+            }
+            // Listener gone — drop the spatial attachment, fall through to
+            // non-spatial mix.
+            v.isSpatial = false;
+        }
 
         const bool stop = mixClipVoiceInto(v, clip, dst, impl_->bufferFrames, channels);
         if (stop) impl_->voices.free(i);

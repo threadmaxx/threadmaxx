@@ -9,6 +9,7 @@
 /// from a stolen / stopped voice cannot accidentally address the slot's new
 /// occupant.
 
+#include "threadmaxx_audio/spatial.hpp"
 #include "threadmaxx_audio/types.hpp"
 
 #include <cstdint>
@@ -18,11 +19,16 @@ namespace threadmaxx::audio::detail {
 
 /// Per-slot voice state. Mixer fields (sound/bus/gain) plus allocator
 /// bookkeeping (alive/generation/startTick) plus playback cursor.
+///
+/// `playheadFrames` is a `double` so the AU4 spatial path can advance by a
+/// fractional Doppler-derived rate. Non-spatial voices advance by an
+/// integer count per mix call — the value of `playheadFrames` stays at
+/// integer values and round-trips losslessly until ~2^53 frames played.
 struct VoiceSlot {
     bool          alive          = false;
     std::uint32_t generation     = 0;
     std::uint64_t startTick      = 0;
-    std::uint64_t playheadFrames = 0;
+    double        playheadFrames = 0.0;
 
     SoundId       sound{};
     StreamId      stream{};      ///< AU3 — non-zero means this is a stream voice.
@@ -30,6 +36,12 @@ struct VoiceSlot {
     float         gainDb         = 0.0f;
     bool          looping        = false;
     bool          isStream       = false;
+
+    // AU4 — spatial attachment. `isSpatial` gates the spatial mix path;
+    // `listener` is resolved against the mixer's listener table each mix.
+    bool          isSpatial      = false;
+    ListenerId    listener{};
+    EmitterDesc   emitter{};
 };
 
 class VoiceAllocator {

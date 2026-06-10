@@ -17,6 +17,10 @@ set(THREADMAXX_AUDIO_TESTS
     test_audio_stream_rewind
     test_audio_stream_underrun
     test_audio_stream_loop
+    test_audio_spatial_attenuation
+    test_audio_spatial_pan
+    test_audio_spatial_doppler
+    test_audio_spatial_multiple_listeners
 )
 
 foreach(test ${THREADMAXX_AUDIO_TESTS})
