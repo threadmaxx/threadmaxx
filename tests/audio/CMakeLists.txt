@@ -21,6 +21,10 @@ set(THREADMAXX_AUDIO_TESTS
     test_audio_spatial_pan
     test_audio_spatial_doppler
     test_audio_spatial_multiple_listeners
+    test_audio_dsp_gain
+    test_audio_dsp_pan
+    test_audio_dsp_fade
+    test_audio_dsp_no_allocations
 )
 
 foreach(test ${THREADMAXX_AUDIO_TESTS})

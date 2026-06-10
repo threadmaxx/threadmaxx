@@ -4,6 +4,7 @@ set(THREADMAXX_AUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/clip.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/device.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/dsp.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/loopback_device.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/mixer.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/spatial.hpp

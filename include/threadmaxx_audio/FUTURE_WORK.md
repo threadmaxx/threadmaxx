@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1-AU4 shipped (2026-06-10)**. AU5-AU8 are 📋 planned.
+Status: **AU1-AU5 shipped (2026-06-10)**. AU6-AU8 are 📋 planned.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -277,25 +277,41 @@ panning by listener-relative angle, and Doppler pitch shift.
 **Out of scope**: HRTF / binaural rendering (v1.x), reverb
 (v1.x), occlusion (v1.x).
 
-## Batch AU5 — DSP helpers
+## Batch AU5 — DSP helpers ✅ landed 2026-06-10
 
 **Goal**: gain / pan / fade-in / fade-out as standalone span ops
-(per DESIGN_NOTES §5.4). Used both internally by the mixer and
-exposed publicly for custom DSP chains.
+(per DESIGN_NOTES §5.4). Header-only; usable both internally and
+in custom DSP chains.
 
-**Test gate**:
+**Test gate** (all green on `build/` + `build-werror/`):
 
-- `test_audio_dsp_gain` — `applyGain(buf, 0dB)` is a no-op;
-  `applyGain(buf, -inf dB)` produces silence.
-- `test_audio_dsp_pan` — applyPanStereo at -1/0/+1 produces
-  left-only / center / right-only.
-- `test_audio_dsp_fade_in` — fadeIn over N seconds produces a
-  monotonically-increasing gain envelope; sample[0] is silent;
-  sample[N*rate-1] is full gain.
-- `test_audio_dsp_no_allocations` — every helper runs zero-alloc
-  under the tracking allocator.
+- ✅ `test_audio_dsp_gain` — `applyGain(buf, 0dB)` is bit-exact no-op
+  (× 1.0 in IEEE-754); `applyGain(buf, -∞dB)` silences every
+  sample; `-6dB` halves amplitude within 1e-4 tolerance.
+- ✅ `test_audio_dsp_pan` — `applyPanStereo` at -1 produces L-only
+  output; 0 produces equal-power center (`L = R = src × √2/2`);
+  +1 produces R-only; mono buffers are a no-op.
+- ✅ `test_audio_dsp_fade` — both fade directions verified:
+  monotonic envelopes, sample[0] / sample[N*rate-1] hit the
+  expected endpoints, samples past the fade region clamp to the
+  target gain; zero-seconds and negative-rate are silent no-ops.
+- ✅ `test_audio_dsp_no_allocations` — 64 chained
+  gain/pan/fadeIn/fadeOut passes over a stereo span produce zero
+  heap traffic under the tracking allocator.
 
-**Files**: `dsp.hpp`. No source file needed — these are header-only.
+**Files landed**:
+- `include/threadmaxx_audio/dsp.hpp` — header-only `applyGain`,
+  `applyPanStereo`, `applyFadeIn`, `applyFadeOut`
+- four `tests/audio/test_audio_dsp_*.cpp`
+
+**Resolved decisions**:
+- Stereo pan: equal-power, same `(pan+1)·π/4` mapping as the
+  spatializer in AU4.
+- Fade envelopes: linear, denominator `fadeFrames - 1` so the last
+  in-range sample hits the target exactly. Fades shorter than 2
+  frames are no-ops (degenerate input).
+- 0 dB is bit-exact identity — early-out path skips the multiply
+  loop entirely.
 
 **Out of scope**: filters (lowpass/highpass/EQ) — v1.x.
 

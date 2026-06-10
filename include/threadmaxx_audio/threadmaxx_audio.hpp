@@ -10,6 +10,7 @@
 #include "threadmaxx_audio/clip.hpp"
 #include "threadmaxx_audio/config.hpp"
 #include "threadmaxx_audio/device.hpp"
+#include "threadmaxx_audio/dsp.hpp"
 #include "threadmaxx_audio/loopback_device.hpp"
 #include "threadmaxx_audio/mixer.hpp"
 #include "threadmaxx_audio/spatial.hpp"
