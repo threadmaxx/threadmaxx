@@ -29,6 +29,9 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_obstacle_blocks
     test_navmesh_obstacle_update
     test_navmesh_obstacle_remove
+    test_navmesh_bake_smoke
+    test_navmesh_bake_validation
+    test_navmesh_bake_areas
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})

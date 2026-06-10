@@ -10,6 +10,7 @@
 /// otherwise standalone — no engine-internal headers are required to
 /// consume it.
 
+#include "threadmaxx_navmesh/bake.hpp"
 #include "threadmaxx_navmesh/config.hpp"
 #include "threadmaxx_navmesh/crowd.hpp"
 #include "threadmaxx_navmesh/mesh.hpp"

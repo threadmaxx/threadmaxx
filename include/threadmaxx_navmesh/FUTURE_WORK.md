@@ -4,15 +4,17 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N8 shipped (2026-06-10)** — `ObstacleOverlay` + `DynamicObstacle`
-back a spatial-hash overlay; `PathRequest::obstacles` makes the solver
-skip neighbor polys whose centroid sits inside any blocker for the
-matching area tag. Header-only spatial hash in
-`detail/spatial_hash.hpp`; PImpl'd public surface in `obstacle.hpp` +
-`src/ObstacleOverlay.cpp`. Green on `build/` (238/238) and
-`build-werror/` (23/23 navmesh). N9 remains 📋 planned. Sequencing
-follows the §10 "implementation order" of the design notes, regrouped
-into shippable units that each carry their own tests.
+Status: **N9 shipped (2026-06-10)** — `bakeNavMesh()` consumes a
+triangle-direct soup (vertices + per-triangle area tags) and emits a
+v2 blob the runtime loads verbatim. Validation rejects empty input,
+out-of-range indices, repeated-vertex / collinear triangles, and
+non-manifold edges. CLI driver `threadmaxx_navmesh_bake` reads the
+text format from stdin / `--in` and writes the blob to stdout /
+`--out`. Green on `build/` (241/241) and `build-werror/` (26/26
+navmesh). v1.0 close-out criteria all met — see
+`§ v1.0 close-out`. Sequencing follows the §10 "implementation order"
+of the design notes, regrouped into shippable units that each carry
+their own tests.
 
 ## Conventions
 
@@ -470,34 +472,65 @@ fields (v1.x), agent-radius-aware corridor shrink (v1.x).
 obstacles (v1.x); segment-vs-AABB edge sweep (centroid test is the
 v1.0 contract); 3D queries against `halfExtents.y` (v1.x).
 
-## Batch N9 — Bake tool
+## Batch N9 — Bake tool ✅ shipped 2026-06-10
 
-**Goal**: an offline executable that consumes triangle mesh input
-+ bake parameters and produces the v1 baked-blob format. Lives in
-its own CMake target (`threadmaxx_navmesh_bake`), not linked into
-the runtime library.
+**Delivered**:
+- `bake.hpp` — `BakeInputTriangle { a, b, c, areaTag }`, `BakeInput
+  { vertices, triangles, name, tileId }`, `BakeError` enum (None,
+  EmptyInput, InvalidIndex, DegenerateTriangle, NonManifoldEdge,
+  TooManyPolygons), `BakeResult { blob, error, diagnostic }`,
+  `bakeNavMesh(input) -> BakeResult` pure function.
+- `src/BakeTool.cpp` — triangle-direct bake (one input triangle =
+  one output polygon). Validation: vertex bounds, repeated indices,
+  XZ-area degeneracy, ≤ 2 incident polys per edge (non-manifold
+  rejection), per-tile polygon cap. Edge-incidence map keyed by
+  sorted `(vmin, vmax)`; neighbor lookup walks each tri's three
+  edges and pairs with the *other* incident triangle (or
+  `kInvalidPolyIndex` for open edges). Emits the v2 wire format the
+  registry already reads — no parallel format work.
+- `examples/navmesh_bake/main.cpp` — minimal CLI driver. Reads
+  stdin / `--in PATH` text format (`v X Y Z`, `t A B C [TAG]`,
+  `name STRING`, `tile ID`, `#` comments); writes blob to
+  stdout / `--out PATH`. Diagnostics surface bake error name +
+  message on stderr. Wired as the `threadmaxx_navmesh_bake` CMake
+  target under `THREADMAXX_BUILD_EXAMPLES` (guarded on
+  `threadmaxx::navmesh` being available).
 
-**Test gate**:
+**Test outcomes**:
+- `test_navmesh_bake_smoke` — 10-quad L-shape silhouette baked into
+  20 triangles; round-trips through the registry, meta carries the
+  asserted tile/poly/vertex counts, and a path query across the
+  silhouette resolves with first/last waypoint pinned at start /
+  goal (the N4 contract).
+- `test_navmesh_bake_validation` — every BakeError mode exercised
+  end-to-end (empty verts, empty tris, OOB index, repeated-vertex
+  tri, collinear-tri zero area, three triangles fanning a shared
+  edge → NonManifoldEdge). Each path leaves an empty blob + a
+  non-empty diagnostic; a clean two-tri quad still succeeds.
+- `test_navmesh_bake_areas` — `makeAreaMaskStrip`-equivalent 3×2
+  quad grid built from triangles; baked tile has exactly 2
+  area-tag-1 polys + 10 area-tag-0 polys. With the water mask
+  cleared A* returns a strictly-greater-cost detour and the water
+  polys never appear in the corridor.
+- Green on `build/` (241/241) and `build-werror/` (26/26 navmesh).
 
-- `test_navmesh_bake_smoke` — bake a known-good triangle soup
-  (10 quads forming the L-shape) and validate the runtime can
-  load the result.
-- `test_navmesh_bake_validation` — bake input with non-manifold
-  geometry returns a validation error, not a runtime crash.
-- `test_navmesh_bake_areas` — bake input with per-triangle area
-  tags preserves them in the baked output; A* sees them.
-
-**Files**: `bake.hpp`, `src/BakeTool.cpp`,
-`examples/navmesh_bake/main.cpp` (the executable).
-
-**Risks**: voxel-based bake (Recast-style) is the right algorithm
-but a big implementation effort. Recommendation for v1.0: ship a
-**triangle-direct** bake that assumes input geometry is already
-planar and walkable, with explicit per-triangle area tags. Real
-Recast-style voxelization is a v1.x candidate.
+**Files**: `include/threadmaxx_navmesh/bake.hpp` (new),
+`src/threadmaxx_navmesh/BakeTool.cpp` (new),
+`examples/navmesh_bake/main.cpp` (new),
+`examples/navmesh_bake/CMakeLists.txt` (new),
+`include/threadmaxx_navmesh/threadmaxx_navmesh.hpp` (modified — umbrella),
+`src/threadmaxx_navmesh/CMakeLists.txt` (modified — new source + header),
+`CMakeLists.txt` (modified — examples subdir),
+`tests/navmesh/test_navmesh_bake_smoke.cpp`,
+`test_navmesh_bake_validation.cpp`,
+`test_navmesh_bake_areas.cpp` (new),
+`tests/navmesh/CMakeLists.txt` (modified).
 
 **Out of scope**: heightfield voxelization, automatic walkability
-classification, mesh simplification (all v1.x).
+classification, mesh simplification (all v1.x). Multi-tile bake
+also deferred — current bake emits a single tile, which is fine
+for the v1.0 close-out and consistent with the design-notes
+recommendation to ship triangle-direct first.
 
 ## v1.0 close-out criteria
 

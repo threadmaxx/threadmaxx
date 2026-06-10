@@ -1,6 +1,7 @@
 set(THREADMAXX_NAVMESH_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/threadmaxx_navmesh.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/types.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/bake.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/mesh.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/obstacle.hpp
@@ -11,6 +12,7 @@ set(THREADMAXX_NAVMESH_PUBLIC_HEADERS
 
 set(THREADMAXX_NAVMESH_SOURCES
     NavMeshRegistry.cpp
+    BakeTool.cpp
     ObstacleOverlay.cpp
     Solver.cpp
     PathQueryService.cpp
