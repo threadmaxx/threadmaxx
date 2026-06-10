@@ -5,6 +5,7 @@
 #include "threadmaxx_navmesh/query.hpp"
 #include "threadmaxx_navmesh/threadmaxx_navmesh.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 
@@ -48,7 +49,7 @@ int main() {
     CHECK(id != 0);
     CHECK(svc.lastRequestStatus() == PathRequestStatus::Accepted);
 
-    auto maybe = svc.tryGet(id);
+    auto maybe = svc.wait(id, std::chrono::seconds{5});
     CHECK(maybe.has_value());
     if (!maybe) return gTestFailures;
     const PathResult& r = *maybe;
@@ -87,7 +88,7 @@ int main() {
     selfReq.goal  = Vec3{2.5f, 0.0f, 0.5f};
     PathId selfId = svc.request(selfReq);
     CHECK(selfId != 0);
-    auto selfRes = svc.tryGet(selfId);
+    auto selfRes = svc.wait(selfId, std::chrono::seconds{5});
     CHECK(selfRes.has_value());
     if (selfRes) {
         CHECK(selfRes->success);

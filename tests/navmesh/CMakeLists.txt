@@ -18,6 +18,9 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_funnel_straight
     test_navmesh_funnel_corner
     test_navmesh_funnel_pinch
+    test_navmesh_query_async_smoke
+    test_navmesh_query_cancel
+    test_navmesh_query_clear
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})

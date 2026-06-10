@@ -5,6 +5,8 @@
 #include "threadmaxx_navmesh/query.hpp"
 #include "threadmaxx_navmesh/threadmaxx_navmesh.hpp"
 
+#include <chrono>
+
 using namespace threadmaxx::navmesh;
 using namespace threadmaxx::navmesh::test_fixtures;
 
@@ -29,7 +31,7 @@ int main() {
     CHECK(id != 0);
     CHECK(svc.lastRequestStatus() == PathRequestStatus::Accepted);
 
-    auto res = svc.tryGet(id);
+    auto res = svc.wait(id, std::chrono::seconds{5});
     CHECK(res.has_value());
     if (!res) return gTestFailures;
 

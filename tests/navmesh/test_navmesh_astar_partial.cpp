@@ -5,6 +5,7 @@
 #include "threadmaxx_navmesh/query.hpp"
 #include "threadmaxx_navmesh/threadmaxx_navmesh.hpp"
 
+#include <chrono>
 #include <cmath>
 
 using namespace threadmaxx::navmesh;
@@ -39,7 +40,7 @@ int main() {
 
     PathId id = svc.request(req);
     CHECK(id != 0);
-    auto res = svc.tryGet(id);
+    auto res = svc.wait(id, std::chrono::seconds{5});
     CHECK(res.has_value());
     if (!res) return gTestFailures;
 
@@ -72,7 +73,7 @@ int main() {
     PathRequest strict = req;
     strict.allowPartial = false;
     PathId strictId = svc.request(strict);
-    auto strictRes = svc.tryGet(strictId);
+    auto strictRes = svc.wait(strictId, std::chrono::seconds{5});
     CHECK(strictRes.has_value());
     if (strictRes) {
         CHECK(!strictRes->success);

@@ -4,14 +4,15 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N4 shipped (2026-06-10)** — Simple Stupid Funnel smoothing
-on top of the N3 corridor. `PathResult::waypoints` is now the smoothed
-walking path (`[start, ..., end]`) rather than the polygon-edge
-midpoint zig-zag; the polygon corridor still rides in `corridor`.
-Green on `build/` and `build-werror/` (12/12 navmesh tests). N5 → N9
-remain 📋 planned. Sequencing follows the §10 "implementation order"
-of the design notes, regrouped into shippable units that each carry
-their own tests.
+Status: **N5 shipped (2026-06-10)** — `PathQueryService` now runs
+solves on an internal worker thread by default. `request()` enqueues
+after pre-validating start/goal locations (so `lastRequestStatus()`
+stays meaningful on return), `tryGet()` returns `nullopt` until the
+worker stores a result, and a new `wait(id, timeout)` blocks for
+sync-style callers. Green on `build/` (230/230) and `build-werror/`
+(15/15 navmesh). N6 → N9 remain 📋 planned. Sequencing follows the
+§10 "implementation order" of the design notes, regrouped into
+shippable units that each carry their own tests.
 
 ## Conventions
 
@@ -226,30 +227,65 @@ tests updated for the smoothed-waypoints contract,
 
 **Out of scope**: agent-radius-aware path corridor shrinking (N7).
 
-## Batch N5 — Async path query service
+## Batch N5 — Async path query service — ✅ shipped 2026-06-10
 
 **Goal**: convert the synchronous N3 service to a worker-thread
-queue. `request()` enqueues; the service drains on its own thread
-or via an engine-job submit; `tryGet()` returns `nullopt` until
-ready.
+queue. `request()` enqueues; the service drains on its own thread;
+`tryGet()` returns `nullopt` until ready.
 
-**Test gate**:
+**Test gate** (delivered):
 
-- `test_navmesh_query_async_smoke` — submit 100 requests over 10
-  ticks; all complete with the same paths the synchronous N3 path
-  would have produced.
-- `test_navmesh_query_cancel` — cancel a pending request before
-  it solves; `tryGet()` reflects cancellation; the solver doesn't
-  crash.
-- `test_navmesh_query_clear` — `clear()` drops all pending /
-  ready entries; subsequent `tryGet()` returns `nullopt`.
+- `test_navmesh_query_async_smoke` — 100 requests fanning out over
+  the 16-poly flat square; each async result matches the reference
+  produced by a fresh `PathQueryService` in synchronous mode
+  (`workerThreads == 0`). After draining, `pendingCount == 0` and
+  `storedCount == 100`.
+- `test_navmesh_query_cancel` — three cases: cancel a freshly-issued
+  id before the worker pops it (`wait()` returns nullopt); cancel
+  the last of 64 queued ids (the rest still complete successfully);
+  cancel an already-stored id (`tryGet()` returns nullopt). Cancel
+  on an unknown id is a no-op.
+- `test_navmesh_query_clear` — queue 64 requests, call `clear()`,
+  verify `pendingCount == 0`, `storedCount == 0`, every prior id
+  returns nullopt from both `tryGet()` and `wait()` (the latter
+  resolves fast via tombstone — no timeout). Fresh requests after
+  `clear()` resolve normally.
 
-**Files**: extension to `src/PathQueryService.cpp`, optional
-`detail/ring_buffer.hpp` for the request queue.
+**Shipped**:
 
-**Risks**: the engine integration choice — does the service spawn
-its own thread pool, or borrow from the engine's `JobSystem`?
-Recommendation: borrow. Cleaner ownership, same worker accounting.
+- `query.hpp` — `PathQueryServiceConfig { workerThreads = 1 }`,
+  `wait(id, timeout)`, `pendingCount()`, `workerCount()`. Move ctor
+  / assignment disabled (worker threads + condvars make a sound
+  relocation awkward and unnecessary in practice). `Config{0}` is
+  the synchronous mode kept for testing + sync-style callers.
+- `src/PathQueryService.cpp` — `solvePrepared()` helper factored
+  out of `request()`; per-worker `SolverScratch` (A* state + node
+  index + centroids + funnel portal buf). Internal worker loop:
+  pop, cancellation check, mesh resolve, unlock, solve, re-lock,
+  in-flight removal + cancellation re-check, store. Tombstones via
+  `cancelled` set cover three windows: cancel-while-queued (popped
+  worker drops), cancel-during-solve (post-solve check drops),
+  `clear()` against in-flight (tracked via `inFlight` set).
+- Existing N3/N4 tests migrated from `svc.tryGet(id)` immediately
+  after `svc.request(req)` to `svc.wait(id, seconds{5})` — one-line
+  change per call site (6 tests, 9 sites). The terminal
+  `tryGet`s that assert "unknown id returns nullopt" stay
+  unchanged.
+
+**Files**: `include/threadmaxx_navmesh/query.hpp` (modified),
+`src/threadmaxx_navmesh/PathQueryService.cpp` (modified),
+`tests/navmesh/test_navmesh_query_async_smoke.cpp`,
+`tests/navmesh/test_navmesh_query_cancel.cpp`,
+`tests/navmesh/test_navmesh_query_clear.cpp` (new),
+`tests/navmesh/CMakeLists.txt` (modified), six N3/N4 tests migrated
+from `tryGet` → `wait`.
+
+**Engine integration**: the service spawns its own thread (default
+1 worker). The sibling library remains zero-coupled to engine
+internals — borrowing from the engine's `JobSystem` would have
+required exposing that header out of `src/`, which is out of
+scope for v1.0. N6's `BatchPathSolver` can revisit thread-pool
+sharing if profiling shows two pools fighting for cores.
 
 **Out of scope**: batch solver (N6).
 

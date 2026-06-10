@@ -5,6 +5,7 @@
 #include "threadmaxx_navmesh/query.hpp"
 #include "threadmaxx_navmesh/threadmaxx_navmesh.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 
@@ -39,7 +40,7 @@ int main() {
     PathId id = svc.request(req);
     CHECK(id != 0);
 
-    auto res = svc.tryGet(id);
+    auto res = svc.wait(id, std::chrono::seconds{5});
     CHECK(res.has_value());
     if (!res) return gTestFailures;
 

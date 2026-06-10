@@ -5,6 +5,7 @@
 #include "threadmaxx_navmesh/query.hpp"
 #include "threadmaxx_navmesh/threadmaxx_navmesh.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 
@@ -40,7 +41,7 @@ int main() {
     req.areaMask = 0xFFFFFFFFu;
     PathId openId = svc.request(req);
     CHECK(openId != 0);
-    auto open = svc.tryGet(openId);
+    auto open = svc.wait(openId, std::chrono::seconds{5});
     CHECK(open.has_value());
     if (!open) return gTestFailures;
 
@@ -58,7 +59,7 @@ int main() {
     req.areaMask = ~(std::uint32_t{1} << 1);  // every bit except 1.
     PathId dryId = svc.request(req);
     CHECK(dryId != 0);
-    auto dry = svc.tryGet(dryId);
+    auto dry = svc.wait(dryId, std::chrono::seconds{5});
     CHECK(dry.has_value());
     if (!dry) return gTestFailures;
 

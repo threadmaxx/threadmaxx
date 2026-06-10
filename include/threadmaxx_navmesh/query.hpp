@@ -4,14 +4,16 @@
 
 #include "threadmaxx/Components.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
 
-/// Synchronous polygon-graph A* path query (N3). The service stores
-/// results under an opaque `PathId` so the same shape works when N5
-/// converts it into an asynchronous worker-fed solver.
+/// Asynchronous polygon-graph A* path query (N5). `request()` enqueues
+/// onto an internal worker queue; `tryGet()` returns `std::nullopt`
+/// until the worker has produced a result; `wait()` blocks. Built on
+/// top of the N3/N4 solver (corridor + funnel smoothing).
 namespace threadmaxx::navmesh {
 
 using ::threadmaxx::Vec3;
@@ -46,9 +48,9 @@ struct PathRequest {
 };
 
 /// Output of a path query. `corridor` is the polygon sequence the path
-/// walks; `waypoints` is `[start, edge-midpoints..., end]`. The end is
-/// `goal` when the query reached it, or the centroid of the closest
-/// reachable polygon for a partial result.
+/// walks; `waypoints` is the funnel-smoothed walking path `[start, ...,
+/// end]`. The end is `goal` when the query reached it, or the centroid
+/// of the closest reachable polygon for a partial result.
 struct PathResult {
     /// Polygon along the corridor — `(tileId, polyId)` pair.
     struct CorridorEntry {
@@ -57,44 +59,74 @@ struct PathResult {
     };
 
     PathId id{};                          ///< Matches the id returned by `request`.
-    bool ready{};                         ///< Always true in v1.0 (sync); N5 makes this load-bearing.
+    bool ready{};                         ///< Always true once `tryGet` / `wait` returns a value.
     bool success{};                       ///< true if a usable path was produced.
     bool partial{};                       ///< true when `allowPartial` rescued an unreachable goal.
-    std::vector<Vec3> waypoints;          ///< `[start, edge-midpoints..., end]`.
+    std::vector<Vec3> waypoints;          ///< funnel-smoothed `[start, ..., end]`.
     std::vector<CorridorEntry> corridor;  ///< Polygon walk start→end (empty on failure).
     float cost{};                         ///< Sum of A* edge costs along the corridor.
 };
 
-/// Owns synchronous-mode path solves. The instance keeps a per-mesh
-/// A* scratch — `request` is single-thread by API contract in v1.0;
-/// `tryGet` / `cancel` / `clear` are safe from any thread.
+/// Tunables for the worker queue. `workerThreads = 0` runs solves
+/// in-line on the `request()` thread (synchronous compat mode).
+struct PathQueryServiceConfig {
+    std::uint32_t workerThreads{1};
+};
+
+/// Owns the async path query queue. `request()` validates the inputs
+/// up front (so `lastRequestStatus()` is meaningful on return), then
+/// enqueues for an internal worker thread to solve. `tryGet` /
+/// `wait` / `cancel` / `clear` are safe from any thread.
 class PathQueryService {
 public:
+    using Config = PathQueryServiceConfig;
+
     /// `registry` must outlive the service — only borrowed.
-    explicit PathQueryService(const NavMeshRegistry& registry);
+    explicit PathQueryService(const NavMeshRegistry& registry,
+                              Config cfg = {});
     ~PathQueryService();
     PathQueryService(const PathQueryService&) = delete;
     PathQueryService& operator=(const PathQueryService&) = delete;
-    PathQueryService(PathQueryService&&) noexcept;
-    PathQueryService& operator=(PathQueryService&&) noexcept;
+    // Non-movable: holding worker threads + condvars makes a sound
+    // move() awkward and we never relocate live services in practice.
+    PathQueryService(PathQueryService&&) = delete;
+    PathQueryService& operator=(PathQueryService&&) = delete;
 
-    /// Solve immediately and stash the result. Returns the id, or 0
+    /// Validate (locate start/goal) then enqueue. Returns the id, or 0
     /// when the request failed pre-solve (`lastRequestStatus` reports
-    /// the reason).
+    /// the reason). In `workerThreads == 0` mode the solve runs inline
+    /// and the result is ready before this call returns.
     PathId request(const PathRequest& req);
 
-    /// Look up a previously-solved result. `std::nullopt` if `id` is
-    /// unknown (e.g. cancelled or never issued).
+    /// Look up a result. `std::nullopt` if `id` is unknown, cancelled,
+    /// or still queued / mid-solve.
     std::optional<PathResult> tryGet(PathId id) const;
 
-    /// Drop the stored result for `id`. No-op if the id is unknown.
+    /// Block until a result for `id` is ready, the id is cancelled, or
+    /// `timeout` elapses. Returns the result on success; `nullopt`
+    /// otherwise. Safe to call from any thread.
+    std::optional<PathResult> wait(
+        PathId id, std::chrono::milliseconds timeout) const;
+
+    /// Cancel a pending or completed request. If the request is still
+    /// queued, the worker skips it on pop. If it's mid-solve, the
+    /// worker discards the result on store. If it's already stored,
+    /// the result is dropped. No-op for unknown ids.
     void cancel(PathId id);
 
-    /// Drop every stored result.
+    /// Drop every stored result AND every queued / in-flight request.
+    /// In-flight solves complete but their result is discarded.
     void clear();
 
-    /// Number of stored results currently retrievable.
+    /// Number of stored (ready) results currently retrievable.
     std::size_t storedCount() const noexcept;
+
+    /// Number of requests queued but not yet solved. In-flight (already
+    /// popped, mid-solve) requests are NOT counted.
+    std::size_t pendingCount() const noexcept;
+
+    /// Configured worker thread count. `0` means synchronous mode.
+    std::uint32_t workerCount() const noexcept;
 
     /// Diagnostic — only meaningful from the thread that called
     /// `request` last (single-thread contract).
