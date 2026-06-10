@@ -3,12 +3,15 @@ set(THREADMAXX_NAVMESH_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/mesh.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/obstacle.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/query.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/steering.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/crowd.hpp
 )
 
 set(THREADMAXX_NAVMESH_SOURCES
     NavMeshRegistry.cpp
+    ObstacleOverlay.cpp
     Solver.cpp
     PathQueryService.cpp
     BatchPathSolver.cpp

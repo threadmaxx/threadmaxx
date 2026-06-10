@@ -3,6 +3,7 @@
 #include "threadmaxx_navmesh/detail/a_star.hpp"
 #include "threadmaxx_navmesh/detail/funnel.hpp"
 #include "threadmaxx_navmesh/mesh.hpp"
+#include "threadmaxx_navmesh/obstacle.hpp"
 #include "threadmaxx_navmesh/query.hpp"
 
 #include "threadmaxx/Components.hpp"
@@ -197,6 +198,21 @@ void solvePrepared(const NavMesh& mesh,
             const std::uint32_t nbrNode =
                 scratch.nodeIndex.encode(nbrTileIdx, nbrPolyId);
             if (scratch.state.closed.test(nbrNode)) continue;
+
+            // N8 — dynamic obstacle overlay. Skip a neighbor whose
+            // centroid sits inside any obstacle that blocks the
+            // neighbor's area tag. Start polygon is special-cased in
+            // the caller via the open-set seeding, so we never gate
+            // it here. The caller-mask is `1 << areaTag`, so an
+            // obstacle's `areaMask` bit `k` blocks polys tagged `k`.
+            if (req.obstacles != nullptr) {
+                const std::uint32_t areaBit =
+                    std::uint32_t{1} << (nbrPoly.areaTag & 31u);
+                if (req.obstacles->isBlocked(
+                        scratch.centroids[nbrNode], areaBit)) {
+                    continue;
+                }
+            }
             const float stepCost = distance(
                 scratch.centroids[cur.node], scratch.centroids[nbrNode]);
             const float newG = cur.gCost + stepCost;

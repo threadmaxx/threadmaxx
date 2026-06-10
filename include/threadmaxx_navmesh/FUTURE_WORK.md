@@ -4,15 +4,15 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **N7 shipped (2026-06-10)** — `followPath(in) -> out` turns a
-funnel-smoothed waypoint list plus the agent's `(position, velocity)`
-into a `desiredVelocity` under an acceleration cap, with arrival
-detection against a configurable `arrivalRadius`. Header-only
-`steering.hpp`; pure function, safe to call from any thread. Green on
-`build/` (235/235) and `build-werror/` (20/20 navmesh). N8 → N9 remain
-📋 planned. Sequencing follows the §10 "implementation order" of the
-design notes, regrouped into shippable units that each carry their
-own tests.
+Status: **N8 shipped (2026-06-10)** — `ObstacleOverlay` + `DynamicObstacle`
+back a spatial-hash overlay; `PathRequest::obstacles` makes the solver
+skip neighbor polys whose centroid sits inside any blocker for the
+matching area tag. Header-only spatial hash in
+`detail/spatial_hash.hpp`; PImpl'd public surface in `obstacle.hpp` +
+`src/ObstacleOverlay.cpp`. Green on `build/` (238/238) and
+`build-werror/` (23/23 navmesh). N9 remains 📋 planned. Sequencing
+follows the §10 "implementation order" of the design notes, regrouped
+into shippable units that each carry their own tests.
 
 ## Conventions
 
@@ -414,31 +414,61 @@ navigate the path.
 **Out of scope**: local avoidance / RVO (v1.x), crowd density
 fields (v1.x), agent-radius-aware corridor shrink (v1.x).
 
-## Batch N8 — Dynamic obstacle overlay
+## Batch N8 — Dynamic obstacle overlay ✅ shipped 2026-06-10
 
-**Goal**: temporary blockers without rebaking. Obstacles get added
-to a spatial-hash overlay; A* consults the overlay during edge
-expansion and skips edges crossing into blocked cells.
+**Delivered**:
+- `DynamicObstacle { center, halfExtents, height, areaMask }` POD.
+  `areaMask` bit `k` blocks polygons tagged `areaTag == k` (default
+  `0xFFFFFFFFu` blocks every area tag). `height` is reserved for
+  v1.x 3D queries — the runtime treats the obstacle as an XZ
+  rectangle.
+- `ObstacleOverlay` — PImpl'd public surface (`obstacle.hpp` +
+  `src/ObstacleOverlay.cpp`). `add(o) -> ObstacleId`, `update(id,
+  o)`, `remove(id)`, `isBlocked(xz, callerMask)`. Ids strictly
+  monotonic; never reused. `update()` rebuilds the obstacle's
+  spatial-hash buckets atomically (no transient ghost cells).
+- `detail/spatial_hash.hpp` — header-only generic XZ spatial hash
+  (`SpatialHashXZ<KeyT, ValueT>`). Floor-to-negative-infinity cell
+  math handles obstacles straddling the origin without bias. The
+  overlay buckets each obstacle by its XZ AABB; `isBlocked()` does
+  the precise AABB-vs-point test on the matched cell's payloads.
+- `PathRequest::obstacles` — optional `const ObstacleOverlay*` the
+  solver consults during edge expansion. Skip rule: `if obstacles
+  && obstacles->isBlocked(centroid[neighbor], 1 << nbrPoly.areaTag)`
+  → drop the neighbor. Null overlay path is the original behavior;
+  no measurable cost for legacy callers.
+- `Config::cellSize` defaults to `1.0f` per the DESIGN_NOTES
+  recommendation; callers should reach for
+  `max(agentRadius, tileSize/8)` when they have those numbers.
 
-**Test gate**:
+**Test outcomes**:
+- `test_navmesh_obstacle_blocks` — wall bisecting the middle row of
+  the 16-poly flat square forces the path off the direct (cost 3.0,
+  4 polys) route onto the detour (cost 5.0, 6 polys), then dropping
+  the overlay restores the direct path.
+- `test_navmesh_obstacle_update` — moving the same obstacle to a
+  far corner restores the direct path; moving it to the upper row
+  keeps the direct path optimal (it never used the upper row).
+- `test_navmesh_obstacle_remove` — remove the wall and the direct
+  path returns. Stale `remove()` is a silent no-op; a fresh id is
+  unaffected by stale removes.
+- Green on `build/` (238/238) and `build-werror/` (23/23 navmesh).
 
-- `test_navmesh_obstacle_blocks` — add an obstacle that bisects
-  the L-shape; the path now routes around it.
-- `test_navmesh_obstacle_update` — moving an obstacle invalidates
-  the affected cells; subsequent queries pick up the new state.
-- `test_navmesh_obstacle_remove` — removing the obstacle restores
-  the original path.
-
-**Files**: `obstacle.hpp`, `src/ObstacleOverlay.cpp`,
-`detail/spatial_hash.hpp`.
-
-**Risks**: the obstacle-grid resolution. Too coarse and small
-obstacles don't block anything; too fine and the overlay update
-cost dominates. Ship a configurable cell size; default to
-`max(agentRadius, tileSize/8)`.
+**Files**: `include/threadmaxx_navmesh/obstacle.hpp` (new),
+`include/threadmaxx_navmesh/detail/spatial_hash.hpp` (new),
+`src/threadmaxx_navmesh/ObstacleOverlay.cpp` (new),
+`include/threadmaxx_navmesh/query.hpp` (modified — `PathRequest::obstacles`),
+`src/threadmaxx_navmesh/Solver.cpp` (modified — edge-expansion gate),
+`include/threadmaxx_navmesh/threadmaxx_navmesh.hpp` (modified — umbrella),
+`src/threadmaxx_navmesh/CMakeLists.txt` (modified),
+`tests/navmesh/test_navmesh_obstacle_blocks.cpp`,
+`test_navmesh_obstacle_update.cpp`,
+`test_navmesh_obstacle_remove.cpp` (new),
+`tests/navmesh/CMakeLists.txt` (modified).
 
 **Out of scope**: full local-avoidance steering against dynamic
-obstacles (v1.x).
+obstacles (v1.x); segment-vs-AABB edge sweep (centroid test is the
+v1.0 contract); 3D queries against `halfExtents.y` (v1.x).
 
 ## Batch N9 — Bake tool
 

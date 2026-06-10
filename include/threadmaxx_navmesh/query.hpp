@@ -19,6 +19,7 @@ namespace threadmaxx::navmesh {
 using ::threadmaxx::Vec3;
 
 class NavMeshRegistry;
+class ObstacleOverlay;
 
 /// Why the most recent `PathQueryService::request` failed before the
 /// solver ran. `Accepted` means the solve ran; per-result `success`
@@ -45,6 +46,11 @@ struct PathRequest {
     /// ends at the polygon with the lowest heuristic-to-goal seen.
     /// When false, an unreachable goal sets `success = false`.
     bool allowPartial{true};
+    /// Optional dynamic-obstacle overlay (N8). When non-null, the
+    /// solver skips edges that cross into polygons whose centroid sits
+    /// inside any obstacle blocking the neighbor's area tag. The
+    /// overlay must outlive the request — the solver only borrows it.
+    const ObstacleOverlay* obstacles{nullptr};
 };
 
 /// Output of a path query. `corridor` is the polygon sequence the path

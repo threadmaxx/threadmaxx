@@ -26,6 +26,9 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_follow_straight
     test_navmesh_follow_corner
     test_navmesh_follow_finished
+    test_navmesh_obstacle_blocks
+    test_navmesh_obstacle_update
+    test_navmesh_obstacle_remove
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})
