@@ -4,14 +4,17 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/context.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/draw.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/layout.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backends/NullBackend.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/clip_stack.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/id_stack.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/rect_math.hpp
 )
 
 set(THREADMAXX_UI_SOURCES
+    Layout.cpp
     backends/NullBackend.cpp
 )
 

@@ -10,6 +10,12 @@ set(THREADMAXX_UI_TESTS
     test_ui_draw_list
     test_ui_context_lifecycle
     test_ui_no_allocations
+    test_ui_layout_row
+    test_ui_layout_column
+    test_ui_layout_nested
+    test_ui_layout_padding_spacing
+    test_ui_layout_clipping
+    test_ui_layout_overflow
 )
 
 foreach(test ${THREADMAXX_UI_TESTS})
