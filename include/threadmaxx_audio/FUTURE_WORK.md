@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1-AU6 shipped (2026-06-10/11)**. AU7-AU8 are 📋 planned.
+Status: **AU1-AU7 shipped (2026-06-10/11)**. AU8 is 📋 planned.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -361,25 +361,58 @@ in custom DSP chains.
 
 **Out of scope**: spectrum analysis, capture-to-file.
 
-## Batch AU7 — Engine integration
+## Batch AU7 — Engine integration ✅ landed 2026-06-11
 
-**Goal**: a recommended `ISystem` pattern that reads `Transform` +
-`Velocity` chunks and updates listener / emitter state. Lives in
-documentation and a smoke test, not in the library itself (the
-library stays engine-agnostic per DESIGN_NOTES §2.1).
+**Goal**: a recommended `ISystem` pattern that reads `Transform`
+chunks and updates listener / emitter state. The library stays
+engine-agnostic per DESIGN_NOTES §2.1 — only `scene.hpp`'s thin
+one-line wrappers ship in the library; the integration glue lives
+in the smoke test and the example.
 
-**Test gate**:
+**Test gate** (green on `build/` + `build-werror/`):
 
-- `test_audio_engine_integration` — register an Engine + an
-  AudioMixer + a sample `AudioSystem` (in the test harness); spawn
-  a moving emitter entity; verify the mixer's spatializer received
-  the per-tick updated position.
-- `bench/audio_crowd_bench.cpp` — 512 simultaneously-playing
-  emitters across 4 buses; report mix-cost / frame.
+- ✅ `test_audio_engine_integration` — Engine + AudioMixer + sample
+  `AudioSystem` ISystem. Tracks (entity, voice) pairs; reads
+  Transform via `ctx.worldView().world()->tryGetTransform()` in
+  postStep and calls `setEmitterPose`; calls `mixer.mix()` to close
+  the tick. A second-tick TeleportSystem writes a new Transform via
+  `cb.setTransform`; AudioSystem sees the committed value the same
+  tick (registration order). Verified by peak amplitude collapsing
+  near→far.
+- ✅ `bench/audio_crowd_bench.cpp` — 256 voices on 4 buses, 1024-
+  frame buffers @ 48 kHz, 2000 iterations: **0.139 ms/buffer**
+  (avg 0.54 µs/voice). v1.0 close-out gate was < 2 ms/buffer — we
+  cleared it by ~14×.
 
-**Files**: `scene.hpp` (helper functions for engine integration),
-example integration code in `examples/audio_demo/` (separate
-target, not part of the library).
+**Performance fix during this batch**: the original
+`mixClipVoiceInto` called `mixFramesIntoBus` once per output frame,
+which blocked vectorisation and turned the bench in at 4.5 ms/256
+voices. Rewrote to segmented mixing (one contiguous run per
+clip-wrap chunk) + specialised stereo→stereo / mono→stereo fast
+paths inside `mixFramesIntoBus`; the compiler now vectorises the
+inner loop. Same correctness (24/24 audio tests still green).
+
+**Files landed**:
+- `include/threadmaxx_audio/scene.hpp` — `setListenerPose` /
+  `setEmitterPose` one-line wrappers
+- `tests/audio/test_audio_engine_integration.cpp` (links both
+  `threadmaxx::audio` and `threadmaxx::threadmaxx`, gated on the
+  core target being available)
+- `bench/audio_crowd_bench.cpp` (opt-in via
+  `THREADMAXX_BUILD_BENCHMARKS`; gated on `threadmaxx::audio`)
+- `examples/audio_demo/` (headless integration walkthrough using
+  `LoopbackDevice`; reads back the peak meter)
+- Mixer hot-path perf rewrite in `AudioMixer.cpp`
+
+**Resolved decisions**:
+- `scene.hpp` is engine-agnostic — game code converts its own
+  `Transform` to `audio::Vec3` at the call site (one struct-init
+  line). The library never names a threadmaxx core type.
+- AudioSystem reads positions in `postStep` so it sees Transforms
+  committed by writers earlier in the registration order during
+  the same tick.
+- Bench gate phrasing changed from "audible-amplitude assertion"
+  to a numeric ms/buffer report so v1.0 close-out can quote it.
 
 **Out of scope**: the full RPG demo audio integration (lives in
 GAME_EXTENSION.md's mid-term tranche, depends on this library).

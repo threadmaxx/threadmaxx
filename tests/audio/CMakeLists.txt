@@ -48,3 +48,30 @@ foreach(test ${THREADMAXX_AUDIO_TESTS})
     endif()
     add_test(NAME audio.${test} COMMAND ${test})
 endforeach()
+
+# AU7 — engine integration smoke test. Links against both the audio
+# sibling library and the threadmaxx core engine; only built when the
+# core library target is available (same opt-in as the other audio
+# tests).
+if (TARGET threadmaxx::threadmaxx)
+    add_executable(test_audio_engine_integration
+        test_audio_engine_integration.cpp)
+    target_link_libraries(test_audio_engine_integration PRIVATE
+        threadmaxx::audio
+        threadmaxx::threadmaxx)
+    target_include_directories(test_audio_engine_integration PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    set_target_properties(test_audio_engine_integration PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(test_audio_engine_integration PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME audio.test_audio_engine_integration
+             COMMAND test_audio_engine_integration)
+endif()

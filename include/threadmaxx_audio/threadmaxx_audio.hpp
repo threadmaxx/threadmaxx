@@ -15,6 +15,7 @@
 #include "threadmaxx_audio/events.hpp"
 #include "threadmaxx_audio/loopback_device.hpp"
 #include "threadmaxx_audio/mixer.hpp"
+#include "threadmaxx_audio/scene.hpp"
 #include "threadmaxx_audio/spatial.hpp"
 #include "threadmaxx_audio/stream.hpp"
 #include "threadmaxx_audio/types.hpp"

@@ -475,14 +475,28 @@ bool AudioMixer::isPlaying(VoiceId voice) const noexcept {
 namespace {
 
 // Mix `frames` of interleaved float source at `src` (with `srcChans` channels)
-// into `dst` (with `busChans` channels), applying `linearGain`. Handles mono
-// → stereo dup and matching/mismatched channel counts via the same channel
-// adaptation policy as the clip path.
+// into `dst` (with `busChans` channels), applying `linearGain`. Specialised
+// stereo→stereo and mono→stereo paths keep the inner loop branch-free so the
+// compiler vectorises them; mismatched layouts fall through to the generic
+// down-mix path.
 inline void mixFramesIntoBus(const float* src, std::uint8_t srcChans,
                              float* dst, std::uint8_t busChans,
                              std::size_t frames, float linearGain) noexcept {
     if (srcChans == 0 || busChans == 0 || src == nullptr || dst == nullptr) return;
-    if (srcChans == busChans) {
+    if (srcChans == 2 && busChans == 2) {
+        // Fast path — vectorisable. Used by every stereo clip / stereo
+        // stream voice into the stereo master/bus buffer.
+        for (std::size_t i = 0; i < frames; ++i) {
+            dst[i * 2 + 0] += src[i * 2 + 0] * linearGain;
+            dst[i * 2 + 1] += src[i * 2 + 1] * linearGain;
+        }
+    } else if (srcChans == 1 && busChans == 2) {
+        for (std::size_t i = 0; i < frames; ++i) {
+            const float s = src[i] * linearGain;
+            dst[i * 2 + 0] += s;
+            dst[i * 2 + 1] += s;
+        }
+    } else if (srcChans == busChans) {
         for (std::size_t i = 0; i < frames; ++i) {
             const float* s = src + i * srcChans;
             float* d       = dst + i * busChans;
@@ -509,8 +523,11 @@ inline void mixFramesIntoBus(const float* src, std::uint8_t srcChans,
 // Mix `bufferFrames` of `clip` starting at `v.playheadFrames` into `dst`.
 // Returns true when the voice should stop (clip exhausted, non-looping).
 // Sets `looped` to true if ≥1 wrap occurred during this call (AU6 event).
-// Non-spatial: integer frame advance — `playheadFrames` is `double` but
-// always holds integer values on this path.
+//
+// Segmented: a non-looping voice mixes one contiguous run and may run out
+// mid-buffer; a looping voice mixes contiguous runs separated by clip-
+// boundary wraps. This lets `mixFramesIntoBus` see long batches and the
+// compiler vectorise the stereo→stereo / mono→stereo paths.
 bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
                       float* dst, std::size_t bufferFrames,
                       std::uint8_t busChans,
@@ -521,28 +538,41 @@ bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
     if (clipFrames == 0 || clipChans == 0 || busChans == 0) return true;
 
     const float linearGain = dbToLinear(v.gainDb);
-    bool reachedEnd = false;
     const std::uint64_t startFrame = static_cast<std::uint64_t>(v.playheadFrames);
 
-    for (std::size_t i = 0; i < bufferFrames; ++i) {
-        std::uint64_t f = startFrame + i;
-        if (f >= clipFrames) {
-            if (v.looping) {
-                looped = true;
-                f = f % clipFrames;
-            } else {
-                reachedEnd = true;
-                break;
-            }
+    if (!v.looping) {
+        if (startFrame >= clipFrames) {
+            return true;
         }
-        const float* src = clip.samples.data() + f * clipChans;
-        float* d         = dst + i * busChans;
-        mixFramesIntoBus(src, clipChans, d, busChans, 1u, linearGain);
+        const std::size_t available = static_cast<std::size_t>(clipFrames - startFrame);
+        const std::size_t toMix     = available < bufferFrames ? available : bufferFrames;
+        if (toMix > 0) {
+            mixFramesIntoBus(clip.samples.data() + startFrame * clipChans, clipChans,
+                             dst, busChans, toMix, linearGain);
+        }
+        v.playheadFrames += static_cast<double>(bufferFrames);
+        return v.playheadFrames >= static_cast<double>(clipFrames);
     }
 
+    // Looping: walk the buffer in clip-bounded chunks.
+    std::size_t   remaining = bufferFrames;
+    std::uint64_t srcFrame  = startFrame % clipFrames;
+    std::size_t   dstOff    = 0;
+    while (remaining > 0) {
+        const std::size_t available = static_cast<std::size_t>(clipFrames - srcFrame);
+        const std::size_t chunk     = remaining < available ? remaining : available;
+        mixFramesIntoBus(clip.samples.data() + srcFrame * clipChans, clipChans,
+                         dst + dstOff * busChans, busChans, chunk, linearGain);
+        srcFrame += chunk;
+        if (srcFrame >= clipFrames) {
+            srcFrame = 0;
+            looped   = true;
+        }
+        dstOff    += chunk;
+        remaining -= chunk;
+    }
     v.playheadFrames += static_cast<double>(bufferFrames);
-    if (!v.looping && v.playheadFrames >= static_cast<double>(clipFrames)) reachedEnd = true;
-    return reachedEnd;
+    return false;
 }
 
 // AU4 — spatial clip path. Down-mixes the clip frame to mono, then writes

@@ -9,6 +9,7 @@ set(THREADMAXX_AUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/events.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/loopback_device.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/mixer.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/scene.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/spatial.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/stream.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/types.hpp

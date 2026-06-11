@@ -211,6 +211,7 @@ if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/tou2d)
     add_subdirectory(examples/physics_demo)
     add_subdirectory(examples/navmesh_bake)
+    add_subdirectory(examples/audio_demo)
 endif()
 
 # --------------------------------------------------------------------------
