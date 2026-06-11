@@ -4,8 +4,12 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **planning** — seed lands `DESIGN_NOTES.md` and this
-batch plan; I1–I8 + v1.0 close-out follow as separate commits.
+Status: **v1.0.0 shipped (2026-06-11)** — all eight batches I1–I8
+plus the close-out landed. Close-out gates green: 41/41 tests on
+both `build/` and `build-werror/`, 500-action no-alloc gate clean,
+bench at 12.92 µs / frame (~4× under the 50 µs target), README +
+USER_GUIDE + MAINTAINER_GUIDE + CHANGELOG all under
+`include/threadmaxx_input/`, version stamped at `1.0.0`.
 
 Sequencing follows §8 ("Suggested implementation order") of the
 design notes. Each batch is independently shippable, with its own
@@ -75,7 +79,7 @@ bench/
   input_*.cpp
 ```
 
-## Batch I1 — Foundations (context + state POD + null backend)
+## Batch I1 — Foundations (context + state POD + null backend) ✅ landed 2026-06-11
 
 **Goal**: stand up `InputContext`, `InputState` POD, the raw
 `InputEvent` variant, `NullBackend`, and the per-frame
@@ -125,7 +129,7 @@ state plumbing.
 **Out of scope**: edge detection (I2), action map (I3),
 gamepad polling beyond connection events (I4).
 
-## Batch I2 — Keyboard + mouse polling
+## Batch I2 — Keyboard + mouse polling ✅ landed 2026-06-11
 
 **Goal**: drain backend events into `InputState`, compute edge
 bitsets (`keysPressed` / `keysReleased`), handle the per-frame
@@ -157,7 +161,7 @@ char queue, derive the modifier mask.
 
 **Out of scope**: gamepad axes (I4).
 
-## Batch I3 — Action map + bindings
+## Batch I3 — Action map + bindings ✅ landed 2026-06-11
 
 **Goal**: `BindingSet`, `ActionId` hashing, `action(id)` query,
 binary (de)serialization, exact modifier matching.
@@ -194,7 +198,7 @@ binary (de)serialization, exact modifier matching.
 
 **Out of scope**: chords (`Ctrl+K, Ctrl+S`) — deferred to v1.x.
 
-## Batch I4 — Gamepad
+## Batch I4 — Gamepad ✅ landed 2026-06-11
 
 **Goal**: multi-pad state, deadzones, axis curves, button-state
 edges, hot-plug events.
@@ -222,7 +226,7 @@ edges, hot-plug events.
 **Out of scope**: rumble / haptics (deferred to a future
 output-side sibling library).
 
-## Batch I5 — Cursor mode + capture sinks
+## Batch I5 — Cursor mode + capture sinks ✅ landed 2026-06-11
 
 **Goal**: `CursorMode { Visible, Hidden, Locked }`,
 `setCaptureMouse/Keyboard` plumbing, `wantsMouse/Keyboard` query
@@ -251,7 +255,7 @@ shape, backend `setCursorMode` hook.
 **Out of scope**: OS-level cursor warping logic lives in the
 backend; I5 only asserts that `NullBackend` records the calls.
 
-## Batch I6 — Picking
+## Batch I6 — Picking ✅ landed 2026-06-11
 
 **Goal**: `Camera` POD, `Ray` POD, `screenToRay`, `worldToScreen`,
 numerical-stability tests.
@@ -282,7 +286,7 @@ numerical-stability tests.
 - Mixed-precision matrices — the I6 tests pin all inputs at
   `float` and document that `double` is out of scope for v1.0.
 
-## Batch I7 — UI bridge
+## Batch I7 — UI bridge ✅ landed 2026-06-11
 
 **Goal**: `toUIInput(InputContext) -> threadmaxx::ui::UIInput`
 lowering, gated by `THREADMAXX_INPUT_UI_BRIDGE=ON`. Capture-
@@ -316,7 +320,7 @@ sink handshake: UI tells input what to swallow; input answers
 **Out of scope**: input does not read UI state — capture flags
 are the only feedback channel.
 
-## Batch I8 — Replay + Linux + GLFW backends
+## Batch I8 — Replay + Linux + GLFW backends ✅ landed 2026-06-11 (Linux evdev deferred to v1.x)
 
 **Goal**: `InputTrace::record` / `replay` + serialization;
 `EvdevBackend` over `/dev/input/`; `GlfwBackend` for hosts already
@@ -354,7 +358,7 @@ using GLFW (the engine's reference Vulkan renderer + rpg_demo).
 - `EvdevBackend` requires a real `/dev/input/` node for end-to-end
   hot-plug testing — pin smoke test to a synthetic file stream.
 
-## v1.0 close-out
+## v1.0 close-out ✅ landed 2026-06-11
 
 - `version.hpp` bumped to `1.0.0`
   (`THREADMAXX_INPUT_VERSION = 10000`).

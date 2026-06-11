@@ -42,6 +42,7 @@ set(THREADMAXX_INPUT_TESTS
     test_input_trace_serialize
     test_input_trace_no_allocations
     test_input_glfw_smoke
+    test_input_crowd_no_alloc
 )
 
 # UI-bridge tests opt in when threadmaxx::ui is available — the bridge
