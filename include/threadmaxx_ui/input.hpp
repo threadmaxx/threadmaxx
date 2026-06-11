@@ -39,6 +39,10 @@ namespace NavKey {
     inline constexpr std::uint16_t Right    = 1u << 5;
     inline constexpr std::uint16_t Up       = 1u << 6;
     inline constexpr std::uint16_t Down     = 1u << 7;
+    inline constexpr std::uint16_t Backspace = 1u << 8;
+    inline constexpr std::uint16_t Delete    = 1u << 9;
+    inline constexpr std::uint16_t Home      = 1u << 10;
+    inline constexpr std::uint16_t End       = 1u << 11;
 }
 
 /// Mouse button bit positions (bit-OR into the mouse fields).
@@ -86,6 +90,11 @@ struct UIInput {
 
     /// Number of valid entries in `chars`.
     std::uint8_t charsCount = 0;
+
+    /// Wall-clock time elapsed since the previous frame, in seconds.
+    /// Tooltip / animation / drag-threshold logic consume this; default 0
+    /// is fine for tests that drive frame counts directly.
+    float deltaTimeSeconds = 0.0f;
 };
 
 /// Flags passed to `registerHitTest`.

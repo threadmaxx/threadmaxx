@@ -21,6 +21,15 @@ set(THREADMAXX_UI_TESTS
     test_ui_input_capture_mouse
     test_ui_input_capture_keyboard
     test_ui_input_determinism
+    test_ui_widget_button
+    test_ui_widget_checkbox
+    test_ui_widget_radio
+    test_ui_widget_slider
+    test_ui_widget_drag_scalar
+    test_ui_widget_input_text
+    test_ui_widget_selectable
+    test_ui_widget_tooltip
+    test_ui_widget_no_allocations
 )
 
 foreach(test ${THREADMAXX_UI_TESTS})

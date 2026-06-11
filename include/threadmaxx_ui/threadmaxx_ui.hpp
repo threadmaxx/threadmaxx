@@ -9,6 +9,7 @@
 ///         version.hpp.
 ///   UI2 — layout.hpp.
 ///   UI3 — input.hpp.
+///   UI4 — widget.hpp.
 
 #include "threadmaxx_ui/backend.hpp"
 #include "threadmaxx_ui/config.hpp"
@@ -18,3 +19,4 @@
 #include "threadmaxx_ui/layout.hpp"
 #include "threadmaxx_ui/types.hpp"
 #include "threadmaxx_ui/version.hpp"
+#include "threadmaxx_ui/widget.hpp"

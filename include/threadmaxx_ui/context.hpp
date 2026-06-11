@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cstdint>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "threadmaxx_ui/backend.hpp"
@@ -70,6 +71,25 @@ struct HitTestRecord {
     WidgetID id{};
     Rect bounds{};
     std::uint32_t flags = 0;
+};
+
+/// Per-widget retained state. Lives across frames; keyed by `WidgetID`.
+/// Widget impls use the fields as needed — checkbox/slider don't need
+/// retained state (value is bound to the caller's variable), but
+/// drag-scalar, input-text, tree node, tooltip all do.
+struct WidgetState {
+    /// Generic integer slot. Used by:
+    ///   input text: cursor position in the buffer.
+    ///   tree node : 0=closed, 1=open.
+    ///   selectable: 1 once "press inside" has fired (sticky activation).
+    std::int64_t iv = 0;
+    /// Generic float slot. Used by:
+    ///   drag scalar: accumulated drag delta.
+    ///   tooltip    : seconds the widget has been hovered.
+    double dv = 0.0;
+    /// Last frame this widget reported in. Hosts can GC stale entries by
+    /// pruning anything with `lastSeenFrame < currentFrame - threshold`.
+    std::uint64_t lastSeenFrame = 0;
 };
 
 class UIContext {
@@ -190,6 +210,27 @@ public:
     /// per-frame growth in the no-alloc gate.
     void reserveHitTests(std::size_t n) { hitTests_.reserve(n); }
 
+    /// Look up a widget's retained state. Creates the entry on first
+    /// touch (this allocates if the map needs to grow — host should call
+    /// `reserveWidgetStates(n)` before any no-alloc-tested frames).
+    /// Updates `lastSeenFrame` so a GC pass can drop dead entries.
+    [[nodiscard]] WidgetState& widgetState(WidgetID id) {
+        auto& slot = widgetStates_[id.value];
+        slot.lastSeenFrame = frameCount_;
+        return slot;
+    }
+
+    /// Probe the state without creating an entry. Returns nullptr when the
+    /// widget has never been seen.
+    [[nodiscard]] const WidgetState* tryGetWidgetState(WidgetID id) const noexcept {
+        const auto it = widgetStates_.find(id.value);
+        return (it == widgetStates_.end()) ? nullptr : &it->second;
+    }
+
+    /// Pre-size the widget-state map so subsequent `widgetState(id)` calls
+    /// don't trigger rehashes. Pair with the no-alloc warmup in tests.
+    void reserveWidgetStates(std::size_t n) { widgetStates_.reserve(n); }
+
 private:
     void finalizeInputState() noexcept;
 
@@ -214,6 +255,9 @@ private:
     WidgetID focusedId_{};
     bool focusKeyboardCapture_ = false;
     std::uint32_t focusableCount_ = 0;
+
+    // Retained widget state, keyed by WidgetID::value.
+    std::unordered_map<std::uint64_t, WidgetState> widgetStates_{};
 };
 
 } // namespace threadmaxx::ui

@@ -8,6 +8,7 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/layout.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/widget.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backends/NullBackend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/clip_stack.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/id_stack.hpp
@@ -17,6 +18,7 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
 set(THREADMAXX_UI_SOURCES
     Input.cpp
     Layout.cpp
+    Widgets.cpp
     backends/NullBackend.cpp
 )
 
