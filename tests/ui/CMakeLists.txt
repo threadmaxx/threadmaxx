@@ -45,6 +45,7 @@ set(THREADMAXX_UI_TESTS
     test_ui_dragdrop_lifecycle
     test_ui_gizmo_drag_2d
     test_ui_debug_hud
+    test_ui_vertex_backend
 )
 
 foreach(test ${THREADMAXX_UI_TESTS})

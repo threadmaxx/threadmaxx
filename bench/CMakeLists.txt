@@ -103,6 +103,22 @@ if (TARGET threadmaxx::audio)
     endif()
 endif()
 
+# threadmaxx_ui UI8 — frame-build throughput. v1.0 close-out target is
+# < 1 ms / frame for 500 widgets across 8 panels (excludes renderer upload).
+if (TARGET threadmaxx::ui)
+    add_executable(ui_crowd_bench ui_crowd_bench.cpp)
+    target_link_libraries(ui_crowd_bench PRIVATE threadmaxx::ui)
+    set_target_properties(ui_crowd_bench PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(ui_crowd_bench PRIVATE
+            -Wall -Wextra -Wpedantic -O3)
+    endif()
+endif()
+
 # threadmaxx_physics P9 — Jolt-backed rigid-body throughput. Gated on
 # Jolt availability (see src/threadmaxx_physics/CMakeLists.txt); when
 # Jolt is absent the bench target is silently not created.

@@ -17,6 +17,7 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/widget.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backends/NullBackend.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backends/VertexBackend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/clip_stack.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/id_stack.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/rect_math.hpp
@@ -34,6 +35,7 @@ set(THREADMAXX_UI_SOURCES
     Tree.cpp
     Widgets.cpp
     backends/NullBackend.cpp
+    backends/VertexBackend.cpp
 )
 
 add_library(threadmaxx_ui STATIC
