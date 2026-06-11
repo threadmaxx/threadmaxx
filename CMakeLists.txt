@@ -17,6 +17,7 @@ option(THREADMAXX_BUILD_NAVMESH "Make the threadmaxx_navmesh sibling library ava
 option(THREADMAXX_BUILD_AUDIO "Make the threadmaxx_audio sibling library available" ON)
 option(THREADMAXX_BUILD_UI "Make the threadmaxx_ui sibling library available" ON)
 option(THREADMAXX_BUILD_INPUT "Make the threadmaxx_input sibling library available" ON)
+option(THREADMAXX_BUILD_ASSETS "Make the threadmaxx_assets sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -230,6 +231,22 @@ endif()
 # spec.
 if (THREADMAXX_BUILD_INPUT)
     add_subdirectory(src/threadmaxx_input)
+endif()
+
+# --------------------------------------------------------------------------
+# threadmaxx_assets — asset import + cache sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_ASSETS=ON` (the default). Static library —
+# public headers under `include/threadmaxx_assets/`, implementation under
+# `src/threadmaxx_assets/`. v1.0 sequences as A1 → A8 per
+# `include/threadmaxx_assets/FUTURE_WORK.md`. Engine-independent: depends
+# only on the STL; the engine bridge (A7) opts in via a `TARGET
+# threadmaxx::threadmaxx` check and exports
+# `THREADMAXX_ASSETS_HAS_ENGINE_BRIDGE=1`. See
+# `include/threadmaxx_assets/DESIGN_NOTES.md` for the spec.
+if (THREADMAXX_BUILD_ASSETS)
+    add_subdirectory(src/threadmaxx_assets)
 endif()
 
 # --------------------------------------------------------------------------
