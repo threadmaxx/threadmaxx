@@ -40,6 +40,11 @@ set(THREADMAXX_UI_TESTS
     test_ui_inspect_vector
     test_ui_inspect_handle
     test_ui_inspect_no_allocations
+    test_ui_panel_move
+    test_ui_panel_resize
+    test_ui_dragdrop_lifecycle
+    test_ui_gizmo_drag_2d
+    test_ui_debug_hud
 )
 
 foreach(test ${THREADMAXX_UI_TESTS})

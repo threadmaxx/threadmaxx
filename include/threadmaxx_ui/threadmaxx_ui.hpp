@@ -12,15 +12,20 @@
 ///   UI4 — widget.hpp.
 ///   UI5 — tree.hpp, menu.hpp.
 ///   UI6 — inspect.hpp.
+///   UI7 — panel.hpp, dragdrop.hpp, gizmo.hpp, debug.hpp.
 
 #include "threadmaxx_ui/backend.hpp"
 #include "threadmaxx_ui/config.hpp"
 #include "threadmaxx_ui/context.hpp"
+#include "threadmaxx_ui/debug.hpp"
+#include "threadmaxx_ui/dragdrop.hpp"
 #include "threadmaxx_ui/draw.hpp"
+#include "threadmaxx_ui/gizmo.hpp"
 #include "threadmaxx_ui/input.hpp"
 #include "threadmaxx_ui/inspect.hpp"
 #include "threadmaxx_ui/layout.hpp"
 #include "threadmaxx_ui/menu.hpp"
+#include "threadmaxx_ui/panel.hpp"
 #include "threadmaxx_ui/tree.hpp"
 #include "threadmaxx_ui/types.hpp"
 #include "threadmaxx_ui/version.hpp"

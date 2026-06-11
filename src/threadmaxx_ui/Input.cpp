@@ -185,6 +185,16 @@ void UIContext::finalizeInputState() noexcept {
         }
         ++focusableN;
     }
+    // 5) Cancel any in-progress drag when mouse-up happens without a drop
+    //    target consuming it. (dropTarget() clears dragSourceId_ on accept;
+    //    here we sweep any leftover.)
+    if (dragSourceId_.value != 0 &&
+        (in->mouseButtonsReleased & MouseButton::Left) != 0) {
+        dragSourceId_ = WidgetID{};
+        dragPayloadHash_ = 0;
+        dragPayloadData_ = nullptr;
+    }
+
     if (focusableN == 0) return;
     const std::int32_t cappedN = focusableN < 64 ? focusableN : 64;
 

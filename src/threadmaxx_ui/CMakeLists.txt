@@ -3,11 +3,15 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/context.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/debug.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/dragdrop.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/draw.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/gizmo.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/input.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/inspect.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/layout.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/menu.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/panel.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/tree.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
@@ -19,10 +23,14 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
 )
 
 set(THREADMAXX_UI_SOURCES
+    Debug.cpp
+    DragDrop.cpp
+    Gizmo.cpp
     Input.cpp
     Inspect.cpp
     Layout.cpp
     Menu.cpp
+    Panel.cpp
     Tree.cpp
     Widgets.cpp
     backends/NullBackend.cpp

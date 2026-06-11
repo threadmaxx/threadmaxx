@@ -219,6 +219,27 @@ public:
     [[nodiscard]] bool menuBarActive() const noexcept { return menuBarActive_; }
     void setMenuBarActive(bool v) noexcept { menuBarActive_ = v; }
 
+    // -- Drag/drop state (touched by dragdrop.hpp) --------------------------
+
+    [[nodiscard]] WidgetID dragSourceId() const noexcept { return dragSourceId_; }
+    void setDragSourceId(WidgetID id) noexcept { dragSourceId_ = id; }
+    [[nodiscard]] std::uint64_t dragPayloadHash() const noexcept { return dragPayloadHash_; }
+    void setDragPayloadHash(std::uint64_t h) noexcept { dragPayloadHash_ = h; }
+    [[nodiscard]] const void* dragPayloadData() const noexcept { return dragPayloadData_; }
+    void setDragPayloadData(const void* d) noexcept { dragPayloadData_ = d; }
+    [[nodiscard]] bool dragActive() const noexcept { return dragSourceId_.value != 0; }
+
+    // -- Debug HUD cursor (touched by debug.hpp) ----------------------------
+
+    [[nodiscard]] std::int32_t debugCursorY() const noexcept { return debugCursorY_; }
+    void resetDebugCursor(std::int32_t startY = 4) noexcept { debugCursorY_ = startY; }
+    void advanceDebugCursor(std::int32_t dy) noexcept { debugCursorY_ += dy; }
+
+    // -- Host rect (touched by panel.hpp clamp logic) -----------------------
+
+    [[nodiscard]] Rect hostRect() const noexcept { return hostRect_; }
+    void setHostRect(Rect r) noexcept { hostRect_ = r; }
+
     /// Reserve `n` slots in the hit-test vector — tests use it to avoid
     /// per-frame growth in the no-alloc gate.
     void reserveHitTests(std::size_t n) { hitTests_.reserve(n); }
@@ -274,6 +295,17 @@ private:
     std::int32_t popupBodyDepth_ = 0;
     WidgetID menuBarOpenId_{};
     bool menuBarActive_ = false;
+
+    // Drag/drop state.
+    WidgetID dragSourceId_{};
+    std::uint64_t dragPayloadHash_ = 0;
+    const void* dragPayloadData_ = nullptr;
+
+    // Debug HUD cursor — reset at the top of each frame's HUD pass.
+    std::int32_t debugCursorY_ = 4;
+
+    // Window rect inside which panels clamp (default = large virtual rect).
+    Rect hostRect_{0, 0, 1920, 1080};
 
     // Retained widget state, keyed by WidgetID::value.
     std::unordered_map<std::uint64_t, WidgetState> widgetStates_{};
