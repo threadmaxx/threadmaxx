@@ -58,3 +58,14 @@ else()
         target_compile_options(threadmaxx_input PRIVATE -Werror)
     endif()
 endif()
+
+# Opt-in UI bridge: compiles UiBridge.cpp + ui_bridge.hpp when
+# threadmaxx::ui is available. Exports THREADMAXX_INPUT_HAS_UI_BRIDGE=1
+# so consumers can `#if`-gate.
+if (TARGET threadmaxx::ui)
+    target_sources(threadmaxx_input PRIVATE UiBridge.cpp)
+    target_sources(threadmaxx_input PRIVATE
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/ui_bridge.hpp)
+    target_link_libraries(threadmaxx_input PUBLIC threadmaxx::ui)
+    target_compile_definitions(threadmaxx_input PUBLIC THREADMAXX_INPUT_HAS_UI_BRIDGE=1)
+endif()

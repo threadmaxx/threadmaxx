@@ -40,6 +40,17 @@ set(THREADMAXX_INPUT_TESTS
     test_input_picking_no_allocations
 )
 
+# UI-bridge tests opt in when threadmaxx::ui is available — the bridge
+# itself is compiled only in that case (see src/threadmaxx_input/CMakeLists.txt).
+if (TARGET threadmaxx::ui)
+    list(APPEND THREADMAXX_INPUT_TESTS
+        test_input_ui_bridge_mouse
+        test_input_ui_bridge_keys
+        test_input_ui_bridge_capture
+        test_input_ui_bridge_no_allocations
+    )
+endif()
+
 foreach(test ${THREADMAXX_INPUT_TESTS})
     add_executable(${test} ${test}.cpp)
     target_link_libraries(${test} PRIVATE threadmaxx::input)
