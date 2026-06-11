@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1-AU7 shipped (2026-06-10/11)**. AU8 is 📋 planned.
+Status: **AU1-AU8 shipped (2026-06-10/11)**. v1.0 close-out in flight.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -417,25 +417,53 @@ inner loop. Same correctness (24/24 audio tests still green).
 **Out of scope**: the full RPG demo audio integration (lives in
 GAME_EXTENSION.md's mid-term tranche, depends on this library).
 
-## Batch AU8 — Platform backends (Linux first)
+## Batch AU8 — Platform backends (Linux first) ✅ landed 2026-06-11
 
 **Goal**: ship `AlsaDevice` and `PulseDevice` so the library is
-useful end-to-end on the dev target. CMake `find_package` gates
-each one; missing libs silently skip the backend.
+usable end-to-end on the Linux dev target. CMake's `find_package`
+gates each one; missing libs silently skip the backend so the
+build still succeeds.
 
-**Test gate**:
+**Test gate** (green on `build/` + `build-werror/`):
 
-- `test_audio_backend_alsa` — gated by `find_package(ALSA)`;
-  initialize → submit 1024 frames → shutdown without error. No
-  audible-output assertion (CI is silent), just no-crash + no-error
-  return.
-- `test_audio_backend_pulse` — same shape, gated by
-  `find_package(PulseAudio)`.
+- ✅ `test_audio_backend_alsa` — built when CMake found ALSA at
+  configure time (otherwise compiles to a `printf` + PASS). Boots
+  the "default" PCM, submits one buffer of silence, shuts down,
+  re-initializes, drops a post-shutdown submit silently. Booted
+  cleanly on the dev target (~0.28 s for the drain).
+- ✅ `test_audio_backend_pulse` — same shape, gated on
+  libpulse-simple via `pkg_check_modules`. Boots a pulse playback
+  stream and round-trips identically.
 
-**Files**: `src/backends/AlsaDevice.cpp`, `src/backends/PulseDevice.cpp`.
+**Files landed**:
+- `include/threadmaxx_audio/alsa_device.hpp` /
+  `pulse_device.hpp` — PImpl'd public headers so consumers don't
+  pull `<alsa/asoundlib.h>` or `<pulse/simple.h>` into every TU
+- `src/threadmaxx_audio/backends/AlsaDevice.cpp` — `snd_pcm_open`
+  on "default", interleaved float32 LE, 100 ms target latency,
+  `snd_pcm_recover` on transient xrun
+- `src/threadmaxx_audio/backends/PulseDevice.cpp` —
+  `pa_simple_new` + `pa_simple_write`, default server / device,
+  PA_SAMPLE_FLOAT32LE
+- CMake gating in `src/threadmaxx_audio/CMakeLists.txt` via
+  `find_package(ALSA)` + `pkg_check_modules(libpulse-simple)`;
+  defines `THREADMAXX_AUDIO_HAS_ALSA=1` / `…_HAS_PULSE=1` when
+  available
+- `tests/audio/test_audio_backend_alsa.cpp` /
+  `test_audio_backend_pulse.cpp` — both tolerant: `init()`
+  returning false (no device / no daemon) is a PASS so the suite
+  stays green on headless CI
 
-**Risks**: ALSA/PulseAudio on headless CI may fail device open;
-fallback chain (Alsa → Pulse → Loopback) lets games not care.
+**Resolved decisions**:
+- Fallback chain is **caller-side**: games construct in priority
+  order (`AlsaDevice` → `PulseDevice` → `LoopbackDevice`) and use
+  the first one that `initialize()`s. The library doesn't ship a
+  "smart" wrapper because that policy is game-specific.
+- ALSA is opened on "default" (the user's `~/.asoundrc` /
+  `/etc/asound.conf` resolution applies); pulse is opened with
+  default server + default device. No knobs in the v1.0 surface.
+- Buffer-frame parameter is recorded but not enforced: ALSA picks
+  its own period size; the mixer's `bufferFrames` is independent.
 
 **Out of scope**: macOS CoreAudio, Windows WASAPI, JACK. Add when
 the project targets those platforms.

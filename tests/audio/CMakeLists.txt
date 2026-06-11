@@ -28,6 +28,8 @@ set(THREADMAXX_AUDIO_TESTS
     test_audio_diagnostics_meters
     test_audio_diagnostics_reset
     test_audio_events_playback
+    test_audio_backend_alsa
+    test_audio_backend_pulse
 )
 
 foreach(test ${THREADMAXX_AUDIO_TESTS})
