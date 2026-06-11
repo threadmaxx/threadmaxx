@@ -78,6 +78,12 @@ public:
     void setDeadzoneConfig(DeadzoneConfig cfg) noexcept { deadzones_ = cfg; }
     const DeadzoneConfig& deadzoneConfig() const noexcept { return deadzones_; }
 
+    // Cursor mode. Visible (default) lets x/y track absolute screen
+    // position; Locked freezes x/y at the lock point and exposes only
+    // dx/dy. Set-call forwards to the backend; null backend is a no-op.
+    void setCursorMode(CursorMode mode) noexcept;
+    CursorMode cursorMode() const noexcept { return cursorMode_; }
+
     // Bindings. Copied in; the source set may be freed after the call.
     // Re-binding mid-frame is allowed but resets the action edge tracking.
     void setBindings(const BindingSet& bindings);
@@ -129,6 +135,7 @@ private:
     bool frameOpen_{false};
     bool captureMouse_{false};
     bool captureKeyboard_{false};
+    CursorMode cursorMode_{CursorMode::Visible};
 
     double simulationTime_{0.0};
     float lastDeltaTime_{0.0f};

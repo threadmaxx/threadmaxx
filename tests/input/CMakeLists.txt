@@ -28,6 +28,11 @@ set(THREADMAXX_INPUT_TESTS
     test_input_gamepad_axis_pair_radial
     test_input_gamepad_action_binding
     test_input_gamepad_hotunplug
+    test_input_cursor_mode_default
+    test_input_cursor_locked_relative
+    test_input_capture_mouse
+    test_input_capture_keyboard
+    test_input_capture_clear_on_release
 )
 
 foreach(test ${THREADMAXX_INPUT_TESTS})

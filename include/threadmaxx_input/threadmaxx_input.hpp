@@ -10,6 +10,7 @@
 #include "threadmaxx_input/binding.hpp"
 #include "threadmaxx_input/config.hpp"
 #include "threadmaxx_input/context.hpp"
+#include "threadmaxx_input/cursor.hpp"
 #include "threadmaxx_input/events.hpp"
 #include "threadmaxx_input/state.hpp"
 #include "threadmaxx_input/types.hpp"

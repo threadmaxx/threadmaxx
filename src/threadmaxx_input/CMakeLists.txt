@@ -5,6 +5,7 @@ set(THREADMAXX_INPUT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/binding.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/context.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/cursor.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/events.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/state.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/types.hpp

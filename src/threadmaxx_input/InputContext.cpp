@@ -187,16 +187,24 @@ void InputContext::applyEvent(const InputEvent& e) {
                     state_.chars[state_.charCount++] = ev.codepoint;
                 }
             } else if constexpr (std::is_same_v<T, MouseMoveEvent>) {
-                state_.mouse.x = ev.x;
-                state_.mouse.y = ev.y;
+                // In Locked mode the absolute cursor is anchored — the
+                // backend warps the OS cursor each frame, so x/y carry no
+                // meaningful screen-space position. Only the delta is
+                // exposed.
+                if (cursorMode_ != CursorMode::Locked) {
+                    state_.mouse.x = ev.x;
+                    state_.mouse.y = ev.y;
+                }
                 state_.mouse.dx += ev.dx;
                 state_.mouse.dy += ev.dy;
             } else if constexpr (std::is_same_v<T, MouseButtonEvent>) {
                 const std::uint8_t bit = mouseBit(ev.button);
                 if (ev.down) state_.mouse.buttons = static_cast<std::uint8_t>(state_.mouse.buttons | bit);
                 else state_.mouse.buttons = static_cast<std::uint8_t>(state_.mouse.buttons & ~bit);
-                state_.mouse.x = ev.x;
-                state_.mouse.y = ev.y;
+                if (cursorMode_ != CursorMode::Locked) {
+                    state_.mouse.x = ev.x;
+                    state_.mouse.y = ev.y;
+                }
             } else if constexpr (std::is_same_v<T, MouseWheelEvent>) {
                 state_.mouse.wheelDx += ev.dx;
                 state_.mouse.wheelDy += ev.dy;
@@ -311,6 +319,11 @@ bool InputContext::isGamepadConnected(DeviceId pad) const noexcept {
 
 void InputContext::setBindings(const BindingSet& bindings) {
     bindings_ = bindings;
+}
+
+void InputContext::setCursorMode(CursorMode mode) noexcept {
+    cursorMode_ = mode;
+    if (backend_) backend_->setCursorMode(mode);
 }
 
 ActionTrigger InputContext::action(ActionId id) const noexcept {
