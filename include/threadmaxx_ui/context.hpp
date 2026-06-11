@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 #include "threadmaxx_ui/backend.hpp"
 #include "threadmaxx_ui/config.hpp"
@@ -28,6 +29,8 @@
 #include "threadmaxx_ui/types.hpp"
 
 namespace threadmaxx::ui {
+
+struct UIInput;
 
 /// Padding around a layout frame's content rect (per-edge).
 struct Padding {
@@ -62,6 +65,13 @@ enum class FrameState : std::uint8_t {
     Active  = 1,
 };
 
+/// One registered hit-test region. UI3 populates these inside `interact()`.
+struct HitTestRecord {
+    WidgetID id{};
+    Rect bounds{};
+    std::uint32_t flags = 0;
+};
+
 class UIContext {
 public:
     UIContext() = default;
@@ -79,14 +89,21 @@ public:
         drawList_.clear();
         layoutDepth_ = 0;
         clipStack_.reset();
+        hitTests_.clear();
+        hoveredId_ = WidgetID{};
+        focusKeyboardCapture_ = false;
+        focusableCount_ = 0;
         state_ = FrameState::Active;
         ++frameCount_;
     }
 
     /// Close the current frame and hand the draw list to the backend.
-    /// Asserts if no frame is open.
+    /// Asserts if no frame is open. Also finalizes input state for the
+    /// frame (advances Tab focus, drops a stale `activeId_` if its widget
+    /// was not re-registered this frame).
     void endFrame() noexcept {
         assert(state_ == FrameState::Active && "endFrame called without a matching beginFrame");
+        finalizeInputState();
         if (backend_) {
             backend_->submit(drawList_);
         }
@@ -143,7 +160,39 @@ public:
     [[nodiscard]] detail::ClipStack& clipStack() noexcept { return clipStack_; }
     [[nodiscard]] const detail::ClipStack& clipStack() const noexcept { return clipStack_; }
 
+    // -- Input / interaction state (touched by input.hpp APIs) --------------
+
+    /// Set the input snapshot for the upcoming frame. Call BEFORE
+    /// `beginFrame()`; the snapshot is borrowed by reference during the
+    /// frame.
+    void setInput(const UIInput& in) noexcept { input_ = &in; }
+    [[nodiscard]] const UIInput* input() const noexcept { return input_; }
+
+    [[nodiscard]] std::vector<HitTestRecord>& hitTests() noexcept { return hitTests_; }
+    [[nodiscard]] const std::vector<HitTestRecord>& hitTests() const noexcept { return hitTests_; }
+
+    [[nodiscard]] WidgetID hoveredId() const noexcept { return hoveredId_; }
+    void setHoveredId(WidgetID id) noexcept { hoveredId_ = id; }
+
+    [[nodiscard]] WidgetID activeId() const noexcept { return activeId_; }
+    void setActiveId(WidgetID id) noexcept { activeId_ = id; }
+
+    [[nodiscard]] WidgetID focusedId() const noexcept { return focusedId_; }
+    void setFocusedId(WidgetID id) noexcept { focusedId_ = id; }
+
+    [[nodiscard]] bool focusKeyboardCapture() const noexcept { return focusKeyboardCapture_; }
+    void setFocusKeyboardCapture(bool v) noexcept { focusKeyboardCapture_ = v; }
+
+    [[nodiscard]] std::uint32_t focusableCount() const noexcept { return focusableCount_; }
+    void bumpFocusableCount() noexcept { ++focusableCount_; }
+
+    /// Reserve `n` slots in the hit-test vector — tests use it to avoid
+    /// per-frame growth in the no-alloc gate.
+    void reserveHitTests(std::size_t n) { hitTests_.reserve(n); }
+
 private:
+    void finalizeInputState() noexcept;
+
     detail::IdStack ids_{};
     DrawList drawList_{};
     IUIBackend* backend_ = nullptr;
@@ -156,6 +205,15 @@ private:
     std::uint64_t layoutOverflows_ = 0;
 
     detail::ClipStack clipStack_{};
+
+    // Input state.
+    const UIInput* input_ = nullptr;
+    std::vector<HitTestRecord> hitTests_{};
+    WidgetID hoveredId_{};
+    WidgetID activeId_{};
+    WidgetID focusedId_{};
+    bool focusKeyboardCapture_ = false;
+    std::uint32_t focusableCount_ = 0;
 };
 
 } // namespace threadmaxx::ui

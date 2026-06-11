@@ -4,6 +4,7 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/context.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/draw.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/input.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/layout.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
@@ -14,6 +15,7 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
 )
 
 set(THREADMAXX_UI_SOURCES
+    Input.cpp
     Layout.cpp
     backends/NullBackend.cpp
 )

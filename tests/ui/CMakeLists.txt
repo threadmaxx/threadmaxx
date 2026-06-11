@@ -16,6 +16,11 @@ set(THREADMAXX_UI_TESTS
     test_ui_layout_padding_spacing
     test_ui_layout_clipping
     test_ui_layout_overflow
+    test_ui_input_hover
+    test_ui_input_focus
+    test_ui_input_capture_mouse
+    test_ui_input_capture_keyboard
+    test_ui_input_determinism
 )
 
 foreach(test ${THREADMAXX_UI_TESTS})
