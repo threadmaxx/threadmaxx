@@ -109,6 +109,10 @@ namespace HitTestFlags {
     /// Widget should be skipped by hover resolution even though it has a
     /// bounds rect (useful for layout containers).
     inline constexpr std::uint32_t NoHover         = 1u << 2;
+    /// Widget bypasses popup shadow — it can still hover / activate even
+    /// when another popup is open. Menu-bar buttons use this so hovering a
+    /// sibling switches the open submenu.
+    inline constexpr std::uint32_t BypassPopupShadow = 1u << 3;
 }
 
 /// Outcome of `interact()` — the widget primitive in UI4 wraps this.

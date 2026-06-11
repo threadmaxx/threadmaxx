@@ -41,8 +41,18 @@ InteractionResult interact(UIContext& ctx, WidgetID id, Rect bounds,
         ctx.bumpFocusableCount();
     }
 
+    // If a popup is open and we're NOT inside its body, the widget is
+    // shadowed — no hover / no active / no click. The popup itself still
+    // hit-tests because beginPopup() bumps popupBodyDepth before
+    // registering anything. BypassPopupShadow opts out — menu-bar buttons
+    // use it so hovering a sibling can switch which submenu is open.
+    const bool popupShadow = ctx.popupOpenId().value != 0 &&
+                             ctx.popupBodyDepth() == 0 &&
+                             (flags & HitTestFlags::BypassPopupShadow) == 0;
+
     const UIInput* input = ctx.input();
-    const bool insideCursor = (flags & HitTestFlags::NoHover) == 0 &&
+    const bool insideCursor = !popupShadow &&
+                              (flags & HitTestFlags::NoHover) == 0 &&
                               mouseInside(input, bounds);
 
     if (insideCursor) {
@@ -52,8 +62,8 @@ InteractionResult interact(UIContext& ctx, WidgetID id, Rect bounds,
     InteractionResult r{};
     r.hovered = (ctx.hoveredId() == id);
 
-    // Active state transition.
-    if (r.hovered && leftPressed(input) && ctx.activeId() != id) {
+    // Active state transition. Skipped when shadowed by a popup.
+    if (!popupShadow && r.hovered && leftPressed(input) && ctx.activeId() != id) {
         ctx.setActiveId(id);
         if (flags & HitTestFlags::Focusable) {
             ctx.setFocusedId(id);
@@ -122,15 +132,43 @@ void UIContext::finalizeInputState() noexcept {
         if (!stillRegistered) activeId_ = WidgetID{};
     }
 
-    // 2) Tab navigation — process Tab / Shift-Tab edges against the
-    //    focusables registered this frame.
     if (!in) return;
 
+    // 2) Escape closes any open popup AND any menu-bar selection.
+    if ((in->navKeysPressed & NavKey::Escape) != 0) {
+        if (popupOpenId_.value != 0) {
+            popupOpenId_ = WidgetID{};
+            menuBarActive_ = false;
+            menuBarOpenId_ = WidgetID{};
+        }
+    }
+
+    // 3) A left-click outside any registered popup body region closes the
+    //    open popup. We approximate "inside the popup body" as "the click
+    //    hit a registered widget on this frame" — since popup-body widgets
+    //    were the only ones eligible (others were shadowed). If no widget
+    //    activated on the press edge AND a popup was open, treat it as a
+    //    click-outside.
+    if (popupOpenId_.value != 0 &&
+        (in->mouseButtonsPressed & MouseButton::Left) != 0 &&
+        activeId_.value == 0) {
+        popupOpenId_ = WidgetID{};
+        menuBarActive_ = false;
+        menuBarOpenId_ = WidgetID{};
+    }
+
+    // 4) Focus cycling — Tab / Shift-Tab AND Up / Down. Treat Down=Tab,
+    //    Up=ShiftTab.
     const bool tab      = (in->navKeysPressed & NavKey::Tab) != 0;
+    const bool down     = (in->navKeysPressed & NavKey::Down) != 0;
     const bool shiftTab = (in->navKeysPressed & NavKey::ShiftTab) != 0
                        || (tab && (in->modifiers & Modifiers::Shift) != 0);
+    const bool up       = (in->navKeysPressed & NavKey::Up) != 0;
 
-    if (!tab && !shiftTab) return;
+    const bool fwd      = tab || down;
+    const bool back     = shiftTab || up;
+
+    if (!fwd && !back) return;
 
     // Build the focusables list in registration order.
     std::int32_t focusedIdx = -1;
@@ -151,7 +189,7 @@ void UIContext::finalizeInputState() noexcept {
     const std::int32_t cappedN = focusableN < 64 ? focusableN : 64;
 
     std::int32_t target = 0;
-    if (shiftTab) {
+    if (back) {
         target = (focusedIdx < 0) ? cappedN - 1 : (focusedIdx - 1 + cappedN) % cappedN;
     } else {
         target = (focusedIdx < 0) ? 0 : (focusedIdx + 1) % cappedN;

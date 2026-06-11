@@ -6,6 +6,8 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/draw.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/input.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/layout.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/menu.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/tree.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/widget.hpp
@@ -18,6 +20,8 @@ set(THREADMAXX_UI_PUBLIC_HEADERS
 set(THREADMAXX_UI_SOURCES
     Input.cpp
     Layout.cpp
+    Menu.cpp
+    Tree.cpp
     Widgets.cpp
     backends/NullBackend.cpp
 )

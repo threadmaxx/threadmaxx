@@ -206,6 +206,19 @@ public:
     [[nodiscard]] std::uint32_t focusableCount() const noexcept { return focusableCount_; }
     void bumpFocusableCount() noexcept { ++focusableCount_; }
 
+    // -- Popup / menu-bar state (touched by menu.hpp) -----------------------
+
+    [[nodiscard]] WidgetID popupOpenId() const noexcept { return popupOpenId_; }
+    void setPopupOpenId(WidgetID id) noexcept { popupOpenId_ = id; }
+    [[nodiscard]] std::int32_t popupBodyDepth() const noexcept { return popupBodyDepth_; }
+    void pushPopupBody() noexcept { ++popupBodyDepth_; }
+    void popPopupBody() noexcept { if (popupBodyDepth_ > 0) --popupBodyDepth_; }
+
+    [[nodiscard]] WidgetID menuBarOpenId() const noexcept { return menuBarOpenId_; }
+    void setMenuBarOpenId(WidgetID id) noexcept { menuBarOpenId_ = id; }
+    [[nodiscard]] bool menuBarActive() const noexcept { return menuBarActive_; }
+    void setMenuBarActive(bool v) noexcept { menuBarActive_ = v; }
+
     /// Reserve `n` slots in the hit-test vector — tests use it to avoid
     /// per-frame growth in the no-alloc gate.
     void reserveHitTests(std::size_t n) { hitTests_.reserve(n); }
@@ -255,6 +268,12 @@ private:
     WidgetID focusedId_{};
     bool focusKeyboardCapture_ = false;
     std::uint32_t focusableCount_ = 0;
+
+    // Popup / menu-bar state.
+    WidgetID popupOpenId_{};
+    std::int32_t popupBodyDepth_ = 0;
+    WidgetID menuBarOpenId_{};
+    bool menuBarActive_ = false;
 
     // Retained widget state, keyed by WidgetID::value.
     std::unordered_map<std::uint64_t, WidgetState> widgetStates_{};

@@ -30,6 +30,11 @@ set(THREADMAXX_UI_TESTS
     test_ui_widget_selectable
     test_ui_widget_tooltip
     test_ui_widget_no_allocations
+    test_ui_tree_expand
+    test_ui_tree_keyboard_nav
+    test_ui_menu_bar
+    test_ui_popup_modal
+    test_ui_menu_keyboard_nav
 )
 
 foreach(test ${THREADMAXX_UI_TESTS})
