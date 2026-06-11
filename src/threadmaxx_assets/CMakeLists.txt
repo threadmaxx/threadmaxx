@@ -8,10 +8,14 @@ set(THREADMAXX_ASSETS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/data/mesh.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/data/texture.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/detail/io.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/obj.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/ply.hpp
 )
 
 set(THREADMAXX_ASSETS_SOURCES
     Io.cpp
+    loaders/Obj.cpp
+    loaders/Ply.cpp
 )
 
 add_library(threadmaxx_assets STATIC

@@ -3,12 +3,17 @@ set(THREADMAXX_ASSETS_TESTS
     test_assets_version
     test_assets_pod_layout
     test_assets_io_round_trip
+    test_assets_obj_cube
+    test_assets_obj_smoothed_normals
+    test_assets_ply_binary
 )
 
 foreach(test ${THREADMAXX_ASSETS_TESTS})
     add_executable(${test} ${test}.cpp)
     target_link_libraries(${test} PRIVATE threadmaxx::assets)
     target_include_directories(${test} PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_compile_definitions(${test} PRIVATE
+        THREADMAXX_ASSETS_FIXTURES_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
     set_target_properties(${test} PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
