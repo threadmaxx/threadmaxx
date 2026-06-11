@@ -1,0 +1,32 @@
+# threadmaxx_ui test suite (UI1+).
+#
+# Each test links `threadmaxx::ui` and uses the tiny `Check.hpp` harness
+# from the parent `tests/` directory. Registered with CTest under the
+# `ui.*` name prefix.
+
+set(THREADMAXX_UI_TESTS
+    test_ui_widget_id
+    test_ui_rect_math
+    test_ui_draw_list
+    test_ui_context_lifecycle
+    test_ui_no_allocations
+)
+
+foreach(test ${THREADMAXX_UI_TESTS})
+    add_executable(${test} ${test}.cpp)
+    target_link_libraries(${test} PRIVATE threadmaxx::ui)
+    target_include_directories(${test} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    set_target_properties(${test} PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(${test} PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME ui.${test} COMMAND ${test})
+endforeach()

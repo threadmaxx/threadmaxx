@@ -192,6 +192,12 @@ if (TARGET threadmaxx::audio)
     add_subdirectory(audio)
 endif()
 
+# threadmaxx_ui sibling-library test suite (UI1+). Lives in
+# `tests/ui/`. Skipped if the UI opt-in is off.
+if (TARGET threadmaxx::ui)
+    add_subdirectory(ui)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)

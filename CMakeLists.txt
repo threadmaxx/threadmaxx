@@ -15,6 +15,7 @@ option(THREADMAXX_BUILD_ANIMATION "Make the threadmaxx_animation sibling library
 option(THREADMAXX_BUILD_PHYSICS "Make the threadmaxx_physics sibling library available" ON)
 option(THREADMAXX_BUILD_NAVMESH "Make the threadmaxx_navmesh sibling library available" ON)
 option(THREADMAXX_BUILD_AUDIO "Make the threadmaxx_audio sibling library available" ON)
+option(THREADMAXX_BUILD_UI "Make the threadmaxx_ui sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -201,6 +202,21 @@ if (THREADMAXX_BUILD_AUDIO)
 endif()
 
 # --------------------------------------------------------------------------
+# threadmaxx_ui — immediate-mode UI primitives sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_UI=ON` (the default). Static library —
+# public headers under `include/threadmaxx_ui/`, implementation under
+# `src/threadmaxx_ui/` (renderer adapters under `backends/`). v1.0 sequences
+# as UI1 → UI8 per `include/threadmaxx_ui/FUTURE_WORK.md`. Engine-
+# independent: depends only on the STL; renderer integration ships as a
+# thin draw-list adapter. See `include/threadmaxx_ui/DESIGN_NOTES.md` for
+# the spec.
+if (THREADMAXX_BUILD_UI)
+    add_subdirectory(src/threadmaxx_ui)
+endif()
+
+# --------------------------------------------------------------------------
 # Examples
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
@@ -321,6 +337,21 @@ if (THREADMAXX_INSTALL)
             INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         )
         install(DIRECTORY include/threadmaxx_audio
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling UI library — static. Same `if (TARGET threadmaxx::ui)`
+    # downstream probe.
+    if (THREADMAXX_BUILD_UI)
+        install(TARGETS threadmaxx_ui
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_ui
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
             FILES_MATCHING PATTERN "*.hpp"
         )
