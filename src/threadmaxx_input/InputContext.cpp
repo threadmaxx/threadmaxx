@@ -1,5 +1,6 @@
 #include "threadmaxx_input/context.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <variant>
 
@@ -36,6 +37,59 @@ inline std::size_t gamepadSlotForDevice(DeviceId device) noexcept {
     if (device < kGamepadDeviceIdBase) return kMaxGamepads;
     const std::size_t slot = static_cast<std::size_t>(device - kGamepadDeviceIdBase);
     return slot < kMaxGamepads ? slot : kMaxGamepads;
+}
+
+// True when `b`'s source is currently active in `s`. Modifier mask is an
+// exact match — Ctrl+S does NOT fire on Shift+Ctrl+S.
+bool evaluateBindingHeld(const Binding& b, const InputState& s) noexcept {
+    if (b.modifiers != s.modifiers) return false;
+    switch (b.source) {
+        case Binding::Source::Key:
+            return s.keys.test(static_cast<Key>(b.code));
+        case Binding::Source::MouseButton: {
+            const auto bit = static_cast<std::uint8_t>(1u << b.code);
+            return (s.mouse.buttons & bit) != 0;
+        }
+        case Binding::Source::GamepadButton: {
+            const auto slot = gamepadSlotForDevice(b.device);
+            if (slot >= kMaxGamepads) return false;
+            const auto bit = static_cast<std::uint16_t>(1u << b.code);
+            return (s.gamepads[slot].buttons & bit) != 0;
+        }
+        case Binding::Source::GamepadAxisPos: {
+            const auto slot = gamepadSlotForDevice(b.device);
+            if (slot >= kMaxGamepads) return false;
+            const auto axisIdx = static_cast<std::size_t>(b.code);
+            if (axisIdx >= s.gamepads[slot].axes.size()) return false;
+            return s.gamepads[slot].axes[axisIdx] >= b.threshold;
+        }
+        case Binding::Source::GamepadAxisNeg: {
+            const auto slot = gamepadSlotForDevice(b.device);
+            if (slot >= kMaxGamepads) return false;
+            const auto axisIdx = static_cast<std::size_t>(b.code);
+            if (axisIdx >= s.gamepads[slot].axes.size()) return false;
+            return s.gamepads[slot].axes[axisIdx] <= -b.threshold;
+        }
+    }
+    return false;
+}
+
+float evaluateBindingValue(const Binding& b, const InputState& s) noexcept {
+    if (!evaluateBindingHeld(b, s)) return 0.0f;
+    switch (b.source) {
+        case Binding::Source::GamepadAxisPos: {
+            const auto slot = gamepadSlotForDevice(b.device);
+            const auto axisIdx = static_cast<std::size_t>(b.code);
+            return std::clamp(s.gamepads[slot].axes[axisIdx], 0.0f, 1.0f);
+        }
+        case Binding::Source::GamepadAxisNeg: {
+            const auto slot = gamepadSlotForDevice(b.device);
+            const auto axisIdx = static_cast<std::size_t>(b.code);
+            return std::clamp(-s.gamepads[slot].axes[axisIdx], 0.0f, 1.0f);
+        }
+        default:
+            return 1.0f;
+    }
 }
 
 }  // namespace
@@ -220,6 +274,31 @@ float InputContext::axis(DeviceId pad, GamepadAxis a) const noexcept {
     const auto& padState = state_.gamepads[slot];
     if (idx >= padState.axes.size()) return 0.0f;
     return padState.axes[idx];
+}
+
+void InputContext::setBindings(const BindingSet& bindings) {
+    bindings_ = bindings;
+}
+
+ActionTrigger InputContext::action(ActionId id) const noexcept {
+    const auto bs = bindings_.bindingsFor(id);
+    if (bs.empty()) return ActionTrigger{};
+
+    bool prevAny = false;
+    bool curAny = false;
+    float bestValue = 0.0f;
+    for (const Binding& b : bs) {
+        if (evaluateBindingHeld(b, previousState_)) prevAny = true;
+        if (evaluateBindingHeld(b, state_)) curAny = true;
+        const float v = evaluateBindingValue(b, state_);
+        if (v > bestValue) bestValue = v;
+    }
+    ActionTrigger t{};
+    t.held = curAny;
+    t.pressed = curAny && !prevAny;
+    t.released = !curAny && prevAny;
+    t.value = bestValue;
+    return t;
 }
 
 }  // namespace threadmaxx::input

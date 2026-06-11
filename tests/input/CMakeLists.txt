@@ -16,6 +16,12 @@ set(THREADMAXX_INPUT_TESTS
     test_input_mouse_motion
     test_input_char_queue
     test_input_modifier_mask
+    test_input_action_id
+    test_input_binding_single_source
+    test_input_binding_multi_source
+    test_input_modifier_exact_match
+    test_input_binding_serialize
+    test_input_action_no_allocations
 )
 
 foreach(test ${THREADMAXX_INPUT_TESTS})

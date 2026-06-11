@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <vector>
 
+#include "threadmaxx_input/action.hpp"
 #include "threadmaxx_input/backend.hpp"
+#include "threadmaxx_input/binding.hpp"
 #include "threadmaxx_input/state.hpp"
 
 namespace threadmaxx::input {
@@ -48,6 +50,17 @@ public:
     bool isHeld(DeviceId pad, GamepadButton b) const noexcept;
     float axis(DeviceId pad, GamepadAxis a) const noexcept;
 
+    // Bindings. Copied in; the source set may be freed after the call.
+    // Re-binding mid-frame is allowed but resets the action edge tracking.
+    void setBindings(const BindingSet& bindings);
+    const BindingSet& bindings() const noexcept { return bindings_; }
+
+    // Per-action query. Returns idle ActionTrigger for unknown ids.
+    ActionTrigger action(ActionId id) const noexcept;
+    ActionTrigger action(std::string_view name) const noexcept {
+        return action(actionId(name));
+    }
+
     // Capture sinks (the UI library sets these; queries inform the host).
     void setCaptureMouse(bool capture) noexcept { captureMouse_ = capture; }
     void setCaptureKeyboard(bool capture) noexcept { captureKeyboard_ = capture; }
@@ -74,6 +87,8 @@ private:
     void deriveEdges(const InputState& previous);
 
     IInputBackend* backend_{nullptr};
+
+    BindingSet bindings_;
 
     InputState state_{};
     InputState previousState_{};
