@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include "threadmaxx_input/action.hpp"
@@ -114,6 +115,12 @@ public:
     // beginFrame call (diagnostic — counts only those that survived the
     // capacity gate, not ones the backend itself dropped).
     std::size_t lastFrameEventCount() const noexcept { return lastFrameEventCount_; }
+
+    // Borrowed span of the events drained on the most recent beginFrame.
+    // Invalidated by the next beginFrame call. Used by InputTrace::recordCurrentFrame.
+    std::span<const InputEvent> lastFrameEvents() const noexcept {
+        return std::span<const InputEvent>(eventBuffer_.data(), lastFrameEventCount_);
+    }
 
 private:
     void drainBackendEvents();

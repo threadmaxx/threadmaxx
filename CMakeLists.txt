@@ -245,6 +245,7 @@ if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/navmesh_bake)
     add_subdirectory(examples/audio_demo)
     add_subdirectory(examples/ui_demo)
+    add_subdirectory(examples/input_demo)
 endif()
 
 # --------------------------------------------------------------------------

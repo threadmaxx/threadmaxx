@@ -20,7 +20,9 @@
 #include "threadmaxx_input/events.hpp"
 #include "threadmaxx_input/state.hpp"
 #include "threadmaxx_input/types.hpp"
+#include "threadmaxx_input/trace.hpp"
 #include "threadmaxx_input/version.hpp"
+#include "threadmaxx_input/backends/GlfwBackend.hpp"
 #include "threadmaxx_input/detail/edge_buffer.hpp"
 
 #if defined(THREADMAXX_VERSION_HPP)               \

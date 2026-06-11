@@ -9,8 +9,10 @@ set(THREADMAXX_INPUT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/events.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/picking.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/state.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/trace.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/version.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/backends/GlfwBackend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/backends/NullBackend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/detail/deadzone.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/detail/edge_buffer.hpp
@@ -21,6 +23,8 @@ set(THREADMAXX_INPUT_SOURCES
     InputContext.cpp
     Binding.cpp
     Picking.cpp
+    Trace.cpp
+    backends/GlfwBackend.cpp
     backends/NullBackend.cpp
 )
 

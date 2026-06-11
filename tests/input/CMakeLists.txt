@@ -38,6 +38,10 @@ set(THREADMAXX_INPUT_TESTS
     test_input_picking_viewport_offset
     test_input_picking_far_plane
     test_input_picking_no_allocations
+    test_input_trace_record_replay
+    test_input_trace_serialize
+    test_input_trace_no_allocations
+    test_input_glfw_smoke
 )
 
 # UI-bridge tests opt in when threadmaxx::ui is available — the bridge

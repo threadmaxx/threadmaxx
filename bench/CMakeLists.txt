@@ -119,6 +119,22 @@ if (TARGET threadmaxx::ui)
     endif()
 endif()
 
+# threadmaxx_input I8 — frame-build throughput. v1.0 close-out target is
+# < 50 µs / frame for 200 actions / 800 bindings / 16 events.
+if (TARGET threadmaxx::input)
+    add_executable(input_crowd_bench input_crowd_bench.cpp)
+    target_link_libraries(input_crowd_bench PRIVATE threadmaxx::input)
+    set_target_properties(input_crowd_bench PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(input_crowd_bench PRIVATE
+            -Wall -Wextra -Wpedantic -O3)
+    endif()
+endif()
+
 # threadmaxx_physics P9 — Jolt-backed rigid-body throughput. Gated on
 # Jolt availability (see src/threadmaxx_physics/CMakeLists.txt); when
 # Jolt is absent the bench target is silently not created.

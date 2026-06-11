@@ -6,6 +6,7 @@
 
 #include "threadmaxx_input/action.hpp"
 #include "threadmaxx_input/backend.hpp"
+#include "threadmaxx_input/backends/GlfwBackend.hpp"
 #include "threadmaxx_input/backends/NullBackend.hpp"
 #include "threadmaxx_input/binding.hpp"
 #include "threadmaxx_input/config.hpp"
@@ -14,5 +15,6 @@
 #include "threadmaxx_input/events.hpp"
 #include "threadmaxx_input/picking.hpp"
 #include "threadmaxx_input/state.hpp"
+#include "threadmaxx_input/trace.hpp"
 #include "threadmaxx_input/types.hpp"
 #include "threadmaxx_input/version.hpp"
