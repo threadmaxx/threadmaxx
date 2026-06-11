@@ -198,6 +198,12 @@ if (TARGET threadmaxx::ui)
     add_subdirectory(ui)
 endif()
 
+# threadmaxx_input sibling-library test suite (I1+). Lives in
+# `tests/input/`. Skipped if the input opt-in is off.
+if (TARGET threadmaxx::input)
+    add_subdirectory(input)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)

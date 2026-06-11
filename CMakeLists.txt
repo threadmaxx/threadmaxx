@@ -16,6 +16,7 @@ option(THREADMAXX_BUILD_PHYSICS "Make the threadmaxx_physics sibling library ava
 option(THREADMAXX_BUILD_NAVMESH "Make the threadmaxx_navmesh sibling library available" ON)
 option(THREADMAXX_BUILD_AUDIO "Make the threadmaxx_audio sibling library available" ON)
 option(THREADMAXX_BUILD_UI "Make the threadmaxx_ui sibling library available" ON)
+option(THREADMAXX_BUILD_INPUT "Make the threadmaxx_input sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -214,6 +215,21 @@ endif()
 # the spec.
 if (THREADMAXX_BUILD_UI)
     add_subdirectory(src/threadmaxx_ui)
+endif()
+
+# --------------------------------------------------------------------------
+# threadmaxx_input — input + binding sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_INPUT=ON` (the default). Static library —
+# public headers under `include/threadmaxx_input/`, implementation under
+# `src/threadmaxx_input/`. v1.0 sequences as I1 → I8 per
+# `include/threadmaxx_input/FUTURE_WORK.md`. Engine-independent: depends
+# only on the STL; UI bridge (I7) and platform backends (I8) opt in via
+# their own flags. See `include/threadmaxx_input/DESIGN_NOTES.md` for the
+# spec.
+if (THREADMAXX_BUILD_INPUT)
+    add_subdirectory(src/threadmaxx_input)
 endif()
 
 # --------------------------------------------------------------------------
