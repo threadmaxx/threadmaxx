@@ -22,6 +22,12 @@ set(THREADMAXX_INPUT_TESTS
     test_input_modifier_exact_match
     test_input_binding_serialize
     test_input_action_no_allocations
+    test_input_gamepad_connect
+    test_input_gamepad_buttons
+    test_input_gamepad_axis_deadzone
+    test_input_gamepad_axis_pair_radial
+    test_input_gamepad_action_binding
+    test_input_gamepad_hotunplug
 )
 
 foreach(test ${THREADMAXX_INPUT_TESTS})

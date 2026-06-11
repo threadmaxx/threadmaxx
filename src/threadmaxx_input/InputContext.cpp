@@ -5,6 +5,7 @@
 #include <variant>
 
 #include "threadmaxx_input/config.hpp"
+#include "threadmaxx_input/detail/deadzone.hpp"
 #include "threadmaxx_input/events.hpp"
 
 namespace threadmaxx::input {
@@ -274,6 +275,38 @@ float InputContext::axis(DeviceId pad, GamepadAxis a) const noexcept {
     const auto& padState = state_.gamepads[slot];
     if (idx >= padState.axes.size()) return 0.0f;
     return padState.axes[idx];
+}
+
+StickXY InputContext::stickXY(DeviceId pad, Stick side) const noexcept {
+    const std::size_t slot = gamepadSlotForDevice(pad);
+    if (slot >= kMaxGamepads) return {0.0f, 0.0f};
+    const auto& padState = state_.gamepads[slot];
+    const auto xIdx = side == Stick::Left
+                          ? static_cast<std::size_t>(GamepadAxis::LStickX)
+                          : static_cast<std::size_t>(GamepadAxis::RStickX);
+    const auto yIdx = side == Stick::Left
+                          ? static_cast<std::size_t>(GamepadAxis::LStickY)
+                          : static_cast<std::size_t>(GamepadAxis::RStickY);
+    const float rx = padState.axes[xIdx];
+    const float ry = padState.axes[yIdx];
+    const auto out = detail::applyRadial(rx, ry, deadzones_.stickInner, deadzones_.stickOuter);
+    return {out.x, out.y};
+}
+
+float InputContext::trigger(DeviceId pad, Trigger side) const noexcept {
+    const std::size_t slot = gamepadSlotForDevice(pad);
+    if (slot >= kMaxGamepads) return 0.0f;
+    const auto idx = side == Trigger::Left
+                         ? static_cast<std::size_t>(GamepadAxis::LTrigger)
+                         : static_cast<std::size_t>(GamepadAxis::RTrigger);
+    return detail::applyTrigger(state_.gamepads[slot].axes[idx],
+                                deadzones_.triggerThreshold);
+}
+
+bool InputContext::isGamepadConnected(DeviceId pad) const noexcept {
+    const std::size_t slot = gamepadSlotForDevice(pad);
+    if (slot >= kMaxGamepads) return false;
+    return state_.gamepads[slot].connected;
 }
 
 void InputContext::setBindings(const BindingSet& bindings) {

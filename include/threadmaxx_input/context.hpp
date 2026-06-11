@@ -10,6 +10,22 @@
 
 namespace threadmaxx::input {
 
+enum class Stick : std::uint8_t { Left = 0, Right = 1 };
+enum class Trigger : std::uint8_t { Left = 0, Right = 1 };
+
+struct StickXY {
+    float x{};
+    float y{};
+};
+
+// Tunable deadzones applied by `stickXY` / `trigger` (and by the binding
+// evaluator for axis sources). Defaults from `config.hpp`.
+struct DeadzoneConfig {
+    float stickInner{kDefaultStickInnerDeadzone};
+    float stickOuter{kDefaultStickOuterDeadzone};
+    float triggerThreshold{kDefaultTriggerThreshold};
+};
+
 // Per-frame state owner. One per editor pane / game viewport. No globals.
 //
 // Lifecycle:
@@ -50,6 +66,18 @@ public:
     bool isHeld(DeviceId pad, GamepadButton b) const noexcept;
     float axis(DeviceId pad, GamepadAxis a) const noexcept;
 
+    // Paired-axis stick read with radial deadzone applied.
+    StickXY stickXY(DeviceId pad, Stick side) const noexcept;
+    // 1D trigger read with threshold applied. Returns 0..1.
+    float trigger(DeviceId pad, Trigger side) const noexcept;
+
+    // Connected-gamepad queries (forwarded from the backend; safe when
+    // the backend is null — returns empty / false).
+    bool isGamepadConnected(DeviceId pad) const noexcept;
+
+    void setDeadzoneConfig(DeadzoneConfig cfg) noexcept { deadzones_ = cfg; }
+    const DeadzoneConfig& deadzoneConfig() const noexcept { return deadzones_; }
+
     // Bindings. Copied in; the source set may be freed after the call.
     // Re-binding mid-frame is allowed but resets the action edge tracking.
     void setBindings(const BindingSet& bindings);
@@ -89,6 +117,8 @@ private:
     IInputBackend* backend_{nullptr};
 
     BindingSet bindings_;
+
+    DeadzoneConfig deadzones_{};
 
     InputState state_{};
     InputState previousState_{};
