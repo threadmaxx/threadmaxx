@@ -17,8 +17,8 @@
 
 #pragma once
 
-#define THREADMAXX_UI_VERSION_MAJOR 0
-#define THREADMAXX_UI_VERSION_MINOR 1
+#define THREADMAXX_UI_VERSION_MAJOR 1
+#define THREADMAXX_UI_VERSION_MINOR 0
 #define THREADMAXX_UI_VERSION_PATCH 0
 
 #define THREADMAXX_UI_VERSION \
@@ -28,10 +28,9 @@
 
 namespace threadmaxx::ui {
 
-/// Returns the library version as a dotted string. Bumps to "1.0.0" at the
-/// v1.0 close-out.
+/// Returns the library version as a dotted string.
 constexpr const char* version_string() noexcept {
-    return "0.1.0";
+    return "1.0.0";
 }
 
 } // namespace threadmaxx::ui
