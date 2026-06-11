@@ -35,6 +35,11 @@ set(THREADMAXX_UI_TESTS
     test_ui_menu_bar
     test_ui_popup_modal
     test_ui_menu_keyboard_nav
+    test_ui_inspect_primitives
+    test_ui_inspect_enum
+    test_ui_inspect_vector
+    test_ui_inspect_handle
+    test_ui_inspect_no_allocations
 )
 
 foreach(test ${THREADMAXX_UI_TESTS})

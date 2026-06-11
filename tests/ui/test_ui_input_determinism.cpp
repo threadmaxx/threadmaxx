@@ -70,7 +70,7 @@ int main() {
             static_cast<std::int32_t>(i % 40)};
         if (i % 7 == 0) in.mouseButtonsPressed = MouseButton::Left;
         if (i % 7 == 3) in.mouseButtonsReleased = MouseButton::Left;
-        if (i % 7 >= 0 && i % 7 < 3) in.mouseButtons = MouseButton::Left;
+        if (i % 7 < 3) in.mouseButtons = MouseButton::Left;
         if (i % 11 == 0) in.navKeysPressed = NavKey::Tab;
         if (i % 23 == 0) in.navKeysPressed |= NavKey::ShiftTab;
     }

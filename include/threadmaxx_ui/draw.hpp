@@ -122,9 +122,16 @@ public:
     }
 
     void emitText(Vec2i pos, Color color, std::string_view text, std::uint32_t fontHandle = 0) {
-        const std::uint32_t offset = static_cast<std::uint32_t>(textBytes_.size());
+        const std::size_t oldSize = textBytes_.size();
+        const std::uint32_t offset = static_cast<std::uint32_t>(oldSize);
         const std::uint32_t length = static_cast<std::uint32_t>(text.size());
-        textBytes_.insert(textBytes_.end(), text.begin(), text.end());
+        // Use resize + memcpy rather than `insert(end, begin, end)` — GCC's
+        // -Wstringop-overflow gets confused by the iterator-pair insert when
+        // it inlines into a TU it can't see the reserved capacity for.
+        textBytes_.resize(oldSize + text.size());
+        if (length > 0) {
+            std::memcpy(textBytes_.data() + oldSize, text.data(), text.size());
+        }
         DrawCmd c;
         c.kind = DrawCmdKind::Text;
         c.payload.text = DrawText{pos, color, offset, length, fontHandle};
