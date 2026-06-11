@@ -123,6 +123,14 @@ struct AudioMixer::Impl {
     std::vector<float>            busBuffer;
     std::vector<float>            streamScratch;  // AU3 — per-call stream read target
 
+    // AU6 — meters + playback events.
+    float                         peakL          = 0.0f;
+    float                         peakR          = 0.0f;
+    float                         rmsL           = 0.0f;
+    float                         rmsR           = 0.0f;
+    PlaybackEventCallback         playbackCb     = nullptr;
+    void*                         playbackCbUser = nullptr;
+
     [[nodiscard]] std::size_t samplesPerBus() const noexcept {
         return bufferFrames * static_cast<std::size_t>(format.channels);
     }
@@ -165,6 +173,10 @@ bool AudioMixer::initialize(const AudioFormat& format, std::size_t bufferFrames)
     impl_->tickCounter        = 0;
     impl_->droppedVoicesTotal = 0;
     impl_->underrunsTotal     = 0;
+    impl_->peakL              = 0.0f;
+    impl_->peakR              = 0.0f;
+    impl_->rmsL               = 0.0f;
+    impl_->rmsR               = 0.0f;
 
     const std::size_t spb = impl_->samplesPerBus();
     impl_->masterBuffer.assign(spb, 0.0f);
@@ -407,6 +419,9 @@ VoiceId AudioMixer::play(const VoiceDesc& desc) {
     bool stolen = false;
     const std::uint32_t slotIdx = impl_->voices.allocate(impl_->tickCounter, stolen);
     if (stolen) ++impl_->droppedVoicesTotal;
+    // Note: a stolen voice does NOT emit VoiceStopped — its generation is
+    // already bumped inside `voices.allocate`, so there's no stable VoiceId
+    // to attach. Listeners use `droppedVoices` to count steals.
 
     auto& s          = impl_->voices.slot(slotIdx);
     s.sound          = desc.sound;
@@ -422,13 +437,32 @@ VoiceId AudioMixer::play(const VoiceDesc& desc) {
     s.emitter        = EmitterDesc{};
 
     ++impl_->tickCounter;
-    return impl_->voices.encode(slotIdx);
+    const VoiceId vid = impl_->voices.encode(slotIdx);
+
+    if (impl_->playbackCb) {
+        PlaybackEvent ev{};
+        ev.type   = PlaybackEventType::VoiceStarted;
+        ev.voice  = vid;
+        ev.sound  = wantStream ? SoundId{0} : desc.sound;
+        ev.stream = wantStream ? desc.stream : StreamId{0};
+        impl_->playbackCb(ev, impl_->playbackCbUser);
+    }
+    return vid;
 }
 
 void AudioMixer::stop(VoiceId voice) {
     if (!impl_) return;
     std::uint32_t slot = 0;
     if (!impl_->voices.decode(voice, slot)) return;
+    if (impl_->playbackCb) {
+        const auto& v = impl_->voices.slot(slot);
+        PlaybackEvent ev{};
+        ev.type   = PlaybackEventType::VoiceStopped;
+        ev.voice  = voice;
+        ev.sound  = v.isStream ? SoundId{0} : v.sound;
+        ev.stream = v.isStream ? v.stream : StreamId{0};
+        impl_->playbackCb(ev, impl_->playbackCbUser);
+    }
     impl_->voices.free(slot);
 }
 
@@ -474,11 +508,14 @@ inline void mixFramesIntoBus(const float* src, std::uint8_t srcChans,
 
 // Mix `bufferFrames` of `clip` starting at `v.playheadFrames` into `dst`.
 // Returns true when the voice should stop (clip exhausted, non-looping).
+// Sets `looped` to true if ≥1 wrap occurred during this call (AU6 event).
 // Non-spatial: integer frame advance — `playheadFrames` is `double` but
 // always holds integer values on this path.
 bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
                       float* dst, std::size_t bufferFrames,
-                      std::uint8_t busChans) noexcept {
+                      std::uint8_t busChans,
+                      bool& looped) noexcept {
+    looped = false;
     const std::size_t clipFrames = clip.frames();
     const std::uint8_t clipChans = clip.format.channels;
     if (clipFrames == 0 || clipChans == 0 || busChans == 0) return true;
@@ -491,6 +528,7 @@ bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
         std::uint64_t f = startFrame + i;
         if (f >= clipFrames) {
             if (v.looping) {
+                looped = true;
                 f = f % clipFrames;
             } else {
                 reachedEnd = true;
@@ -514,7 +552,9 @@ bool mixClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
 bool mixSpatialClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
                              float* dst, std::size_t bufferFrames,
                              std::uint8_t busChans,
-                             const detail::SpatialResult& sr) noexcept {
+                             const detail::SpatialResult& sr,
+                             bool& looped) noexcept {
+    looped = false;
     const std::size_t clipFrames = clip.frames();
     const std::uint8_t clipChans = clip.format.channels;
     if (clipFrames == 0 || clipChans == 0 || busChans == 0) return true;
@@ -528,6 +568,7 @@ bool mixSpatialClipVoiceInto(detail::VoiceSlot& v, const Clip& clip,
         std::uint64_t f = static_cast<std::uint64_t>(posD);
         if (f >= clipFrames) {
             if (v.looping) {
+                looped = true;
                 f = f % clipFrames;
             } else {
                 reachedEnd = true;
@@ -660,7 +701,17 @@ void AudioMixer::mix() {
                 impl_->streamScratch.data(),
                 impl_->streamScratch.size() / 8u);
             if (r.underran) ++impl_->underrunsTotal;
-            if (r.stop) impl_->voices.free(i);
+            if (r.stop) {
+                if (impl_->playbackCb) {
+                    PlaybackEvent ev{};
+                    ev.type   = PlaybackEventType::VoiceStopped;
+                    ev.voice  = impl_->voices.encode(i);
+                    ev.sound  = SoundId{0};
+                    ev.stream = v.stream;
+                    impl_->playbackCb(ev, impl_->playbackCbUser);
+                }
+                impl_->voices.free(i);
+            }
             continue;
         }
 
@@ -673,6 +724,8 @@ void AudioMixer::mix() {
         }
         const Clip& clip = impl_->clips[clipSlot].clip;
 
+        bool stop   = false;
+        bool looped = false;
         if (v.isSpatial) {
             // Resolve listener; fall back to non-spatial mix on stale.
             std::uint32_t lslot = 0, lgen = 0;
@@ -683,18 +736,38 @@ void AudioMixer::mix() {
                 const float linearVoiceGain = dbToLinear(v.gainDb);
                 const detail::SpatialResult sr =
                     detail::computeSpatial(listenerDesc, v.emitter, linearVoiceGain);
-                const bool stop = mixSpatialClipVoiceInto(
-                    v, clip, dst, impl_->bufferFrames, channels, sr);
-                if (stop) impl_->voices.free(i);
-                continue;
+                stop = mixSpatialClipVoiceInto(
+                    v, clip, dst, impl_->bufferFrames, channels, sr, looped);
+            } else {
+                // Listener gone — drop the spatial attachment, fall through to
+                // non-spatial mix.
+                v.isSpatial = false;
+                stop = mixClipVoiceInto(v, clip, dst, impl_->bufferFrames, channels, looped);
             }
-            // Listener gone — drop the spatial attachment, fall through to
-            // non-spatial mix.
-            v.isSpatial = false;
+        } else {
+            stop = mixClipVoiceInto(v, clip, dst, impl_->bufferFrames, channels, looped);
         }
 
-        const bool stop = mixClipVoiceInto(v, clip, dst, impl_->bufferFrames, channels);
-        if (stop) impl_->voices.free(i);
+        // AU6 — emit VoiceLooped before VoiceStopped if both fire same call.
+        if (looped && !stop && impl_->playbackCb) {
+            PlaybackEvent ev{};
+            ev.type   = PlaybackEventType::VoiceLooped;
+            ev.voice  = impl_->voices.encode(i);
+            ev.sound  = v.sound;
+            ev.stream = StreamId{0};
+            impl_->playbackCb(ev, impl_->playbackCbUser);
+        }
+        if (stop) {
+            if (impl_->playbackCb) {
+                PlaybackEvent ev{};
+                ev.type   = PlaybackEventType::VoiceStopped;
+                ev.voice  = impl_->voices.encode(i);
+                ev.sound  = v.isStream ? SoundId{0} : v.sound;
+                ev.stream = v.isStream ? v.stream : StreamId{0};
+                impl_->playbackCb(ev, impl_->playbackCbUser);
+            }
+            impl_->voices.free(i);
+        }
     }
 
     // Pass 2: detect any solo'd non-master bus.
@@ -728,6 +801,44 @@ void AudioMixer::mix() {
         }
     }
 
+    // AU6 — meters. Peak is hold-max; RMS is instantaneous per call. For
+    // mono buses, mirror the single channel into both L/R fields.
+    {
+        float peakL = 0.0f, peakR = 0.0f;
+        double sqL = 0.0, sqR = 0.0;
+        const std::uint8_t ch = impl_->format.channels;
+        if (ch >= 2) {
+            for (std::size_t i = 0; i < impl_->bufferFrames; ++i) {
+                const float l = impl_->masterBuffer[i * ch + 0];
+                const float r = impl_->masterBuffer[i * ch + 1];
+                const float al = l < 0.0f ? -l : l;
+                const float ar = r < 0.0f ? -r : r;
+                if (al > peakL) peakL = al;
+                if (ar > peakR) peakR = ar;
+                sqL += static_cast<double>(l) * static_cast<double>(l);
+                sqR += static_cast<double>(r) * static_cast<double>(r);
+            }
+        } else if (ch == 1) {
+            for (std::size_t i = 0; i < impl_->bufferFrames; ++i) {
+                const float m = impl_->masterBuffer[i];
+                const float am = m < 0.0f ? -m : m;
+                if (am > peakL) peakL = am;
+                sqL += static_cast<double>(m) * static_cast<double>(m);
+            }
+            peakR = peakL;
+            sqR   = sqL;
+        }
+        if (peakL > impl_->peakL) impl_->peakL = peakL;
+        if (peakR > impl_->peakR) impl_->peakR = peakR;
+        if (impl_->bufferFrames > 0) {
+            impl_->rmsL = static_cast<float>(std::sqrt(sqL / static_cast<double>(impl_->bufferFrames)));
+            impl_->rmsR = static_cast<float>(std::sqrt(sqR / static_cast<double>(impl_->bufferFrames)));
+        } else {
+            impl_->rmsL = 0.0f;
+            impl_->rmsR = 0.0f;
+        }
+    }
+
     impl_->device->submit(ConstAudioSpan{ impl_->masterBuffer.data(), impl_->bufferFrames, impl_->format });
 }
 
@@ -738,11 +849,23 @@ MixerStats AudioMixer::stats() const noexcept {
     out.allocatedVoices = impl_->voices.capacity();
     out.droppedVoices   = impl_->droppedVoicesTotal;
     out.underruns       = impl_->underrunsTotal;
+    out.peakL           = impl_->peakL;
+    out.peakR           = impl_->peakR;
+    out.rmsL            = impl_->rmsL;
+    out.rmsR            = impl_->rmsR;
     return out;
 }
 
 void AudioMixer::resetPeaks() noexcept {
-    // AU6 wires the meters; AU2 stub keeps the public symbol available.
+    if (!impl_) return;
+    impl_->peakL = 0.0f;
+    impl_->peakR = 0.0f;
+}
+
+void AudioMixer::setPlaybackEventCallback(PlaybackEventCallback cb, void* user) noexcept {
+    if (!impl_) return;
+    impl_->playbackCb     = cb;
+    impl_->playbackCbUser = user;
 }
 
 } // namespace threadmaxx::audio

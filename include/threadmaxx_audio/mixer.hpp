@@ -11,6 +11,7 @@
 #include "threadmaxx_audio/buffer.hpp"
 #include "threadmaxx_audio/config.hpp"
 #include "threadmaxx_audio/device.hpp"
+#include "threadmaxx_audio/events.hpp"
 #include "threadmaxx_audio/spatial.hpp"
 #include "threadmaxx_audio/types.hpp"
 #include "threadmaxx_audio/voice.hpp"
@@ -131,7 +132,15 @@ public:
     void mix();
 
     [[nodiscard]] MixerStats stats() const noexcept;
+    /// Reset peak-hold meters to zero; does not touch RMS or counters.
     void resetPeaks() noexcept;
+
+    /// Register a playback event callback. `user` is passed through to every
+    /// invocation. Pass `cb = nullptr` to clear. AU6 fires VoiceStarted on
+    /// `play()`, VoiceStopped when the slot is freed (mix-time clip end /
+    /// stream EOF or explicit `stop()`), and VoiceLooped once per `mix()`
+    /// call where ≥1 clip-loop wrap occurred.
+    void setPlaybackEventCallback(PlaybackEventCallback cb, void* user = nullptr) noexcept;
 
 private:
     struct Impl;

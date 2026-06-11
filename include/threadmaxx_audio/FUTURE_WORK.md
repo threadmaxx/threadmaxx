@@ -4,7 +4,7 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1-AU5 shipped (2026-06-10)**. AU6-AU8 are 📋 planned.
+Status: **AU1-AU6 shipped (2026-06-10/11)**. AU7-AU8 are 📋 planned.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -315,21 +315,49 @@ in custom DSP chains.
 
 **Out of scope**: filters (lowpass/highpass/EQ) — v1.x.
 
-## Batch AU6 — Diagnostics + events
+## Batch AU6 — Diagnostics + events ✅ landed 2026-06-11
 
-**Goal**: `MixerStats` with peak/RMS meters, underrun counter,
-voice-pool stats. `events.hpp` for playback callbacks.
+**Goal**: peak/RMS meters wired into `MixerStats`,
+`AudioDiagnostics` view wrapper, playback event callback.
 
-**Test gate**:
+**Test gate** (all green on `build/` + `build-werror/`):
 
-- `test_audio_diagnostics_meters` — play a known sine clip; peak
-  meter reports ~1.0 ± 1e-3 within the clip's duration.
-- `test_audio_diagnostics_reset` — `resetPeaks()` clears peakL/peakR
-  but preserves underrun count.
-- `test_audio_events_playback` — start / stop / loop events fire
-  on the expected boundaries; callbacks receive the right VoiceId.
+- ✅ `test_audio_diagnostics_meters` — DC clip at 1.0 amplitude
+  drives `peakL` / `peakR` / `rmsL` / `rmsR` all within 1e-3 of
+  1.0 after one mix; switching to a quieter clip keeps peak (hold-
+  max) while RMS tracks the current buffer.
+- ✅ `test_audio_diagnostics_reset` — `resetPeaks()` zeroes the
+  peak meters but preserves the cumulative `underruns` counter;
+  subsequent mix re-populates peaks from the still-playing voice.
+- ✅ `test_audio_events_playback` — VoiceStarted fires immediately
+  on `play()`; VoiceLooped fires once per mix call where the clip
+  wraps; VoiceStopped fires on both explicit `stop()` and mix-time
+  auto-stop; clearing the callback with `nullptr` silences events.
 
-**Files**: `diagnostics.hpp`, `events.hpp`.
+**Files landed**:
+- `include/threadmaxx_audio/events.hpp` — `PlaybackEventType`,
+  `PlaybackEvent`, `PlaybackEventCallback` (C function pointer +
+  user-data to avoid hidden `std::function` allocations)
+- `include/threadmaxx_audio/diagnostics.hpp` — `AudioDiagnostics`
+  non-owning view wrapper
+- `AudioMixer::setPlaybackEventCallback`; peaks wired in mix()
+  end-of-buffer; `resetPeaks()` implementation; `mixClipVoiceInto`
+  / `mixSpatialClipVoiceInto` gained a `looped` out-param so the
+  mixer can emit `VoiceLooped`
+- three `tests/audio/test_audio_(diagnostics|events)_*.cpp`
+
+**Resolved decisions**:
+- `peakL` / `peakR` are hold-max (lifetime since last
+  `resetPeaks()`); `rmsL` / `rmsR` are per-call instantaneous (RMS
+  over a single buffer).
+- Mono buses mirror the single channel into both L/R fields so
+  consumers can read a single set of numbers regardless of layout.
+- Voice stealing does NOT emit `VoiceStopped` for the displaced
+  voice — the slot's generation is already bumped before the
+  callback could fire. Use the `droppedVoices` counter for steal
+  observability.
+- Callback signature is a C-style function pointer + user-data
+  (not `std::function`) to keep the hot path zero-alloc.
 
 **Out of scope**: spectrum analysis, capture-to-file.
 

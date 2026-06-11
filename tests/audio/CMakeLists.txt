@@ -25,6 +25,9 @@ set(THREADMAXX_AUDIO_TESTS
     test_audio_dsp_pan
     test_audio_dsp_fade
     test_audio_dsp_no_allocations
+    test_audio_diagnostics_meters
+    test_audio_diagnostics_reset
+    test_audio_events_playback
 )
 
 foreach(test ${THREADMAXX_AUDIO_TESTS})
