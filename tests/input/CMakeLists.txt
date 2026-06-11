@@ -10,6 +10,12 @@ set(THREADMAXX_INPUT_TESTS
     test_input_context_lifecycle
     test_input_no_allocations
     test_input_no_engine_link
+    test_input_keys_held
+    test_input_keys_released
+    test_input_mouse_buttons
+    test_input_mouse_motion
+    test_input_char_queue
+    test_input_modifier_mask
 )
 
 foreach(test ${THREADMAXX_INPUT_TESTS})

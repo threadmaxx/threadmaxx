@@ -9,6 +9,7 @@ set(THREADMAXX_INPUT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/backends/NullBackend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/detail/edge_buffer.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/detail/keymap.hpp
 )
 
 set(THREADMAXX_INPUT_SOURCES
