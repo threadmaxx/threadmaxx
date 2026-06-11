@@ -7,6 +7,7 @@ set(THREADMAXX_INPUT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/context.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/cursor.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/events.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/picking.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/state.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/version.hpp
@@ -19,6 +20,7 @@ set(THREADMAXX_INPUT_PUBLIC_HEADERS
 set(THREADMAXX_INPUT_SOURCES
     InputContext.cpp
     Binding.cpp
+    Picking.cpp
     backends/NullBackend.cpp
 )
 

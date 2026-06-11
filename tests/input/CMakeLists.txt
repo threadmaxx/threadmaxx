@@ -33,6 +33,11 @@ set(THREADMAXX_INPUT_TESTS
     test_input_capture_mouse
     test_input_capture_keyboard
     test_input_capture_clear_on_release
+    test_input_picking_identity_camera
+    test_input_picking_round_trip
+    test_input_picking_viewport_offset
+    test_input_picking_far_plane
+    test_input_picking_no_allocations
 )
 
 foreach(test ${THREADMAXX_INPUT_TESTS})

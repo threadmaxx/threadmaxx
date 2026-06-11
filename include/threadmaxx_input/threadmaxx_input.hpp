@@ -12,6 +12,7 @@
 #include "threadmaxx_input/context.hpp"
 #include "threadmaxx_input/cursor.hpp"
 #include "threadmaxx_input/events.hpp"
+#include "threadmaxx_input/picking.hpp"
 #include "threadmaxx_input/state.hpp"
 #include "threadmaxx_input/types.hpp"
 #include "threadmaxx_input/version.hpp"
