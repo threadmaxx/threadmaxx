@@ -30,6 +30,7 @@ set(THREADMAXX_AUDIO_TESTS
     test_audio_events_playback
     test_audio_backend_alsa
     test_audio_backend_pulse
+    test_audio_voice_pool_256_no_alloc
 )
 
 foreach(test ${THREADMAXX_AUDIO_TESTS})

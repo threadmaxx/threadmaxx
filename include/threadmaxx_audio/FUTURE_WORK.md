@@ -4,7 +4,9 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **AU1-AU8 shipped (2026-06-10/11)**. v1.0 close-out in flight.
+Status: **v1.0.0 shipped (2026-06-11)** — all eight batches landed,
+close-out gates green. Version stamped at `1.0.0` in
+`include/threadmaxx_audio/version.hpp`.
 Sequencing follows the §8 "implementation order" of the design notes,
 regrouped into shippable units that each carry their own tests.
 
@@ -468,18 +470,25 @@ build still succeeds.
 **Out of scope**: macOS CoreAudio, Windows WASAPI, JACK. Add when
 the project targets those platforms.
 
-## v1.0 close-out criteria
+## v1.0 close-out criteria ✅ all green 2026-06-11
 
-- ✓ Every batch AU1–AU8 landed and tested.
-- ✓ Voice pool tested up to 256 simultaneously-playing voices
-  without allocation.
-- ✓ ALSA backend boots on the dev target.
-- ✓ Bench `audio_crowd_bench.cpp` reports <2ms mix cost per 1024
-  frames at 48kHz for 256 voices.
-- ✓ Docs: README, USER_GUIDE, MAINTAINER_GUIDE.
-- ✓ ctest 100% on `build/` and `build-werror/`.
-- ✓ Version stamped at 1.0.0 in
-  `include/threadmaxx_audio/version.hpp`.
+- ✅ Every batch AU1–AU8 landed and tested.
+- ✅ Voice pool tested up to 256 simultaneously-playing voices
+  without allocation (`test_audio_voice_pool_256_no_alloc`,
+  100 mix cycles under tracking allocator, zero heap traffic).
+- ✅ ALSA backend boots on the dev target
+  (`test_audio_backend_alsa` PASS on Linux x86_64).
+- ✅ Bench `audio_crowd_bench` reports **0.140 ms / buffer** at
+  256 voices / 4 buses / 1024 frames @ 48 kHz — ~14× under the
+  2 ms gate.
+- ✅ Docs: `README.md`, `USER_GUIDE.md`, `MAINTAINER_GUIDE.md`,
+  `CHANGELOG.md` all landed under `include/threadmaxx_audio/`.
+- ✅ ctest 100% on `build/` AND `build-werror/`
+  (`-Wsign-conversion -Wconversion -Wold-style-cast -Werror`) —
+  27/27 audio tests.
+- ✅ Version stamped at 1.0.0 in
+  `include/threadmaxx_audio/version.hpp` —
+  `THREADMAXX_AUDIO_VERSION = 10000`, `version_string() = "1.0.0"`.
 
 ## v1.x candidate batches (not blocking v1.0)
 

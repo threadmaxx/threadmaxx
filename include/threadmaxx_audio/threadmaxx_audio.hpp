@@ -19,4 +19,5 @@
 #include "threadmaxx_audio/spatial.hpp"
 #include "threadmaxx_audio/stream.hpp"
 #include "threadmaxx_audio/types.hpp"
+#include "threadmaxx_audio/version.hpp"
 #include "threadmaxx_audio/voice.hpp"

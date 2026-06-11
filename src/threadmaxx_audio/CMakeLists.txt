@@ -13,6 +13,7 @@ set(THREADMAXX_AUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/spatial.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/stream.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/types.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/voice.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/detail/pan_law.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/detail/voice_allocator.hpp
