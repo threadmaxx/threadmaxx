@@ -150,7 +150,7 @@ in `apply()` rather than mutating world state directly.
 **Out of scope**: transaction groups (multiple commands as one
 undo unit) — E10 / v1.x.
 
-## Batch E4 — Hot reload controller
+## Batch E4 — Hot reload controller ✅ landed 2026-06-12
 
 **Goal**: orchestrate the engine's existing
 `Engine::markResourceStale<T>` + `AssetReloaded` event channel.

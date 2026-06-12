@@ -10,6 +10,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_command_stack_redo
     test_editor_command_stack_new_after_undo
     test_editor_command_clear
+    test_editor_hotreload_request
+    test_editor_hotreload_event_observed
+    test_editor_hotreload_cancel
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})
