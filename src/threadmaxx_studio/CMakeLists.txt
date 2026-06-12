@@ -3,12 +3,14 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/data_source.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panel.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/studio.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
 )
 
-# ST1 only ships interfaces + a version anchor; no concrete impls yet.
-# StudioApp / PanelHost / DirectDataSource land in ST2 / ST4.
+# ST2 lights up StudioApp + PanelHost. DirectDataSource lands in ST4.
 set(THREADMAXX_STUDIO_SOURCES
+    PanelHost.cpp
+    StudioApp.cpp
     StudioVersion.cpp
 )
 

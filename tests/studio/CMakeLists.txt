@@ -3,6 +3,9 @@ set(THREADMAXX_STUDIO_TESTS
     test_studio_panel_interface_canary
     test_studio_data_source_canary
     test_studio_no_engine_link_canary
+    test_studio_app_lifecycle
+    test_studio_panel_register_unregister
+    test_studio_layout_persists_via_editor
 )
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
