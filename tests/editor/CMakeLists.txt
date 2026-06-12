@@ -13,6 +13,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_hotreload_request
     test_editor_hotreload_event_observed
     test_editor_hotreload_cancel
+    test_editor_telemetry_basic
+    test_editor_telemetry_config_off
+    test_editor_telemetry_system_stats
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

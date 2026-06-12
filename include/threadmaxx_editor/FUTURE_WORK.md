@@ -175,7 +175,7 @@ render thread). Document the thread-safety expectations clearly.
 **Out of scope**: file-system watcher (game-side / OS-specific —
 controller exposes the hooks, but the watcher loop is not in v1.0).
 
-## Batch E5 — Telemetry overlay
+## Batch E5 — Telemetry overlay ✅ landed 2026-06-12
 
 **Goal**: a polled view of engine `FrameSnapshot` data — FPS,
 frame time, per-system stats, optional trace event count. Renders
