@@ -210,6 +210,12 @@ if (TARGET threadmaxx::assets)
     add_subdirectory(assets)
 endif()
 
+# threadmaxx_reflect sibling-library test suite (R1+). Lives in
+# `tests/reflect/`. Skipped if the reflect opt-in is off.
+if (TARGET threadmaxx::reflect)
+    add_subdirectory(reflect)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)

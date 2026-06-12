@@ -18,6 +18,7 @@ option(THREADMAXX_BUILD_AUDIO "Make the threadmaxx_audio sibling library availab
 option(THREADMAXX_BUILD_UI "Make the threadmaxx_ui sibling library available" ON)
 option(THREADMAXX_BUILD_INPUT "Make the threadmaxx_input sibling library available" ON)
 option(THREADMAXX_BUILD_ASSETS "Make the threadmaxx_assets sibling library available" ON)
+option(THREADMAXX_BUILD_REFLECT "Make the threadmaxx_reflect sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -250,6 +251,22 @@ if (THREADMAXX_BUILD_ASSETS)
 endif()
 
 # --------------------------------------------------------------------------
+# threadmaxx_reflect — compile-time + runtime reflection sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_REFLECT=ON` (the default). Static library
+# — public headers under `include/threadmaxx_reflect/`, implementation
+# under `src/threadmaxx_reflect/`. v1.0 sequences as R1 → R8 per
+# `include/threadmaxx_reflect/FUTURE_WORK.md`. Engine-independent: depends
+# only on the STL; the engine bridge (R7) opts in via a `TARGET
+# threadmaxx::threadmaxx` check and exports
+# `THREADMAXX_REFLECT_HAS_ENGINE_BRIDGE=1`. See
+# `include/threadmaxx_reflect/DESIGN_NOTES.md` for the spec.
+if (THREADMAXX_BUILD_REFLECT)
+    add_subdirectory(src/threadmaxx_reflect)
+endif()
+
+# --------------------------------------------------------------------------
 # Examples
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
@@ -265,6 +282,9 @@ if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/input_demo)
     if (TARGET threadmaxx::assets)
         add_subdirectory(examples/assets_demo)
+    endif()
+    if (TARGET threadmaxx::reflect)
+        add_subdirectory(examples/reflect_demo)
     endif()
 endif()
 
