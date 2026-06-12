@@ -11,6 +11,10 @@ set(THREADMAXX_REFLECT_TESTS
     test_reflect_registry_lookup_by_name
     test_reflect_registry_lookup_by_type_index
     test_reflect_registry_concurrent
+    test_reflect_enum_basic
+    test_reflect_enum_round_trip
+    test_reflect_enum_custom_range
+    test_reflect_enum_flags
 )
 
 foreach(test ${THREADMAXX_REFLECT_TESTS})

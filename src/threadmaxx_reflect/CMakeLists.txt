@@ -8,7 +8,9 @@ set(THREADMAXX_REFLECT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/type_info.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/version.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/enum.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/aggregate_impl.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/enum_impl.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/macro_impl.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/name_arena.hpp
 )
