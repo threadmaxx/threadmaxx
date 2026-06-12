@@ -302,8 +302,9 @@ if (THREADMAXX_BUILD_EXAMPLES)
     if (TARGET threadmaxx::reflect)
         add_subdirectory(examples/reflect_demo)
     endif()
-    # editor_demo is wired at the v1.0 close-out batch (E1-E10 ship
-    # headless tests only).
+    if (TARGET threadmaxx::editor)
+        add_subdirectory(examples/editor_demo)
+    endif()
 endif()
 
 # --------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 set(THREADMAXX_EDITOR_TESTS
+    test_editor_version
     test_editor_session_attach
     test_editor_headless_backend_capture
     test_editor_session_destroy_order

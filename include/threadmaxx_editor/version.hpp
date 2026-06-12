@@ -9,8 +9,8 @@
 
 #include <string_view>
 
-#define THREADMAXX_EDITOR_VERSION_MAJOR 0
-#define THREADMAXX_EDITOR_VERSION_MINOR 9
+#define THREADMAXX_EDITOR_VERSION_MAJOR 1
+#define THREADMAXX_EDITOR_VERSION_MINOR 0
 #define THREADMAXX_EDITOR_VERSION_PATCH 0
 #define THREADMAXX_EDITOR_VERSION \
     (THREADMAXX_EDITOR_VERSION_MAJOR * 10000 + \
@@ -19,10 +19,9 @@
 
 namespace threadmaxx::editor {
 
-/// @brief Human-readable version string. Pre-1.0 development series;
-/// flipped to "1.0.0" at the v1.0 close-out batch.
+/// @brief Human-readable version string.
 constexpr std::string_view version_string() noexcept {
-    return "0.9.0-dev";
+    return "1.0.0";
 }
 
 } // namespace threadmaxx::editor

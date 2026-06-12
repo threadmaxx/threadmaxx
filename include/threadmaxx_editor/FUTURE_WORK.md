@@ -4,10 +4,9 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **E1 landed 2026-06-12**. Remaining batches 📋 planned.
-Sequencing follows the §8 "implementation order" of the design
-notes, regrouped into shippable units that each carry their own
-tests.
+**v1.0.0 shipped 2026-06-12.** Every E-batch landed; gates green
+(34 editor tests across `build/` + `build-werror/`). E11 (ImGui
+backend) lands as a follow-on. `DESIGN_NOTES.md` is the spec.
 
 ## Conventions
 
@@ -310,7 +309,7 @@ typed commands (lives behind the same `IEditCommand` infrastructure).
 **Out of scope**: scripting (Lua / Python) — game-side; library
 just exposes the `IEditCommand` hook.
 
-## v1.0 close-out criteria
+## v1.0 close-out criteria ✅ shipped 2026-06-12
 
 - ✓ Every batch E1–E10 landed and tested headlessly.
 - ✓ HeadlessBackend exercises the full editor surface across the
