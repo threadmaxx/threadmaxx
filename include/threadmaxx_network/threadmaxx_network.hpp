@@ -9,6 +9,7 @@
 #include "ids.hpp"
 #include "packets.hpp"
 #include "replication.hpp"
+#include "rollback.hpp"
 #include "session.hpp"
 #include "transport.hpp"
 #include "version.hpp"

@@ -20,6 +20,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_delta_smoke
     test_network_delta_correctness
     test_network_delta_under_loss
+    test_network_rollback_input_history
+    test_network_rollback_snapshot_history
+    test_network_rollback_capacity_overflow
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})
