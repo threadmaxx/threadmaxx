@@ -5,12 +5,14 @@ set(THREADMAXX_NETWORK_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/ids.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/packets.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/session.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/delta.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/replication.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/transport.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/version.hpp
 )
 
 set(THREADMAXX_NETWORK_SOURCES
+    Delta.cpp
     Init.cpp
     ReplicationRegistry.cpp
     Session.cpp

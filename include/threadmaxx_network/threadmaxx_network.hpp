@@ -5,6 +5,7 @@
 
 #include "bitstream.hpp"
 #include "config.hpp"
+#include "delta.hpp"
 #include "ids.hpp"
 #include "packets.hpp"
 #include "replication.hpp"

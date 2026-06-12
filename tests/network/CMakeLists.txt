@@ -17,6 +17,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_snapshot_roundtrip
     test_network_snapshot_oversize
     test_network_snapshot_schema
+    test_network_delta_smoke
+    test_network_delta_correctness
+    test_network_delta_under_loss
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})
