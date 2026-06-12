@@ -14,6 +14,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_input_delivery
     test_network_input_ack
     test_network_input_under_loss
+    test_network_snapshot_roundtrip
+    test_network_snapshot_oversize
+    test_network_snapshot_schema
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})

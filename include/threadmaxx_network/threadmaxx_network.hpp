@@ -7,6 +7,7 @@
 #include "config.hpp"
 #include "ids.hpp"
 #include "packets.hpp"
+#include "replication.hpp"
 #include "session.hpp"
 #include "transport.hpp"
 #include "version.hpp"
