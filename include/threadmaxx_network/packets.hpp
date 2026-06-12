@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace threadmaxx::network {
 
@@ -94,6 +95,31 @@ inline std::optional<HelloPayload> readHello(BitReader& r) {
     p.protocolVersion = static_cast<std::uint32_t>(r.readBits(32));
     p.clientSalt      = r.readBits(64);
     if (r.exhausted()) return std::nullopt;
+    return p;
+}
+
+/// @brief One per-tick input frame from the client. The `bytes`
+/// span is opaque to the library — game code defines the layout.
+struct InputPayload {
+    TickId tick{};
+    std::vector<std::byte> bytes{};
+};
+
+inline void writeInput(BitWriter& w, const InputPayload& p) {
+    w.writeBits(p.tick.value, 32);
+    w.writeVarUInt(p.bytes.size());
+    w.writeBytes(std::span<const std::byte>{p.bytes.data(), p.bytes.size()});
+}
+
+inline std::optional<InputPayload> readInput(BitReader& r) {
+    InputPayload p{};
+    p.tick.value = static_cast<std::uint32_t>(r.readBits(32));
+    const auto sz = r.readVarUInt();
+    if (r.exhausted()) return std::nullopt;
+    p.bytes.resize(sz);
+    const auto got = r.readBytes(
+        std::span<std::byte>{p.bytes.data(), p.bytes.size()});
+    if (got != sz) return std::nullopt;
     return p;
 }
 

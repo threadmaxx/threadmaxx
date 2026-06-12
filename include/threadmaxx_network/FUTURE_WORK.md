@@ -144,7 +144,7 @@ session, basic sequence + ack tracking.
 **Out of scope**: encryption / cert exchange (out of scope per
 DESIGN_NOTES §9 — game-layer concern).
 
-## Batch NW4 — Input delivery + ack tracking
+## Batch NW4 — Input delivery + ack tracking ✅ landed 2026-06-12
 
 **Goal**: clients push per-tick input; server queues it; ack bits
 travel both directions so retransmits stay bounded.

@@ -11,6 +11,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_handshake
     test_network_session_unique
     test_network_sequence_wrap
+    test_network_input_delivery
+    test_network_input_ack
+    test_network_input_under_loss
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})

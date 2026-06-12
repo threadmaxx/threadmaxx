@@ -59,9 +59,31 @@ public:
         onConnected_ = std::move(cb);
     }
 
+    /// @brief Set a callback for inbound input packets from connected
+    /// clients. Game code uses this to feed inputs into its
+    /// simulation queue.
+    void onInput(std::function<void(PeerId, const InputPayload&)> cb) {
+        onInput_ = std::move(cb);
+    }
+
+    /// @brief Drained input queue for `peer`. Each input arrived
+    /// once at most (the server side de-duplicates by (peer, tick)).
+    std::span<const InputPayload> inputsFor(PeerId peer) const noexcept;
+
+    /// @brief Drop input packets at or below `tick` for `peer`. Used
+    /// once game code has committed those inputs into its simulation
+    /// (or for memory bound when the client side has acked).
+    void releaseInputsUpTo(PeerId peer, TickId tick);
+
     /// @brief Server-side disconnect. Posts a Disconnect packet and
     /// clears local state.
     void disconnect(PeerId p);
+
+    /// @brief Send an out-of-band ack covering `peer`'s most recent
+    /// tick. Useful when the server has no other downstream traffic
+    /// to piggy-back on. Returns true on a successful transport
+    /// `send` call.
+    bool sendAck(PeerId peer, TickId tick);
 
     /// @brief Currently-installed config.
     const NetworkConfig& config() const noexcept { return cfg_; }
@@ -75,12 +97,17 @@ public:
 private:
     void handleHello_(const PacketHeader& header,
                       const ReceivedPacket& src);
+    void handleInput_(const PacketHeader& header,
+                      const ReceivedPacket& src,
+                      BitReader& r);
 
     ITransport* transport_;
     NetworkConfig cfg_;
     std::uint64_t sessionCounter_{0};
     std::unordered_map<std::uint32_t, PeerState> peers_;
+    std::unordered_map<std::uint32_t, std::vector<InputPayload>> inputQueue_;
     std::function<void(const PeerState&)> onConnected_;
+    std::function<void(PeerId, const InputPayload&)> onInput_;
 };
 
 /// @brief Client-side handshake + sequence tracking.
@@ -97,6 +124,28 @@ public:
     /// @brief Drain transport, dispatch inbound packets. Returns the
     /// number of packets handled.
     std::size_t pumpReceive();
+
+    /// @brief Queue an input frame for `tick` and post it to the
+    /// server. Returns true on a successful transport `send` call.
+    /// The frame is retained in the retransmit window until the
+    /// server acks (via an inbound Ack packet or piggy-backed
+    /// `ack` field on a Snapshot / Delta).
+    bool sendInput(TickId tick, std::span<const std::byte> bytes);
+
+    /// @brief Re-transmit every input frame in the retransmit window
+    /// whose tick is greater than `lastAcked()`. Hosts call this
+    /// once per tick to defeat packet loss.
+    /// @return number of frames re-sent.
+    std::size_t retransmitPending();
+
+    /// @brief Number of input frames currently held in the retransmit
+    /// buffer.
+    std::size_t pendingInputCount() const noexcept {
+        return pending_.size();
+    }
+
+    /// @brief Highest tick the server has acked back (or 0 if none).
+    TickId lastAcked() const noexcept { return lastAcked_; }
 
     /// @brief True after a successful Welcome.
     bool connected() const noexcept { return connected_; }
@@ -124,6 +173,10 @@ private:
     std::uint32_t remoteAckBits_{0};
     std::uint32_t localSeq_{0};
     bool connected_{false};
+
+    // Retransmit ring keyed by tick value.
+    std::vector<InputPayload> pending_{};
+    TickId lastAcked_{};
 };
 
 } // namespace threadmaxx::network
