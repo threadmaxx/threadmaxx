@@ -14,6 +14,7 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/property_editor.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/task_graph.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/tuning.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/world_diff.hpp
 )
 
@@ -36,6 +37,7 @@ set(THREADMAXX_STUDIO_SOURCES
     panels/PropertyEditorPanel.cpp
     panels/StatusBar.cpp
     panels/TaskGraphPanel.cpp
+    panels/TuningPanel.cpp
     panels/WorldDiffPanel.cpp
 )
 
