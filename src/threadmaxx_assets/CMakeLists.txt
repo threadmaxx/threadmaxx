@@ -17,13 +17,17 @@ set(THREADMAXX_ASSETS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/tga.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/wav.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/async_loader.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/bundle.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/registry.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/watch.hpp
 )
 
 set(THREADMAXX_ASSETS_SOURCES
     AsyncLoader.cpp
+    Bundle.cpp
     Io.cpp
     Registry.cpp
+    Watch.cpp
     detail/Inflate.cpp
     loaders/Bmfont.cpp
     loaders/Bmp.cpp

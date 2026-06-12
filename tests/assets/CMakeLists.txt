@@ -14,6 +14,8 @@ set(THREADMAXX_ASSETS_TESTS
     test_assets_bmfont
     test_assets_registry
     test_assets_async_loader
+    test_assets_bundle
+    test_assets_watch
 )
 
 # Engine bridge test only when threadmaxx::threadmaxx target is around AND
