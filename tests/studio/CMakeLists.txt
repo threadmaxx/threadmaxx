@@ -9,6 +9,9 @@ set(THREADMAXX_STUDIO_TESTS
     test_studio_menu_open_panel
     test_studio_status_bar_text
     test_studio_console_panel_renders_editor_console
+    test_studio_direct_source_engine_snapshot
+    test_studio_direct_source_world_snapshot
+    test_studio_direct_source_submits_command
 )
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})

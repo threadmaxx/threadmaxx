@@ -2,6 +2,7 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/threadmaxx_studio.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/data_source.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/direct_data_source.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panel.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/studio.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
@@ -10,9 +11,14 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
 )
 
-# ST2 lights up StudioApp + PanelHost. ST3 adds chrome panels
-# (MenuBar / StatusBar / ConsolePanel). DirectDataSource lands in ST4.
+# ST4 closes M1 with DirectDataSource. The studio is engine-AGNOSTIC
+# at the interface layer (panel.hpp / data_source.hpp stay clean);
+# DirectDataSource is the first TU that pulls threadmaxx/ headers.
+# The core engine lib is already on the public surface transitively
+# via threadmaxx::editor → threadmaxx::threadmaxx, so no extra link
+# is needed here.
 set(THREADMAXX_STUDIO_SOURCES
+    DirectDataSource.cpp
     PanelHost.cpp
     StudioApp.cpp
     StudioVersion.cpp

@@ -7,6 +7,7 @@
 
 #include "config.hpp"
 #include "data_source.hpp"
+#include "direct_data_source.hpp"
 #include "panel.hpp"
 #include "studio.hpp"
 #include "version.hpp"
