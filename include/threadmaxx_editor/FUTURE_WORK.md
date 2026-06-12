@@ -289,7 +289,7 @@ DESIGN_NOTES §6.3.
 **Out of scope**: 3-way diff / merge (v1.x — useful for
 collaborative editing, not yet a real need).
 
-## Batch E10 — Layout persistence + console
+## Batch E10 — Layout persistence + console ✅ landed 2026-06-12
 
 **Goal**: save/load editor layout (which panels are visible, dock
 arrangement, selected tabs) to a stream. Plus a basic console for

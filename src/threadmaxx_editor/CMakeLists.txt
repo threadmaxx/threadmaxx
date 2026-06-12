@@ -13,14 +13,18 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/properties.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/gizmo.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/diff.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/layout.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/console.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
     CommandStack.cpp
+    Console.cpp
     EditorSession.cpp
     Gizmo.cpp
     HotReloadController.cpp
     Inspector.cpp
+    Layout.cpp
     PropertyEditor.cpp
     SelectionState.cpp
     TelemetryOverlay.cpp
