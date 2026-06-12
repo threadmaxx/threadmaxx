@@ -11,11 +11,13 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/telemetry.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/selection.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/properties.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/gizmo.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
     CommandStack.cpp
     EditorSession.cpp
+    Gizmo.cpp
     HotReloadController.cpp
     Inspector.cpp
     PropertyEditor.cpp

@@ -242,7 +242,7 @@ lands.
 
 **Out of scope**: nested struct editing beyond depth=1 (v1.x).
 
-## Batch E8 — Gizmos
+## Batch E8 — Gizmos ✅ landed 2026-06-12
 
 **Goal**: transform gizmo (translate/rotate/scale handles) math.
 The library produces a `GizmoFrame` describing handle positions +

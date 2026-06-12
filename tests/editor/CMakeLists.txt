@@ -22,6 +22,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_property_read
     test_editor_property_edit
     test_editor_property_custom_type
+    test_editor_gizmo_handle_positions
+    test_editor_gizmo_hit_test
+    test_editor_gizmo_drag_translate
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})
