@@ -8,6 +8,7 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/console.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/engine_inspector.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/frame_snapshot.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/gizmo.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/menu_bar.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/property_editor.hpp
@@ -28,6 +29,7 @@ set(THREADMAXX_STUDIO_SOURCES
     StudioVersion.cpp
     panels/ConsolePanel.cpp
     panels/EntityInspectorPanel.cpp
+    panels/FrameSnapshotPanel.cpp
     panels/GizmoPanel.cpp
     panels/MenuBar.cpp
     panels/PropertyEditorPanel.cpp
