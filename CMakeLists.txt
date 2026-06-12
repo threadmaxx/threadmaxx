@@ -263,6 +263,9 @@ if (THREADMAXX_BUILD_EXAMPLES)
     add_subdirectory(examples/audio_demo)
     add_subdirectory(examples/ui_demo)
     add_subdirectory(examples/input_demo)
+    if (TARGET threadmaxx::assets)
+        add_subdirectory(examples/assets_demo)
+    endif()
 endif()
 
 # --------------------------------------------------------------------------

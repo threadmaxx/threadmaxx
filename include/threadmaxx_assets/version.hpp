@@ -2,8 +2,8 @@
 
 #include <string_view>
 
-#define THREADMAXX_ASSETS_VERSION_MAJOR 0
-#define THREADMAXX_ASSETS_VERSION_MINOR 1
+#define THREADMAXX_ASSETS_VERSION_MAJOR 1
+#define THREADMAXX_ASSETS_VERSION_MINOR 0
 #define THREADMAXX_ASSETS_VERSION_PATCH 0
 
 #define THREADMAXX_ASSETS_VERSION                                              \
@@ -14,7 +14,7 @@
 namespace threadmaxx::assets {
 
 [[nodiscard]] constexpr std::string_view version_string() noexcept {
-    return "0.1.0";
+    return "1.0.0";
 }
 
 } // namespace threadmaxx::assets

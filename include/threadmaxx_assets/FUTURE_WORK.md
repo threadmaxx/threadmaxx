@@ -1,7 +1,9 @@
 # `threadmaxx_assets` — future work
 
-Status: **batch plan** for the v1.0 series. Per-batch entries flip to
-`✅ landed` as they ship, with the commit SHA.
+Status: **v1.0.0 shipped (2026-06-12)**. Eight batches (A1–A8) +
+close-out, every gate green on `build/` and `build-werror/`. This
+file remains as the historical scoreboard; the live spec is
+`DESIGN_NOTES.md` and the running release log is `CHANGELOG.md`.
 
 The library's spec lives in `DESIGN_NOTES.md`; this file is the
 schedule + scoreboard.
@@ -41,7 +43,7 @@ Deliverables:
 
 Test gate: 3 passing tests, lib compiles with -Werror.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### A2 — Mesh importers
 
@@ -62,7 +64,7 @@ Deliverables:
   PLY, assert positions and indices.
 - `test_assets_obj_parse_in_memory.cpp` — `parseObj(span)` round-trip.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### A3 — Texture importers
 
@@ -82,7 +84,7 @@ Deliverables:
 - `test_assets_inflate_unit.cpp` — pumps DEFLATE-encoded bytes through
   the decoder independently of PNG framing.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### A4 — Audio importers
 
@@ -98,7 +100,7 @@ Deliverables:
 - `test_assets_wav_unsupported_format.cpp` — IMA ADPCM cookie returns
   `UnsupportedFormat`.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### A5 — Font importers
 
@@ -112,7 +114,7 @@ Deliverables:
 - `test_assets_bmfont_kerning_lookup.cpp` — binary-search glyph
   lookup contract.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### A6 — Registry + dedup
 
@@ -131,7 +133,7 @@ Deliverables:
 - `test_assets_handle_pod.cpp` — `AssetHandle<T>` is trivially
   copyable in terms of the slot pointer (move + atomic increment).
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### A7 — Async loader + engine bridge
 
@@ -150,7 +152,7 @@ Deliverables:
   is linked) — register `EngineAssetLoader`, step engine, assert
   pump fires.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### A8 — Cooked bundle + hot reload
 
@@ -170,7 +172,7 @@ Deliverables:
 - `test_assets_watch_poll.cpp` — touch a file → next `tick()` reports
   it. Untouched files are silent.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ### v1.0 close-out
 
@@ -194,7 +196,7 @@ Deliverables:
   + BMFont, dedups a re-load, writes a `Bundle`, reads it back
   byte-identical, exits 0.
 
-Status: 🚧 staged.
+Status: ✅ landed 2026-06-12.
 
 ## Deferred (out of v1.0)
 

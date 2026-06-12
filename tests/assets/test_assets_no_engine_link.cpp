@@ -32,6 +32,6 @@ int main() {
     AudioClipData a{};
     FontAtlas   f{};
     (void)m; (void)t; (void)a; (void)f;
-    CHECK_EQ(version_string(), "0.1.0");
+    CHECK_EQ(version_string(), "1.0.0");
     EXIT_WITH_RESULT();
 }
