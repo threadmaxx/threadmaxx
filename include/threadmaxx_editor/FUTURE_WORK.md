@@ -4,9 +4,10 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **not started**. All batches are 📋 planned. Sequencing
-follows the §8 "implementation order" of the design notes,
-regrouped into shippable units that each carry their own tests.
+Status: **E1 landed 2026-06-12**. Remaining batches 📋 planned.
+Sequencing follows the §8 "implementation order" of the design
+notes, regrouped into shippable units that each carry their own
+tests.
 
 ## Conventions
 
@@ -70,7 +71,7 @@ tests/editor/
   test_editor_*.cpp
 ```
 
-## Batch E1 — Foundations (session + headless backend)
+## Batch E1 — Foundations (session + headless backend) ✅ landed 2026-06-12
 
 **Goal**: `EditorSession` wraps an `Engine&`. `IEditorBackend`
 contract is exercisable through a `HeadlessBackend` that records

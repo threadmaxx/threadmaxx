@@ -216,6 +216,12 @@ if (TARGET threadmaxx::reflect)
     add_subdirectory(reflect)
 endif()
 
+# threadmaxx_editor sibling-library test suite (E1+). Lives in
+# `tests/editor/`. Skipped if the editor opt-in is off.
+if (TARGET threadmaxx::editor)
+    add_subdirectory(editor)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)

@@ -19,6 +19,7 @@ option(THREADMAXX_BUILD_UI "Make the threadmaxx_ui sibling library available" ON
 option(THREADMAXX_BUILD_INPUT "Make the threadmaxx_input sibling library available" ON)
 option(THREADMAXX_BUILD_ASSETS "Make the threadmaxx_assets sibling library available" ON)
 option(THREADMAXX_BUILD_REFLECT "Make the threadmaxx_reflect sibling library available" ON)
+option(THREADMAXX_BUILD_EDITOR "Make the threadmaxx_editor sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -267,6 +268,21 @@ if (THREADMAXX_BUILD_REFLECT)
 endif()
 
 # --------------------------------------------------------------------------
+# threadmaxx_editor — editor / tooling / hot-reload sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_EDITOR=ON` (the default). Static library
+# — public headers under `include/threadmaxx_editor/`, implementation
+# under `src/threadmaxx_editor/`. v1.0 sequences as E1 → E10 per
+# `include/threadmaxx_editor/FUTURE_WORK.md`. Depends on the core
+# (PUBLIC link); optionally on threadmaxx::reflect (E7+; exports
+# `THREADMAXX_EDITOR_HAS_REFLECT=1`). See
+# `include/threadmaxx_editor/DESIGN_NOTES.md` for the spec.
+if (THREADMAXX_BUILD_EDITOR)
+    add_subdirectory(src/threadmaxx_editor)
+endif()
+
+# --------------------------------------------------------------------------
 # Examples
 # --------------------------------------------------------------------------
 if (THREADMAXX_BUILD_EXAMPLES)
@@ -286,6 +302,8 @@ if (THREADMAXX_BUILD_EXAMPLES)
     if (TARGET threadmaxx::reflect)
         add_subdirectory(examples/reflect_demo)
     endif()
+    # editor_demo is wired at the v1.0 close-out batch (E1-E10 ship
+    # headless tests only).
 endif()
 
 # --------------------------------------------------------------------------
