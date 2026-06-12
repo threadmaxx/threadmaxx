@@ -15,6 +15,7 @@ set(THREADMAXX_STUDIO_TESTS
     test_studio_entity_inspector_list
     test_studio_property_edit_emits_command
     test_studio_gizmo_translate_emits_command
+    test_studio_diff_render_summary
 )
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})

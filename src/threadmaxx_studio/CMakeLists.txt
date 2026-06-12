@@ -12,6 +12,7 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/menu_bar.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/property_editor.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/world_diff.hpp
 )
 
 # ST4 closes M1 with DirectDataSource. The studio is engine-AGNOSTIC
@@ -31,6 +32,7 @@ set(THREADMAXX_STUDIO_SOURCES
     panels/MenuBar.cpp
     panels/PropertyEditorPanel.cpp
     panels/StatusBar.cpp
+    panels/WorldDiffPanel.cpp
 )
 
 add_library(threadmaxx_studio STATIC
