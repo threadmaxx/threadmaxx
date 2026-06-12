@@ -24,6 +24,9 @@ set(THREADMAXX_REFLECT_SOURCES
     Registry.cpp
 )
 
+# R7 — engine bridge sources are opt-in; the file is only added when
+# threadmaxx::threadmaxx is around, identical to threadmaxx_assets.
+
 add_library(threadmaxx_reflect STATIC
     ${THREADMAXX_REFLECT_SOURCES}
     ${THREADMAXX_REFLECT_PUBLIC_HEADERS}
@@ -65,6 +68,9 @@ endif()
 # R7 will add the EngineBridge.cpp source; the gate already lives here
 # so the macro is exported in time for tests / examples.
 if (TARGET threadmaxx::threadmaxx)
+    target_sources(threadmaxx_reflect PRIVATE
+        EngineBridge.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/engine_bridge.hpp)
     target_link_libraries(threadmaxx_reflect PUBLIC threadmaxx::threadmaxx)
     target_compile_definitions(threadmaxx_reflect PUBLIC
         THREADMAXX_REFLECT_HAS_ENGINE_BRIDGE=1)

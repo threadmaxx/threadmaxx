@@ -1,3 +1,28 @@
+# Engine-bridge tests only when the bridge define is exported. Same
+# pattern as threadmaxx_assets.
+get_target_property(_reflect_compile_defs threadmaxx::reflect INTERFACE_COMPILE_DEFINITIONS)
+if (_reflect_compile_defs MATCHES "THREADMAXX_REFLECT_HAS_ENGINE_BRIDGE=1")
+    foreach(test
+            test_reflect_engine_bridge_builtins
+            test_reflect_engine_bridge_user_component
+            test_reflect_engine_bridge_idempotent)
+        add_executable(${test} ${test}.cpp)
+        target_link_libraries(${test} PRIVATE
+            threadmaxx::reflect threadmaxx::threadmaxx)
+        target_include_directories(${test} PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+        set_target_properties(${test} PROPERTIES
+            CXX_STANDARD 20
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+        )
+        if (NOT MSVC)
+            target_compile_options(${test} PRIVATE
+                -Wall -Wextra -Wpedantic -Wshadow)
+        endif()
+        add_test(NAME reflect.${test} COMMAND ${test})
+    endforeach()
+endif()
+
 set(THREADMAXX_REFLECT_TESTS
     test_reflect_no_engine_link
     test_reflect_version
