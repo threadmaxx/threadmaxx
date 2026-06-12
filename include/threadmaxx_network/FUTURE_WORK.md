@@ -96,7 +96,7 @@ across the board.
 **Out of scope**: compression (deltas handle most of it; raw
 compression of payloads is a v1.x topic if needed).
 
-## Batch NW2 — Transport interface + LoopbackTransport
+## Batch NW2 — Transport interface + LoopbackTransport ✅ landed 2026-06-12
 
 **Goal**: `ITransport` contract and the in-process loopback
 backend used by every test. Loopback supports configurable loss,

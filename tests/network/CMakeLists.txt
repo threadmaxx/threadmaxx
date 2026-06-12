@@ -8,6 +8,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_loopback_loss
     test_network_loopback_reorder
     test_network_loopback_determinism
+    test_network_handshake
+    test_network_session_unique
+    test_network_sequence_wrap
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})

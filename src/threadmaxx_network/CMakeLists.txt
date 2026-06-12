@@ -1,13 +1,17 @@
 set(THREADMAXX_NETWORK_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/threadmaxx_network.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/bitstream.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/ids.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/packets.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/session.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/transport.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/version.hpp
 )
 
 set(THREADMAXX_NETWORK_SOURCES
     Init.cpp
+    Session.cpp
     Transport.cpp
 )
 

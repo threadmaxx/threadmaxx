@@ -1,0 +1,129 @@
+#pragma once
+
+/// @file session.hpp
+/// @brief ServerSession + ClientSession — packet routing, handshake,
+/// sequence + ack tracking.
+///
+/// Both sessions own an `ITransport*` (non-owning). The session
+/// drives `transport.poll()` + `transport.receive(...)`, dispatches
+/// inbound packets on `PacketType`, and feeds outbound packets
+/// through `transport.send`. The simulation loop sits above this:
+/// game code calls `session.pumpReceive()` once per tick, then queues
+/// outbound state via `sendSnapshot` / `sendInput` / etc.
+
+#include "config.hpp"
+#include "packets.hpp"
+#include "transport.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <span>
+#include <unordered_map>
+#include <vector>
+
+namespace threadmaxx::network {
+
+/// @brief Per-peer connection state on the server side.
+struct PeerState {
+    PeerId    peer{};
+    SessionId session{};
+    bool      connected{false};
+
+    /// @brief Last `sequence` we received from this peer.
+    std::uint32_t remoteSeq{0};
+    /// @brief 32-bit ack bitmap of recently-received sequences below
+    /// `remoteSeq`.
+    std::uint32_t remoteAckBits{0};
+    /// @brief Next `sequence` we'll stamp on outbound packets.
+    std::uint32_t localSeq{0};
+};
+
+class ServerSession {
+public:
+    ServerSession(ITransport* transport, NetworkConfig cfg = {});
+
+    /// @brief Drain the transport once and dispatch every packet.
+    /// Returns the number of packets handled (any type).
+    std::size_t pumpReceive();
+
+    /// @brief Number of currently-connected peers.
+    std::size_t connectedPeerCount() const noexcept;
+
+    /// @brief Lookup peer state by id; returns nullptr if unknown.
+    const PeerState* peer(PeerId p) const noexcept;
+
+    /// @brief Set a callback fired after every successful Hello/Welcome
+    /// handshake. The argument carries the newly-connected peer.
+    void onPeerConnected(std::function<void(const PeerState&)> cb) {
+        onConnected_ = std::move(cb);
+    }
+
+    /// @brief Server-side disconnect. Posts a Disconnect packet and
+    /// clears local state.
+    void disconnect(PeerId p);
+
+    /// @brief Currently-installed config.
+    const NetworkConfig& config() const noexcept { return cfg_; }
+
+    /// @brief Allocate a fresh SessionId. Exposed for tests.
+    SessionId nextSessionId() noexcept {
+        ++sessionCounter_;
+        return SessionId{sessionCounter_};
+    }
+
+private:
+    void handleHello_(const PacketHeader& header,
+                      const ReceivedPacket& src);
+
+    ITransport* transport_;
+    NetworkConfig cfg_;
+    std::uint64_t sessionCounter_{0};
+    std::unordered_map<std::uint32_t, PeerState> peers_;
+    std::function<void(const PeerState&)> onConnected_;
+};
+
+/// @brief Client-side handshake + sequence tracking.
+class ClientSession {
+public:
+    ClientSession(ITransport* transport,
+                  PeerId serverPeer,
+                  NetworkConfig cfg = {});
+
+    /// @brief Send Hello and wait for Welcome. Returns true once
+    /// connected (call `pumpReceive` repeatedly until then).
+    bool beginHandshake(std::uint64_t clientSalt = 0xDEADBEEFull);
+
+    /// @brief Drain transport, dispatch inbound packets. Returns the
+    /// number of packets handled.
+    std::size_t pumpReceive();
+
+    /// @brief True after a successful Welcome.
+    bool connected() const noexcept { return connected_; }
+
+    SessionId sessionId() const noexcept { return session_; }
+    PeerId    selfPeer()  const noexcept { return self_; }
+    PeerId    serverPeer() const noexcept { return server_; }
+
+    /// @brief Last sequence we received from the server.
+    std::uint32_t remoteSeq() const noexcept { return remoteSeq_; }
+    std::uint32_t remoteAckBits() const noexcept { return remoteAckBits_; }
+    std::uint32_t localSeq() const noexcept { return localSeq_; }
+
+    /// @brief Internally-bumped salt used for Hello.
+    std::uint64_t clientSalt() const noexcept { return clientSalt_; }
+
+private:
+    ITransport* transport_;
+    NetworkConfig cfg_;
+    PeerId server_;
+    PeerId self_{};
+    SessionId session_{};
+    std::uint64_t clientSalt_{0};
+    std::uint32_t remoteSeq_{0};
+    std::uint32_t remoteAckBits_{0};
+    std::uint32_t localSeq_{0};
+    bool connected_{false};
+};
+
+} // namespace threadmaxx::network
