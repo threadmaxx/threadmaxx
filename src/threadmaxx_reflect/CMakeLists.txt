@@ -2,9 +2,12 @@ set(THREADMAXX_REFLECT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/threadmaxx_reflect.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/aggregate.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/config.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/field_info.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/macro.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/aggregate_impl.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/macro_impl.hpp
 )
 
 # v1.0 is largely header-only; we still ship a STATIC target so the

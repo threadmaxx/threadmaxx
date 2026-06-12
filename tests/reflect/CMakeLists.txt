@@ -3,6 +3,10 @@ set(THREADMAXX_REFLECT_TESTS
     test_reflect_version
     test_reflect_aggregate_count
     test_reflect_aggregate_for_each
+    test_reflect_macro_basic
+    test_reflect_macro_named_for_each
+    test_reflect_macro_offsets
+    test_reflect_macro_in_namespace
 )
 
 foreach(test ${THREADMAXX_REFLECT_TESTS})

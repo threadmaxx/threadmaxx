@@ -9,12 +9,12 @@
 
 #include "aggregate.hpp"
 #include "config.hpp"
+#include "field_info.hpp"
+#include "macro.hpp"
 #include "types.hpp"
 #include "version.hpp"
 
-// R2+ headers will be added by subsequent batches:
-// #include "macro.hpp"
-// #include "field_info.hpp"
+// R3+ headers will be added by subsequent batches:
 // #include "type_info.hpp"
 // #include "registry.hpp"
 // #include "enum.hpp"

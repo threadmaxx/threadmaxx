@@ -14,8 +14,10 @@
 
 #include <cstddef>
 #include <type_traits>
+#include <utility>
 
 #include "detail/aggregate_impl.hpp"
+#include "field_info.hpp"
 
 namespace threadmaxx::reflect {
 
@@ -32,18 +34,26 @@ constexpr decltype(auto) get(T& obj) {
     return detail::aggregate_get_impl<I>(obj);
 }
 
-/// @brief Walk every field of `obj`, invoking `fn(index, value)` in
-/// declaration order.
+/// @brief Walk every field of `obj` in declaration order.
 ///
-/// When `T` was registered via `THREADMAXX_REFLECT` (R2), the named
-/// overload in `field_info.hpp` takes precedence and `fn` is invoked
-/// as `fn(name, value)` instead. Game code can write a single visitor
-/// that accepts both shapes via overload sets.
+/// - When `T` was registered via `THREADMAXX_REFLECT` (R2+), `fn` is
+///   invoked as `fn(std::string_view name, auto& value)`.
+/// - Otherwise, the aggregate fallback invokes `fn(std::size_t index,
+///   auto& value)`.
+///
+/// Visitors that want to be path-agnostic supply both overloads.
 template <typename T, typename Fn>
 constexpr void for_each_field(T& obj, Fn&& fn) {
-    constexpr std::size_t N = field_count<T>();
-    if constexpr (N > 0) {
-        detail::aggregate_for_each_impl<N>(obj, static_cast<Fn&&>(fn));
+    using Bare = std::remove_cv_t<std::remove_reference_t<T>>;
+    if constexpr (detail::HasReflectHook<Bare>) {
+        using FL = decltype(_threadmaxx_reflect_fields_v1(
+            static_cast<Bare*>(nullptr)));
+        FL::for_each(obj, std::forward<Fn>(fn));
+    } else {
+        constexpr std::size_t N = field_count<Bare>();
+        if constexpr (N > 0) {
+            detail::aggregate_for_each_impl<N>(obj, std::forward<Fn>(fn));
+        }
     }
 }
 
