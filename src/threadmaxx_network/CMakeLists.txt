@@ -2,14 +2,13 @@ set(THREADMAXX_NETWORK_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/threadmaxx_network.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/bitstream.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/ids.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/transport.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/version.hpp
 )
 
-# Init.cpp is a no-op TU that gives CMake / linkers a non-empty
-# source set for the static library at the NW1 seed point. Future
-# batches add real sources (ReplicationRegistry.cpp / ...).
 set(THREADMAXX_NETWORK_SOURCES
     Init.cpp
+    Transport.cpp
 )
 
 add_library(threadmaxx_network STATIC

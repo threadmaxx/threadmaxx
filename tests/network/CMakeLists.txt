@@ -4,6 +4,10 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_bitstream_varuint
     test_network_bitstream_overflow
     test_network_bitstream_align
+    test_network_loopback_send_receive
+    test_network_loopback_loss
+    test_network_loopback_reorder
+    test_network_loopback_determinism
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})

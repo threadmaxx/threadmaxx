@@ -5,4 +5,5 @@
 
 #include "bitstream.hpp"
 #include "ids.hpp"
+#include "transport.hpp"
 #include "version.hpp"
