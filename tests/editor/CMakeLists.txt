@@ -19,6 +19,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_selection_set
     test_editor_selection_clear
     test_editor_selection_stale_entity
+    test_editor_property_read
+    test_editor_property_edit
+    test_editor_property_custom_type
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

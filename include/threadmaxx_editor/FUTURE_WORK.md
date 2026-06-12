@@ -217,7 +217,7 @@ other panels (property editor, gizmo) consume.
 
 **Out of scope**: multi-select (v1.x), selection sets / groups.
 
-## Batch E7 — Property editing + reflection
+## Batch E7 — Property editing + reflection ✅ landed 2026-06-12
 
 **Goal**: a property panel that reads a selected entity's
 components and exposes their fields for edit. Each edit becomes a

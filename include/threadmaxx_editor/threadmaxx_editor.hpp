@@ -10,6 +10,7 @@
 #include "commands.hpp"
 #include "hotreload.hpp"
 #include "inspect.hpp"
+#include "properties.hpp"
 #include "selection.hpp"
 #include "session.hpp"
 #include "telemetry.hpp"

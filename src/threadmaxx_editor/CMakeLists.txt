@@ -10,6 +10,7 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/hotreload.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/telemetry.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/selection.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/properties.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
@@ -17,6 +18,7 @@ set(THREADMAXX_EDITOR_SOURCES
     EditorSession.cpp
     HotReloadController.cpp
     Inspector.cpp
+    PropertyEditor.cpp
     SelectionState.cpp
     TelemetryOverlay.cpp
     backends/HeadlessBackend.cpp
