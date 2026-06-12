@@ -18,21 +18,33 @@
 namespace threadmaxx::reflect {
 
 struct TypeRegistry::Impl {
-    mutable std::shared_mutex                       mu;
+    mutable std::shared_mutex mu;
 
-    // Storage container with stable pointers (deque never invalidates
-    // pointers on push_back).
-    std::deque<TypeInfo>                            typeStorage;
-    // Field storage owned by the registry; each TypeInfo's
-    // `fields` span references a contiguous slice here.
-    std::deque<std::vector<FieldInfo>>              fieldStorage;
-    // Pointer index in registration order for `all()`.
+    /// Bundle every per-type owned storage so pointers stay together.
+    struct StoredType {
+        TypeInfo                                info;
+        std::vector<FieldInfo>                  fields;
+        // Parallel to `fields` — fieldAttrs[i] is the attribute list
+        // for fields[i]. Owned by registry so FieldInfo::attributes
+        // is a stable span.
+        std::vector<std::vector<AttributeInfo>> fieldAttrs;
+    };
+
+    // Stable-pointer container for StoredType.
+    std::deque<StoredType>                          types;
     std::vector<const TypeInfo*>                    typeIndex;
-    // Lookup indexes.
     std::unordered_map<std::type_index, TypeInfo*>  byTypeIndex;
     std::unordered_map<std::string_view, TypeInfo*> byName;
-    // Owned string storage for runtime-supplied name overrides.
     detail::NameArena                               nameArena;
+
+    // Find the owning StoredType for a TypeInfo*. nullptr if foreign.
+    StoredType* find(const TypeInfo* info) noexcept {
+        if (info == nullptr) return nullptr;
+        for (auto& t : types) {
+            if (&t.info == info) return &t;
+        }
+        return nullptr;
+    }
 };
 
 TypeRegistry::TypeRegistry() : impl_(std::make_unique<Impl>()) {}
@@ -86,22 +98,55 @@ const TypeInfo* TypeRegistry::registerTypeImpl(
         name = impl_->nameArena.intern(std::string_view(mangled));
     }
 
-    // Park the FieldInfo vector in stable storage; reference its span.
-    auto& storedFields = impl_->fieldStorage.emplace_back(std::move(fields));
+    // Push a new StoredType; pointers are stable on deque growth.
+    auto& stored = impl_->types.emplace_back(Impl::StoredType{});
+    stored.fields     = std::move(fields);
+    stored.fieldAttrs = std::vector<std::vector<AttributeInfo>>(stored.fields.size());
 
-    impl_->typeStorage.emplace_back(TypeInfo{
+    stored.info = TypeInfo{
         name,
         ti,
         sizeBytes,
         alignBytes,
-        std::span<const FieldInfo>(storedFields.data(), storedFields.size()),
-    });
-    TypeInfo* info = &impl_->typeStorage.back();
+        std::span<const FieldInfo>(stored.fields.data(), stored.fields.size()),
+    };
 
-    impl_->typeIndex.push_back(info);
-    impl_->byTypeIndex.emplace(ti, info);
-    impl_->byName.emplace(name, info);
-    return info;
+    impl_->typeIndex.push_back(&stored.info);
+    impl_->byTypeIndex.emplace(ti, &stored.info);
+    impl_->byName.emplace(name, &stored.info);
+    return &stored.info;
+}
+
+bool TypeRegistry::addFieldAttributeImpl(const TypeInfo* typeInfo,
+                                        std::string_view fieldName,
+                                        std::string_view attrName,
+                                        std::string_view attrPayload) {
+    std::unique_lock<std::shared_mutex> lk(impl_->mu);
+    auto* stored = impl_->find(typeInfo);
+    if (stored == nullptr) return false;
+
+    std::size_t fieldIdx = 0;
+    bool found = false;
+    for (; fieldIdx < stored->fields.size(); ++fieldIdx) {
+        if (stored->fields[fieldIdx].name == fieldName) { found = true; break; }
+    }
+    if (!found) return false;
+
+    // Intern the payload — name comes from a static constexpr literal
+    // already (Attr::kName lives in .rodata) so we keep the original
+    // string_view as-is.
+    std::string_view payloadView = attrPayload.empty()
+                                       ? std::string_view{}
+                                       : impl_->nameArena.intern(attrPayload);
+
+    auto& vec = stored->fieldAttrs[fieldIdx];
+    vec.push_back(AttributeInfo{attrName, payloadView});
+
+    // Re-point the FieldInfo's attributes span to the (possibly-
+    // reallocated) vector storage.
+    stored->fields[fieldIdx].attributes =
+        std::span<const AttributeInfo>(vec.data(), vec.size());
+    return true;
 }
 
 TypeRegistry& TypeRegistry::defaultInstance() noexcept {

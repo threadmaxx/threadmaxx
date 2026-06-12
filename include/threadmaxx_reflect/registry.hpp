@@ -102,6 +102,22 @@ public:
     /// @brief Lookup by `type_index`. nullptr if unregistered.
     const TypeInfo* find(std::type_index ti) const noexcept;
 
+    /// @brief Attach an attribute to a field. `Attr` is a POD type with
+    /// `static constexpr std::string_view kName` and a
+    /// `formatPayload(char* buf, std::size_t cap) -> std::size_t`
+    /// member (see `attributes.hpp`). Returns true on success;
+    /// false if `typeInfo` is unknown to this registry or `fieldName`
+    /// is not a registered field on it.
+    template <typename Attr>
+    bool addFieldAttribute(const TypeInfo* typeInfo,
+                           std::string_view fieldName,
+                           const Attr& attr) {
+        char buf[256];
+        const std::size_t n = attr.formatPayload(buf, sizeof(buf));
+        return addFieldAttributeImpl(typeInfo, fieldName, Attr::kName,
+                                     std::string_view(buf, n));
+    }
+
     /// @brief Every registered TypeInfo*, in registration order.
     std::span<const TypeInfo* const> all() const noexcept;
     /// @brief Count of registered types.
@@ -117,6 +133,11 @@ private:
         std::uint32_t sizeBytes,
         std::uint32_t alignBytes,
         std::vector<FieldInfo> fields);
+
+    bool addFieldAttributeImpl(const TypeInfo* typeInfo,
+                               std::string_view fieldName,
+                               std::string_view attrName,
+                               std::string_view attrPayload);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

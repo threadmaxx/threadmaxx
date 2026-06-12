@@ -15,6 +15,10 @@ set(THREADMAXX_REFLECT_TESTS
     test_reflect_enum_round_trip
     test_reflect_enum_custom_range
     test_reflect_enum_flags
+    test_reflect_attr_range
+    test_reflect_attr_tooltip
+    test_reflect_attr_multiple
+    test_reflect_attr_query
 )
 
 foreach(test ${THREADMAXX_REFLECT_TESTS})

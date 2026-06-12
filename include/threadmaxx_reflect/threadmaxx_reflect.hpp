@@ -8,6 +8,7 @@
 /// `aggregate.hpp`, `macro.hpp`, `registry.hpp`, `enum.hpp`, etc.
 
 #include "aggregate.hpp"
+#include "attributes.hpp"
 #include "config.hpp"
 #include "enum.hpp"
 #include "field_info.hpp"
@@ -17,8 +18,7 @@
 #include "types.hpp"
 #include "version.hpp"
 
-// R5+ headers will be added by subsequent batches:
-// #include "attributes.hpp"
+// R6+ headers will be added by subsequent batches:
 // #include "visit.hpp"
 // #include "value.hpp"
 // #include "patch.hpp"
