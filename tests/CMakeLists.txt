@@ -222,6 +222,12 @@ if (TARGET threadmaxx::editor)
     add_subdirectory(editor)
 endif()
 
+# threadmaxx_network sibling-library test suite (NW1+). Lives in
+# `tests/network/`. Skipped if the network opt-in is off.
+if (TARGET threadmaxx::network)
+    add_subdirectory(network)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)

@@ -21,6 +21,7 @@ option(THREADMAXX_BUILD_ASSETS "Make the threadmaxx_assets sibling library avail
 option(THREADMAXX_BUILD_REFLECT "Make the threadmaxx_reflect sibling library available" ON)
 option(THREADMAXX_BUILD_EDITOR "Make the threadmaxx_editor sibling library available" ON)
 option(THREADMAXX_EDITOR_FETCH_IMGUI "FetchContent Dear ImGui and build the ImGui editor backend (E11)" OFF)
+option(THREADMAXX_BUILD_NETWORK "Make the threadmaxx_network sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -266,6 +267,20 @@ endif()
 # `include/threadmaxx_reflect/DESIGN_NOTES.md` for the spec.
 if (THREADMAXX_BUILD_REFLECT)
     add_subdirectory(src/threadmaxx_reflect)
+endif()
+
+# --------------------------------------------------------------------------
+# threadmaxx_network — networking / replication / rollback sibling library
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_NETWORK=ON` (the default). Static
+# library — public headers under `include/threadmaxx_network/`,
+# implementation under `src/threadmaxx_network/`. v1.0 sequences as
+# NW1 → NW10 per `include/threadmaxx_network/FUTURE_WORK.md`.
+# Engine-agnostic (per DESIGN_NOTES §2.1); game code bridges via
+# `SimulationBridge` functors.
+if (THREADMAXX_BUILD_NETWORK)
+    add_subdirectory(src/threadmaxx_network)
 endif()
 
 # --------------------------------------------------------------------------

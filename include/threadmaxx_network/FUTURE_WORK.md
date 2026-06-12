@@ -4,9 +4,10 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **not started**. All batches are 📋 planned. Sequencing
-follows the §10 "implementation order" of the design notes,
-regrouped into shippable units that each carry their own tests.
+Status: **NW1 landed 2026-06-12**. Remaining batches 📋 planned.
+Sequencing follows the §10 "implementation order" of the design
+notes, regrouped into shippable units that each carry their own
+tests.
 
 ## Conventions
 
@@ -69,7 +70,7 @@ bench/
   network_*.cpp
 ```
 
-## Batch NW1 — Bitstream codec
+## Batch NW1 — Bitstream codec ✅ landed 2026-06-12
 
 **Goal**: `BitWriter` / `BitReader` with bit-packed writes,
 variable-length integers, and byte-aligned blob writes. Used by
