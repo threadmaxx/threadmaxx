@@ -4,10 +4,9 @@ Sibling-library implementation plan. `DESIGN_NOTES.md` is the
 authoritative spec; this doc breaks it down into shippable
 test-driven batches.
 
-Status: **NW1 landed 2026-06-12**. Remaining batches 📋 planned.
-Sequencing follows the §10 "implementation order" of the design
-notes, regrouped into shippable units that each carry their own
-tests.
+**v1.0.0 shipped 2026-06-12.** Every NW-batch landed; gates green
+(34 network tests across `build/` + `build-werror/`).
+`DESIGN_NOTES.md` is the spec.
 
 ## Conventions
 
@@ -308,7 +307,7 @@ Winsock). For v1.0, ship POSIX only; Winsock variant as v1.x.
 **Out of scope**: TCP / QUIC transports (v1.x); Windows
 UdpTransport (v1.x); NAT traversal (game-layer concern).
 
-## v1.0 close-out criteria
+## v1.0 close-out criteria ✅ shipped 2026-06-12
 
 - ✓ Every batch NW1–NW10 landed and tested.
 - ✓ Loopback-only end-to-end soak: 1k ticks, 8 clients, 30%

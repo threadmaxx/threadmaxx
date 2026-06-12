@@ -32,6 +32,7 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_commit_hash_match
     test_network_commit_hash_mismatch
     test_network_udp_smoke
+    test_network_soak_loopback
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})

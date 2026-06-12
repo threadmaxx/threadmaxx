@@ -8,8 +8,8 @@
 
 #include <string_view>
 
-#define THREADMAXX_NETWORK_VERSION_MAJOR 0
-#define THREADMAXX_NETWORK_VERSION_MINOR 9
+#define THREADMAXX_NETWORK_VERSION_MAJOR 1
+#define THREADMAXX_NETWORK_VERSION_MINOR 0
 #define THREADMAXX_NETWORK_VERSION_PATCH 0
 #define THREADMAXX_NETWORK_VERSION \
     (THREADMAXX_NETWORK_VERSION_MAJOR * 10000 + \
@@ -18,10 +18,9 @@
 
 namespace threadmaxx::network {
 
-/// @brief Human-readable version. Pre-1.0 development series; flipped
-/// to "1.0.0" at the v1.0 close-out batch.
+/// @brief Human-readable version.
 constexpr std::string_view version_string() noexcept {
-    return "0.9.0-dev";
+    return "1.0.0";
 }
 
 } // namespace threadmaxx::network
