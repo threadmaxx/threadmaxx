@@ -9,8 +9,8 @@
 
 #include <string_view>
 
-#define THREADMAXX_REFLECT_VERSION_MAJOR 0
-#define THREADMAXX_REFLECT_VERSION_MINOR 9
+#define THREADMAXX_REFLECT_VERSION_MAJOR 1
+#define THREADMAXX_REFLECT_VERSION_MINOR 0
 #define THREADMAXX_REFLECT_VERSION_PATCH 0
 #define THREADMAXX_REFLECT_VERSION \
     (THREADMAXX_REFLECT_VERSION_MAJOR * 10000 + \
@@ -19,9 +19,9 @@
 
 namespace threadmaxx::reflect {
 
-/// @brief Human-readable version string ("0.9.0-dev" during R1-R8, "1.0.0" at close-out).
+/// @brief Human-readable version string.
 constexpr std::string_view version_string() noexcept {
-    return "0.9.0-dev";
+    return "1.0.0";
 }
 
 } // namespace threadmaxx::reflect

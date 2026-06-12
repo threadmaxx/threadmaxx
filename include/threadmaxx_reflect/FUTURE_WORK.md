@@ -1,12 +1,12 @@
 # `threadmaxx_reflect` — batch sequence + deferred items
 
-`DESIGN_NOTES.md` is the spec. This file tracks the v1.0 batch
-ordering, what's intentionally deferred to a v1.x series, and the
-close-out gates.
+**v1.0.0 shipped 2026-06-12.** Every R-batch landed; gates green
+(32 reflect tests + 3 engine-bridge tests, 403/403 full repo sweep,
+crowd no-alloc gate 0/0). `DESIGN_NOTES.md` is the spec.
 
-## v1.0 batch series
+## v1.0 batch series — ✅ landed
 
-### R1 — Foundations
+### R1 — Foundations ✅ landed 2026-06-12
 
 - Library skeleton: `include/threadmaxx_reflect/`, `src/threadmaxx_reflect/`,
   `tests/reflect/`, `examples/reflect_demo/`.
@@ -23,7 +23,7 @@ close-out gates.
 - Root `CMakeLists.txt` `option(THREADMAXX_BUILD_REFLECT … ON)` and
   the gated `add_subdirectory` block.
 
-### R2 — Macro registration + named fields
+### R2 — Macro registration + named fields ✅ landed 2026-06-12
 
 - `macro.hpp` + `detail/macro_impl.hpp`: `THREADMAXX_REFLECT(T, …)`
   emits the ADL hook
@@ -38,7 +38,7 @@ close-out gates.
   `test_reflect_macro_offsets`, `test_reflect_macro_in_namespace`
   (the macro must work inside `namespace game { struct Health { … }; }`).
 
-### R3 — Runtime TypeInfo + TypeRegistry
+### R3 — Runtime TypeInfo + TypeRegistry ✅ landed 2026-06-12
 
 - `type_info.hpp`: `TypeInfo`, `FieldInfo`, `AttributeInfo` PODs.
 - `registry.hpp` + `src/Registry.cpp`: `TypeRegistry` with
@@ -58,7 +58,7 @@ close-out gates.
   `test_reflect_registry_concurrent` (N threads register +
   read; data race clean under TSAN).
 
-### R4 — Enum reflection
+### R4 — Enum reflection ✅ landed 2026-06-12
 
 - `enum.hpp` + `detail/enum_impl.hpp`: `enum_name<V>()`,
   `enum_values<E>()`, `enum_cast<E>(string_view)`,
@@ -70,7 +70,7 @@ close-out gates.
 - Tests: `test_reflect_enum_basic`, `test_reflect_enum_round_trip`,
   `test_reflect_enum_custom_range`, `test_reflect_enum_flags`.
 
-### R5 — Attributes
+### R5 — Attributes ✅ landed 2026-06-12
 
 - `attributes.hpp`: `Range`, `Tooltip`, `Hidden`, `Units`,
   `ReadOnly`, `Step`, `Choice` (enum-like dropdown for string fields).
@@ -79,7 +79,7 @@ close-out gates.
 - Tests: `test_reflect_attr_range`, `test_reflect_attr_tooltip`,
   `test_reflect_attr_multiple`, `test_reflect_attr_query`.
 
-### R6 — Visitor + JSON binder
+### R6 — Visitor + JSON binder ✅ landed 2026-06-12
 
 - `visit.hpp`: `visit_fields(value, visitor)` and trait helpers.
 - `binders/json.hpp` + `src/JsonBinder.cpp`: `JsonVisitor`,
@@ -92,7 +92,7 @@ close-out gates.
   `test_reflect_hash_visitor`,
   `test_reflect_equals_visitor`.
 
-### R7 — Engine bridge
+### R7 — Engine bridge ✅ landed 2026-06-12
 
 - `engine_bridge.hpp` + `src/EngineBridge.cpp` (opt-in via
   `TARGET threadmaxx::threadmaxx`).
@@ -109,7 +109,7 @@ close-out gates.
   `test_reflect_engine_bridge_user_component`,
   `test_reflect_engine_bridge_idempotent`.
 
-### R8 — Patch / apply
+### R8 — Patch / apply ✅ landed 2026-06-12
 
 - `value.hpp` + `src/Value.cpp`: 40-byte SBO `Value`,
   `Value::is<T>()`, `Value::as<T>()`,
@@ -124,7 +124,7 @@ close-out gates.
   `test_reflect_patch_unknown_field`,
   `test_reflect_read_field_round_trip`.
 
-### v1.0 close-out
+### v1.0 close-out ✅ shipped 2026-06-12
 
 - Version bump: `THREADMAXX_REFLECT_VERSION = 10000`,
   `version_string() = "1.0.0"`.

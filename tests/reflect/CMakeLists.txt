@@ -53,6 +53,7 @@ set(THREADMAXX_REFLECT_TESTS
     test_reflect_patch_basic
     test_reflect_patch_unknown_field
     test_reflect_read_field_round_trip
+    test_reflect_crowd_no_alloc
 )
 
 foreach(test ${THREADMAXX_REFLECT_TESTS})
