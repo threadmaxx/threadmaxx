@@ -25,6 +25,10 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_gizmo_handle_positions
     test_editor_gizmo_hit_test
     test_editor_gizmo_drag_translate
+    test_editor_diff_identical
+    test_editor_diff_added
+    test_editor_diff_modified
+    test_editor_diff_removed
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

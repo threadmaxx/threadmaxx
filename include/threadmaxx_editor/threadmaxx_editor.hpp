@@ -8,6 +8,7 @@
 #include "backend.hpp"
 #include "backends/headless.hpp"
 #include "commands.hpp"
+#include "diff.hpp"
 #include "gizmo.hpp"
 #include "hotreload.hpp"
 #include "inspect.hpp"

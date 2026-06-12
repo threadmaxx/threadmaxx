@@ -266,7 +266,7 @@ testable without a backend.
 backend-specific). World-space vs. local-space mode toggle (v1.x
 ergonomics polish).
 
-## Batch E9 — World diff
+## Batch E9 — World diff ✅ landed 2026-06-12
 
 **Goal**: compare two `WorldSnapshot`s and produce a list of
 per-entity differences. Useful for debugging, save-game

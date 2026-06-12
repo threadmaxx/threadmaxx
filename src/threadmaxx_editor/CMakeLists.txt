@@ -12,6 +12,7 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/selection.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/properties.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/gizmo.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/diff.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
@@ -23,6 +24,7 @@ set(THREADMAXX_EDITOR_SOURCES
     PropertyEditor.cpp
     SelectionState.cpp
     TelemetryOverlay.cpp
+    WorldDiff.cpp
     backends/HeadlessBackend.cpp
 )
 
