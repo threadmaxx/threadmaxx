@@ -228,6 +228,12 @@ if (TARGET threadmaxx::network)
     add_subdirectory(network)
 endif()
 
+# threadmaxx_studio sibling-library test suite (ST1+). Lives in
+# `tests/studio/`. Skipped if the studio opt-in is off.
+if (TARGET threadmaxx::studio)
+    add_subdirectory(studio)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)

@@ -1,0 +1,62 @@
+set(THREADMAXX_STUDIO_PUBLIC_HEADERS
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/threadmaxx_studio.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/config.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/data_source.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panel.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
+)
+
+# ST1 only ships interfaces + a version anchor; no concrete impls yet.
+# StudioApp / PanelHost / DirectDataSource land in ST2 / ST4.
+set(THREADMAXX_STUDIO_SOURCES
+    StudioVersion.cpp
+)
+
+add_library(threadmaxx_studio STATIC
+    ${THREADMAXX_STUDIO_SOURCES}
+    ${THREADMAXX_STUDIO_PUBLIC_HEADERS}
+)
+add_library(threadmaxx::studio ALIAS threadmaxx_studio)
+
+target_include_directories(threadmaxx_studio
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_compile_features(threadmaxx_studio PUBLIC cxx_std_20)
+
+set_target_properties(threadmaxx_studio PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+
+# The studio is engine-AGNOSTIC. The core threadmaxx target is NOT
+# linked at the library level — concrete data sources (DirectDataSource
+# in ST4) opt in via their own TU. This is what the no-engine-link
+# canary pins.
+#
+# The editor v1.0 surface IS a public dependency: every panel renders
+# through `editor::IEditorBackend` (ST2+) and submits mutations
+# through `editor::CommandStack` (ST4+). We forward-declare
+# `IEditorBackend` in `panel.hpp` to keep ST1 header-include-cheap;
+# ST2 enables the editor link.
+if (TARGET threadmaxx::editor)
+    target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::editor)
+endif()
+
+if (MSVC)
+    target_compile_options(threadmaxx_studio PRIVATE /W4 /permissive-)
+    if (THREADMAXX_WARNINGS_AS_ERRORS)
+        target_compile_options(threadmaxx_studio PRIVATE /WX)
+    endif()
+else()
+    target_compile_options(threadmaxx_studio PRIVATE
+        -Wall -Wextra -Wpedantic -Wshadow
+        -Wsign-conversion -Wconversion -Wold-style-cast)
+    if (THREADMAXX_WARNINGS_AS_ERRORS)
+        target_compile_options(threadmaxx_studio PRIVATE -Werror)
+    endif()
+endif()

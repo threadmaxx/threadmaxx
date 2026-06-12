@@ -1,0 +1,22 @@
+set(THREADMAXX_STUDIO_TESTS
+    test_studio_version
+    test_studio_panel_interface_canary
+    test_studio_data_source_canary
+    test_studio_no_engine_link_canary
+)
+
+foreach(test ${THREADMAXX_STUDIO_TESTS})
+    add_executable(${test} ${test}.cpp)
+    target_link_libraries(${test} PRIVATE threadmaxx::studio)
+    target_include_directories(${test} PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    set_target_properties(${test} PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(${test} PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME studio.${test} COMMAND ${test})
+endforeach()

@@ -22,6 +22,7 @@ option(THREADMAXX_BUILD_REFLECT "Make the threadmaxx_reflect sibling library ava
 option(THREADMAXX_BUILD_EDITOR "Make the threadmaxx_editor sibling library available" ON)
 option(THREADMAXX_EDITOR_FETCH_IMGUI "FetchContent Dear ImGui and build the ImGui editor backend (E11)" OFF)
 option(THREADMAXX_BUILD_NETWORK "Make the threadmaxx_network sibling library available" ON)
+option(THREADMAXX_BUILD_STUDIO "Make the threadmaxx_studio sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -333,6 +334,23 @@ if (THREADMAXX_BUILD_EDITOR)
         endif()
     endif()
     add_subdirectory(src/threadmaxx_editor)
+endif()
+
+# --------------------------------------------------------------------------
+# threadmaxx_studio — panel host for the editor / sibling diagnostics
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_STUDIO=ON` (the default). Static library
+# — public headers under `include/threadmaxx_studio/`, implementation
+# under `src/threadmaxx_studio/`. v1.0 sequences as ST1 → ST41 per
+# `include/threadmaxx_studio/FUTURE_WORK.md`. Engine-agnostic core: the
+# library itself does NOT link the core engine; concrete data sources
+# (DirectDataSource in ST4) opt into the engine in their own TU. The
+# editor v1.0 surface is a public dependency from ST2 onward (panels
+# render through `editor::IEditorBackend`). See
+# `include/threadmaxx_studio/DESIGN_NOTES.md` for the spec.
+if (THREADMAXX_BUILD_STUDIO)
+    add_subdirectory(src/threadmaxx_studio)
 endif()
 
 # --------------------------------------------------------------------------
