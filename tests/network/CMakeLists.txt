@@ -26,6 +26,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_prediction_basic
     test_network_prediction_misprediction
     test_network_prediction_smoothing
+    test_network_interest_distance
+    test_network_interest_enter_exit
+    test_network_interest_explicit
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})

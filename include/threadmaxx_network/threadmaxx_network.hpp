@@ -7,6 +7,7 @@
 #include "config.hpp"
 #include "delta.hpp"
 #include "ids.hpp"
+#include "interest.hpp"
 #include "packets.hpp"
 #include "prediction.hpp"
 #include "replication.hpp"

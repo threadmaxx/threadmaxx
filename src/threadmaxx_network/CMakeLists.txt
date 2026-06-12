@@ -7,6 +7,7 @@ set(THREADMAXX_NETWORK_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/session.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/delta.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/replication.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/interest.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/prediction.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/rollback.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/transport.hpp
@@ -16,6 +17,7 @@ set(THREADMAXX_NETWORK_PUBLIC_HEADERS
 set(THREADMAXX_NETWORK_SOURCES
     Delta.cpp
     Init.cpp
+    InterestManager.cpp
     Reconciler.cpp
     ReplicationRegistry.cpp
     RollbackBuffer.cpp
