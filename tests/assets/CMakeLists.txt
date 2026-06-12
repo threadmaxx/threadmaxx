@@ -6,6 +6,10 @@ set(THREADMAXX_ASSETS_TESTS
     test_assets_obj_cube
     test_assets_obj_smoothed_normals
     test_assets_ply_binary
+    test_assets_inflate_unit
+    test_assets_bmp
+    test_assets_tga
+    test_assets_png
 )
 
 foreach(test ${THREADMAXX_ASSETS_TESTS})
