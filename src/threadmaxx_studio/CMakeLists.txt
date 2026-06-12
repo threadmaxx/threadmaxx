@@ -5,13 +5,20 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panel.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/studio.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/console.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/menu_bar.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
 )
 
-# ST2 lights up StudioApp + PanelHost. DirectDataSource lands in ST4.
+# ST2 lights up StudioApp + PanelHost. ST3 adds chrome panels
+# (MenuBar / StatusBar / ConsolePanel). DirectDataSource lands in ST4.
 set(THREADMAXX_STUDIO_SOURCES
     PanelHost.cpp
     StudioApp.cpp
     StudioVersion.cpp
+    panels/ConsolePanel.cpp
+    panels/MenuBar.cpp
+    panels/StatusBar.cpp
 )
 
 add_library(threadmaxx_studio STATIC

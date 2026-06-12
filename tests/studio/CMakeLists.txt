@@ -6,6 +6,9 @@ set(THREADMAXX_STUDIO_TESTS
     test_studio_app_lifecycle
     test_studio_panel_register_unregister
     test_studio_layout_persists_via_editor
+    test_studio_menu_open_panel
+    test_studio_status_bar_text
+    test_studio_console_panel_renders_editor_console
 )
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
