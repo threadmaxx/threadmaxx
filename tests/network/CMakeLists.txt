@@ -29,6 +29,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_interest_distance
     test_network_interest_enter_exit
     test_network_interest_explicit
+    test_network_commit_hash_match
+    test_network_commit_hash_mismatch
+    test_network_udp_smoke
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})

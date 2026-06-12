@@ -7,10 +7,12 @@ set(THREADMAXX_NETWORK_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/session.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/delta.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/replication.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/diagnostics.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/interest.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/prediction.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/rollback.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/transport.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/udp_transport.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/version.hpp
 )
 
@@ -23,7 +25,9 @@ set(THREADMAXX_NETWORK_SOURCES
     RollbackBuffer.cpp
     Session.cpp
     Snapshot.cpp
+    SyncTracker.cpp
     Transport.cpp
+    UdpTransport.cpp
 )
 
 add_library(threadmaxx_network STATIC
@@ -50,6 +54,15 @@ set_target_properties(threadmaxx_network PROPERTIES
 # The library has no PUBLIC dependency on the engine — networking
 # stays engine-agnostic per DESIGN_NOTES §2.1. The engine bridge
 # enters via SimulationBridge functors that game code supplies.
+
+# NW10 — detect POSIX socket headers at configure time. Sets
+# THREADMAXX_NETWORK_HAS_UDP=1 on platforms where UdpTransport compiles.
+include(CheckIncludeFileCXX)
+check_include_file_cxx("sys/socket.h" THREADMAXX_NETWORK_HAS_POSIX_SOCKETS)
+if (THREADMAXX_NETWORK_HAS_POSIX_SOCKETS)
+    target_compile_definitions(threadmaxx_network PUBLIC
+        THREADMAXX_NETWORK_HAS_UDP=1)
+endif()
 
 if (MSVC)
     target_compile_options(threadmaxx_network PRIVATE /W4 /permissive-)
