@@ -7,6 +7,7 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/studio.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/console.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/engine_inspector.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/menu_bar.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
 )
@@ -23,6 +24,7 @@ set(THREADMAXX_STUDIO_SOURCES
     StudioApp.cpp
     StudioVersion.cpp
     panels/ConsolePanel.cpp
+    panels/EntityInspectorPanel.cpp
     panels/MenuBar.cpp
     panels/StatusBar.cpp
 )
