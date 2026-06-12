@@ -14,6 +14,7 @@ set(THREADMAXX_ASSETS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/ply.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/png.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/tga.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/wav.hpp
 )
 
 set(THREADMAXX_ASSETS_SOURCES
@@ -24,6 +25,7 @@ set(THREADMAXX_ASSETS_SOURCES
     loaders/Ply.cpp
     loaders/Png.cpp
     loaders/Tga.cpp
+    loaders/Wav.cpp
 )
 
 add_library(threadmaxx_assets STATIC
