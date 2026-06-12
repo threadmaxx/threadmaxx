@@ -15,6 +15,7 @@
 #include "threadmaxx_audio/mixer.hpp"
 
 #include "threadmaxx_audio/clip.hpp"
+#include "threadmaxx_audio/diagnostics.hpp"
 #include "threadmaxx_audio/detail/pan_law.hpp"
 #include "threadmaxx_audio/detail/voice_allocator.hpp"
 #include "threadmaxx_audio/stream.hpp"
@@ -890,6 +891,42 @@ void AudioMixer::resetPeaks() noexcept {
     if (!impl_) return;
     impl_->peakL = 0.0f;
     impl_->peakR = 0.0f;
+}
+
+std::vector<BusSummary> AudioMixer::listBuses() const {
+    std::vector<BusSummary> out;
+    if (!impl_) return out;
+
+    const auto busCap = static_cast<std::uint32_t>(impl_->buses.size());
+    out.reserve(busCap);
+
+    // Pre-count voices per bus slot in one pass.
+    std::vector<std::uint32_t> voicesByBus(busCap, 0);
+    for (std::uint32_t i = 0; i < impl_->voices.capacity(); ++i) {
+        auto& v = impl_->voices.slot(i);
+        if (!v.alive) continue;
+        std::uint32_t bs = 0, bg = 0;
+        if (!decodeBusId(v.bus, busCap, bs, bg)
+            || !impl_->buses[bs].alive
+            || impl_->buses[bs].generation != bg) {
+            bs = 0; // routed to master fallback
+        }
+        if (bs < busCap) ++voicesByBus[bs];
+    }
+
+    for (std::uint32_t i = 0; i < busCap; ++i) {
+        const auto& e = impl_->buses[i];
+        if (!e.alive) continue;
+        BusSummary s{};
+        s.id = encodeBusId(i, e.generation);
+        s.gainDb = e.desc.gainDb;
+        s.muted = e.desc.muted;
+        s.solo = e.desc.solo;
+        s.isMaster = (i == 0u);
+        s.voiceCount = voicesByBus[i];
+        out.push_back(s);
+    }
+    return out;
 }
 
 void AudioMixer::setPlaybackEventCallback(PlaybackEventCallback cb, void* user) noexcept {

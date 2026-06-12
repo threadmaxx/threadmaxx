@@ -20,8 +20,9 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
 
-namespace threadmaxx::audio { class IAudioStream; }
+namespace threadmaxx::audio { class IAudioStream; struct BusSummary; }
 
 namespace threadmaxx::audio {
 
@@ -134,6 +135,13 @@ public:
     [[nodiscard]] MixerStats stats() const noexcept;
     /// Reset peak-hold meters to zero; does not touch RMS or counters.
     void resetPeaks() noexcept;
+
+    /// AU9 — enumerate every live bus + the master. One `BusSummary`
+    /// per live slot, in slot order. The master bus is always slot 0
+    /// (`isMaster == true`). `voiceCount` is the count of live voices
+    /// currently routing into the bus. Caller-owned vector; one
+    /// allocation per call.
+    [[nodiscard]] std::vector<BusSummary> listBuses() const;
 
     /// Register a playback event callback. `user` is passed through to every
     /// invocation. Pass `cb = nullptr` to clear. AU6 fires VoiceStarted on
