@@ -11,12 +11,12 @@
 #include "config.hpp"
 #include "field_info.hpp"
 #include "macro.hpp"
+#include "registry.hpp"
+#include "type_info.hpp"
 #include "types.hpp"
 #include "version.hpp"
 
-// R3+ headers will be added by subsequent batches:
-// #include "type_info.hpp"
-// #include "registry.hpp"
+// R4+ headers will be added by subsequent batches:
 // #include "enum.hpp"
 // #include "attributes.hpp"
 // #include "visit.hpp"

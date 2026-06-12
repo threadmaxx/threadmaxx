@@ -7,6 +7,10 @@ set(THREADMAXX_REFLECT_TESTS
     test_reflect_macro_named_for_each
     test_reflect_macro_offsets
     test_reflect_macro_in_namespace
+    test_reflect_registry_idempotent
+    test_reflect_registry_lookup_by_name
+    test_reflect_registry_lookup_by_type_index
+    test_reflect_registry_concurrent
 )
 
 foreach(test ${THREADMAXX_REFLECT_TESTS})

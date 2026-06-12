@@ -4,18 +4,18 @@ set(THREADMAXX_REFLECT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/config.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/field_info.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/macro.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/registry.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/type_info.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/aggregate_impl.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/macro_impl.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/name_arena.hpp
 )
 
-# v1.0 is largely header-only; we still ship a STATIC target so the
-# build system, the engine bridge, and consumers can target one name
-# consistently. R3 (TypeRegistry) and R7 (engine bridge) add sources.
-# A placeholder Init.cpp keeps the target buildable from R1 onward.
 set(THREADMAXX_REFLECT_SOURCES
     Init.cpp
+    Registry.cpp
 )
 
 add_library(threadmaxx_reflect STATIC
