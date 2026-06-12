@@ -26,6 +26,7 @@ headless tests; the v1.0 close-out gates green on `build/` and
 | `session.hpp` | `EditorSession` — bound view of a live `Engine&`. |
 | `backend.hpp` | `IEditorBackend` — abstract draw-call sink. |
 | `backends/headless.hpp` | `HeadlessBackend` — capture every call into ordered ops for tests. |
+| `backends/imgui.hpp` | `ImGuiBackend` — Dear ImGui binding (opt-in via `-DTHREADMAXX_EDITOR_FETCH_IMGUI=ON`). |
 | `inspect.hpp` | `Inspector` — read-only summaries of entities / resources / systems. |
 | `commands.hpp` | `IEditCommand` + `CommandStack` — undo/redo on the engine's deterministic-commit path. |
 | `hotreload.hpp` | `HotReloadController` — orchestration over `markResourceStale` + `AssetReloaded`. |

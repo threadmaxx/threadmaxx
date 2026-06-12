@@ -50,3 +50,28 @@ foreach(test ${THREADMAXX_EDITOR_TESTS})
     endif()
     add_test(NAME editor.${test} COMMAND ${test})
 endforeach()
+
+# E11 — ImGui backend tests only when the backend is compiled in.
+get_target_property(_editor_compile_defs threadmaxx::editor
+    INTERFACE_COMPILE_DEFINITIONS)
+if (_editor_compile_defs MATCHES "THREADMAXX_EDITOR_HAS_IMGUI_BACKEND=1")
+    foreach(test
+            test_editor_imgui_backend_smoke
+            test_editor_imgui_overlay)
+        add_executable(${test} ${test}.cpp)
+        target_link_libraries(${test} PRIVATE
+            threadmaxx::editor imgui)
+        target_include_directories(${test} PRIVATE
+            ${CMAKE_SOURCE_DIR}/tests)
+        set_target_properties(${test} PROPERTIES
+            CXX_STANDARD 20
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+        )
+        if (NOT MSVC)
+            target_compile_options(${test} PRIVATE
+                -Wall -Wextra -Wpedantic -Wshadow)
+        endif()
+        add_test(NAME editor.${test} COMMAND ${test})
+    endforeach()
+endif()

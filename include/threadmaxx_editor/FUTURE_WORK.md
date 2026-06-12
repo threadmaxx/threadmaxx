@@ -326,12 +326,26 @@ just exposes the `IEditCommand` hook.
 
 ## v1.x candidate batches (not blocking v1.0)
 
-### v1.x (E11) — ImGui backend
+### E11 — ImGui backend ✅ landed 2026-06-12
 
-The expected first real UI binding. Implements `IEditorBackend`
-against Dear ImGui. Lives under
-`src/threadmaxx_editor/backends/ImGuiBackend.cpp`. Standalone
-binary `examples/editor_demo` becomes the integration smoke test.
+First concrete UI backend. Implements `IEditorBackend` against Dear
+ImGui (`include/threadmaxx_editor/backends/imgui.hpp` +
+`src/threadmaxx_editor/backends/ImGuiBackend.cpp`).
+
+Opt-in via `-DTHREADMAXX_EDITOR_FETCH_IMGUI=ON`. The root
+`CMakeLists.txt` FetchContent-pulls ImGui (`v1.91.5`) and assembles a
+static `imgui` target. When that target exists,
+`threadmaxx_editor` compiles the backend + exports
+`THREADMAXX_EDITOR_HAS_IMGUI_BACKEND=1`. Two tests
+(`test_editor_imgui_backend_smoke`, `test_editor_imgui_overlay`) run
+in null/headless ImGui mode and exercise drawText + drawRect +
+overlay→backend wiring.
+
+The backend does NOT call `ImGui::NewFrame()` / `ImGui::Render()` —
+the host owns the per-tick brackets and the actual renderer
+(Vulkan, OpenGL, etc.). Each `editor.X.render(backend)` produces
+one ImGui window via `ImGui::Begin(windowTitle)` /
+`ImGui::End()`.
 
 ### v1.x — Remote backend
 

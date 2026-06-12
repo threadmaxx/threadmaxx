@@ -41,9 +41,21 @@ both `build/` and `build-werror/`; 34 tests across the editor slice.
 - `Console` — `registerCommand(verb, handler)` + `exec(stack, line)`,
   64-entry newest-first history.
 
+### E11 — ImGui backend (shipped 2026-06-12, opt-in)
+
+`ImGuiBackend` (`include/threadmaxx_editor/backends/imgui.hpp` +
+`src/threadmaxx_editor/backends/ImGuiBackend.cpp`) translates
+`drawText` / `drawRect` into Dear ImGui calls.
+
+Opt-in via `-DTHREADMAXX_EDITOR_FETCH_IMGUI=ON` — the root build
+FetchContent-pulls Dear ImGui v1.91.5, assembles a static `imgui`
+target, and `threadmaxx_editor` exports
+`THREADMAXX_EDITOR_HAS_IMGUI_BACKEND=1`. Two tests
+(`test_editor_imgui_backend_smoke`, `test_editor_imgui_overlay`)
+exercise the backend in null/headless ImGui mode.
+
 ### Out of v1.0 (deferred to v1.x)
 
-- ImGui backend (E11 — first concrete backend; tracked but separate).
 - Asset browser (game-specific; v1.x ships a generic
   ResourceRegistry-backed tree).
 - Scene hierarchy / entity tree view (Parent-graph rooted; flat

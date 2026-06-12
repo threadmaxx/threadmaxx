@@ -78,3 +78,15 @@ if (TARGET threadmaxx::reflect)
     target_compile_definitions(threadmaxx_editor PUBLIC
         THREADMAXX_EDITOR_HAS_REFLECT=1)
 endif()
+
+# E11 — optional Dear ImGui backend. The base library always compiles
+# without ImGui; this just adds the ImGuiBackend implementation +
+# public header when ImGui is in the build.
+if (TARGET imgui)
+    target_sources(threadmaxx_editor PRIVATE
+        backends/ImGuiBackend.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backends/imgui.hpp)
+    target_link_libraries(threadmaxx_editor PUBLIC imgui)
+    target_compile_definitions(threadmaxx_editor PUBLIC
+        THREADMAXX_EDITOR_HAS_IMGUI_BACKEND=1)
+endif()

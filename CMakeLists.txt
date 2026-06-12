@@ -20,6 +20,7 @@ option(THREADMAXX_BUILD_INPUT "Make the threadmaxx_input sibling library availab
 option(THREADMAXX_BUILD_ASSETS "Make the threadmaxx_assets sibling library available" ON)
 option(THREADMAXX_BUILD_REFLECT "Make the threadmaxx_reflect sibling library available" ON)
 option(THREADMAXX_BUILD_EDITOR "Make the threadmaxx_editor sibling library available" ON)
+option(THREADMAXX_EDITOR_FETCH_IMGUI "FetchContent Dear ImGui and build the ImGui editor backend (E11)" OFF)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -279,6 +280,43 @@ endif()
 # `THREADMAXX_EDITOR_HAS_REFLECT=1`). See
 # `include/threadmaxx_editor/DESIGN_NOTES.md` for the spec.
 if (THREADMAXX_BUILD_EDITOR)
+    # Optional Dear ImGui — fetched only when explicitly opted in.
+    # When this target exists, src/threadmaxx_editor compiles the
+    # ImGui editor backend (E11) and exports
+    # THREADMAXX_EDITOR_HAS_IMGUI_BACKEND=1.
+    if (THREADMAXX_EDITOR_FETCH_IMGUI AND NOT TARGET imgui)
+        include(FetchContent)
+        FetchContent_Declare(threadmaxx_imgui
+            GIT_REPOSITORY https://github.com/ocornut/imgui.git
+            GIT_TAG v1.91.5
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(threadmaxx_imgui)
+        if (NOT TARGET imgui)
+            # imgui's repo doesn't ship a CMakeLists; assemble one.
+            add_library(imgui STATIC
+                ${threadmaxx_imgui_SOURCE_DIR}/imgui.cpp
+                ${threadmaxx_imgui_SOURCE_DIR}/imgui_demo.cpp
+                ${threadmaxx_imgui_SOURCE_DIR}/imgui_draw.cpp
+                ${threadmaxx_imgui_SOURCE_DIR}/imgui_tables.cpp
+                ${threadmaxx_imgui_SOURCE_DIR}/imgui_widgets.cpp
+            )
+            # SYSTEM include so consumers don't trip our strict warning
+            # set on upstream ImGui headers (it has C-style casts in
+            # public macros like IM_COL32 / GetCharAdvance / etc).
+            target_include_directories(imgui SYSTEM PUBLIC
+                ${threadmaxx_imgui_SOURCE_DIR})
+            # And keep ImGui's own .cpp build relaxed: it never has
+            # to satisfy our strict warning set.
+            if (NOT MSVC)
+                target_compile_options(imgui PRIVATE
+                    -Wno-old-style-cast -Wno-conversion
+                    -Wno-sign-conversion)
+            endif()
+            set_target_properties(imgui PROPERTIES
+                POSITION_INDEPENDENT_CODE ON)
+        endif()
+    endif()
     add_subdirectory(src/threadmaxx_editor)
 endif()
 
