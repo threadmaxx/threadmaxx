@@ -16,6 +16,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_telemetry_basic
     test_editor_telemetry_config_off
     test_editor_telemetry_system_stats
+    test_editor_selection_set
+    test_editor_selection_clear
+    test_editor_selection_stale_entity
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

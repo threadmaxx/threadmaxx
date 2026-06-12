@@ -197,7 +197,7 @@ calls.
 **Out of scope**: graphical overlays (frame-time graph, profiler
 flamegraph) — v1.x with a real UI backend.
 
-## Batch E6 — Selection state
+## Batch E6 — Selection state ✅ landed 2026-06-12
 
 **Goal**: `Selection` POD + selection-history tracking. The
 editor "what's currently selected" is a first-class concept the
