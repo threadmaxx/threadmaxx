@@ -11,6 +11,7 @@ set(THREADMAXX_ASSETS_TESTS
     test_assets_tga
     test_assets_png
     test_assets_wav
+    test_assets_bmfont
 )
 
 foreach(test ${THREADMAXX_ASSETS_TESTS})
