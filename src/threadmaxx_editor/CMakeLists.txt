@@ -6,9 +6,11 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backends/headless.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/inspect.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/commands.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
+    CommandStack.cpp
     EditorSession.cpp
     Inspector.cpp
     backends/HeadlessBackend.cpp

@@ -6,6 +6,10 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_inspector_resources
     test_editor_inspector_systems
     test_editor_inspector_entity_specific
+    test_editor_command_basic
+    test_editor_command_stack_redo
+    test_editor_command_stack_new_after_undo
+    test_editor_command_clear
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

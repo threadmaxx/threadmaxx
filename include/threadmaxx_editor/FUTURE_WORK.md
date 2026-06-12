@@ -123,7 +123,7 @@ hammering the engine.
 
 **Out of scope**: live filtering / search (E10 console).
 
-## Batch E3 — Command stack + IEditCommand + undo/redo
+## Batch E3 — Command stack + IEditCommand + undo/redo ✅ landed 2026-06-12
 
 **Goal**: every editor mutation funnels through a command. The
 command knows how to apply + how to undo. `CommandStack` tracks
