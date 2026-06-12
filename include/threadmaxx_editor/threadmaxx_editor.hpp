@@ -7,6 +7,7 @@
 
 #include "backend.hpp"
 #include "backends/headless.hpp"
+#include "inspect.hpp"
 #include "session.hpp"
 #include "types.hpp"
 #include "version.hpp"

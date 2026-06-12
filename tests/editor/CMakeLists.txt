@@ -2,6 +2,10 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_session_attach
     test_editor_headless_backend_capture
     test_editor_session_destroy_order
+    test_editor_inspector_entities
+    test_editor_inspector_resources
+    test_editor_inspector_systems
+    test_editor_inspector_entity_specific
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

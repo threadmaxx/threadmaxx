@@ -95,7 +95,7 @@ three tests.
 
 **Out of scope**: ImGui backend (E11 / v1.x), real layout (E10).
 
-## Batch E2 — Inspector (entity / resource / system listing)
+## Batch E2 — Inspector (entity / resource / system listing) ✅ landed 2026-06-12
 
 **Goal**: `Inspector` reads engine-exposed data and produces
 summaries. No mutation, no UI — just data-extraction logic.
