@@ -32,6 +32,7 @@ set(THREADMAXX_NAVMESH_TESTS
     test_navmesh_bake_smoke
     test_navmesh_bake_validation
     test_navmesh_bake_areas
+    test_navmesh_diagnostics
 )
 
 foreach(test ${THREADMAXX_NAVMESH_TESTS})
