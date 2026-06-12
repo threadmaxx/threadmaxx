@@ -8,6 +8,7 @@
 #include "delta.hpp"
 #include "ids.hpp"
 #include "packets.hpp"
+#include "prediction.hpp"
 #include "replication.hpp"
 #include "rollback.hpp"
 #include "session.hpp"

@@ -23,6 +23,9 @@ set(THREADMAXX_NETWORK_TESTS
     test_network_rollback_input_history
     test_network_rollback_snapshot_history
     test_network_rollback_capacity_overflow
+    test_network_prediction_basic
+    test_network_prediction_misprediction
+    test_network_prediction_smoothing
 )
 
 foreach(test ${THREADMAXX_NETWORK_TESTS})
