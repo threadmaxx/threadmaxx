@@ -13,7 +13,32 @@ set(THREADMAXX_ASSETS_TESTS
     test_assets_wav
     test_assets_bmfont
     test_assets_registry
+    test_assets_async_loader
 )
+
+# Engine bridge test only when threadmaxx::threadmaxx target is around AND
+# the bridge define is exported.
+get_target_property(_assets_compile_defs threadmaxx::assets INTERFACE_COMPILE_DEFINITIONS)
+if (_assets_compile_defs MATCHES "THREADMAXX_ASSETS_HAS_ENGINE_BRIDGE=1")
+    add_executable(test_assets_engine_bridge test_assets_engine_bridge.cpp)
+    target_link_libraries(test_assets_engine_bridge PRIVATE
+        threadmaxx::assets threadmaxx::threadmaxx)
+    target_include_directories(test_assets_engine_bridge PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests)
+    target_compile_definitions(test_assets_engine_bridge PRIVATE
+        THREADMAXX_ASSETS_FIXTURES_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
+    set_target_properties(test_assets_engine_bridge PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(test_assets_engine_bridge PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME assets.test_assets_engine_bridge
+             COMMAND test_assets_engine_bridge)
+endif()
 
 foreach(test ${THREADMAXX_ASSETS_TESTS})
     add_executable(${test} ${test}.cpp)

@@ -16,10 +16,12 @@ set(THREADMAXX_ASSETS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/png.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/tga.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/wav.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/async_loader.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/registry.hpp
 )
 
 set(THREADMAXX_ASSETS_SOURCES
+    AsyncLoader.cpp
     Io.cpp
     Registry.cpp
     detail/Inflate.cpp
@@ -65,4 +67,19 @@ else()
     if (THREADMAXX_WARNINGS_AS_ERRORS)
         target_compile_options(threadmaxx_assets PRIVATE -Werror)
     endif()
+endif()
+
+# Threads: AsyncLoader spawns a pool.
+find_package(Threads REQUIRED)
+target_link_libraries(threadmaxx_assets PUBLIC Threads::Threads)
+
+# Opt-in engine bridge: compiles the engine-side IResourceLoader adapter
+# when threadmaxx::threadmaxx is available. Exports
+# THREADMAXX_ASSETS_HAS_ENGINE_BRIDGE=1 so consumers can `#if`-gate.
+if (TARGET threadmaxx::threadmaxx)
+    target_sources(threadmaxx_assets PRIVATE
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/engine_bridge.hpp)
+    target_link_libraries(threadmaxx_assets PUBLIC threadmaxx::threadmaxx)
+    target_compile_definitions(threadmaxx_assets PUBLIC
+        THREADMAXX_ASSETS_HAS_ENGINE_BRIDGE=1)
 endif()

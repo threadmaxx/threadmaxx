@@ -70,6 +70,14 @@ public:
     // stay valid; pointed-at content is replaced atomically.
     bool reload(AssetId id);
 
+    // Existing-slot lookup (no disk I/O). Returns an invalid handle when
+    // no slot matches. Used by AsyncLoader to dedup against in-flight or
+    // already-installed records.
+    AssetHandle<MeshData>      findMesh   (std::string_view path);
+    AssetHandle<TextureData>   findTexture(std::string_view path);
+    AssetHandle<AudioClipData> findAudio  (std::string_view path);
+    AssetHandle<FontAtlas>     findFont   (std::string_view path);
+
     // Diagnostic accessors. Slot lookups are safe under concurrent reads.
     [[nodiscard]] std::size_t                  liveAssetCount(AssetType t = AssetType::Unknown) const;
     [[nodiscard]] std::uint32_t                refCount(AssetId id) const;

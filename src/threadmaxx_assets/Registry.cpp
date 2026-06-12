@@ -232,6 +232,18 @@ AssetHandle<T> addInjected(AssetRegistry& self,
         [](void* p) { delete static_cast<T*>(p); });
     std::unique_lock<std::shared_mutex> wlk(impl.mu);
     const std::string key{name};
+    // If the canonical key is already alive, dedup against it (discards
+    // the new value); covers the AsyncLoader pump-after-sync-load race.
+    const auto it = impl.keyToId.find(key);
+    if (it != impl.keyToId.end()) {
+        const auto eid = it->second;
+        auto* s = impl.slots[eid].get();
+        if (s != nullptr && s->live && s->type == type) {
+            s->refCount.fetch_add(1, std::memory_order_relaxed);
+            ++impl.stats.loadsDedup;
+            return AssetHandle<T>{&self, eid, s->generation};
+        }
+    }
     const auto id = impl.installSlot(wlk, type, key, /*isFile=*/false, std::move(data));
     ++impl.stats.loadsSync;
     return AssetHandle<T>{&self, id, impl.slots[id]->generation};
@@ -393,6 +405,41 @@ std::optional<std::string> AssetRegistry::pathOf(AssetId id) const {
     auto* s = impl_->slots[id].get();
     if (s == nullptr || !s->live) return std::nullopt;
     return s->canonicalKey;
+}
+
+namespace {
+
+template <class T>
+AssetHandle<T> findExistingTemplated(AssetRegistry& self,
+                                     AssetRegistry::Impl& impl,
+                                     std::string_view path,
+                                     AssetType type) {
+    const auto key = canonicalize(path);
+    if (key.empty()) return AssetHandle<T>{};
+    std::shared_lock<std::shared_mutex> rlk(impl.mu);
+    const auto it = impl.keyToId.find(key);
+    if (it == impl.keyToId.end()) return AssetHandle<T>{};
+    const auto id = it->second;
+    if (id >= impl.slots.size()) return AssetHandle<T>{};
+    auto* s = impl.slots[id].get();
+    if (s == nullptr || !s->live || s->type != type) return AssetHandle<T>{};
+    s->refCount.fetch_add(1, std::memory_order_relaxed);
+    return AssetHandle<T>{&self, id, s->generation};
+}
+
+} // namespace
+
+AssetHandle<MeshData> AssetRegistry::findMesh(std::string_view path) {
+    return findExistingTemplated<MeshData>(*this, *impl_, path, AssetType::Mesh);
+}
+AssetHandle<TextureData> AssetRegistry::findTexture(std::string_view path) {
+    return findExistingTemplated<TextureData>(*this, *impl_, path, AssetType::Texture);
+}
+AssetHandle<AudioClipData> AssetRegistry::findAudio(std::string_view path) {
+    return findExistingTemplated<AudioClipData>(*this, *impl_, path, AssetType::Audio);
+}
+AssetHandle<FontAtlas> AssetRegistry::findFont(std::string_view path) {
+    return findExistingTemplated<FontAtlas>(*this, *impl_, path, AssetType::Font);
 }
 
 AssetRegistry::Stats AssetRegistry::stats() const {
