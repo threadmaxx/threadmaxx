@@ -10,6 +10,8 @@ set(THREADMAXX_REFLECT_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/attributes.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/enum.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/visit.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/binders/json.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/aggregate_impl.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/enum_impl.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/macro_impl.hpp
@@ -18,6 +20,7 @@ set(THREADMAXX_REFLECT_PUBLIC_HEADERS
 
 set(THREADMAXX_REFLECT_SOURCES
     Init.cpp
+    JsonBinder.cpp
     Registry.cpp
 )
 

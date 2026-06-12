@@ -19,6 +19,11 @@ set(THREADMAXX_REFLECT_TESTS
     test_reflect_attr_tooltip
     test_reflect_attr_multiple
     test_reflect_attr_query
+    test_reflect_visit_aggregate
+    test_reflect_visit_macro
+    test_reflect_json_round_trip
+    test_reflect_hash_visitor
+    test_reflect_equals_visitor
 )
 
 foreach(test ${THREADMAXX_REFLECT_TESTS})

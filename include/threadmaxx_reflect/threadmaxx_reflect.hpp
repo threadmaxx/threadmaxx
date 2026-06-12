@@ -9,6 +9,7 @@
 
 #include "aggregate.hpp"
 #include "attributes.hpp"
+#include "binders/json.hpp"
 #include "config.hpp"
 #include "enum.hpp"
 #include "field_info.hpp"
@@ -17,8 +18,8 @@
 #include "type_info.hpp"
 #include "types.hpp"
 #include "version.hpp"
+#include "visit.hpp"
 
-// R6+ headers will be added by subsequent batches:
-// #include "visit.hpp"
+// R7+ headers will be added by subsequent batches:
 // #include "value.hpp"
 // #include "patch.hpp"
