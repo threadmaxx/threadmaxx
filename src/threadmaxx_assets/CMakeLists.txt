@@ -16,10 +16,12 @@ set(THREADMAXX_ASSETS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/png.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/tga.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/wav.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/registry.hpp
 )
 
 set(THREADMAXX_ASSETS_SOURCES
     Io.cpp
+    Registry.cpp
     detail/Inflate.cpp
     loaders/Bmfont.cpp
     loaders/Bmp.cpp
