@@ -49,6 +49,10 @@ set(THREADMAXX_REFLECT_TESTS
     test_reflect_json_round_trip
     test_reflect_hash_visitor
     test_reflect_equals_visitor
+    test_reflect_value_sbo
+    test_reflect_patch_basic
+    test_reflect_patch_unknown_field
+    test_reflect_read_field_round_trip
 )
 
 foreach(test ${THREADMAXX_REFLECT_TESTS})

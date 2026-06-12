@@ -14,12 +14,10 @@
 #include "enum.hpp"
 #include "field_info.hpp"
 #include "macro.hpp"
+#include "patch.hpp"
 #include "registry.hpp"
 #include "type_info.hpp"
 #include "types.hpp"
+#include "value.hpp"
 #include "version.hpp"
 #include "visit.hpp"
-
-// R7+ headers will be added by subsequent batches:
-// #include "value.hpp"
-// #include "patch.hpp"
