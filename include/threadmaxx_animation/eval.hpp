@@ -2,6 +2,7 @@
 
 #include "threadmaxx_animation/clip.hpp"
 #include "threadmaxx_animation/detail/graph_eval.hpp"
+#include "threadmaxx_animation/diagnostics.hpp"
 #include "threadmaxx_animation/graph.hpp"
 #include "threadmaxx_animation/pose.hpp"
 
@@ -113,6 +114,11 @@ public:
     /// for non-clip nodes or invalid ids. Useful for tests and
     /// debugging; production code typically doesn't need to peek.
     float nodeTime(GraphNodeId node) const noexcept;
+
+    /// A9 — Diagnostics snapshot of the animator's current state.
+    /// Cheap; pure read of member fields. Intended for debug HUDs,
+    /// studio inspector panels, and post-mortem dumps.
+    AnimatorStats stats() const noexcept;
 
 private:
     // Single-clip mode (A2) state.

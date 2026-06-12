@@ -130,4 +130,35 @@ inline PoseIssue validateJoint(const JointPose& jp) noexcept {
     return detail::classifyJoint(jp);
 }
 
+/// A9 — Diagnostics POD returned by `Animator::stats()`.
+///
+/// One snapshot of an Animator's current runtime state. Mirrors the
+/// fields a debug HUD / studio panel typically wants: which mode the
+/// animator is in (single-clip / graph / detached), the active
+/// playhead, and the queued event count. POD by design so a host can
+/// copy across threads or marshal over a wire without touching the
+/// Animator's internals.
+struct AnimatorStats {
+    /// Which evaluation mode the animator is currently bound to.
+    enum class Mode : std::uint8_t {
+        Detached = 0,    ///< Neither clip nor graph bound.
+        SingleClip = 1,  ///< `setClip` is the active binding.
+        Graph = 2,       ///< `setGraph` is the active binding.
+    };
+
+    Mode mode = Mode::Detached;
+    /// Single-clip mode: current playhead. Graph mode: 0 (per-node
+    /// times live on the Animator and the studio panel queries them
+    /// via `nodeTime()`).
+    float playheadSeconds = 0.0f;
+    /// Single-clip mode: duration of the bound clip. Graph mode: 0.
+    float clipDurationSeconds = 0.0f;
+    /// Number of graph nodes in the bound graph (0 in single-clip mode
+    /// or when detached).
+    std::uint32_t graphNodeCount = 0;
+    /// Pending events queued from the most recent `advance` /
+    /// `evaluate` calls (drained by `drainEvents`).
+    std::uint32_t pendingEventCount = 0;
+};
+
 } // namespace threadmaxx::animation

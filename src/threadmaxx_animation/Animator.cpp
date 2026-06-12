@@ -1,6 +1,7 @@
 #include "threadmaxx_animation/eval.hpp"
 
 #include "threadmaxx_animation/detail/curve_eval.hpp"
+#include "threadmaxx_animation/diagnostics.hpp"
 
 #include <cmath>
 
@@ -60,6 +61,25 @@ void Animator::drainEvents(std::vector<EventTrackEvent>& dst) {
     if (pendingEvents_.empty()) return;
     dst.insert(dst.end(), pendingEvents_.begin(), pendingEvents_.end());
     pendingEvents_.clear();
+}
+
+AnimatorStats Animator::stats() const noexcept {
+    AnimatorStats s{};
+    s.pendingEventCount =
+        static_cast<std::uint32_t>(pendingEvents_.size());
+    if (graph_ != nullptr) {
+        s.mode = AnimatorStats::Mode::Graph;
+        s.graphNodeCount =
+            static_cast<std::uint32_t>(graph_->nodeCount());
+        return s;
+    }
+    if (clip_ != nullptr) {
+        s.mode = AnimatorStats::Mode::SingleClip;
+        s.playheadSeconds = time_;
+        s.clipDurationSeconds = clip_->duration;
+        return s;
+    }
+    return s;
 }
 
 } // namespace threadmaxx::animation

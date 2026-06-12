@@ -32,6 +32,7 @@ set(THREADMAXX_ANIMATION_TESTS
     test_animation_diagnostics
     test_animation_retarget_smoke
     test_animation_serialization_roundtrip
+    test_animation_animator_stats
 )
 
 foreach(test ${THREADMAXX_ANIMATION_TESTS})
