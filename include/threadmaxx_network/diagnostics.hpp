@@ -1,7 +1,8 @@
 #pragma once
 
 /// @file diagnostics.hpp
-/// @brief Desync detection via per-tick `commitHash`.
+/// @brief Desync detection via per-tick `commitHash` + NW11 per-peer
+/// summaries surfaced to the studio panel.
 ///
 /// Server and clients periodically exchange a commit hash for each
 /// recently-simulated tick. When they disagree, the tracker fires a
@@ -22,6 +23,27 @@
 #include <optional>
 
 namespace threadmaxx::network {
+
+/// NW11 — One row of `ServerSession::listPeers()`. Mirrors a subset
+/// of `PeerState` plus the server-side input queue depth, sized for
+/// a debug HUD / studio network panel. POD by design so it can be
+/// copied across threads / processes.
+struct PeerSummary {
+    PeerId peer{};
+    SessionId session{};
+    bool connected = false;
+
+    /// Last `sequence` we received from this peer.
+    std::uint32_t remoteSeq = 0;
+    /// 32-bit ack bitmap of recently-received sequences below
+    /// `remoteSeq`.
+    std::uint32_t remoteAckBits = 0;
+    /// Next `sequence` we'll stamp on outbound packets.
+    std::uint32_t localSeq = 0;
+    /// Pending input packets queued for this peer (size of
+    /// `ServerSession::inputsFor(peer)`).
+    std::uint32_t pendingInputCount = 0;
+};
 
 struct DesyncReport {
     TickId tick{};

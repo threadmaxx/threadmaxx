@@ -3,6 +3,8 @@
 
 #include "threadmaxx_network/session.hpp"
 
+#include "threadmaxx_network/diagnostics.hpp"
+
 #include <array>
 #include <utility>
 
@@ -48,6 +50,27 @@ std::size_t ServerSession::connectedPeerCount() const noexcept {
 const PeerState* ServerSession::peer(PeerId p) const noexcept {
     auto it = peers_.find(p.value);
     return it != peers_.end() ? &it->second : nullptr;
+}
+
+std::vector<PeerSummary> ServerSession::listPeers() const {
+    std::vector<PeerSummary> out;
+    out.reserve(peers_.size());
+    for (const auto& kv : peers_) {
+        const auto& ps = kv.second;
+        PeerSummary s{};
+        s.peer = ps.peer;
+        s.session = ps.session;
+        s.connected = ps.connected;
+        s.remoteSeq = ps.remoteSeq;
+        s.remoteAckBits = ps.remoteAckBits;
+        s.localSeq = ps.localSeq;
+        const auto itQ = inputQueue_.find(ps.peer.value);
+        s.pendingInputCount = (itQ != inputQueue_.end())
+            ? static_cast<std::uint32_t>(itQ->second.size())
+            : 0u;
+        out.push_back(s);
+    }
+    return out;
 }
 
 std::size_t ServerSession::pumpReceive() {

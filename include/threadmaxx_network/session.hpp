@@ -53,6 +53,13 @@ public:
     /// @brief Lookup peer state by id; returns nullptr if unknown.
     const PeerState* peer(PeerId p) const noexcept;
 
+    /// @brief NW11 — enumerate every known peer as a `PeerSummary`.
+    /// Walks the peers map; one allocation per call (caller owns the
+    /// returned vector). Studio's network panel + remote attach use
+    /// this; game code typically prefers the per-peer `peer()`
+    /// accessor.
+    std::vector<struct PeerSummary> listPeers() const;
+
     /// @brief Set a callback fired after every successful Hello/Welcome
     /// handshake. The argument carries the newly-connected peer.
     void onPeerConnected(std::function<void(const PeerState&)> cb) {
