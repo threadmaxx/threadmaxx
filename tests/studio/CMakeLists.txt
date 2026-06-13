@@ -70,6 +70,10 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_NETWORK_PANELS=1")
         test_studio_network_desync_log
         test_studio_network_packet_filter)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_REMOTE_ATTACH=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_agent_send_snapshot)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)
