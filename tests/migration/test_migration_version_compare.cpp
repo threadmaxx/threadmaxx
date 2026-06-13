@@ -42,9 +42,9 @@ int main() {
     // Current format.
     CHECK_EQ(kCurrentFormatVersion.value, 1u);
 
-    // Library version stamp.
-    CHECK_EQ(kLibraryVersionMajor, 0u);
-    CHECK_EQ(kLibraryVersionMinor, 1u);
+    // Library version stamp (1.0.0 after M1..M8 closed).
+    CHECK_EQ(kLibraryVersionMajor, 1u);
+    CHECK_EQ(kLibraryVersionMinor, 0u);
     CHECK_EQ(kLibraryVersionPatch, 0u);
 
     EXIT_WITH_RESULT();

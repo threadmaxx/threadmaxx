@@ -15,15 +15,14 @@
 
 namespace threadmaxx::migration {
 
-/// @brief Library version stamp (`0.1.0` at M1 ship). Tracks the
-/// `threadmaxx_migration` library's own release line, distinct from
-/// `SchemaVersion` (which describes the save schema) and
-/// `FormatVersion` (the container layout). Reaches `1.0.0` when the
-/// M1..M8 batch sequence closes out.
-inline constexpr std::uint32_t kLibraryVersionMajor = 0;
-inline constexpr std::uint32_t kLibraryVersionMinor = 1;
+/// @brief Library version stamp. Tracks the `threadmaxx_migration`
+/// library's own release line, distinct from `SchemaVersion` (which
+/// describes the save schema) and `FormatVersion` (the container
+/// layout). `1.0.0` after the M1..M8 batch sequence closed.
+inline constexpr std::uint32_t kLibraryVersionMajor = 1;
+inline constexpr std::uint32_t kLibraryVersionMinor = 0;
 inline constexpr std::uint32_t kLibraryVersionPatch = 0;
-inline constexpr std::string_view kLibraryVersionString = "0.1.0";
+inline constexpr std::string_view kLibraryVersionString = "1.0.0";
 
 /// @brief Semver-style schema version. Equality requires all three
 /// components match; ordering is lexicographic.

@@ -26,4 +26,28 @@ struct MigrationResult {
     std::vector<std::string> appliedSteps;
 };
 
+/// @brief M8 — Human-readable summary of a `MigrationResult`. The
+/// studio's MigrationValidatorPanel (ST38) renders this; the
+/// offline convert tool prints it to stdout.
+struct MigrationReportSummary {
+    std::size_t recordCount{0};
+    std::size_t warningCount{0};
+    std::size_t errorCount{0};
+    std::size_t appliedStepCount{0};
+    bool        ok{false};
+};
+
+/// @brief Build a summary from a result. Free function so it
+/// composes nicely with M5's result type.
+[[nodiscard]] inline MigrationReportSummary
+summarize(const MigrationResult& result) noexcept {
+    MigrationReportSummary out{};
+    out.ok               = result.ok;
+    out.recordCount      = result.output.records.size();
+    out.warningCount     = result.warnings.size();
+    out.errorCount       = result.errors.size();
+    out.appliedStepCount = result.appliedSteps.size();
+    return out;
+}
+
 } // namespace threadmaxx::migration

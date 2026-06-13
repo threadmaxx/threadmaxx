@@ -366,6 +366,7 @@ endif()
 # opt-in adapter for the engine's WorldSnapshot.
 if (THREADMAXX_BUILD_MIGRATION)
     add_subdirectory(src/threadmaxx_migration)
+    add_subdirectory(tools/migration_convert)
 endif()
 
 # --------------------------------------------------------------------------

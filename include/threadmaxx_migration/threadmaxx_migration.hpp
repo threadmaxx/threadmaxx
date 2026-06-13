@@ -13,4 +13,5 @@
 #include "report.hpp"
 #include "savefile.hpp"
 #include "transform.hpp"
+#include "validation.hpp"
 #include "version.hpp"
