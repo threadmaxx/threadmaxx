@@ -82,6 +82,20 @@ if (TARGET threadmaxx::editor)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::editor)
 endif()
 
+# M4 — sibling panels. Each guards on the sibling's library target so
+# studio still builds when a sibling is opted out of the build. The
+# matching panel TUs forward-declare into the public header so a
+# downstream tooling user can include the panel header without pulling
+# the sibling lib's headers.
+if (TARGET threadmaxx::animation)
+    target_sources(threadmaxx_studio PRIVATE
+        panels/AnimationPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/animation.hpp)
+    target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::animation)
+    target_compile_definitions(threadmaxx_studio PUBLIC
+        THREADMAXX_STUDIO_HAS_ANIMATION_PANEL=1)
+endif()
+
 if (MSVC)
     target_compile_options(threadmaxx_studio PRIVATE /W4 /permissive-)
     if (THREADMAXX_WARNINGS_AS_ERRORS)
