@@ -8,6 +8,7 @@ set(THREADMAXX_PHYSICS_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/character.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/constraints.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/contact.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/diagnostics.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/jolt_backend.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/query.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/step.hpp
@@ -19,6 +20,7 @@ set(THREADMAXX_PHYSICS_PUBLIC_HEADERS
 set(THREADMAXX_PHYSICS_SOURCES
     backends/StubBackend.cpp
     backends/JoltBackend.cpp
+    BackendDefaults.cpp
     CharacterController.cpp
 )
 

@@ -53,6 +53,10 @@ struct ConstraintDesc;
 struct ContactEvent;
 using ContactCallback = std::function<void(const ContactEvent&)>;
 
+// P10 — forward declaration of the diagnostics POD; defined in
+// `diagnostics.hpp`.
+struct PhysicsWorldStats;
+
 class IPhysicsBackend {
 public:
     virtual ~IPhysicsBackend() = default;
@@ -190,6 +194,13 @@ public:
     /// for currently-active contacts.
     virtual void setContactCallback(PhysicsWorldId world,
                                     ContactCallback callback) = 0;
+
+    /// P10 — per-world diagnostics snapshot for debug HUDs / studio
+    /// inspector panels. Default impl returns zeros; backends opt in
+    /// by overriding (`StubBackend` does; the Jolt backend keeps the
+    /// default until it grows its own counters). Non-pure so existing
+    /// backends keep linking.
+    virtual PhysicsWorldStats worldStats(PhysicsWorldId world) const noexcept;
 
 protected:
     IPhysicsBackend() = default;

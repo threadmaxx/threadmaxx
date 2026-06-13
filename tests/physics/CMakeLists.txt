@@ -34,6 +34,7 @@ set(THREADMAXX_PHYSICS_TESTS
     test_physics_contact_begin
     test_physics_contact_end
     test_physics_contact_stable
+    test_physics_diagnostics
 )
 
 # Jolt-backed tests are only registered when the CMake gate found Jolt

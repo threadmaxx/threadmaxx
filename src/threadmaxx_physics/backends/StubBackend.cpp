@@ -2,6 +2,7 @@
 
 #include "threadmaxx_physics/constraints.hpp"
 #include "threadmaxx_physics/contact.hpp"
+#include "threadmaxx_physics/diagnostics.hpp"
 #include "threadmaxx_physics/query.hpp"
 
 #include <algorithm>
@@ -699,6 +700,28 @@ public:
         w->contactCallback = std::move(callback);
     }
 
+    PhysicsWorldStats worldStats(PhysicsWorldId world) const noexcept override {
+        PhysicsWorldStats out{};
+        const WorldSlot* w = lookupWorldConst(world);
+        if (w == nullptr) {
+            return out;
+        }
+        // Body / constraint slot 0 is reserved (the "invalid" sentinel),
+        // so the loops start at 1.
+        for (std::size_t i = 1; i < w->bodies.size(); ++i) {
+            if (w->bodies[i].alive) {
+                ++out.bodyCount;
+            }
+        }
+        for (std::size_t i = 1; i < w->constraints.size(); ++i) {
+            if (w->constraints[i].alive) {
+                ++out.constraintCount;
+            }
+        }
+        out.activeContactCount = w->activeContacts.size();
+        return out;
+    }
+
     void overlap(PhysicsWorldId world,
                  const OverlapRequest& request,
                  std::vector<BodyId>& outBodies) override {
@@ -783,6 +806,21 @@ private:
         ConstraintSlot& s = w.constraints.back();
         s.generation = 1;
         return static_cast<std::uint32_t>(w.constraints.size() - 1);
+    }
+
+    const WorldSlot* lookupWorldConst(PhysicsWorldId world) const noexcept {
+        if (world.value == kInvalidSlot) {
+            return nullptr;
+        }
+        const std::uint32_t slot = slotOf(world.value);
+        if (slot == 0 || slot >= worlds_.size()) {
+            return nullptr;
+        }
+        const WorldSlot& w = worlds_[slot];
+        if (!w.alive || w.generation != generationOf(world.value)) {
+            return nullptr;
+        }
+        return &w;
     }
 
     WorldSlot* lookupWorld(PhysicsWorldId world) {
