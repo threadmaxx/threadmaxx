@@ -338,6 +338,22 @@ if (THREADMAXX_BUILD_EDITOR)
 endif()
 
 # --------------------------------------------------------------------------
+# threadmaxx_migration — save versioning / migration pipeline
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_MIGRATION=ON` (the default). Static
+# library — public headers under `include/threadmaxx_migration/`,
+# implementation under `src/threadmaxx_migration/`. v1.0 sequences as
+# M1 → M8 per `include/threadmaxx_migration/FUTURE_WORK.md`.
+# Engine-independent — depends only on the STL. M6 introduces an
+# opt-in adapter for the engine's WorldSnapshot. Must process before
+# threadmaxx_studio so the ST35..ST38 migration panels see the target.
+if (THREADMAXX_BUILD_MIGRATION)
+    add_subdirectory(src/threadmaxx_migration)
+    add_subdirectory(tools/migration_convert)
+endif()
+
+# --------------------------------------------------------------------------
 # threadmaxx_studio — panel host for the editor / sibling diagnostics
 # --------------------------------------------------------------------------
 #
@@ -352,21 +368,6 @@ endif()
 # `include/threadmaxx_studio/DESIGN_NOTES.md` for the spec.
 if (THREADMAXX_BUILD_STUDIO)
     add_subdirectory(src/threadmaxx_studio)
-endif()
-
-# --------------------------------------------------------------------------
-# threadmaxx_migration — save versioning / migration pipeline
-# --------------------------------------------------------------------------
-#
-# Opt-in via `-DTHREADMAXX_BUILD_MIGRATION=ON` (the default). Static
-# library — public headers under `include/threadmaxx_migration/`,
-# implementation under `src/threadmaxx_migration/`. v1.0 sequences as
-# M1 → M8 per `include/threadmaxx_migration/FUTURE_WORK.md`.
-# Engine-independent — depends only on the STL. M6 introduces an
-# opt-in adapter for the engine's WorldSnapshot.
-if (THREADMAXX_BUILD_MIGRATION)
-    add_subdirectory(src/threadmaxx_migration)
-    add_subdirectory(tools/migration_convert)
 endif()
 
 # --------------------------------------------------------------------------

@@ -80,6 +80,10 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_REMOTE_ATTACH=1")
         test_studio_remote_uses_interest_filter
         test_studio_multi_shard_pick)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_MIGRATION_PANELS=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_save_inspector_diff)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)
