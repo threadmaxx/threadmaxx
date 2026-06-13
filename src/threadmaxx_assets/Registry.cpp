@@ -407,6 +407,25 @@ std::optional<std::string> AssetRegistry::pathOf(AssetId id) const {
     return s->canonicalKey;
 }
 
+std::vector<AssetRegistry::ResidentAsset>
+AssetRegistry::listResident(AssetType filter) const {
+    std::vector<ResidentAsset> out;
+    std::shared_lock<std::shared_mutex> lk(impl_->mu);
+    out.reserve(impl_->slots.size());
+    for (std::size_t i = 0; i < impl_->slots.size(); ++i) {
+        const auto& slot = impl_->slots[i];
+        if (slot == nullptr || !slot->live) continue;
+        if (filter != AssetType::Unknown && slot->type != filter) continue;
+        ResidentAsset r{};
+        r.id = static_cast<AssetId>(i);
+        r.type = slot->type;
+        r.refCount = slot->refCount.load(std::memory_order_relaxed);
+        r.path = slot->canonicalKey;
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
 namespace {
 
 template <class T>

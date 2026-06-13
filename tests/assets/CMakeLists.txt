@@ -17,6 +17,7 @@ set(THREADMAXX_ASSETS_TESTS
     test_assets_bundle
     test_assets_watch
     test_assets_crowd_no_alloc
+    test_assets_list_resident
 )
 
 # Engine bridge test only when threadmaxx::threadmaxx target is around AND

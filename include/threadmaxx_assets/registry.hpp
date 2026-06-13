@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "data/audio.hpp"
 #include "data/font.hpp"
@@ -91,6 +92,20 @@ public:
         std::uint64_t evicted{};
     };
     [[nodiscard]] Stats stats() const;
+
+    // A9-resident — one row of `listResident()`. Studio's AssetsPanel
+    // renders one entry per live slot.
+    struct ResidentAsset {
+        AssetId       id{kInvalidAssetId};
+        AssetType     type{AssetType::Unknown};
+        std::uint32_t refCount{0};
+        std::string   path;
+    };
+    /// Enumerate every currently-live asset slot. Snapshots under a
+    /// shared lock; the returned vector is caller-owned. Pass a
+    /// non-`Unknown` filter to restrict the listing to a single type.
+    [[nodiscard]] std::vector<ResidentAsset>
+    listResident(AssetType filter = AssetType::Unknown) const;
 
     // Internal — used by AssetHandle.
     template <class T>
