@@ -54,3 +54,16 @@ else()
         target_compile_options(threadmaxx_migration PRIVATE -Werror)
     endif()
 endif()
+
+# M6 — opt-in engine bridge. Compiles the WorldSnapshot adapter when
+# threadmaxx::threadmaxx is available. Exports
+# THREADMAXX_MIGRATION_HAS_ENGINE_BRIDGE=1 so consumers + tests can
+# `#if`-gate on it.
+if (TARGET threadmaxx::threadmaxx)
+    target_sources(threadmaxx_migration PRIVATE
+        WorldSnapshotMigrator.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/world.hpp)
+    target_link_libraries(threadmaxx_migration PUBLIC threadmaxx::threadmaxx)
+    target_compile_definitions(threadmaxx_migration PUBLIC
+        THREADMAXX_MIGRATION_HAS_ENGINE_BRIDGE=1)
+endif()

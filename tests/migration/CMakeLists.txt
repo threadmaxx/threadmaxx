@@ -21,6 +21,16 @@ set(THREADMAXX_MIGRATION_TESTS
     test_migration_pipeline_stable_ids
 )
 
+get_target_property(_migration_compile_defs threadmaxx::migration
+    INTERFACE_COMPILE_DEFINITIONS)
+if (_migration_compile_defs MATCHES "THREADMAXX_MIGRATION_HAS_ENGINE_BRIDGE=1")
+    list(APPEND THREADMAXX_MIGRATION_TESTS
+        test_migration_snapshot_export
+        test_migration_snapshot_import_identity
+        test_migration_snapshot_migrated_roundtrip
+        test_migration_snapshot_stable_id_preservation)
+endif()
+
 foreach(test ${THREADMAXX_MIGRATION_TESTS})
     add_executable(${test} ${test}.cpp)
     target_link_libraries(${test} PRIVATE threadmaxx::migration)
