@@ -6,5 +6,6 @@
 
 #include "io.hpp"
 #include "records.hpp"
+#include "registry.hpp"
 #include "savefile.hpp"
 #include "version.hpp"

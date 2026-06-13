@@ -6,6 +6,9 @@ set(THREADMAXX_MIGRATION_TESTS
     test_migration_metadata_commit_hash
     test_migration_metadata_build_id
     test_migration_metadata_reject_unknown_format
+    test_migration_registry_register
+    test_migration_registry_alias
+    test_migration_registry_hasPath
 )
 
 foreach(test ${THREADMAXX_MIGRATION_TESTS})
