@@ -62,6 +62,10 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_REFLECT_PANEL=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_reflect_panel_list_types)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_NETWORK_PANELS=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_network_peer_list)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)
