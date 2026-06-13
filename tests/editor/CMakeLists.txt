@@ -41,6 +41,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_profiler_ring
     test_editor_remote_round_trip
     test_editor_remote_truncation
+    test_editor_replay_empty
+    test_editor_replay_cursor
+    test_editor_replay_round_trip
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

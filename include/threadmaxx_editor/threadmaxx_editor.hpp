@@ -17,6 +17,7 @@
 #include "layout.hpp"
 #include "profiler.hpp"
 #include "properties.hpp"
+#include "replay.hpp"
 #include "selection.hpp"
 #include "session.hpp"
 #include "telemetry.hpp"

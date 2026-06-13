@@ -18,6 +18,7 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/console.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/hierarchy.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/profiler.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/replay.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
@@ -31,6 +32,7 @@ set(THREADMAXX_EDITOR_SOURCES
     Layout.cpp
     Profiler.cpp
     PropertyEditor.cpp
+    Replay.cpp
     SelectionState.cpp
     TelemetryOverlay.cpp
     WorldDiff.cpp
