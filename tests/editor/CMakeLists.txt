@@ -36,6 +36,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_hierarchy_flat
     test_editor_hierarchy_chain
     test_editor_hierarchy_collapse
+    test_editor_profiler_empty
+    test_editor_profiler_aggregate
+    test_editor_profiler_ring
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})

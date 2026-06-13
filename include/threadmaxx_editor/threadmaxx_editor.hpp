@@ -15,6 +15,7 @@
 #include "hotreload.hpp"
 #include "inspect.hpp"
 #include "layout.hpp"
+#include "profiler.hpp"
 #include "properties.hpp"
 #include "selection.hpp"
 #include "session.hpp"
