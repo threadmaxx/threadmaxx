@@ -30,7 +30,9 @@
 #include "savefile.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace threadmaxx::migration {
@@ -44,5 +46,39 @@ writeRecordSet(const RecordSet& set);
 /// it as opaque on failure).
 [[nodiscard]] bool
 readRecordSet(std::span<const std::byte> bytes, RecordSet& out);
+
+// -------------------------------------------------------------------------
+// M2 — load-time compatibility checks + rich-error variant.
+
+/// @brief Optional rules a loader can enforce on top of the bare
+/// container parse. Every field is optional — `nullopt` = "don't
+/// check". The intended use is host code that knows its own
+/// build's commitHash + supported schema window and wants to refuse
+/// saves outside that window before the pipeline runs.
+struct CompatibilityRules {
+    /// @brief If set, the save's `commitHash` MUST equal this value.
+    std::optional<std::uint64_t> requiredCommitHash;
+    /// @brief If set, the save's `schemaVersion` MUST be ≥ this.
+    std::optional<SchemaVersion> minSchemaVersion;
+    /// @brief If set, the save's `schemaVersion` MUST be ≤ this.
+    std::optional<SchemaVersion> maxSchemaVersion;
+};
+
+/// @brief Result of `loadRecordSet`. `ok` is true on a clean parse
+/// AND a compatibility match. `error` is empty on success; on
+/// failure it carries a human-readable diagnostic that names the
+/// observed-vs-expected mismatch (the test gates the
+/// "unknown FormatVersion" message includes the observed value).
+struct LoadResult {
+    bool        ok{false};
+    std::string error;
+    RecordSet   set;
+};
+
+/// @brief Parse @p bytes and apply @p rules. Always returns a
+/// LoadResult; check `.ok` before reading `.set`.
+[[nodiscard]] LoadResult
+loadRecordSet(std::span<const std::byte> bytes,
+              const CompatibilityRules& rules = {});
 
 } // namespace threadmaxx::migration

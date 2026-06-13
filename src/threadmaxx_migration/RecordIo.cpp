@@ -1,10 +1,13 @@
 /// @file RecordIo.cpp
 /// @brief M1 — implementation of `readRecordSet` / `writeRecordSet`.
+/// M2 — `loadRecordSet` adds compatibility checks + rich errors.
 
 #include <threadmaxx_migration/io.hpp>
 
 #include <threadmaxx_migration/detail/binary_reader.hpp>
 #include <threadmaxx_migration/detail/binary_writer.hpp>
+
+#include <cstdio>
 
 namespace threadmaxx::migration {
 
@@ -106,6 +109,116 @@ bool readRecordSet(std::span<const std::byte> bytes, RecordSet& out) {
         if (!readRecord(r, out.records[i])) return false;
     }
     return r.ok();
+}
+
+// -------------------------------------------------------------------------
+// M2 — rich-error loader with compatibility checks.
+
+namespace {
+
+std::string formatSchemaVersion(const SchemaVersion& v) {
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%u.%u.%u", v.major, v.minor, v.patch);
+    return buf;
+}
+
+LoadResult parseWithErrors(std::span<const std::byte> bytes,
+                           const CompatibilityRules& rules) {
+    LoadResult result{};
+
+    detail::BinaryReader r{bytes};
+    std::uint32_t magic{};
+    if (!r.read(magic)) {
+        result.error = "truncated container: missing magic";
+        return result;
+    }
+    if (magic != kSaveFileMagic) {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf),
+                      "bad magic: expected 0x%08X, got 0x%08X",
+                      kSaveFileMagic, magic);
+        result.error = buf;
+        return result;
+    }
+    std::uint32_t formatValue{};
+    if (!r.read(formatValue)) {
+        result.error = "truncated container: missing FormatVersion";
+        return result;
+    }
+    if (formatValue == 0u || formatValue > kCurrentFormatVersion.value) {
+        char buf[120];
+        std::snprintf(buf, sizeof(buf),
+                      "unknown FormatVersion: observed %u, supported 1..%u",
+                      formatValue, kCurrentFormatVersion.value);
+        result.error = buf;
+        return result;
+    }
+    result.set.metadata.formatVersion = FormatVersion{formatValue};
+    if (!readMetadata(r, result.set.metadata)) {
+        result.error = "truncated container: bad SaveMetadata";
+        return result;
+    }
+    std::uint64_t recordCount{};
+    if (!r.read(recordCount)) {
+        result.error = "truncated container: missing recordCount";
+        return result;
+    }
+    result.set.records.resize(recordCount);
+    for (std::uint64_t i = 0; i < recordCount; ++i) {
+        if (!readRecord(r, result.set.records[i])) {
+            char buf[80];
+            std::snprintf(buf, sizeof(buf),
+                          "truncated container: bad record at index %llu",
+                          static_cast<unsigned long long>(i));
+            result.error = buf;
+            return result;
+        }
+    }
+    if (!r.ok()) {
+        result.error = "truncated container: trailing read failed";
+        return result;
+    }
+
+    // Compatibility checks.
+    if (rules.requiredCommitHash.has_value() &&
+        *rules.requiredCommitHash != result.set.metadata.commitHash) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "commitHash mismatch: expected 0x%016llx, got 0x%016llx",
+                      static_cast<unsigned long long>(*rules.requiredCommitHash),
+                      static_cast<unsigned long long>(
+                          result.set.metadata.commitHash));
+        result.error = buf;
+        return result;
+    }
+    if (rules.minSchemaVersion.has_value() &&
+        result.set.metadata.schemaVersion < *rules.minSchemaVersion) {
+        result.error =
+            "schemaVersion below minimum: observed " +
+            formatSchemaVersion(result.set.metadata.schemaVersion) +
+            ", minimum " +
+            formatSchemaVersion(*rules.minSchemaVersion);
+        return result;
+    }
+    if (rules.maxSchemaVersion.has_value() &&
+        *rules.maxSchemaVersion < result.set.metadata.schemaVersion) {
+        result.error =
+            "schemaVersion above maximum: observed " +
+            formatSchemaVersion(result.set.metadata.schemaVersion) +
+            ", maximum " +
+            formatSchemaVersion(*rules.maxSchemaVersion);
+        return result;
+    }
+
+    result.ok = true;
+    return result;
+}
+
+} // namespace
+
+LoadResult loadRecordSet(std::span<const std::byte> bytes,
+                         const CompatibilityRules& rules) {
+    return parseWithErrors(bytes, rules);
 }
 
 } // namespace threadmaxx::migration

@@ -3,6 +3,9 @@ set(THREADMAXX_MIGRATION_TESTS
     test_migration_record_roundtrip
     test_migration_recordset_metadata
     test_migration_corrupted_blob
+    test_migration_metadata_commit_hash
+    test_migration_metadata_build_id
+    test_migration_metadata_reject_unknown_format
 )
 
 foreach(test ${THREADMAXX_MIGRATION_TESTS})
