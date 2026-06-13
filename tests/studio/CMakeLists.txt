@@ -66,7 +66,8 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_NETWORK_PANELS=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_network_peer_list
         test_studio_network_bandwidth_chart
-        test_studio_network_aoi_view)
+        test_studio_network_aoi_view
+        test_studio_network_desync_log)
 endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
