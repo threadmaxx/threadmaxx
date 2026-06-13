@@ -164,7 +164,9 @@ endif()
 if (TARGET threadmaxx::network)
     target_sources(threadmaxx_studio PRIVATE
         panels/NetworkSessionPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/network_session.hpp)
+        panels/SnapshotDeltaPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/network_session.hpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/snapshot_delta.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::network)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_NETWORK_PANELS=1)
