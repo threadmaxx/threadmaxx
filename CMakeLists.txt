@@ -393,6 +393,9 @@ if (THREADMAXX_BUILD_EXAMPLES)
     if (TARGET threadmaxx::editor)
         add_subdirectory(examples/editor_demo)
     endif()
+    if (TARGET threadmaxx::studio)
+        add_subdirectory(examples/studio_demo)
+    endif()
 endif()
 
 # --------------------------------------------------------------------------
