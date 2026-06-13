@@ -20,6 +20,11 @@ RemoteDataSource::engineSnapshot() const {
     return engineSnapshotCache_;
 }
 
+namespace {
+// Auth is a one-shot setup call and bypasses the per-tick budget;
+// every other request uses the helper below to charge the budget.
+} // namespace
+
 std::uint32_t RemoteDataSource::authenticate(std::string_view token) {
     if (transport_ == nullptr) return 0;
     const auto requestId = nextRequestId_++;
@@ -31,23 +36,51 @@ std::uint32_t RemoteDataSource::authenticate(std::string_view token) {
 
 std::uint32_t RemoteDataSource::requestEngineSnapshot() {
     if (transport_ == nullptr) return 0;
+    if (requestsPerTickBudget_ != 0 &&
+        requestsThisTick_ >= requestsPerTickBudget_) {
+        ++requestsDropped_;
+        return 0;
+    }
     const auto requestId = nextRequestId_++;
     const auto bytes = encodeGetEngineSnapshotRequest(requestId);
     const network::PacketView view{bytes.data(), bytes.size()};
     if (transport_->send(agentPeer_, view)) {
         lastEngineSnapshotRequestId_ = requestId;
+        ++requestsThisTick_;
     }
     return requestId;
 }
 
 bool RemoteDataSource::submitCommand(std::string_view label) {
     if (transport_ == nullptr) return false;
+    if (requestsPerTickBudget_ != 0 &&
+        requestsThisTick_ >= requestsPerTickBudget_) {
+        ++requestsDropped_;
+        return false;
+    }
     const auto requestId = nextRequestId_++;
     const auto bytes = encodeSubmitCommandRequest(requestId, label);
     const network::PacketView view{bytes.data(), bytes.size()};
     if (!transport_->send(agentPeer_, view)) return false;
     lastCommandRequestId_ = requestId;
+    ++requestsThisTick_;
     return true;
+}
+
+std::uint32_t RemoteDataSource::pushClientFocus() {
+    if (transport_ == nullptr || !hasClientFocus_) return 0;
+    if (requestsPerTickBudget_ != 0 &&
+        requestsThisTick_ >= requestsPerTickBudget_) {
+        ++requestsDropped_;
+        return 0;
+    }
+    const auto requestId = nextRequestId_++;
+    const auto bytes = encodeSetClientFocusRequest(requestId, clientFocus_);
+    const network::PacketView view{bytes.data(), bytes.size()};
+    if (transport_->send(agentPeer_, view)) {
+        ++requestsThisTick_;
+    }
+    return requestId;
 }
 
 std::size_t RemoteDataSource::pump() {
@@ -85,6 +118,10 @@ std::size_t RemoteDataSource::pump() {
                 case AgentResponseTag::CommandResult:
                     lastCommandAccepted_ = decoded->ok;
                     ++commandResponsesReceived_;
+                    break;
+                case AgentResponseTag::FocusAck:
+                    lastFocusAccepted_ = decoded->ok;
+                    ++focusResponsesReceived_;
                     break;
             }
         }

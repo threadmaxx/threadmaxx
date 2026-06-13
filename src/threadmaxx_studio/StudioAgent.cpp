@@ -86,6 +86,32 @@ encodeAuthenticateRequest(std::uint32_t requestId, std::string_view token) {
 }
 
 std::vector<std::byte>
+encodeSetClientFocusRequest(std::uint32_t requestId,
+                            const network::ClientFocus& focus) {
+    std::vector<std::byte> out;
+    out.reserve(1 + sizeof(std::uint32_t) +
+                sizeof(std::uint32_t) + 4 * sizeof(float));
+    appendPod(out, static_cast<std::uint8_t>(AgentRequestTag::SetClientFocus));
+    appendPod(out, requestId);
+    appendPod(out, focus.peer.value);  // overridden agent-side; informational.
+    appendPod(out, focus.x);
+    appendPod(out, focus.y);
+    appendPod(out, focus.z);
+    appendPod(out, focus.config.radius);
+    return out;
+}
+
+std::vector<std::byte>
+encodeFocusAckResponse(std::uint32_t requestId, bool accepted) {
+    std::vector<std::byte> out;
+    out.reserve(1 + sizeof(std::uint32_t) + 1);
+    appendPod(out, static_cast<std::uint8_t>(AgentResponseTag::FocusAck));
+    appendPod(out, requestId);
+    appendPod(out, static_cast<std::uint8_t>(accepted ? 1 : 0));
+    return out;
+}
+
+std::vector<std::byte>
 encodeAuthResultResponse(std::uint32_t requestId, bool accepted) {
     std::vector<std::byte> out;
     out.reserve(1 + sizeof(std::uint32_t) + 1);
@@ -157,6 +183,7 @@ decodeAgentResponse(std::span<const std::byte> bytes) {
             return out;
         case AgentResponseTag::AuthResult:
         case AgentResponseTag::CommandResult:
+        case AgentResponseTag::FocusAck:
             // ok byte already consumed; no extra payload.
             return out;
     }
@@ -180,6 +207,13 @@ void StudioAgent::setAuthToken(std::string token) {
 bool StudioAgent::isPeerAuthenticated(network::PeerId peer) const noexcept {
     if (authToken_.empty()) return true;
     return authenticatedPeers_.find(peer) != authenticatedPeers_.end();
+}
+
+const network::ClientFocus*
+StudioAgent::peerFocus(network::PeerId peer) const noexcept {
+    auto it = peerFocuses_.find(peer.value);
+    if (it == peerFocuses_.end()) return nullptr;
+    return &it->second;
 }
 
 void StudioAgent::setCommandStack(editor::CommandStack* stack) noexcept {
@@ -262,6 +296,9 @@ void StudioAgent::handleRequest_(network::PeerId from,
                 response = encodeCommandResultResponse(requestId, false);
                 ++commandsRejected_;
                 break;
+            case AgentRequestTag::SetClientFocus:
+                response = encodeFocusAckResponse(requestId, false);
+                break;
             case AgentRequestTag::Authenticate:
                 return; // unreachable: filtered above.
         }
@@ -320,6 +357,30 @@ void StudioAgent::handleRequest_(network::PeerId from,
                 ++commandsRejected_;
             }
             auto response = encodeCommandResultResponse(requestId, accepted);
+            const network::PacketView view{response.data(), response.size()};
+            if (transport_->send(from, view)) {
+                bytesSent_ += response.size();
+            }
+            return;
+        }
+        case AgentRequestTag::SetClientFocus: {
+            std::uint32_t wirePeer{};
+            float x{}, y{}, z{}, radius{};
+            if (!readPod(bytes, wirePeer)) return;
+            if (!readPod(bytes, x)) return;
+            if (!readPod(bytes, y)) return;
+            if (!readPod(bytes, z)) return;
+            if (!readPod(bytes, radius)) return;
+            network::ClientFocus focus{};
+            // Override wire peerId with the actual `from` — prevents a
+            // forged peer field from poisoning another peer's focus.
+            focus.peer = from;
+            focus.x = x;
+            focus.y = y;
+            focus.z = z;
+            focus.config.radius = radius;
+            peerFocuses_[from.value] = focus;
+            auto response = encodeFocusAckResponse(requestId, true);
             const network::PacketView view{response.data(), response.size()};
             if (transport_->send(from, view)) {
                 bytesSent_ += response.size();

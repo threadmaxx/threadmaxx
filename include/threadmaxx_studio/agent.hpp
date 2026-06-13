@@ -40,6 +40,7 @@
 #include "data_source.hpp"
 
 #include <threadmaxx_network/ids.hpp>
+#include <threadmaxx_network/interest.hpp>
 #include <threadmaxx_network/transport.hpp>
 
 #include <cstddef>
@@ -71,13 +72,15 @@ enum class AgentRequestTag : std::uint8_t {
     Authenticate      = 0x01,
     GetEngineSnapshot = 0x10,
     SubmitCommand     = 0x20,
+    SetClientFocus    = 0x30,
 };
 
 /// @brief Tags for outbound agent→studio RPC responses.
 enum class AgentResponseTag : std::uint8_t {
-    AuthResult     = 0x81,
-    EngineSnapshot = 0x90,
-    CommandResult  = 0xA0,
+    AuthResult       = 0x81,
+    EngineSnapshot   = 0x90,
+    CommandResult    = 0xA0,
+    FocusAck         = 0xB0,
 };
 
 /// @brief Compile-time production-attach toggle. When `NDEBUG` is
@@ -111,6 +114,19 @@ encodeAuthenticateRequest(std::uint32_t requestId, std::string_view token);
 /// @brief Encode an AuthResult response. Agent→studio.
 [[nodiscard]] std::vector<std::byte>
 encodeAuthResultResponse(std::uint32_t requestId, bool accepted);
+
+/// @brief Encode a SetClientFocus request. Studio→agent. The wire
+/// carries the focus position + radius (the peerId field on the wire
+/// is always the sending studio's localPeer — the agent overrides it
+/// with the actual `from` peer on receipt so a forged peerId can't
+/// poison another peer's focus).
+[[nodiscard]] std::vector<std::byte>
+encodeSetClientFocusRequest(std::uint32_t requestId,
+                            const network::ClientFocus& focus);
+
+/// @brief Encode a FocusAck response. Agent→studio.
+[[nodiscard]] std::vector<std::byte>
+encodeFocusAckResponse(std::uint32_t requestId, bool accepted);
 
 /// @brief Encode a GetEngineSnapshot request. Studio→agent.
 [[nodiscard]] std::vector<std::byte>
@@ -185,6 +201,20 @@ public:
         return authenticatedPeers_.size();
     }
 
+    /// @brief Latest focus a peer pushed via SetClientFocus, or
+    /// `nullptr` if the peer has not pushed one. **ST33 contract**:
+    /// the remote IStudioDataSource MUST opt into ClientFocus like any
+    /// other peer — no special-cased full-world reads. Future
+    /// world-snapshot RPCs consult this map before slicing world
+    /// state.
+    [[nodiscard]] const network::ClientFocus*
+    peerFocus(network::PeerId peer) const noexcept;
+
+    /// @brief Number of peers that have pushed a focus.
+    [[nodiscard]] std::size_t peerFocusCount() const noexcept {
+        return peerFocuses_.size();
+    }
+
     /// @brief Bind a `CommandStack`. Mutation requests are rejected
     /// (CommandResult ok=0) until a stack is bound. The stack must
     /// outlive the agent. Pass `nullptr` to detach.
@@ -248,6 +278,7 @@ private:
     bool                  attachEnabled_{kStudioAgentDefaultAttachEnabled};
     std::string           authToken_;
     std::unordered_set<network::PeerId, PeerIdHash> authenticatedPeers_;
+    std::unordered_map<std::uint32_t, network::ClientFocus> peerFocuses_;
     std::size_t           requestsHandled_{0};
     std::size_t           commandsApplied_{0};
     std::size_t           commandsRejected_{0};

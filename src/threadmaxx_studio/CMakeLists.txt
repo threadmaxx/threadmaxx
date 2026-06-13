@@ -170,11 +170,13 @@ if (TARGET threadmaxx::network)
         panels/PacketTracePanel.cpp
         StudioAgent.cpp
         RemoteDataSource.cpp
+        panels/BandwidthPanel.cpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/network_session.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/snapshot_delta.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/interest.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/desync.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/packet_trace.hpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/bandwidth.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/agent.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/remote_data_source.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::network)

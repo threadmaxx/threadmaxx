@@ -23,6 +23,7 @@
 #include "data_source.hpp"
 
 #include <threadmaxx_network/ids.hpp>
+#include <threadmaxx_network/interest.hpp>
 #include <threadmaxx_network/transport.hpp>
 
 #include <string_view>
@@ -121,6 +122,64 @@ public:
     /// `nullopt` until a fresh pump.
     void invalidateCache() noexcept;
 
+    // ---- ST33: bandwidth throttle ------------------------------------
+
+    /// @brief Cap how many outbound requests this source may post per
+    /// tick. `0` (default) disables the throttle. Any `requestX` call
+    /// past the budget is dropped (returns 0 / false) and counts
+    /// toward `requestsDropped()`. Callers MUST signal frame
+    /// boundaries via `beginTick()`.
+    void setRequestsPerTickBudget(std::uint32_t n) noexcept {
+        requestsPerTickBudget_ = n;
+    }
+
+    [[nodiscard]] std::uint32_t requestsPerTickBudget() const noexcept {
+        return requestsPerTickBudget_;
+    }
+
+    /// @brief Reset the per-tick request counter. Hosts call this at
+    /// the start of each studio frame.
+    void beginTick() noexcept { requestsThisTick_ = 0; }
+
+    /// @brief Requests issued this tick (post-budget; never exceeds
+    /// `requestsPerTickBudget()` unless the budget is 0).
+    [[nodiscard]] std::uint32_t requestsThisTick() const noexcept {
+        return requestsThisTick_;
+    }
+
+    /// @brief Cumulative requests the budget blocked since
+    /// construction.
+    [[nodiscard]] std::uint32_t requestsDropped() const noexcept {
+        return requestsDropped_;
+    }
+
+    // ---- ST33: interest filter contract -----------------------------
+
+    /// @brief Configure the focus this peer pushes to the agent. The
+    /// remote IStudioDataSource MUST opt into ClientFocus like any
+    /// other peer — no special-cased full-world reads. `pushClientFocus()`
+    /// actually ships the configured focus over the wire.
+    void setClientFocus(network::ClientFocus focus) noexcept {
+        clientFocus_ = std::move(focus);
+        hasClientFocus_ = true;
+    }
+
+    [[nodiscard]] const network::ClientFocus* clientFocus() const noexcept {
+        return hasClientFocus_ ? &clientFocus_ : nullptr;
+    }
+
+    /// @brief Ship the configured focus to the agent. Returns the
+    /// requestId (or 0 when no focus is set / budget exhausted).
+    std::uint32_t pushClientFocus();
+
+    [[nodiscard]] bool lastFocusAccepted() const noexcept {
+        return lastFocusAccepted_;
+    }
+
+    [[nodiscard]] std::size_t focusResponsesReceived() const noexcept {
+        return focusResponsesReceived_;
+    }
+
 private:
     network::ITransport* transport_{nullptr};
     network::PeerId      agentPeer_{};
@@ -135,6 +194,15 @@ private:
 
     bool          lastAuthAccepted_{false};
     std::size_t   authResponsesReceived_{0};
+
+    std::uint32_t requestsPerTickBudget_{0};
+    std::uint32_t requestsThisTick_{0};
+    std::uint32_t requestsDropped_{0};
+
+    bool                 hasClientFocus_{false};
+    network::ClientFocus clientFocus_{};
+    bool                 lastFocusAccepted_{false};
+    std::size_t          focusResponsesReceived_{0};
 
     std::size_t responsesReceived_{0};
     std::size_t bytesReceived_{0};
