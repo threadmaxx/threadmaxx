@@ -5,6 +5,7 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/types.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backends/headless.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backends/remote.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/inspect.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/commands.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/hotreload.hpp
@@ -34,6 +35,7 @@ set(THREADMAXX_EDITOR_SOURCES
     TelemetryOverlay.cpp
     WorldDiff.cpp
     backends/HeadlessBackend.cpp
+    backends/RemoteBackend.cpp
 )
 
 add_library(threadmaxx_editor STATIC

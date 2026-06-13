@@ -39,6 +39,8 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_profiler_empty
     test_editor_profiler_aggregate
     test_editor_profiler_ring
+    test_editor_remote_round_trip
+    test_editor_remote_truncation
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})
