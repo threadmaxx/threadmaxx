@@ -72,6 +72,9 @@ tests; 49 tests green on `build/` and `build-werror/`.
 ### Performance
 - v1.0 perf gate: under 1 ms / frame for 50 visible panels under
   the headless backend.
+- Last empirical measurement (2026-06-13, Release build,
+  `bench/studio_overhead`, 2000 iterations): **153 µs / frame** —
+  6.5× headroom against the gate.
 
 ### Test footprint
 - 49 studio tests, all green on `build/` and `build-werror/`.

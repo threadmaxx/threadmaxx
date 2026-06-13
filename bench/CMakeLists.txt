@@ -152,6 +152,26 @@ if (THREADMAXX_PHYSICS_HAS_JOLT)
     endif()
 endif()
 
+# threadmaxx_studio ST41 — v1.0 close-out perf gate. Renders 50 panels
+# through the headless backend; target is < 1 ms / frame.
+if (TARGET threadmaxx::studio)
+    add_executable(studio_overhead studio_overhead.cpp)
+    target_link_libraries(studio_overhead PRIVATE
+        threadmaxx::threadmaxx
+        threadmaxx::editor
+        threadmaxx::reflect
+        threadmaxx::studio)
+    set_target_properties(studio_overhead PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(studio_overhead PRIVATE
+            -Wall -Wextra -Wpedantic -O3)
+    endif()
+endif()
+
 # §S4 close-out — SIMD kernels bench. Separate from the core bench
 # list because it needs `-mavx2 -mfma` on x86_64 to actually exercise
 # the AVX2 path (the core library stays portable, so the AVX2 code
