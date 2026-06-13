@@ -12,6 +12,7 @@ set(THREADMAXX_STUDIO_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/gizmo.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/hierarchy.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/menu_bar.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/profiler.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/property_editor.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/resources.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
@@ -37,6 +38,7 @@ set(THREADMAXX_STUDIO_SOURCES
     panels/GizmoPanel.cpp
     panels/HierarchyPanel.cpp
     panels/MenuBar.cpp
+    panels/ProfilerPanel.cpp
     panels/PropertyEditorPanel.cpp
     panels/ResourcesPanel.cpp
     panels/StatusBar.cpp
