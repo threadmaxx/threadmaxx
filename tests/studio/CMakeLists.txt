@@ -44,6 +44,11 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_ASSETS_PANEL=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_assets_panel_reload)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_UI_INSPECTOR_PANEL=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_ui_inspector_draw_count
+        test_studio_ui_inspector_stub_when_unavailable)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)
