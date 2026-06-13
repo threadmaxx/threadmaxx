@@ -23,6 +23,7 @@ option(THREADMAXX_BUILD_EDITOR "Make the threadmaxx_editor sibling library avail
 option(THREADMAXX_EDITOR_FETCH_IMGUI "FetchContent Dear ImGui and build the ImGui editor backend (E11)" OFF)
 option(THREADMAXX_BUILD_NETWORK "Make the threadmaxx_network sibling library available" ON)
 option(THREADMAXX_BUILD_STUDIO "Make the threadmaxx_studio sibling library available" ON)
+option(THREADMAXX_BUILD_MIGRATION "Make the threadmaxx_migration sibling library available" ON)
 option(THREADMAXX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 # Default install rules ON when threadmaxx is the top-level project; OFF when
@@ -351,6 +352,20 @@ endif()
 # `include/threadmaxx_studio/DESIGN_NOTES.md` for the spec.
 if (THREADMAXX_BUILD_STUDIO)
     add_subdirectory(src/threadmaxx_studio)
+endif()
+
+# --------------------------------------------------------------------------
+# threadmaxx_migration — save versioning / migration pipeline
+# --------------------------------------------------------------------------
+#
+# Opt-in via `-DTHREADMAXX_BUILD_MIGRATION=ON` (the default). Static
+# library — public headers under `include/threadmaxx_migration/`,
+# implementation under `src/threadmaxx_migration/`. v1.0 sequences as
+# M1 → M8 per `include/threadmaxx_migration/FUTURE_WORK.md`.
+# Engine-independent — depends only on the STL. M6 introduces an
+# opt-in adapter for the engine's WorldSnapshot.
+if (THREADMAXX_BUILD_MIGRATION)
+    add_subdirectory(src/threadmaxx_migration)
 endif()
 
 # --------------------------------------------------------------------------

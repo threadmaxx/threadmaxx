@@ -234,6 +234,12 @@ if (TARGET threadmaxx::studio)
     add_subdirectory(studio)
 endif()
 
+# threadmaxx_migration sibling-library test suite (M1+). Lives in
+# `tests/migration/`. Skipped if the migration opt-in is off.
+if (TARGET threadmaxx::migration)
+    add_subdirectory(migration)
+endif()
+
 # M5.7 — tests that need to link tou2d_core (CameraSystem's full
 # implementation). Skipped when tou2d isn't built (no Vulkan renderer).
 if (TARGET tou2d_core)
