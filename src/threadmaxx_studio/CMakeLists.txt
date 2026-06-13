@@ -96,6 +96,15 @@ if (TARGET threadmaxx::animation)
         THREADMAXX_STUDIO_HAS_ANIMATION_PANEL=1)
 endif()
 
+if (TARGET threadmaxx::audio)
+    target_sources(threadmaxx_studio PRIVATE
+        panels/AudioPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/audio.hpp)
+    target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::audio)
+    target_compile_definitions(threadmaxx_studio PUBLIC
+        THREADMAXX_STUDIO_HAS_AUDIO_PANEL=1)
+endif()
+
 if (MSVC)
     target_compile_options(threadmaxx_studio PRIVATE /W4 /permissive-)
     if (THREADMAXX_WARNINGS_AS_ERRORS)

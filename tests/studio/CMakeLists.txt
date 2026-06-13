@@ -32,6 +32,10 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_ANIMATION_PANEL=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_animation_panel_lists_clips)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_AUDIO_PANEL=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_audio_bus_graph)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)
