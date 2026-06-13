@@ -167,10 +167,12 @@ if (TARGET threadmaxx::network)
         panels/SnapshotDeltaPanel.cpp
         panels/InterestPanel.cpp
         panels/DesyncPanel.cpp
+        panels/PacketTracePanel.cpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/network_session.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/snapshot_delta.hpp
         ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/interest.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/desync.hpp)
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/desync.hpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/packet_trace.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::network)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_NETWORK_PANELS=1)
