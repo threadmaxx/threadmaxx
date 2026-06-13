@@ -6,9 +6,13 @@ physics, AI, render-prep, ...) that read the world in parallel and emit
 commands; the engine commits them deterministically and hands a flat
 `RenderFrame` to whatever renderer you plug in.
 
-**Status: v1.2.1.** Stable public API; 100+ no-dependency tests pin the
-documented invariants; ASAN / UBSAN / TSAN trees pass clean. The sibling
-`threadmaxx_simd` library ships at `include/threadmaxx_simd/`.
+**Status: core v1.2.1; full suite shipped.** The core engine sealed at
+v1.0.0 on 2026-05-18 and has shipped two additive minor bumps since.
+Thirteen sibling libraries — `simd`, `reflect`, `editor`, `assets`,
+`input`, `audio`, `animation`, `navmesh`, `physics`, `ui`, `network`,
+`migration`, `studio` — are all at their own v1.0.0. Each has its own
+semver line and its own headless test suite; ASAN / UBSAN / TSAN trees
+pass clean across the whole repository.
 
 ## Documentation map
 
@@ -16,11 +20,15 @@ documented invariants; ASAN / UBSAN / TSAN trees pass clean. The sibling
 |---|---|
 | **`README.md`** (this file) | Top-level overview, build/run, the minimal example |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Deep implementation details — subsystems, threading model, invariants |
-| [`CHANGELOG.md`](CHANGELOG.md) | Per-release notes back to 0.1.0 |
+| [`CHANGELOG.md`](CHANGELOG.md) | Per-release notes back to 0.1.0 (core only; siblings have their own) |
 | [`CLAUDE.md`](CLAUDE.md) | Contributor playbook — recipes, gotchas, "what to grep when" |
-| [`doc/index.md`](doc/index.md) | Multi-page user guide (also ingested by Doxygen) |
+| [`doc/index.md`](doc/index.md) | Multi-page user guide for the core engine (also ingested by Doxygen) |
 | [`FUTURE_WORK.md`](FUTURE_WORK.md) | What's deferred / out of scope |
 | [`tests/COVERAGE_AUDIT.md`](tests/COVERAGE_AUDIT.md) | Public-API coverage record |
+
+Each sibling library has its own README + CHANGELOG under
+`include/threadmaxx_<name>/`. The [Sibling libraries](#sibling-libraries)
+section below indexes every one.
 
 The Doxygen API reference is buildable via `cmake --build build --target doc`
 → `doc/generated/html/index.html`.
@@ -39,6 +47,12 @@ Optional, only for the renderer examples:
 - `examples/vulkan_renderer` — Vulkan 1.3 SDK, GLFW3, `glslc` (silently
   skipped if any of the three is missing).
 - `examples/rpg_demo` — same Vulkan toolchain as above.
+- `examples/tou2d` — Vulkan + GLFW + `glslc` (2D arena combat demo).
+
+Sibling-library demos under `examples/` (`assets_demo`, `audio_demo`,
+`editor_demo`, `input_demo`, `navmesh_bake`, `physics_demo`,
+`reflect_demo`, `studio_demo`, `ui_demo`, `minimal`) auto-skip when
+their sibling target isn't built.
 
 ## Build
 
@@ -86,6 +100,7 @@ F1 toggle Chrome-trace capture, F5 quick-save, F9 diagnose save.
 | `THREADMAXX_BUILD_LONG_SOAK` | `OFF` | Builds `tests/concurrency_soak_long.cpp` (~5-6 min runtime) |
 | `THREADMAXX_WARNINGS_AS_ERRORS` | `OFF` | Promotes `-Wsign-conversion -Wconversion -Wshadow -Wold-style-cast` to errors. The project compiles clean under it — keep it that way. |
 | `THREADMAXX_BUILD_SIMD` | `ON` | Builds the header-only `threadmaxx::simd` sibling library and includes it in the install set. |
+| `THREADMAXX_BUILD_<SIBLING>` | `ON` | One per sibling library (`REFLECT`, `EDITOR`, `ASSETS`, `INPUT`, `AUDIO`, `ANIMATION`, `NAVMESH`, `PHYSICS`, `UI`, `NETWORK`, `MIGRATION`, `STUDIO`). Each silently no-ops if an external dependency it needs is missing. |
 | `THREADMAXX_INSTALL` | `ON` when top-level, `OFF` when `add_subdirectory`'d | Generates the `install(...)` rules (headers, static lib, package config). |
 
 ## Install
@@ -434,34 +449,80 @@ Key invariants:
 
 Full design + diagram: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+## Sibling libraries
+
+Each sibling lives under `include/threadmaxx_<name>/` and `src/threadmaxx_<name>/`,
+ships its own README + CHANGELOG, and tracks its own semver line. The
+core engine never depends on a sibling; siblings depend on the core
+(and occasionally on each other, e.g. `studio → editor → reflect`).
+
+| Library | Status | What it does |
+|---|---|---|
+| [`threadmaxx_simd`](include/threadmaxx_simd/README.md) | v1.0.0 | Header-only AVX2 batch kernels over engine PODs |
+| [`threadmaxx_reflect`](include/threadmaxx_reflect/README.md) | v1.0.0 | Lightweight runtime reflection / type registry |
+| [`threadmaxx_editor`](include/threadmaxx_editor/README.md) | v1.0.0 | Renderer-neutral editor primitives — `IEditorBackend`, `CommandStack`, selection, hierarchy view, property editor, console |
+| [`threadmaxx_assets`](include/threadmaxx_assets/README.md) | v1.0.0 | Asset pipeline — IDs, manifests, dependency graph, hot-reload bridge |
+| [`threadmaxx_input`](include/threadmaxx_input/README.md) | v1.0.0 | Action / binding system, device adapters, replay log |
+| [`threadmaxx_audio`](include/threadmaxx_audio/README.md) | v1.0.0 | Voice mixer + 3D audio bus |
+| [`threadmaxx_animation`](include/threadmaxx_animation/README.md) | v1.0.0 | Skeleton, clip blending, IK helpers, crowd evaluation |
+| [`threadmaxx_navmesh`](include/threadmaxx_navmesh/README.md) | v1.0.0 | Navmesh build + path query (batched A\* solver) |
+| [`threadmaxx_physics`](include/threadmaxx_physics/README.md) | v1.0.0 | Jolt-backed rigid-body integration (gated on Jolt availability) |
+| [`threadmaxx_ui`](include/threadmaxx_ui/README.md) | v1.0.0 | Retained-mode UI tree + frame builder |
+| [`threadmaxx_network`](include/threadmaxx_network/README.md) | v1.0.0 | Transport abstraction + RPC hub (loopback + remote) |
+| [`threadmaxx_migration`](include/threadmaxx_migration/README.md) | v1.0.0 | Save-file versioning, schema evolution, offline converter |
+| [`threadmaxx_studio`](include/threadmaxx_studio/README.md) | v1.0.0 | Panel host + attach environment (in-process or remote) for every sibling |
+
+The umbrella `threadmaxx::threadmaxx` target still has zero
+third-party dependencies — every sibling that needs one (Jolt for
+physics, GLFW for the input demo, etc.) gates on `find_package`.
+
 ## Repository layout
 
 ```
-include/threadmaxx/        public API (28 headers + internal/, render/)
-include/threadmaxx_simd/   sibling SIMD library (independent semver)
-src/                       private engine implementation (PImpl behind Engine/World)
-examples/minimal/          headless console example (integration smoke)
-examples/boids/            SDL2 boids example
-examples/vulkan_renderer/  Vulkan 1.3 reference renderer (static lib + smoke)
-examples/rpg_demo/         3D RPG demo on top of the Vulkan renderer
-bench/                     standalone microbenchmarks (opt-in)
-tests/                     no-dependency tests under CTest (120+ executables)
-doc/                       multi-page user guide (Markdown + Doxygen)
-ARCHITECTURE.md            deep implementation overview
-CHANGELOG.md               per-release notes
-CLAUDE.md                  contributor playbook
-FUTURE_WORK.md             roadmap / deliberate gaps
+include/threadmaxx/             core public API (~30 headers + internal/, render/)
+include/threadmaxx_simd/        sibling SIMD library (independent semver)
+include/threadmaxx_reflect/     sibling reflection
+include/threadmaxx_editor/      sibling editor primitives
+include/threadmaxx_assets/      sibling asset pipeline
+include/threadmaxx_input/       sibling input mapping
+include/threadmaxx_audio/       sibling audio mixer
+include/threadmaxx_animation/   sibling animation
+include/threadmaxx_navmesh/     sibling navmesh
+include/threadmaxx_physics/     sibling physics
+include/threadmaxx_ui/          sibling UI
+include/threadmaxx_network/     sibling networking
+include/threadmaxx_migration/   sibling save-file migration
+include/threadmaxx_studio/      sibling studio (panel host)
+src/                            private engine implementation + per-sibling private cpp
+examples/minimal/               headless console example (integration smoke)
+examples/boids/                 SDL2 boids example
+examples/vulkan_renderer/       Vulkan 1.3 reference renderer (static lib + smoke)
+examples/rpg_demo/              3D RPG demo on top of the Vulkan renderer
+examples/tou2d/                 2D arena combat demo (Vulkan)
+examples/studio_demo/           end-to-end studio drive (Shape A + Shape B)
+examples/{assets,audio,editor,input,navmesh_bake,physics,reflect,ui}_demo/
+                                per-sibling demos (auto-skipped if sibling off)
+tools/migration_convert/        offline save-file converter executable
+bench/                          standalone microbenchmarks (opt-in)
+tests/                          no-dependency tests under CTest (250+ executables)
+doc/                            multi-page user guide for the core (Markdown + Doxygen)
+ARCHITECTURE.md                 deep implementation overview (core engine)
+CHANGELOG.md                    per-release notes (core engine)
+CLAUDE.md                       contributor playbook (core engine)
+FUTURE_WORK.md                  roadmap / deliberate gaps (core engine)
 ```
 
 ## Versioning
 
-The library follows [Semantic Versioning](https://semver.org/). Bump rules
-(documented in [`include/threadmaxx/version.hpp`](include/threadmaxx/version.hpp)):
+Every published library follows [Semantic Versioning](https://semver.org/).
+Bump rules for the core engine (documented in
+[`include/threadmaxx/version.hpp`](include/threadmaxx/version.hpp)):
 
 - **MAJOR** — breaking public API change.
 - **MINOR** — additive change (new method / header / component / event /
   feature flag); source- and binary-compatible.
 - **PATCH** — bug fix or doc improvement; no public API change.
 
-The sibling `threadmaxx_simd` library has its own independent semver at
-[`include/threadmaxx_simd/CHANGELOG.md`](include/threadmaxx_simd/CHANGELOG.md).
+Each sibling tracks its own semver line under
+`include/threadmaxx_<name>/CHANGELOG.md`. They release independently —
+a core PATCH bump never forces a sibling rebuild.
