@@ -77,7 +77,8 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_REMOTE_ATTACH=1")
         test_studio_remote_command_roundtrip
         test_studio_agent_auth_reject
         test_studio_remote_bandwidth_throttle
-        test_studio_remote_uses_interest_filter)
+        test_studio_remote_uses_interest_filter
+        test_studio_multi_shard_pick)
 endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
