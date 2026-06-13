@@ -20,6 +20,7 @@ set(THREADMAXX_STUDIO_TESTS
     test_studio_task_graph_layout
     test_studio_tuning_patch_apply
     test_studio_resources_list
+    test_studio_hierarchy_panel
 )
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
