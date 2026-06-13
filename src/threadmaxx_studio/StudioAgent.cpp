@@ -71,6 +71,31 @@ encodeGetEngineSnapshotRequest(std::uint32_t requestId) {
 }
 
 std::vector<std::byte>
+encodeAuthenticateRequest(std::uint32_t requestId, std::string_view token) {
+    std::vector<std::byte> out;
+    out.reserve(1 + sizeof(std::uint32_t) + sizeof(std::uint32_t) + token.size());
+    appendPod(out, static_cast<std::uint8_t>(AgentRequestTag::Authenticate));
+    appendPod(out, requestId);
+    appendPod(out, static_cast<std::uint32_t>(token.size()));
+    const auto offset = out.size();
+    out.resize(offset + token.size());
+    if (!token.empty()) {
+        std::memcpy(out.data() + offset, token.data(), token.size());
+    }
+    return out;
+}
+
+std::vector<std::byte>
+encodeAuthResultResponse(std::uint32_t requestId, bool accepted) {
+    std::vector<std::byte> out;
+    out.reserve(1 + sizeof(std::uint32_t) + 1);
+    appendPod(out, static_cast<std::uint8_t>(AgentResponseTag::AuthResult));
+    appendPod(out, requestId);
+    appendPod(out, static_cast<std::uint8_t>(accepted ? 1 : 0));
+    return out;
+}
+
+std::vector<std::byte>
 encodeSubmitCommandRequest(std::uint32_t requestId, std::string_view label) {
     std::vector<std::byte> out;
     out.reserve(1 + sizeof(std::uint32_t) + sizeof(std::uint32_t) + label.size());
@@ -130,6 +155,7 @@ decodeAgentResponse(std::span<const std::byte> bytes) {
                 }
             }
             return out;
+        case AgentResponseTag::AuthResult:
         case AgentResponseTag::CommandResult:
             // ok byte already consumed; no extra payload.
             return out;
@@ -143,6 +169,18 @@ decodeAgentResponse(std::span<const std::byte> bytes) {
 StudioAgent::StudioAgent(network::ITransport& transport,
                         IStudioDataSource& source) noexcept
     : transport_(&transport), source_(&source) {}
+
+void StudioAgent::setAuthToken(std::string token) {
+    authToken_ = std::move(token);
+    // Changing the token drops every previously-authenticated peer —
+    // the studio side must re-authenticate against the new value.
+    authenticatedPeers_.clear();
+}
+
+bool StudioAgent::isPeerAuthenticated(network::PeerId peer) const noexcept {
+    if (authToken_.empty()) return true;
+    return authenticatedPeers_.find(peer) != authenticatedPeers_.end();
+}
 
 void StudioAgent::setCommandStack(editor::CommandStack* stack) noexcept {
     commandStack_ = stack;
@@ -181,6 +219,9 @@ std::size_t StudioAgent::pump() {
         if (received == 0) break;
         for (std::size_t i = 0; i < received; ++i) {
             const auto& pkt = inbox[i];
+            // Production attach gate: drain but don't dispatch when
+            // disabled. Counters stay at zero — the agent is invisible.
+            if (!attachEnabled_) continue;
             std::span<const std::byte> view{pkt.payload.data(),
                                             pkt.payload.size()};
             handleRequest_(pkt.peer, view);
@@ -202,7 +243,61 @@ void StudioAgent::handleRequest_(network::PeerId from,
     std::uint32_t requestId{};
     if (!readPod(bytes, requestId)) return;
 
-    switch (static_cast<AgentRequestTag>(tagByte)) {
+    const auto tag = static_cast<AgentRequestTag>(tagByte);
+
+    // Authentication itself is the one request the unauthenticated
+    // peer is allowed to send. Every other request gates on the auth
+    // check first.
+    if (tag != AgentRequestTag::Authenticate && !isPeerAuthenticated(from)) {
+        // Reply with a kind-appropriate ok=0 so the studio side knows
+        // the request was refused (rather than dropped). The
+        // shape of the response matches the request to keep the
+        // RemoteDataSource decode loop simple.
+        std::vector<std::byte> response;
+        switch (tag) {
+            case AgentRequestTag::GetEngineSnapshot:
+                response = encodeEngineSnapshotResponse(requestId, std::nullopt);
+                break;
+            case AgentRequestTag::SubmitCommand:
+                response = encodeCommandResultResponse(requestId, false);
+                ++commandsRejected_;
+                break;
+            case AgentRequestTag::Authenticate:
+                return; // unreachable: filtered above.
+        }
+        const network::PacketView view{response.data(), response.size()};
+        if (transport_->send(from, view)) {
+            bytesSent_ += response.size();
+        }
+        return;
+    }
+
+    switch (tag) {
+        case AgentRequestTag::Authenticate: {
+            std::uint32_t tokenLen{};
+            if (!readPod(bytes, tokenLen)) return;
+            if (bytes.size() < tokenLen) return;
+            const std::string_view token{
+                reinterpret_cast<const char*>(bytes.data()), tokenLen};
+            bool accepted = false;
+            if (authToken_.empty()) {
+                // Open mode — auth always succeeds.
+                accepted = true;
+                authenticatedPeers_.insert(from);
+            } else if (token == authToken_) {
+                accepted = true;
+                authenticatedPeers_.insert(from);
+            } else {
+                // Wrong token: drop any prior auth state for this peer.
+                authenticatedPeers_.erase(from);
+            }
+            auto response = encodeAuthResultResponse(requestId, accepted);
+            const network::PacketView view{response.data(), response.size()};
+            if (transport_->send(from, view)) {
+                bytesSent_ += response.size();
+            }
+            return;
+        }
         case AgentRequestTag::GetEngineSnapshot: {
             auto response = encodeEngineSnapshotResponse(
                 requestId, source_->engineSnapshot());

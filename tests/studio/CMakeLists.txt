@@ -74,7 +74,8 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_REMOTE_ATTACH=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_agent_send_snapshot
         test_studio_remote_data_source_smoke
-        test_studio_remote_command_roundtrip)
+        test_studio_remote_command_roundtrip
+        test_studio_agent_auth_reject)
 endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})

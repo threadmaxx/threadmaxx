@@ -51,6 +51,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace threadmaxx::editor {
@@ -67,15 +68,30 @@ inline constexpr std::uint32_t kAgentWireVersion = 1;
 
 /// @brief Tags for inbound studio→agent RPC requests.
 enum class AgentRequestTag : std::uint8_t {
+    Authenticate      = 0x01,
     GetEngineSnapshot = 0x10,
     SubmitCommand     = 0x20,
 };
 
 /// @brief Tags for outbound agent→studio RPC responses.
 enum class AgentResponseTag : std::uint8_t {
+    AuthResult     = 0x81,
     EngineSnapshot = 0x90,
     CommandResult  = 0xA0,
 };
+
+/// @brief Compile-time production-attach toggle. When `NDEBUG` is
+/// defined and `THREADMAXX_STUDIO_AGENT_ENABLE_PROD` is NOT, the
+/// agent defaults to attach-disabled (every inbound packet is
+/// silently dropped). Hosts can override at runtime via
+/// `StudioAgent::setAttachEnabled(true)` after confirming the
+/// host-side authorization story.
+inline constexpr bool kStudioAgentDefaultAttachEnabled =
+#if defined(NDEBUG) && !defined(THREADMAXX_STUDIO_AGENT_ENABLE_PROD)
+    false;
+#else
+    true;
+#endif
 
 /// @brief Decoded view of a single response frame. Filled from
 /// `decodeAgentResponse`. Used by `RemoteDataSource` in ST30 and by
@@ -87,6 +103,14 @@ struct DecodedAgentResponse {
     /// @brief Populated when `tag == EngineSnapshot && ok`.
     EngineFrameSummary engineSnapshot{};
 };
+
+/// @brief Encode an Authenticate request. Studio→agent.
+[[nodiscard]] std::vector<std::byte>
+encodeAuthenticateRequest(std::uint32_t requestId, std::string_view token);
+
+/// @brief Encode an AuthResult response. Agent→studio.
+[[nodiscard]] std::vector<std::byte>
+encodeAuthResultResponse(std::uint32_t requestId, bool accepted);
 
 /// @brief Encode a GetEngineSnapshot request. Studio→agent.
 [[nodiscard]] std::vector<std::byte>
@@ -130,6 +154,36 @@ public:
     /// the agent; the agent does not take ownership of either.
     StudioAgent(network::ITransport& transport,
                 IStudioDataSource& source) noexcept;
+
+    /// @brief Runtime toggle for the production attach gate. When
+    /// disabled the agent drains the transport but silently discards
+    /// every inbound packet — no responses are emitted. Default at
+    /// construction is `kStudioAgentDefaultAttachEnabled`.
+    void setAttachEnabled(bool enabled) noexcept { attachEnabled_ = enabled; }
+
+    /// @brief Current attach-enabled state.
+    [[nodiscard]] bool attachEnabled() const noexcept { return attachEnabled_; }
+
+    /// @brief Configure the per-peer auth token. Empty token = open
+    /// (no auth required). Non-empty = peers must send an
+    /// `Authenticate(token)` request that exactly matches before any
+    /// other request from that peer is accepted. Changing the token
+    /// drops every previously-authenticated peer.
+    void setAuthToken(std::string token);
+
+    /// @brief Currently-configured auth token. Empty = open.
+    [[nodiscard]] std::string_view authToken() const noexcept {
+        return authToken_;
+    }
+
+    /// @brief True when @p peer has successfully authenticated.
+    /// Always true when no token is configured (open mode).
+    [[nodiscard]] bool isPeerAuthenticated(network::PeerId peer) const noexcept;
+
+    /// @brief Number of distinct peers currently authenticated.
+    [[nodiscard]] std::size_t authenticatedPeerCount() const noexcept {
+        return authenticatedPeers_.size();
+    }
 
     /// @brief Bind a `CommandStack`. Mutation requests are rejected
     /// (CommandResult ok=0) until a stack is bound. The stack must
@@ -179,10 +233,21 @@ private:
                         std::span<const std::byte> bytes);
     bool dispatchCommand_(std::string_view label);
 
+    // PeerId is a thin wrapper around uint32_t with operator== but no
+    // hash — give the auth set an explicit hasher.
+    struct PeerIdHash {
+        std::size_t operator()(network::PeerId p) const noexcept {
+            return std::hash<std::uint32_t>{}(p.value);
+        }
+    };
+
     network::ITransport*  transport_{nullptr};
     IStudioDataSource*    source_{nullptr};
     editor::CommandStack* commandStack_{nullptr};
     std::unordered_map<std::string, CommandFactory> commandFactories_;
+    bool                  attachEnabled_{kStudioAgentDefaultAttachEnabled};
+    std::string           authToken_;
+    std::unordered_set<network::PeerId, PeerIdHash> authenticatedPeers_;
     std::size_t           requestsHandled_{0};
     std::size_t           commandsApplied_{0};
     std::size_t           commandsRejected_{0};

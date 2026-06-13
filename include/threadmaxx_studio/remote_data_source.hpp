@@ -25,6 +25,8 @@
 #include <threadmaxx_network/ids.hpp>
 #include <threadmaxx_network/transport.hpp>
 
+#include <string_view>
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -43,6 +45,23 @@ public:
     /// @brief Latest cached engine summary, or `nullopt` if no
     /// response has been received yet.
     std::optional<EngineFrameSummary> engineSnapshot() const override;
+
+    /// @brief Ship an Authenticate request with the supplied token.
+    /// The agent matches against its configured token; on success the
+    /// peer is allowed to issue every other request. Returns the
+    /// requestId. The AuthResult lands on a later `pump()`.
+    std::uint32_t authenticate(std::string_view token);
+
+    /// @brief True iff the last AuthResult.ok bit was set.
+    /// Defaults to `false` until the first response lands.
+    [[nodiscard]] bool lastAuthAccepted() const noexcept {
+        return lastAuthAccepted_;
+    }
+
+    /// @brief Cumulative AuthResult responses received.
+    [[nodiscard]] std::size_t authResponsesReceived() const noexcept {
+        return authResponsesReceived_;
+    }
 
     /// @brief Queue a GetEngineSnapshot request to the agent.
     /// Returns the requestId. The response lands on a later `pump()`.
@@ -113,6 +132,9 @@ private:
     std::uint32_t lastCommandRequestId_{0};
     bool          lastCommandAccepted_{false};
     std::size_t   commandResponsesReceived_{0};
+
+    bool          lastAuthAccepted_{false};
+    std::size_t   authResponsesReceived_{0};
 
     std::size_t responsesReceived_{0};
     std::size_t bytesReceived_{0};

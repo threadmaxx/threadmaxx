@@ -56,6 +56,7 @@ int main() {
     network::LoopbackTransport studioTransport{hub};
 
     studio::StudioAgent agent{agentTransport, source};
+    agent.setAttachEnabled(true);  // ST32 — production gate, on for tests.
 
     // Studio side issues the request.
     constexpr std::uint32_t kRequestId = 0xC0FFEEu;
@@ -102,6 +103,7 @@ int main() {
     };
     NullSource nullSource;
     studio::StudioAgent nullAgent{agentTransport, nullSource};
+    nullAgent.setAttachEnabled(true);
     auto req2 = studio::encodeGetEngineSnapshotRequest(0x42u);
     CHECK(studioTransport.send(agentTransport.localPeer(),
                                network::PacketView{req2.data(), req2.size()}));

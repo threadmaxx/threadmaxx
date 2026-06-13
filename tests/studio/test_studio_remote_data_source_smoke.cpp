@@ -52,6 +52,7 @@ int main() {
     network::LoopbackTransport studioTransport{hub};
 
     studio::StudioAgent agent{agentTransport, source};
+    agent.setAttachEnabled(true);  // ST32 — production gate, on for tests.
     studio::RemoteDataSource remote{studioTransport,
                                     agentTransport.localPeer()};
 

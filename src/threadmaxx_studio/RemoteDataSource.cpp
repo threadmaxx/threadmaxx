@@ -20,6 +20,15 @@ RemoteDataSource::engineSnapshot() const {
     return engineSnapshotCache_;
 }
 
+std::uint32_t RemoteDataSource::authenticate(std::string_view token) {
+    if (transport_ == nullptr) return 0;
+    const auto requestId = nextRequestId_++;
+    const auto bytes = encodeAuthenticateRequest(requestId, token);
+    const network::PacketView view{bytes.data(), bytes.size()};
+    transport_->send(agentPeer_, view);
+    return requestId;
+}
+
 std::uint32_t RemoteDataSource::requestEngineSnapshot() {
     if (transport_ == nullptr) return 0;
     const auto requestId = nextRequestId_++;
@@ -62,6 +71,10 @@ std::size_t RemoteDataSource::pump() {
             bytesReceived_ += pkt.payload.size();
             ++processedThisCall;
             switch (decoded->tag) {
+                case AgentResponseTag::AuthResult:
+                    lastAuthAccepted_ = decoded->ok;
+                    ++authResponsesReceived_;
+                    break;
                 case AgentResponseTag::EngineSnapshot:
                     if (decoded->ok) {
                         engineSnapshotCache_ = decoded->engineSnapshot;
