@@ -15,6 +15,7 @@ set(THREADMAXX_EDITOR_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/diff.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/layout.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/console.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/hierarchy.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
@@ -22,6 +23,7 @@ set(THREADMAXX_EDITOR_SOURCES
     Console.cpp
     EditorSession.cpp
     Gizmo.cpp
+    Hierarchy.cpp
     HotReloadController.cpp
     Inspector.cpp
     Layout.cpp

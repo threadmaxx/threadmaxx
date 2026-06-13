@@ -11,6 +11,7 @@
 #include "console.hpp"
 #include "diff.hpp"
 #include "gizmo.hpp"
+#include "hierarchy.hpp"
 #include "hotreload.hpp"
 #include "inspect.hpp"
 #include "layout.hpp"

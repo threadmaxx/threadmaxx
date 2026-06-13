@@ -33,6 +33,9 @@ set(THREADMAXX_EDITOR_TESTS
     test_editor_layout_roundtrip
     test_editor_console_exec
     test_editor_console_history
+    test_editor_hierarchy_flat
+    test_editor_hierarchy_chain
+    test_editor_hierarchy_collapse
 )
 
 foreach(test ${THREADMAXX_EDITOR_TESTS})
