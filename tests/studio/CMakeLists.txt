@@ -53,6 +53,10 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_NAVMESH_PANEL=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_navmesh_query_stats)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_PHYSICS_PANEL=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_physics_body_count)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)

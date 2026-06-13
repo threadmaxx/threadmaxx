@@ -141,6 +141,15 @@ if (TARGET threadmaxx::navmesh)
         THREADMAXX_STUDIO_HAS_NAVMESH_PANEL=1)
 endif()
 
+if (TARGET threadmaxx::physics)
+    target_sources(threadmaxx_studio PRIVATE
+        panels/PhysicsPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/physics.hpp)
+    target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::physics)
+    target_compile_definitions(threadmaxx_studio PUBLIC
+        THREADMAXX_STUDIO_HAS_PHYSICS_PANEL=1)
+endif()
+
 if (MSVC)
     target_compile_options(threadmaxx_studio PRIVATE /W4 /permissive-)
     if (THREADMAXX_WARNINGS_AS_ERRORS)
