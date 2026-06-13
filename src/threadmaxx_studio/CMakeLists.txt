@@ -164,7 +164,9 @@ endif()
 if (TARGET threadmaxx::migration)
     target_sources(threadmaxx_studio PRIVATE
         panels/SaveInspectorPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/save_inspector.hpp)
+        panels/MigrationStepPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/save_inspector.hpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/migration_step.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::migration)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_MIGRATION_PANELS=1)
