@@ -105,6 +105,15 @@ if (TARGET threadmaxx::audio)
         THREADMAXX_STUDIO_HAS_AUDIO_PANEL=1)
 endif()
 
+if (TARGET threadmaxx::input)
+    target_sources(threadmaxx_studio PRIVATE
+        panels/InputPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/input.hpp)
+    target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::input)
+    target_compile_definitions(threadmaxx_studio PUBLIC
+        THREADMAXX_STUDIO_HAS_INPUT_PANEL=1)
+endif()
+
 if (MSVC)
     target_compile_options(threadmaxx_studio PRIVATE /W4 /permissive-)
     if (THREADMAXX_WARNINGS_AS_ERRORS)
