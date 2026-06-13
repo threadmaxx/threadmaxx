@@ -84,7 +84,8 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_MIGRATION_PANELS=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_save_inspector_diff
         test_studio_migration_step_visualizer
-        test_studio_schema_graph_render)
+        test_studio_schema_graph_render
+        test_studio_migration_validator_warnings)
 endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
