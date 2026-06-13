@@ -5,9 +5,11 @@
 /// Pulls in every public header at v1.0.
 
 #include "io.hpp"
+#include "pipeline.hpp"
 #include "records.hpp"
 #include "registry.hpp"
 #include "rename.hpp"
+#include "report.hpp"
 #include "savefile.hpp"
 #include "transform.hpp"
 #include "version.hpp"

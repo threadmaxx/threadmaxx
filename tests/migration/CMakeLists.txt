@@ -13,6 +13,12 @@ set(THREADMAXX_MIGRATION_TESTS
     test_migration_remap_widen
     test_migration_remap_default_on_missing
     test_migration_remap_split
+    test_migration_pipeline_one_step
+    test_migration_pipeline_multi_step
+    test_migration_pipeline_no_path
+    test_migration_pipeline_unknown_type
+    test_migration_pipeline_warnings
+    test_migration_pipeline_stable_ids
 )
 
 foreach(test ${THREADMAXX_MIGRATION_TESTS})
