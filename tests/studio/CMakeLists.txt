@@ -57,6 +57,10 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_PHYSICS_PANEL=1")
     list(APPEND THREADMAXX_STUDIO_TESTS
         test_studio_physics_body_count)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_REFLECT_PANEL=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_reflect_panel_list_types)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)

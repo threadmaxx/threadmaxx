@@ -150,6 +150,15 @@ if (TARGET threadmaxx::physics)
         THREADMAXX_STUDIO_HAS_PHYSICS_PANEL=1)
 endif()
 
+if (TARGET threadmaxx::reflect)
+    target_sources(threadmaxx_studio PRIVATE
+        panels/ReflectPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/reflect.hpp)
+    target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::reflect)
+    target_compile_definitions(threadmaxx_studio PUBLIC
+        THREADMAXX_STUDIO_HAS_REFLECT_PANEL=1)
+endif()
+
 if (MSVC)
     target_compile_options(threadmaxx_studio PRIVATE /W4 /permissive-)
     if (THREADMAXX_WARNINGS_AS_ERRORS)
