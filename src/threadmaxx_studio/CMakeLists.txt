@@ -132,6 +132,15 @@ if (TARGET threadmaxx::ui)
         THREADMAXX_STUDIO_HAS_UI_INSPECTOR_PANEL=1)
 endif()
 
+if (TARGET threadmaxx::navmesh)
+    target_sources(threadmaxx_studio PRIVATE
+        panels/NavmeshPanel.cpp
+        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/navmesh.hpp)
+    target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::navmesh)
+    target_compile_definitions(threadmaxx_studio PUBLIC
+        THREADMAXX_STUDIO_HAS_NAVMESH_PANEL=1)
+endif()
+
 if (MSVC)
     target_compile_options(threadmaxx_studio PRIVATE /W4 /permissive-)
     if (THREADMAXX_WARNINGS_AS_ERRORS)

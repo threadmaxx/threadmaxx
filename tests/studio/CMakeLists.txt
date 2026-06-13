@@ -49,6 +49,10 @@ if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_UI_INSPECTOR_PANEL=1")
         test_studio_ui_inspector_draw_count
         test_studio_ui_inspector_stub_when_unavailable)
 endif()
+if (_studio_compile_defs MATCHES "THREADMAXX_STUDIO_HAS_NAVMESH_PANEL=1")
+    list(APPEND THREADMAXX_STUDIO_TESTS
+        test_studio_navmesh_query_stats)
+endif()
 
 foreach(test ${THREADMAXX_STUDIO_TESTS})
     add_executable(${test} ${test}.cpp)
