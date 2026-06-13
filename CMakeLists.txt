@@ -525,6 +525,115 @@ if (THREADMAXX_INSTALL)
         )
     endif()
 
+    # Sibling input library — static. Same `if (TARGET threadmaxx::input)`
+    # downstream probe.
+    if (THREADMAXX_BUILD_INPUT)
+        install(TARGETS threadmaxx_input
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_input
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling assets library — static. Same `if (TARGET threadmaxx::assets)`
+    # downstream probe.
+    if (THREADMAXX_BUILD_ASSETS)
+        install(TARGETS threadmaxx_assets
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_assets
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling reflect library — static. Same `if (TARGET threadmaxx::reflect)`
+    # downstream probe.
+    if (THREADMAXX_BUILD_REFLECT)
+        install(TARGETS threadmaxx_reflect
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_reflect
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling network library — static. Same `if (TARGET threadmaxx::network)`
+    # downstream probe.
+    if (THREADMAXX_BUILD_NETWORK)
+        install(TARGETS threadmaxx_network
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_network
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling editor library — static. Same `if (TARGET threadmaxx::editor)`
+    # downstream probe. NOTE: when THREADMAXX_EDITOR_FETCH_IMGUI=ON the
+    # ImGui static lib is baked into the editor archive — it does not
+    # install as a separate threadmaxx::imgui target.
+    if (THREADMAXX_BUILD_EDITOR)
+        install(TARGETS threadmaxx_editor
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_editor
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling migration library — static. Same `if (TARGET threadmaxx::migration)`
+    # downstream probe.
+    if (THREADMAXX_BUILD_MIGRATION)
+        install(TARGETS threadmaxx_migration
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_migration
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
+    # Sibling studio library — static. Same `if (TARGET threadmaxx::studio)`
+    # downstream probe. PUBLIC-links every sibling whose target exists;
+    # those siblings must also be installed (their install blocks above
+    # gate on their own THREADMAXX_BUILD_<X> flag).
+    if (THREADMAXX_BUILD_STUDIO)
+        install(TARGETS threadmaxx_studio
+            EXPORT threadmaxxTargets
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+        install(DIRECTORY include/threadmaxx_studio
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+
     install(EXPORT threadmaxxTargets
         FILE threadmaxxTargets.cmake
         NAMESPACE threadmaxx::
