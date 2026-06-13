@@ -9,6 +9,10 @@ set(THREADMAXX_MIGRATION_TESTS
     test_migration_registry_register
     test_migration_registry_alias
     test_migration_registry_hasPath
+    test_migration_rename
+    test_migration_remap_widen
+    test_migration_remap_default_on_missing
+    test_migration_remap_split
 )
 
 foreach(test ${THREADMAXX_MIGRATION_TESTS})

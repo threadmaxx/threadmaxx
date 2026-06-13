@@ -3,7 +3,9 @@ set(THREADMAXX_MIGRATION_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/io.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/records.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/registry.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/rename.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/savefile.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/transform.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/version.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/detail/binary_reader.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/detail/binary_writer.hpp
@@ -12,6 +14,7 @@ set(THREADMAXX_MIGRATION_PUBLIC_HEADERS
 set(THREADMAXX_MIGRATION_SOURCES
     RecordIo.cpp
     MigrationRegistry.cpp
+    FieldHelpers.cpp
 )
 
 add_library(threadmaxx_migration STATIC
