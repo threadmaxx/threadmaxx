@@ -1,20 +1,20 @@
 set(THREADMAXX_PHYSICS_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/threadmaxx_physics.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/body.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/shape.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/backend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/character.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/constraints.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/contact.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/diagnostics.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/jolt_backend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/query.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/step.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/stub_backend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/sync.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_physics/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/threadmaxx_physics.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/body.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/shape.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/backend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/character.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/constraints.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/contact.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/diagnostics.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/jolt_backend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/query.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/step.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/stub_backend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/sync.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_physics/version.hpp
 )
 
 set(THREADMAXX_PHYSICS_SOURCES
@@ -96,7 +96,7 @@ add_library(threadmaxx::physics ALIAS threadmaxx_physics)
 
 target_include_directories(threadmaxx_physics
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 

@@ -1,19 +1,19 @@
 set(THREADMAXX_NETWORK_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/threadmaxx_network.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/bitstream.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/ids.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/packets.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/session.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/delta.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/replication.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/diagnostics.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/interest.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/prediction.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/rollback.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/transport.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/udp_transport.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_network/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/threadmaxx_network.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/bitstream.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/ids.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/packets.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/session.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/delta.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/replication.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/diagnostics.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/interest.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/prediction.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/rollback.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/transport.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/udp_transport.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_network/version.hpp
 )
 
 set(THREADMAXX_NETWORK_SOURCES
@@ -38,7 +38,7 @@ add_library(threadmaxx::network ALIAS threadmaxx_network)
 
 target_include_directories(threadmaxx_network
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 

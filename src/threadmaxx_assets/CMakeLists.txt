@@ -1,25 +1,25 @@
 set(THREADMAXX_ASSETS_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/threadmaxx_assets.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/data/audio.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/data/font.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/data/mesh.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/data/texture.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/detail/inflate.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/detail/io.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/bmfont.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/bmp.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/obj.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/ply.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/png.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/tga.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/loaders/wav.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/async_loader.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/bundle.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/registry.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/watch.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/threadmaxx_assets.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/audio.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/font.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/mesh.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/texture.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/detail/inflate.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/detail/io.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/bmfont.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/bmp.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/obj.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/ply.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/png.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/tga.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/wav.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/async_loader.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/bundle.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/registry.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/watch.hpp
 )
 
 set(THREADMAXX_ASSETS_SOURCES
@@ -46,7 +46,7 @@ add_library(threadmaxx::assets ALIAS threadmaxx_assets)
 
 target_include_directories(threadmaxx_assets
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -82,7 +82,7 @@ target_link_libraries(threadmaxx_assets PUBLIC Threads::Threads)
 # THREADMAXX_ASSETS_HAS_ENGINE_BRIDGE=1 so consumers can `#if`-gate.
 if (TARGET threadmaxx::threadmaxx)
     target_sources(threadmaxx_assets PRIVATE
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_assets/engine_bridge.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/engine_bridge.hpp)
     target_link_libraries(threadmaxx_assets PUBLIC threadmaxx::threadmaxx)
     target_compile_definitions(threadmaxx_assets PUBLIC
         THREADMAXX_ASSETS_HAS_ENGINE_BRIDGE=1)

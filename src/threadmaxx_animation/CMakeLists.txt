@@ -1,23 +1,23 @@
 set(THREADMAXX_ANIMATION_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/threadmaxx_animation.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/pose.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/skeleton.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/clip.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/registry.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/graph.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/blend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/ik.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/warp.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/eval.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/diagnostics.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/retarget.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/serialization.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/cloth.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/pose_math.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/curve_eval.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/graph_eval.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_animation/detail/job_batch.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/threadmaxx_animation.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/pose.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/skeleton.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/clip.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/registry.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/graph.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/blend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/ik.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/warp.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/eval.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/diagnostics.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/retarget.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/serialization.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/cloth.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/detail/pose_math.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/detail/curve_eval.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/detail/graph_eval.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_animation/detail/job_batch.hpp
 )
 
 set(THREADMAXX_ANIMATION_SOURCES
@@ -38,7 +38,7 @@ add_library(threadmaxx::animation ALIAS threadmaxx_animation)
 
 target_include_directories(threadmaxx_animation
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 

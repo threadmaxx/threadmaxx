@@ -1,24 +1,24 @@
 set(THREADMAXX_EDITOR_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/threadmaxx_editor.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/session.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backends/headless.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backends/remote.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/inspect.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/commands.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/hotreload.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/telemetry.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/selection.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/properties.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/gizmo.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/diff.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/layout.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/console.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/hierarchy.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/profiler.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/replay.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/threadmaxx_editor.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/backend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/session.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/backends/headless.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/backends/remote.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/inspect.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/commands.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/hotreload.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/telemetry.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/selection.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/properties.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/gizmo.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/diff.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/layout.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/console.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/hierarchy.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/profiler.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/replay.hpp
 )
 
 set(THREADMAXX_EDITOR_SOURCES
@@ -48,7 +48,7 @@ add_library(threadmaxx::editor ALIAS threadmaxx_editor)
 
 target_include_directories(threadmaxx_editor
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -93,7 +93,7 @@ endif()
 if (TARGET imgui)
     target_sources(threadmaxx_editor PRIVATE
         backends/ImGuiBackend.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_editor/backends/imgui.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_editor/backends/imgui.hpp)
     target_link_libraries(threadmaxx_editor PUBLIC imgui)
     target_compile_definitions(threadmaxx_editor PUBLIC
         THREADMAXX_EDITOR_HAS_IMGUI_BACKEND=1)

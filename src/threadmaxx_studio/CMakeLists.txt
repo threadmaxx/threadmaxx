@@ -1,25 +1,25 @@
 set(THREADMAXX_STUDIO_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/threadmaxx_studio.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/data_source.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/direct_data_source.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panel.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/studio.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/console.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/engine_inspector.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/frame_snapshot.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/gizmo.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/hierarchy.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/menu_bar.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/profiler.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/replay.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/property_editor.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/resources.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/task_graph.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/tuning.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/world_diff.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/threadmaxx_studio.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/data_source.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/direct_data_source.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panel.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/studio.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/console.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/engine_inspector.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/frame_snapshot.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/gizmo.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/hierarchy.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/menu_bar.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/profiler.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/replay.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/property_editor.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/resources.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/status_bar.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/task_graph.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/tuning.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/world_diff.hpp
 )
 
 # ST4 closes M1 with DirectDataSource. The studio is engine-AGNOSTIC
@@ -57,7 +57,7 @@ add_library(threadmaxx::studio ALIAS threadmaxx_studio)
 
 target_include_directories(threadmaxx_studio
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -92,7 +92,7 @@ endif()
 if (TARGET threadmaxx::animation)
     target_sources(threadmaxx_studio PRIVATE
         panels/AnimationPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/animation.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/animation.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::animation)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_ANIMATION_PANEL=1)
@@ -101,7 +101,7 @@ endif()
 if (TARGET threadmaxx::audio)
     target_sources(threadmaxx_studio PRIVATE
         panels/AudioPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/audio.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/audio.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::audio)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_AUDIO_PANEL=1)
@@ -110,7 +110,7 @@ endif()
 if (TARGET threadmaxx::input)
     target_sources(threadmaxx_studio PRIVATE
         panels/InputPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/input.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/input.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::input)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_INPUT_PANEL=1)
@@ -119,7 +119,7 @@ endif()
 if (TARGET threadmaxx::assets)
     target_sources(threadmaxx_studio PRIVATE
         panels/AssetsPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/assets.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/assets.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::assets)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_ASSETS_PANEL=1)
@@ -128,7 +128,7 @@ endif()
 if (TARGET threadmaxx::ui)
     target_sources(threadmaxx_studio PRIVATE
         panels/UIInspectorPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/ui_inspector.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/ui_inspector.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::ui)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_UI_INSPECTOR_PANEL=1)
@@ -137,7 +137,7 @@ endif()
 if (TARGET threadmaxx::navmesh)
     target_sources(threadmaxx_studio PRIVATE
         panels/NavmeshPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/navmesh.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/navmesh.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::navmesh)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_NAVMESH_PANEL=1)
@@ -146,7 +146,7 @@ endif()
 if (TARGET threadmaxx::physics)
     target_sources(threadmaxx_studio PRIVATE
         panels/PhysicsPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/physics.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/physics.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::physics)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_PHYSICS_PANEL=1)
@@ -155,7 +155,7 @@ endif()
 if (TARGET threadmaxx::reflect)
     target_sources(threadmaxx_studio PRIVATE
         panels/ReflectPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/reflect.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/reflect.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::reflect)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_REFLECT_PANEL=1)
@@ -167,10 +167,10 @@ if (TARGET threadmaxx::migration)
         panels/MigrationStepPanel.cpp
         panels/SchemaGraphPanel.cpp
         panels/MigrationValidatorPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/save_inspector.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/migration_step.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/schema_graph.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/migration_validator.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/save_inspector.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/migration_step.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/schema_graph.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/migration_validator.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::migration)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_MIGRATION_PANELS=1)
@@ -188,16 +188,16 @@ if (TARGET threadmaxx::network)
         ShardDirectory.cpp
         panels/BandwidthPanel.cpp
         panels/ShardPickerPanel.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/network_session.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/snapshot_delta.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/interest.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/desync.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/packet_trace.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/bandwidth.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/panels/shard_picker.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/agent.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/remote_data_source.hpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_studio/shard_directory.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/network_session.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/snapshot_delta.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/interest.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/desync.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/packet_trace.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/bandwidth.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/panels/shard_picker.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/agent.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/remote_data_source.hpp
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_studio/shard_directory.hpp)
     target_link_libraries(threadmaxx_studio PUBLIC threadmaxx::network)
     target_compile_definitions(threadmaxx_studio PUBLIC
         THREADMAXX_STUDIO_HAS_NETWORK_PANELS=1

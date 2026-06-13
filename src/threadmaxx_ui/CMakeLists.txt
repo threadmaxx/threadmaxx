@@ -1,26 +1,26 @@
 set(THREADMAXX_UI_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/threadmaxx_ui.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/context.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/debug.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/dragdrop.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/draw.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/gizmo.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/input.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/inspect.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/layout.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/menu.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/panel.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/tree.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/widget.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backends/NullBackend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/backends/VertexBackend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/clip_stack.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/id_stack.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_ui/detail/rect_math.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/threadmaxx_ui.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/backend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/context.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/debug.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/dragdrop.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/draw.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/gizmo.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/input.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/inspect.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/layout.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/menu.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/panel.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/tree.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/widget.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/backends/NullBackend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/backends/VertexBackend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/detail/clip_stack.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/detail/id_stack.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_ui/detail/rect_math.hpp
 )
 
 set(THREADMAXX_UI_SOURCES
@@ -46,7 +46,7 @@ add_library(threadmaxx::ui ALIAS threadmaxx_ui)
 
 target_include_directories(threadmaxx_ui
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 

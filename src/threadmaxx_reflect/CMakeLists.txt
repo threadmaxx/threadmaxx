@@ -1,23 +1,23 @@
 set(THREADMAXX_REFLECT_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/threadmaxx_reflect.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/aggregate.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/field_info.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/macro.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/registry.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/type_info.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/attributes.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/enum.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/patch.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/value.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/visit.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/binders/json.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/aggregate_impl.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/enum_impl.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/macro_impl.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/detail/name_arena.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/threadmaxx_reflect.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/aggregate.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/field_info.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/macro.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/registry.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/type_info.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/attributes.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/enum.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/patch.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/value.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/visit.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/binders/json.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/detail/aggregate_impl.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/detail/enum_impl.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/detail/macro_impl.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/detail/name_arena.hpp
 )
 
 set(THREADMAXX_REFLECT_SOURCES
@@ -38,7 +38,7 @@ add_library(threadmaxx::reflect ALIAS threadmaxx_reflect)
 
 target_include_directories(threadmaxx_reflect
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -73,7 +73,7 @@ endif()
 if (TARGET threadmaxx::threadmaxx)
     target_sources(threadmaxx_reflect PRIVATE
         EngineBridge.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_reflect/engine_bridge.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_reflect/engine_bridge.hpp)
     target_link_libraries(threadmaxx_reflect PUBLIC threadmaxx::threadmaxx)
     target_compile_definitions(threadmaxx_reflect PUBLIC
         THREADMAXX_REFLECT_HAS_ENGINE_BRIDGE=1)

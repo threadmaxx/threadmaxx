@@ -1,22 +1,22 @@
 set(THREADMAXX_INPUT_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/threadmaxx_input.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/action.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/backend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/binding.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/context.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/cursor.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/events.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/picking.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/state.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/trace.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/backends/GlfwBackend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/backends/NullBackend.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/detail/deadzone.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/detail/edge_buffer.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/detail/keymap.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/threadmaxx_input.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/action.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/backend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/binding.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/context.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/cursor.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/events.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/picking.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/state.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/trace.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/backends/GlfwBackend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/backends/NullBackend.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/detail/deadzone.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/detail/edge_buffer.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/detail/keymap.hpp
 )
 
 set(THREADMAXX_INPUT_SOURCES
@@ -36,7 +36,7 @@ add_library(threadmaxx::input ALIAS threadmaxx_input)
 
 target_include_directories(threadmaxx_input
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -69,7 +69,7 @@ endif()
 if (TARGET threadmaxx::ui)
     target_sources(threadmaxx_input PRIVATE UiBridge.cpp)
     target_sources(threadmaxx_input PRIVATE
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_input/ui_bridge.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_input/ui_bridge.hpp)
     target_link_libraries(threadmaxx_input PUBLIC threadmaxx::ui)
     target_compile_definitions(threadmaxx_input PUBLIC THREADMAXX_INPUT_HAS_UI_BRIDGE=1)
 endif()

@@ -1,22 +1,22 @@
 set(THREADMAXX_AUDIO_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/threadmaxx_audio.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/buffer.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/clip.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/device.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/diagnostics.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/dsp.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/events.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/loopback_device.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/mixer.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/scene.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/spatial.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/stream.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/voice.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/detail/pan_law.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/detail/voice_allocator.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/threadmaxx_audio.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/buffer.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/clip.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/device.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/diagnostics.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/dsp.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/events.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/loopback_device.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/mixer.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/scene.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/spatial.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/stream.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/voice.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/detail/pan_law.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/detail/voice_allocator.hpp
 )
 
 set(THREADMAXX_AUDIO_SOURCES
@@ -39,7 +39,7 @@ if (UNIX AND NOT APPLE)
         set(THREADMAXX_AUDIO_HAS_ALSA ON)
         list(APPEND THREADMAXX_AUDIO_SOURCES backends/AlsaDevice.cpp)
         list(APPEND THREADMAXX_AUDIO_PUBLIC_HEADERS
-            ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/alsa_device.hpp)
+            ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/alsa_device.hpp)
     endif()
 
     find_package(PkgConfig QUIET)
@@ -49,7 +49,7 @@ if (UNIX AND NOT APPLE)
             set(THREADMAXX_AUDIO_HAS_PULSE ON)
             list(APPEND THREADMAXX_AUDIO_SOURCES backends/PulseDevice.cpp)
             list(APPEND THREADMAXX_AUDIO_PUBLIC_HEADERS
-                ${CMAKE_SOURCE_DIR}/include/threadmaxx_audio/pulse_device.hpp)
+                ${PROJECT_SOURCE_DIR}/include/threadmaxx_audio/pulse_device.hpp)
         endif()
     endif()
 endif()
@@ -62,7 +62,7 @@ add_library(threadmaxx::audio ALIAS threadmaxx_audio)
 
 target_include_directories(threadmaxx_audio
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 

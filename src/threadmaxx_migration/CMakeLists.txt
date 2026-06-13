@@ -1,18 +1,18 @@
 set(THREADMAXX_MIGRATION_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/threadmaxx_migration.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/io.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/records.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/component.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/pipeline.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/registry.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/rename.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/report.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/savefile.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/transform.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/validation.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/version.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/detail/binary_reader.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/detail/binary_writer.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/threadmaxx_migration.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/io.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/records.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/component.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/pipeline.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/registry.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/rename.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/report.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/savefile.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/transform.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/validation.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/version.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/detail/binary_reader.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/detail/binary_writer.hpp
 )
 
 set(THREADMAXX_MIGRATION_SOURCES
@@ -32,7 +32,7 @@ add_library(threadmaxx::migration ALIAS threadmaxx_migration)
 
 target_include_directories(threadmaxx_migration
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -66,7 +66,7 @@ endif()
 if (TARGET threadmaxx::threadmaxx)
     target_sources(threadmaxx_migration PRIVATE
         WorldSnapshotMigrator.cpp
-        ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/world.hpp)
+        ${PROJECT_SOURCE_DIR}/include/threadmaxx_migration/world.hpp)
     target_link_libraries(threadmaxx_migration PUBLIC threadmaxx::threadmaxx)
     target_compile_definitions(threadmaxx_migration PUBLIC
         THREADMAXX_MIGRATION_HAS_ENGINE_BRIDGE=1)

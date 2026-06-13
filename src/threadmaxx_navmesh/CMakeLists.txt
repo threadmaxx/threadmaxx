@@ -1,14 +1,14 @@
 set(THREADMAXX_NAVMESH_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/threadmaxx_navmesh.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/types.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/bake.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/config.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/diagnostics.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/mesh.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/obstacle.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/query.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/steering.hpp
-    ${CMAKE_SOURCE_DIR}/include/threadmaxx_navmesh/crowd.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/threadmaxx_navmesh.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/types.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/bake.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/config.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/diagnostics.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/mesh.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/obstacle.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/query.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/steering.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_navmesh/crowd.hpp
 )
 
 set(THREADMAXX_NAVMESH_SOURCES
@@ -28,7 +28,7 @@ add_library(threadmaxx::navmesh ALIAS threadmaxx_navmesh)
 
 target_include_directories(threadmaxx_navmesh
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
