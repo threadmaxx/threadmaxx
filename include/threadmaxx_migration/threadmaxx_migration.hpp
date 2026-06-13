@@ -4,6 +4,7 @@
 /// @brief Umbrella header for the threadmaxx migration library.
 /// Pulls in every public header at v1.0.
 
+#include "component.hpp"
 #include "io.hpp"
 #include "pipeline.hpp"
 #include "records.hpp"

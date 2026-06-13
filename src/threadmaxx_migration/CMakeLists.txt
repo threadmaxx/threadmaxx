@@ -2,6 +2,7 @@ set(THREADMAXX_MIGRATION_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/threadmaxx_migration.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/io.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/records.hpp
+    ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/component.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/pipeline.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/registry.hpp
     ${CMAKE_SOURCE_DIR}/include/threadmaxx_migration/rename.hpp
@@ -18,6 +19,7 @@ set(THREADMAXX_MIGRATION_SOURCES
     MigrationRegistry.cpp
     FieldHelpers.cpp
     MigrationPipeline.cpp
+    ComponentMigrationBridge.cpp
 )
 
 add_library(threadmaxx_migration STATIC

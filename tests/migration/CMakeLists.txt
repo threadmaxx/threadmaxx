@@ -19,6 +19,9 @@ set(THREADMAXX_MIGRATION_TESTS
     test_migration_pipeline_unknown_type
     test_migration_pipeline_warnings
     test_migration_pipeline_stable_ids
+    test_migration_codec_register
+    test_migration_codec_versioned
+    test_migration_codec_missing
 )
 
 get_target_property(_migration_compile_defs threadmaxx::migration
