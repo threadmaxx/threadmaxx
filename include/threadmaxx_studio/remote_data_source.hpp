@@ -48,6 +48,32 @@ public:
     /// Returns the requestId. The response lands on a later `pump()`.
     std::uint32_t requestEngineSnapshot();
 
+    /// @brief Ship a SubmitCommand request to the agent. The agent's
+    /// registered factory for @p label produces the concrete
+    /// `editor::IEditCommand` on the game side and pushes it through
+    /// the agent's `editor::CommandStack`. Returns `true` if the
+    /// request bytes were successfully posted to the transport;
+    /// acceptance (factory found + command non-null) is reported back
+    /// asynchronously via `lastCommandAccepted()` after `pump()`.
+    bool submitCommand(std::string_view label) override;
+
+    /// @brief Last requestId issued by `submitCommand`. Zero if none.
+    [[nodiscard]] std::uint32_t lastCommandRequestId() const noexcept {
+        return lastCommandRequestId_;
+    }
+
+    /// @brief Most-recent CommandResult.ok bit received from the agent.
+    /// Defaults to `false` until the first response lands. Useful for
+    /// the bandwidth panel (ST33) + this round-trip test.
+    [[nodiscard]] bool lastCommandAccepted() const noexcept {
+        return lastCommandAccepted_;
+    }
+
+    /// @brief Cumulative CommandResult responses received.
+    [[nodiscard]] std::size_t commandResponsesReceived() const noexcept {
+        return commandResponsesReceived_;
+    }
+
     /// @brief Drain the transport, decode every response, and update
     /// the cache. Returns the number of responses processed this
     /// call. Unknown / truncated frames are silently dropped — the
@@ -83,6 +109,10 @@ private:
 
     mutable std::optional<EngineFrameSummary> engineSnapshotCache_;
     std::uint32_t lastEngineSnapshotRequestId_{0};
+
+    std::uint32_t lastCommandRequestId_{0};
+    bool          lastCommandAccepted_{false};
+    std::size_t   commandResponsesReceived_{0};
 
     std::size_t responsesReceived_{0};
     std::size_t bytesReceived_{0};

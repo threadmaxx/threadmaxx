@@ -23,10 +23,14 @@
 ///         [u64 tick][f64 lastStepSeconds][u8 paused]
 ///         [u32 systemCount][u32 workerCount]
 ///
-/// Future request / response tags layer in for ST30..ST34 (world
-/// snapshots, command tunneling, bandwidth metrics, multi-shard
-/// discovery). Tag values are stable within a wire version; bumping
-/// `kAgentWireVersion` is the break signal.
+///     AgentRequestTag::SubmitCommand      (0x20)  — payload:
+///         [u32 labelLen][utf8 label bytes]
+///     AgentResponseTag::CommandResult     (0xA0)  — [u8 ok]
+///
+/// Future request / response tags layer in for ST32..ST34 (auth,
+/// bandwidth metrics, multi-shard discovery). Tag values are stable
+/// within a wire version; bumping `kAgentWireVersion` is the break
+/// signal.
 ///
 /// **Embedding `network::ServerSession`** is intentionally deferred:
 /// the studio RPC pattern is request/response, while ServerSession
@@ -40,9 +44,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
+
+namespace threadmaxx::editor {
+class CommandStack;
+class IEditCommand;
+} // namespace threadmaxx::editor
 
 namespace threadmaxx::studio {
 
@@ -54,11 +68,13 @@ inline constexpr std::uint32_t kAgentWireVersion = 1;
 /// @brief Tags for inbound studio→agent RPC requests.
 enum class AgentRequestTag : std::uint8_t {
     GetEngineSnapshot = 0x10,
+    SubmitCommand     = 0x20,
 };
 
 /// @brief Tags for outbound agent→studio RPC responses.
 enum class AgentResponseTag : std::uint8_t {
     EngineSnapshot = 0x90,
+    CommandResult  = 0xA0,
 };
 
 /// @brief Decoded view of a single response frame. Filled from
@@ -81,6 +97,14 @@ encodeGetEngineSnapshotRequest(std::uint32_t requestId);
 encodeEngineSnapshotResponse(std::uint32_t requestId,
                              std::optional<EngineFrameSummary> summary);
 
+/// @brief Encode a SubmitCommand request. Studio→agent.
+[[nodiscard]] std::vector<std::byte>
+encodeSubmitCommandRequest(std::uint32_t requestId, std::string_view label);
+
+/// @brief Encode a CommandResult response. Agent→studio.
+[[nodiscard]] std::vector<std::byte>
+encodeCommandResultResponse(std::uint32_t requestId, bool accepted);
+
 /// @brief Decode a single response frame.
 /// Returns `nullopt` on truncation or unknown tag.
 [[nodiscard]] std::optional<DecodedAgentResponse>
@@ -95,10 +119,33 @@ decodeAgentResponse(std::span<const std::byte> bytes);
 /// after every `step()`).
 class StudioAgent {
 public:
+    /// @brief Factory that produces a fresh `IEditCommand` per
+    /// invocation. Registered by label via `registerCommandFactory`;
+    /// invoked once per inbound `SubmitCommand(label)` from a remote
+    /// studio. Factories may capture host-side handles / state.
+    using CommandFactory =
+        std::function<std::unique_ptr<editor::IEditCommand>()>;
+
     /// @brief Bind to a transport and data source. Both must outlive
     /// the agent; the agent does not take ownership of either.
     StudioAgent(network::ITransport& transport,
                 IStudioDataSource& source) noexcept;
+
+    /// @brief Bind a `CommandStack`. Mutation requests are rejected
+    /// (CommandResult ok=0) until a stack is bound. The stack must
+    /// outlive the agent. Pass `nullptr` to detach.
+    void setCommandStack(editor::CommandStack* stack) noexcept;
+
+    /// @brief Register a label → command factory. Returns true on
+    /// fresh insertion, false on overwrite (the previous factory is
+    /// replaced). Labels are matched verbatim against the string sent
+    /// over the wire.
+    bool registerCommandFactory(std::string label, CommandFactory factory);
+
+    /// @brief Number of registered factories. Useful for tests.
+    [[nodiscard]] std::size_t commandFactoryCount() const noexcept {
+        return commandFactories_.size();
+    }
 
     /// @brief Drain the transport, decode every inbound packet, and
     /// send a response back to its originator. Returns the number of
@@ -111,6 +158,17 @@ public:
         return requestsHandled_;
     }
 
+    /// @brief Cumulative commands applied to the `CommandStack`.
+    [[nodiscard]] std::size_t commandsApplied() const noexcept {
+        return commandsApplied_;
+    }
+
+    /// @brief Cumulative commands rejected (no stack bound, unknown
+    /// label, factory returned nullptr).
+    [[nodiscard]] std::size_t commandsRejected() const noexcept {
+        return commandsRejected_;
+    }
+
     /// @brief Cumulative response bytes sent since construction.
     [[nodiscard]] std::size_t bytesSent() const noexcept {
         return bytesSent_;
@@ -119,11 +177,16 @@ public:
 private:
     void handleRequest_(network::PeerId from,
                         std::span<const std::byte> bytes);
+    bool dispatchCommand_(std::string_view label);
 
-    network::ITransport* transport_{nullptr};
-    IStudioDataSource*   source_{nullptr};
-    std::size_t          requestsHandled_{0};
-    std::size_t          bytesSent_{0};
+    network::ITransport*  transport_{nullptr};
+    IStudioDataSource*    source_{nullptr};
+    editor::CommandStack* commandStack_{nullptr};
+    std::unordered_map<std::string, CommandFactory> commandFactories_;
+    std::size_t           requestsHandled_{0};
+    std::size_t           commandsApplied_{0};
+    std::size_t           commandsRejected_{0};
+    std::size_t           bytesSent_{0};
 };
 
 } // namespace threadmaxx::studio

@@ -4,8 +4,11 @@
 
 #include <threadmaxx_studio/agent.hpp>
 
+#include <threadmaxx_editor/commands.hpp>
+
 #include <array>
 #include <cstring>
+#include <utility>
 
 namespace threadmaxx::studio {
 
@@ -68,6 +71,31 @@ encodeGetEngineSnapshotRequest(std::uint32_t requestId) {
 }
 
 std::vector<std::byte>
+encodeSubmitCommandRequest(std::uint32_t requestId, std::string_view label) {
+    std::vector<std::byte> out;
+    out.reserve(1 + sizeof(std::uint32_t) + sizeof(std::uint32_t) + label.size());
+    appendPod(out, static_cast<std::uint8_t>(AgentRequestTag::SubmitCommand));
+    appendPod(out, requestId);
+    appendPod(out, static_cast<std::uint32_t>(label.size()));
+    const auto offset = out.size();
+    out.resize(offset + label.size());
+    if (!label.empty()) {
+        std::memcpy(out.data() + offset, label.data(), label.size());
+    }
+    return out;
+}
+
+std::vector<std::byte>
+encodeCommandResultResponse(std::uint32_t requestId, bool accepted) {
+    std::vector<std::byte> out;
+    out.reserve(1 + sizeof(std::uint32_t) + 1);
+    appendPod(out, static_cast<std::uint8_t>(AgentResponseTag::CommandResult));
+    appendPod(out, requestId);
+    appendPod(out, static_cast<std::uint8_t>(accepted ? 1 : 0));
+    return out;
+}
+
+std::vector<std::byte>
 encodeEngineSnapshotResponse(std::uint32_t requestId,
                              std::optional<EngineFrameSummary> summary) {
     std::vector<std::byte> out;
@@ -102,6 +130,9 @@ decodeAgentResponse(std::span<const std::byte> bytes) {
                 }
             }
             return out;
+        case AgentResponseTag::CommandResult:
+            // ok byte already consumed; no extra payload.
+            return out;
     }
     return std::nullopt;
 }
@@ -112,6 +143,30 @@ decodeAgentResponse(std::span<const std::byte> bytes) {
 StudioAgent::StudioAgent(network::ITransport& transport,
                         IStudioDataSource& source) noexcept
     : transport_(&transport), source_(&source) {}
+
+void StudioAgent::setCommandStack(editor::CommandStack* stack) noexcept {
+    commandStack_ = stack;
+}
+
+bool StudioAgent::registerCommandFactory(std::string label,
+                                        CommandFactory factory) {
+    auto [it, inserted] = commandFactories_.emplace(std::move(label),
+                                                    std::move(factory));
+    if (!inserted) {
+        it->second = std::move(factory);
+    }
+    return inserted;
+}
+
+bool StudioAgent::dispatchCommand_(std::string_view label) {
+    if (commandStack_ == nullptr) return false;
+    auto it = commandFactories_.find(std::string(label));
+    if (it == commandFactories_.end()) return false;
+    auto cmd = it->second();
+    if (!cmd) return false;
+    commandStack_->execute(std::move(cmd));
+    return true;
+}
 
 std::size_t StudioAgent::pump() {
     if (transport_ == nullptr || source_ == nullptr) return 0;
@@ -151,6 +206,25 @@ void StudioAgent::handleRequest_(network::PeerId from,
         case AgentRequestTag::GetEngineSnapshot: {
             auto response = encodeEngineSnapshotResponse(
                 requestId, source_->engineSnapshot());
+            const network::PacketView view{response.data(), response.size()};
+            if (transport_->send(from, view)) {
+                bytesSent_ += response.size();
+            }
+            return;
+        }
+        case AgentRequestTag::SubmitCommand: {
+            std::uint32_t labelLen{};
+            if (!readPod(bytes, labelLen)) return;
+            if (bytes.size() < labelLen) return;
+            const std::string_view label{
+                reinterpret_cast<const char*>(bytes.data()), labelLen};
+            const bool accepted = dispatchCommand_(label);
+            if (accepted) {
+                ++commandsApplied_;
+            } else {
+                ++commandsRejected_;
+            }
+            auto response = encodeCommandResultResponse(requestId, accepted);
             const network::PacketView view{response.data(), response.size()};
             if (transport_->send(from, view)) {
                 bytesSent_ += response.size();

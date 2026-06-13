@@ -31,6 +31,16 @@ std::uint32_t RemoteDataSource::requestEngineSnapshot() {
     return requestId;
 }
 
+bool RemoteDataSource::submitCommand(std::string_view label) {
+    if (transport_ == nullptr) return false;
+    const auto requestId = nextRequestId_++;
+    const auto bytes = encodeSubmitCommandRequest(requestId, label);
+    const network::PacketView view{bytes.data(), bytes.size()};
+    if (!transport_->send(agentPeer_, view)) return false;
+    lastCommandRequestId_ = requestId;
+    return true;
+}
+
 std::size_t RemoteDataSource::pump() {
     if (transport_ == nullptr) return 0;
 
@@ -58,6 +68,10 @@ std::size_t RemoteDataSource::pump() {
                     } else {
                         engineSnapshotCache_.reset();
                     }
+                    break;
+                case AgentResponseTag::CommandResult:
+                    lastCommandAccepted_ = decoded->ok;
+                    ++commandResponsesReceived_;
                     break;
             }
         }
