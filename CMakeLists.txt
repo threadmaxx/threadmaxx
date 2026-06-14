@@ -309,6 +309,13 @@ if (THREADMAXX_BUILD_EDITOR)
             GIT_SHALLOW TRUE
         )
         FetchContent_MakeAvailable(threadmaxx_imgui)
+        # Publish the fetched source dir as a globally-visible cache var
+        # so a parent build (e.g. gothic_like_threadmaxx pulling
+        # examples/vulkan_renderer separately) can locate the
+        # imgui_impl_vulkan.cpp / imgui_impl_glfw.cpp backend
+        # translation units.
+        set(THREADMAXX_IMGUI_SOURCE_DIR "${threadmaxx_imgui_SOURCE_DIR}"
+            CACHE INTERNAL "Resolved imgui source directory")
         if (NOT TARGET imgui)
             # imgui's repo doesn't ship a CMakeLists; assemble one.
             add_library(imgui STATIC

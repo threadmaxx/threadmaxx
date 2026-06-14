@@ -271,6 +271,39 @@ public:
     /// the flag back on).
     void setUiOverlayEnabled(bool enabled) noexcept;
 
+    /// 2026-06-15 — opt-in Dear ImGui integration (dynamic-rendering
+    /// path). Available only when threadmaxx was built with the editor's
+    /// ImGui FetchContent option turned on (the static library auto-
+    /// defines `THREADMAXX_VK_HAS_IMGUI=1` in that case). When the
+    /// define is absent, every method below is a no-op and returns
+    /// `false` / does nothing, so hosts can compile against the public
+    /// API regardless of how the engine was built.
+    ///
+    /// Lifecycle:
+    ///   1. `vk.initialize()`            ← renderer up.
+    ///   2. `vk.initializeImGui()`        ← creates the ImGui context,
+    ///                                       wires the GLFW + Vulkan
+    ///                                       backends, uploads the
+    ///                                       default font texture.
+    ///   3. each tick, BEFORE the panel widgets are built:
+    ///         `vk.beginImGuiFrame();`
+    ///         // host calls `ImGui::Begin(...) / Text / End`
+    ///         `vk.endImGuiFrame();`   // ImGui::Render()
+    ///   4. `engine.step()` → `submitFrame()` paints the cached
+    ///      ImDrawData onto the swapchain inside the same dynamic-
+    ///      rendering pass that draws the world.
+    ///   5. `vk.shutdownImGui();`        ← before `vk.shutdown()`.
+    ///                                     idempotent.
+    ///
+    /// Threading: all sim-thread, same as the rest of `IRenderer`.
+    bool initializeImGui();
+    void beginImGuiFrame() noexcept;
+    void endImGuiFrame() noexcept;
+    void shutdownImGui() noexcept;
+    /// True between a successful `initializeImGui()` and a matching
+    /// `shutdownImGui()` (or `shutdown()`).
+    bool imguiInitialized() const noexcept;
+
     /// §3.11.7b.5 batch 9b.4.b — upload the per-frame bone matrices.
     /// `matrices` is a packed array of `mat4` values, column-major
     /// (Vulkan std140 convention). The renderer copies into the

@@ -20,6 +20,12 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -303,6 +309,18 @@ struct VulkanRenderer::Impl {
     // `Subscription` dtor removes the listener in `~Impl`.
     threadmaxx::Subscription reloadSub;
 
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    // 2026-06-15 — opt-in ImGui state. `imguiInitialized` flips true
+    // after `VulkanRenderer::initializeImGui()` runs; the per-frame
+    // draw inside `recordFrame` gates on it. `imguiDescriptorPool` is
+    // a tiny dedicated pool ImGui's Vulkan backend allocates its font
+    // texture descriptor out of (separate from the renderer's own
+    // background / foreground / UI pools).
+    bool             imguiInitialized   = false;
+    bool             imguiOwnsContext   = false;  // we ImGui::CreateContext'd it
+    VkDescriptorPool imguiDescriptorPool = VK_NULL_HANDLE;
+#endif
+
     // §3.11.7b.5 batch 9b.4.b — helpers.
     /// Ensure the bone descriptor pool + per-frame descriptor sets
     /// exist. Idempotent; called once in `initialize()` after
@@ -439,6 +457,13 @@ void VulkanRenderer::shutdown() {
     if (!impl_) return;
 
     if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+
+    // 2026-06-15 — auto-tear-down the ImGui backend if it's still up
+    // (host that forgot the explicit `shutdownImGui()` call). Safe to
+    // run before our descriptor pools / pipelines go away because
+    // ImGui's backend only references the device + descriptor pool we
+    // gave it.
+    shutdownImGui();
 
     // Release loader-owned GPU memory while the context is still live.
     // The engine's later onShutdown pass — which fires after IRenderer
@@ -1729,6 +1754,21 @@ void VulkanRenderer::Impl::recordFrame(VkCommandBuffer cmd, std::uint32_t imageI
         vkCmdDraw(cmd, 6, 1, 0, 0);
     }
 
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    // 2026-06-15 — Dear ImGui dynamic-rendering pass. Hosts that opted
+    // in via `initializeImGui()` AND called `endImGuiFrame()` for the
+    // current tick have a fresh `ImDrawData` cached on the singleton
+    // ImGui context; paint it here, inside the same dynamic-rendering
+    // pass as the world. Skipped silently if no draw data is available
+    // (caller forgot endImGuiFrame, or `DisplaySize` was zero).
+    if (imguiInitialized) {
+        ImDrawData* dd = ImGui::GetDrawData();
+        if (dd != nullptr && dd->Valid && dd->TotalVtxCount > 0) {
+            ImGui_ImplVulkan_RenderDrawData(dd, cmd);
+        }
+    }
+#endif
+
     vkCmdEndRendering(cmd);
 
     // Color: COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR
@@ -2008,6 +2048,181 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
                            sizeof(push), &push);
         vkCmdDraw(cmd, 6, 1, 0, 0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 2026-06-15 — Dear ImGui integration (dynamic-rendering path)
+// ---------------------------------------------------------------------------
+//
+// The renderer keeps its own swapchain + dynamic-rendering pass; ImGui is
+// asked to draw into THAT pass via `imgui_impl_vulkan`'s dynamic-rendering
+// mode. The host (gothic_game / unit tests) opts in by calling
+// `initializeImGui()` after `initialize()`, builds widgets each tick
+// between `beginImGuiFrame()` / `endImGuiFrame()`, and the actual
+// `vkCmdDrawIndexed` calls land inside `recordFrame` right after the
+// UI overlay quad and before `vkCmdEndRendering`.
+
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+
+namespace {
+
+// ImGui's Vulkan backend needs a descriptor pool sized for its font
+// texture (and potentially user textures). 64 slots per type is the
+// "examples/example_glfw_vulkan/main.cpp" recipe; we follow it.
+constexpr std::uint32_t kImGuiPoolSize = 64;
+
+VkDescriptorPool createImGuiDescriptorPool(VkDevice device) {
+    VkDescriptorPoolSize sizes[] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kImGuiPoolSize},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          kImGuiPoolSize},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kImGuiPoolSize},
+    };
+    VkDescriptorPoolCreateInfo pi = {};
+    pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pi.maxSets       = kImGuiPoolSize * 3u;
+    pi.poolSizeCount = static_cast<std::uint32_t>(std::size(sizes));
+    pi.pPoolSizes    = sizes;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(device, &pi, nullptr, &pool) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    return pool;
+}
+
+} // namespace
+
+#endif // THREADMAXX_VK_HAS_IMGUI
+
+bool VulkanRenderer::initializeImGui() {
+#if !defined(THREADMAXX_VK_HAS_IMGUI)
+    return false;
+#else
+    if (!impl_ || impl_->ctx.device() == VK_NULL_HANDLE) return false;
+    if (impl_->imguiInitialized) return true;
+
+    // Create an ImGui context if the host hasn't already. Either path
+    // is fine — `imguiOwnsContext` records who's responsible for the
+    // matching `DestroyContext`.
+    if (ImGui::GetCurrentContext() == nullptr) {
+        ImGui::CreateContext();
+        impl_->imguiOwnsContext = true;
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.LogFilename = nullptr;
+    }
+
+    impl_->imguiDescriptorPool = createImGuiDescriptorPool(impl_->ctx.device());
+    if (impl_->imguiDescriptorPool == VK_NULL_HANDLE) {
+        std::fprintf(stderr, "[vulkan_renderer] ImGui descriptor pool alloc failed\n");
+        if (impl_->imguiOwnsContext) {
+            ImGui::DestroyContext();
+            impl_->imguiOwnsContext = false;
+        }
+        return false;
+    }
+
+    if (!ImGui_ImplGlfw_InitForVulkan(impl_->window, /*install_callbacks=*/false)) {
+        std::fprintf(stderr, "[vulkan_renderer] ImGui_ImplGlfw_InitForVulkan failed\n");
+        vkDestroyDescriptorPool(impl_->ctx.device(),
+                                impl_->imguiDescriptorPool, nullptr);
+        impl_->imguiDescriptorPool = VK_NULL_HANDLE;
+        if (impl_->imguiOwnsContext) {
+            ImGui::DestroyContext();
+            impl_->imguiOwnsContext = false;
+        }
+        return false;
+    }
+
+    const VkFormat colorFmt = impl_->swapchain.colorFormat();
+    VkPipelineRenderingCreateInfo dynRendering = {};
+    dynRendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    dynRendering.colorAttachmentCount    = 1;
+    dynRendering.pColorAttachmentFormats = &colorFmt;
+    dynRendering.depthAttachmentFormat   = VK_FORMAT_UNDEFINED;
+
+    ImGui_ImplVulkan_InitInfo vi = {};
+    vi.Instance        = impl_->ctx.instance();
+    vi.PhysicalDevice  = impl_->ctx.physicalDevice();
+    vi.Device          = impl_->ctx.device();
+    vi.QueueFamily     = impl_->ctx.graphicsQueueIndex();
+    vi.Queue           = impl_->ctx.graphicsQueue();
+    vi.DescriptorPool  = impl_->imguiDescriptorPool;
+    vi.MinImageCount   = impl_->cfg.framesInFlight;
+    vi.ImageCount      = impl_->cfg.framesInFlight;
+    vi.MSAASamples     = VK_SAMPLE_COUNT_1_BIT;
+    vi.UseDynamicRendering         = true;
+    vi.PipelineRenderingCreateInfo = dynRendering;
+
+    if (!ImGui_ImplVulkan_Init(&vi)) {
+        std::fprintf(stderr, "[vulkan_renderer] ImGui_ImplVulkan_Init failed\n");
+        ImGui_ImplGlfw_Shutdown();
+        vkDestroyDescriptorPool(impl_->ctx.device(),
+                                impl_->imguiDescriptorPool, nullptr);
+        impl_->imguiDescriptorPool = VK_NULL_HANDLE;
+        if (impl_->imguiOwnsContext) {
+            ImGui::DestroyContext();
+            impl_->imguiOwnsContext = false;
+        }
+        return false;
+    }
+
+    // ImGui v1.91.x uploads font textures lazily on the first
+    // `ImGui_ImplVulkan_NewFrame()` call — explicit call here is
+    // optional but lets us fail loudly at boot if the font upload
+    // path is broken.
+    ImGui_ImplVulkan_CreateFontsTexture();
+
+    impl_->imguiInitialized = true;
+    return true;
+#endif
+}
+
+void VulkanRenderer::beginImGuiFrame() noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return;
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+#endif
+}
+
+void VulkanRenderer::endImGuiFrame() noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return;
+    // Build draw data; cached internally by ImGui until the next
+    // `ImGui::NewFrame()`. `submitFrame`'s inner `recordFrame` reads
+    // it via `ImGui::GetDrawData()`.
+    ImGui::Render();
+#endif
+}
+
+void VulkanRenderer::shutdownImGui() noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_) return;
+    if (!impl_->imguiInitialized) return;
+    if (impl_->ctx.device()) vkDeviceWaitIdle(impl_->ctx.device());
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    if (impl_->imguiDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(impl_->ctx.device(),
+                                impl_->imguiDescriptorPool, nullptr);
+        impl_->imguiDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (impl_->imguiOwnsContext) {
+        ImGui::DestroyContext();
+        impl_->imguiOwnsContext = false;
+    }
+    impl_->imguiInitialized = false;
+#endif
+}
+
+bool VulkanRenderer::imguiInitialized() const noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    return impl_ && impl_->imguiInitialized;
+#else
+    return false;
+#endif
 }
 
 } // namespace threadmaxx_vk

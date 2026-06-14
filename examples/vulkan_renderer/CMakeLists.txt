@@ -97,6 +97,48 @@ target_link_libraries(threadmaxx_vulkan_renderer
         glfw
 )
 
+# 2026-06-15 — opt-in Dear ImGui integration. When the editor's
+# FetchContent block already pulled `imgui`, compile its Vulkan + GLFW
+# backend translation units into THIS library and define
+# `THREADMAXX_VK_HAS_IMGUI=1` so VulkanRenderer.cpp lights up its
+# ImGui submit path. Without the editor's fetch the renderer compiles
+# cleanly without ImGui (legacy behaviour).
+if (TARGET imgui)
+    # imgui_impl_vulkan.cpp + imgui_impl_glfw.cpp live in the
+    # FetchContent source dir's `backends/` directory. The root
+    # CMakeLists.txt publishes `THREADMAXX_IMGUI_SOURCE_DIR` as a
+    # CACHE INTERNAL var; falling back to the directly-scoped
+    # `threadmaxx_imgui_SOURCE_DIR` in case this file is included
+    # right next to the FetchContent block.
+    set(_VK_IMGUI_DIR "")
+    if (DEFINED THREADMAXX_IMGUI_SOURCE_DIR)
+        set(_VK_IMGUI_DIR "${THREADMAXX_IMGUI_SOURCE_DIR}")
+    elseif (DEFINED threadmaxx_imgui_SOURCE_DIR)
+        set(_VK_IMGUI_DIR "${threadmaxx_imgui_SOURCE_DIR}")
+    else()
+        message(FATAL_ERROR
+            "[vulkan_renderer] imgui target present but its source dir is unset")
+    endif()
+    target_sources(threadmaxx_vulkan_renderer PRIVATE
+        ${_VK_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+        ${_VK_IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    )
+    target_include_directories(threadmaxx_vulkan_renderer PRIVATE
+        ${_VK_IMGUI_DIR}/backends
+    )
+    target_link_libraries(threadmaxx_vulkan_renderer PUBLIC imgui)
+    target_compile_definitions(threadmaxx_vulkan_renderer PUBLIC
+        THREADMAXX_VK_HAS_IMGUI=1)
+    # ImGui's backends are not strict-warning-clean.
+    if (NOT MSVC)
+        set_source_files_properties(
+            ${_VK_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+            ${_VK_IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+            PROPERTIES COMPILE_OPTIONS
+            "-Wno-old-style-cast;-Wno-conversion;-Wno-sign-conversion;-Wno-shadow;-Wno-cast-qual")
+    endif()
+endif()
+
 # §3.11 batch 9b.3 — bake the per-build .spv directory so the
 # `ShaderLoader` can re-read shader bytecode from disk when a hot
 # reload fires. Without this the renderer would only see the embedded
