@@ -5,6 +5,7 @@ set(THREADMAXX_ASSETS_TESTS
     test_assets_io_round_trip
     test_assets_obj_cube
     test_assets_obj_smoothed_normals
+    test_assets_gltf
     test_assets_ply_binary
     test_assets_inflate_unit
     test_assets_bmp

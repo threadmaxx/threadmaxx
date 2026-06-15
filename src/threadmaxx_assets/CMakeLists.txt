@@ -5,12 +5,15 @@ set(THREADMAXX_ASSETS_PUBLIC_HEADERS
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/version.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/audio.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/font.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/gltf.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/mesh.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/data/texture.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/detail/inflate.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/detail/io.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/detail/minimal_json.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/bmfont.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/bmp.hpp
+    ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/gltf.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/obj.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/ply.hpp
     ${PROJECT_SOURCE_DIR}/include/threadmaxx_assets/loaders/png.hpp
@@ -31,6 +34,7 @@ set(THREADMAXX_ASSETS_SOURCES
     detail/Inflate.cpp
     loaders/Bmfont.cpp
     loaders/Bmp.cpp
+    loaders/Gltf.cpp
     loaders/Obj.cpp
     loaders/Ply.cpp
     loaders/Png.cpp
