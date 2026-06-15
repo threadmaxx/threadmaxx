@@ -88,6 +88,12 @@ struct VulkanRenderer::Impl {
     VulkanFrameRing frames;
     VulkanPipelines pipes;
 
+    // Idempotency guard. Hosts that need the mesh loader online before
+    // their `onSetup` runs (game-side mesh registration) may call
+    // `initialize()` themselves; the engine will then call it again
+    // after `onSetup`, and that second call must be a clean no-op.
+    bool initialized = false;
+
     // Non-owning: the engine owns each loader's unique_ptr.
     MeshLoader*    meshLoader    = nullptr;
     TextureLoader* textureLoader = nullptr;
@@ -372,6 +378,7 @@ VulkanRenderer::VulkanRenderer(threadmaxx::Engine* engine,
 VulkanRenderer::~VulkanRenderer() = default;
 
 bool VulkanRenderer::initialize() {
+    if (impl_->initialized) return true;
     if (const char* env = std::getenv("THREADMAXX_VK_PROFILE")) {
         impl_->profileEnabled = (env[0] != '\0' && env[0] != '0');
     }
@@ -450,6 +457,7 @@ bool VulkanRenderer::initialize() {
             }
         });
 
+    impl_->initialized = true;
     return true;
 }
 
@@ -521,6 +529,7 @@ void VulkanRenderer::shutdown() {
     impl_->frames.destroy(impl_->ctx);
     impl_->swapchain.destroy(impl_->ctx);
     impl_->ctx.shutdown();
+    impl_->initialized = false;
 }
 
 void VulkanRenderer::onResize(std::uint32_t width, std::uint32_t height) {
@@ -569,12 +578,13 @@ std::int32_t VulkanRenderer::registerSkinnedMeshFromData(
     std::span<const std::uint16_t> indices) noexcept {
     // §3.11.7b.5 batch 9b.4.b — same upload path as `createMesh`,
     // but the resulting handle goes into the skinned slot table.
-    // We don't check the per-vertex stride here (the input is a flat
-    // float span); callers must match the skinned pipeline's 56-byte
-    // layout (14 floats per vertex). A regression in that contract
-    // would surface as Vulkan validation errors or garbage geometry.
+    // The skinned pipeline binds a 56-byte vertex (pos[3]+normal[3]+
+    // boneIDs[4]u32+boneWeights[4]f = 14 floats), so we pass that
+    // stride explicitly — `createMesh`'s default is 6 (unskinned).
     if (!impl_->meshLoader || !impl_->engine) return -1;
-    auto handle = impl_->meshLoader->createMesh(*impl_->engine, vertices, indices);
+    auto handle = impl_->meshLoader->createMesh(*impl_->engine, vertices,
+                                                indices,
+                                                /*vertexStrideFloats=*/14);
     if (!handle.valid()) return -1;
     impl_->skinnedMeshSlots.push_back(std::move(handle));
     return static_cast<std::int32_t>(impl_->skinnedMeshSlots.size());

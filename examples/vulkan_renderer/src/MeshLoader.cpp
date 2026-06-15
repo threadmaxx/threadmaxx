@@ -115,12 +115,14 @@ threadmaxx::ResourceHandle<Mesh> MeshLoader::createUnitCube(threadmaxx::Engine& 
 threadmaxx::ResourceHandle<Mesh> MeshLoader::createMesh(
     threadmaxx::Engine&             engine,
     std::span<const float>          vertices,
-    std::span<const std::uint16_t>  indices) {
+    std::span<const std::uint16_t>  indices,
+    std::uint32_t                   vertexStrideFloats) {
 
     if (vertices.empty() || indices.empty()) {
         return threadmaxx::ResourceHandle<Mesh>{};
     }
-    if ((vertices.size() % 6u) != 0u) {
+    if (vertexStrideFloats == 0u
+        || (vertices.size() % vertexStrideFloats) != 0u) {
         return threadmaxx::ResourceHandle<Mesh>{};
     }
     if ((indices.size() % 3u) != 0u) {

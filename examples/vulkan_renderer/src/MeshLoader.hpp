@@ -39,14 +39,20 @@ public:
     /// resource registry, and returns the handle. The loader tracks
     /// the GPU memory so it can be freed at shutdown.
     ///
-    /// @pre Vulkan context is up. @pre vertices.size() % 6 == 0.
-    /// @pre indices.size() % 3 == 0 and indices contains only values
-    /// within `[0, vertices.size() / 6)`. Inputs that fail these
-    /// preconditions return an invalid handle.
+    /// @pre Vulkan context is up. @pre vertices.size() %
+    /// `vertexStrideFloats` == 0. @pre indices.size() % 3 == 0 and
+    /// indices contains only values within
+    /// `[0, vertices.size() / vertexStrideFloats)`. Inputs that fail
+    /// these preconditions return an invalid handle.
+    ///
+    /// `vertexStrideFloats` defaults to 6 for the legacy unskinned
+    /// 24-byte vertex (pos[3]+normal[3]). The skinned 56-byte vertex
+    /// (pos[3]+normal[3]+boneIDs[4]u32+boneWeights[4]f) needs 14.
     threadmaxx::ResourceHandle<Mesh> createMesh(
         threadmaxx::Engine&             engine,
         std::span<const float>          vertices,
-        std::span<const std::uint16_t>  indices);
+        std::span<const std::uint16_t>  indices,
+        std::uint32_t                   vertexStrideFloats = 6);
 
     /// Called by @ref VulkanRenderer::shutdown immediately after
     /// `vkDeviceWaitIdle` and before the Vulkan context is destroyed.
