@@ -2225,4 +2225,70 @@ bool VulkanRenderer::imguiInitialized() const noexcept {
 #endif
 }
 
+void VulkanRenderer::forwardGlfwKey(int key, int scancode, int action,
+                                    int mods) noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return;
+    ImGui_ImplGlfw_KeyCallback(impl_->window, key, scancode, action, mods);
+#else
+    (void)key; (void)scancode; (void)action; (void)mods;
+#endif
+}
+
+void VulkanRenderer::forwardGlfwMouseButton(int button, int action,
+                                            int mods) noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return;
+    ImGui_ImplGlfw_MouseButtonCallback(impl_->window, button, action, mods);
+#else
+    (void)button; (void)action; (void)mods;
+#endif
+}
+
+void VulkanRenderer::forwardGlfwCursorPos(double x, double y) noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return;
+    ImGui_ImplGlfw_CursorPosCallback(impl_->window, x, y);
+#else
+    (void)x; (void)y;
+#endif
+}
+
+void VulkanRenderer::forwardGlfwScroll(double xoffset,
+                                       double yoffset) noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return;
+    ImGui_ImplGlfw_ScrollCallback(impl_->window, xoffset, yoffset);
+#else
+    (void)xoffset; (void)yoffset;
+#endif
+}
+
+void VulkanRenderer::forwardGlfwChar(unsigned int codepoint) noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return;
+    ImGui_ImplGlfw_CharCallback(impl_->window, codepoint);
+#else
+    (void)codepoint;
+#endif
+}
+
+bool VulkanRenderer::imguiWantsMouse() const noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return false;
+    return ImGui::GetIO().WantCaptureMouse;
+#else
+    return false;
+#endif
+}
+
+bool VulkanRenderer::imguiWantsKeyboard() const noexcept {
+#if defined(THREADMAXX_VK_HAS_IMGUI)
+    if (!impl_ || !impl_->imguiInitialized) return false;
+    return ImGui::GetIO().WantCaptureKeyboard;
+#else
+    return false;
+#endif
+}
+
 } // namespace threadmaxx_vk

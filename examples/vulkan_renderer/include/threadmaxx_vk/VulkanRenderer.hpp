@@ -304,6 +304,26 @@ public:
     /// `shutdownImGui()` (or `shutdown()`).
     bool imguiInitialized() const noexcept;
 
+    /// 2026-06-15 — GLFW event forwarding. `ImGui_ImplGlfw_InitForVulkan`
+    /// is called with `install_callbacks=false` so the host's pre-existing
+    /// GLFW callbacks (game input, resize, etc.) are preserved. The host
+    /// MUST forward each GLFW event into the matching helper below; ImGui
+    /// otherwise sees no input and on-screen panels become un-clickable.
+    /// All helpers are safe no-ops when ImGui isn't initialized.
+    ///
+    /// `imguiWantsMouse()` / `imguiWantsKeyboard()` mirror
+    /// `ImGuiIO::WantCaptureMouse` / `WantCaptureKeyboard`; the host
+    /// uses them to gate whether the same event should also reach the
+    /// game's input layer (so a click on a panel doesn't also swing the
+    /// player's sword).
+    void forwardGlfwKey(int key, int scancode, int action, int mods) noexcept;
+    void forwardGlfwMouseButton(int button, int action, int mods) noexcept;
+    void forwardGlfwCursorPos(double x, double y) noexcept;
+    void forwardGlfwScroll(double xoffset, double yoffset) noexcept;
+    void forwardGlfwChar(unsigned int codepoint) noexcept;
+    bool imguiWantsMouse() const noexcept;
+    bool imguiWantsKeyboard() const noexcept;
+
     /// §3.11.7b.5 batch 9b.4.b — upload the per-frame bone matrices.
     /// `matrices` is a packed array of `mat4` values, column-major
     /// (Vulkan std140 convention). The renderer copies into the
