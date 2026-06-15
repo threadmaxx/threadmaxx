@@ -151,6 +151,18 @@ CharacterController::CharacterController(IPhysicsBackend& backend,
 }
 
 void CharacterController::move(const CharacterInput& input, float dt) {
+    // Snapshot grounded state at tick start. Walking down a slope at
+    // non-trivial horizontal speed temporarily separates capsule center
+    // from the new floor by `horizDist * tan(slope)`, which is well
+    // outside the standard ground probe's `restingDistance + eps` reach
+    // — `probeRestY` returns nullopt, grounded flips to false, and the
+    // CharacterRender system fires the Jump_Loop clip on flat-ish
+    // terrain. Symmetric to step-up: if we were grounded last tick AND
+    // we didn't jump, allow the post-move probe to snap down by up to
+    // `stepHeight` so descending slopes (and tiny single-tick drops at
+    // ledges) stay grounded.
+    const bool wasGrounded = state_.grounded;
+
     // === 1. Horizontal intent → world-frame velocity ===
     Vec3 horizIntent{input.moveIntent.x, 0.0f, input.moveIntent.z};
     const float intentMag = vec3Length(horizIntent);
@@ -279,6 +291,26 @@ void CharacterController::move(const CharacterInput& input, float dt) {
         if (restY.has_value()) {
             state_.grounded = true;
             newPos.y = *restY;
+        } else if (wasGrounded && !input.jump && desc_.stepHeight > 0.0f) {
+            // Stick-to-floor extended probe: capsule center is currently
+            // up to `stepHeight` above where the new floor wants it.
+            // Probe an extra `stepHeight` below resting and snap down
+            // on hit. Mirrors the step-up reach used in horizontal
+            // motion.
+            const float restingDistance = desc_.height * 0.5f - desc_.radius;
+            const float extendedMax = restingDistance
+                                    + desc_.stepHeight
+                                    + kGroundProbeEps;
+            auto hit = sweepDown(*backend_, world_, desc_, newPos, extendedMax);
+            if (hit.has_value()) {
+                const float sphereCenterAfter = newPos.y - hit->distance;
+                const float contactY = sphereCenterAfter - desc_.radius;
+                newPos.y = contactY + desc_.height * 0.5f;
+                state_.velocity.y = 0.0f;
+                state_.grounded = true;
+            } else {
+                state_.grounded = false;
+            }
         } else {
             state_.grounded = false;
         }
