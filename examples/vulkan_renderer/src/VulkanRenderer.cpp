@@ -1961,7 +1961,13 @@ void VulkanRenderer::Impl::recordCamera(VkCommandBuffer cmd,
                 ? lookupSkinnedMesh(g.meshId)
                 : lookupMesh(g.meshId);
             if (!mesh || !mesh->gpuReady) continue;
-            if (g.skinned && pf.boneDescriptorSet == VK_NULL_HANDLE) continue;
+            // Skinned draws need both the descriptor SET (allocated)
+            // AND the SSBO data written. `boneSize == 0` means no
+            // `setBoneMatrices` has landed yet for this frame slot —
+            // the descriptor points to junk and the GPU would read
+            // garbage. Skip silently; future ticks may upload bones.
+            if (g.skinned && (pf.boneDescriptorSet == VK_NULL_HANDLE
+                              || pf.boneSize == 0)) continue;
 
             // Bind / switch pipeline + push constants if needed.
             const Bound need = g.skinned ? Bound::OpaqueSkinned : Bound::Opaque;
