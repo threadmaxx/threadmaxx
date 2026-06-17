@@ -186,6 +186,12 @@ real regressions. They are still listed below for completeness.
 - ✓ `writeJsonLines` — `frame_snapshot_test.cpp`
 - ✓ `ChromeTraceWriter` — `chrome_trace_test.cpp`, `async_snapshot_test.cpp`
 
+## CommitBreakdown.hpp (SHARDED_OPTIMISATION.md S0)
+- ✓ `Engine::lastCommitBreakdown()` accessor — `migration_batch_test.cpp`, `workload_aware_commit_test.cpp`
+- ✓ S6 `batchedMigrations` counter — `migration_batch_test.cpp`
+- ✓ S16 `workloadAwareFallthrough` counter + `fallbackCalls` bookkeeping — `workload_aware_commit_test.cpp`
+- ✓ Pass A/B/C wall-clock fields populated when sharded path runs in full; zero on fallback paths — `sharded_commit_test.cpp` exercises every code-path that contributes to the breakdown.
+
 ## Tuning.hpp (ADAPTIVE_TUNING.md T4)
 - ✓ `ITuningPolicy::observe` / `propose` pump cadence — `tuning_patch_application_test.cpp`
 - ✓ `TuningPatch` + `SystemGrainOverride` end-to-end (applied next-tick, before preStep) — `tuning_patch_application_test.cpp`
@@ -267,7 +273,7 @@ real regressions. They are still listed below for completeness.
 
 ## threadmaxx.hpp
 - Umbrella header. Covered by every test that `#include`s it (e.g. `alpha_test.cpp`).
-- Note: `Telemetry.hpp` is intentionally NOT in the umbrella; users must include it explicitly. Doc clarification candidate, not a code gap.
+- Note: `Telemetry.hpp` is included via the umbrella (Q1, 2026-06-17). The earlier audit note about it being intentionally excluded is no longer accurate — the explicit-include workaround is no longer required.
 
 ---
 
@@ -309,18 +315,16 @@ real regressions. They are still listed below for completeness.
 | render/UploadRing.hpp | 9 | 9 | 0 | 0 |
 | render/Visibility.hpp | 5 | 5 | 0 | 0 |
 
-**Load-bearing gaps requiring new tests (6):**
-1. `Bundle::with<T>` — batch-22 builder method; never exercised.
-2. `Engine::clearScriptedSkips` — needed for session boundaries.
-3. `forEachSerial<...>` — documented public iteration path; not exercised.
-4. `EngineStats::engineBuildRenderFrameSeconds` / `renderSubmitSeconds` — new 2026-05-20 instrumentation split.
-5. `World::tryGetAnimationStateRef` / `tryGetPhysicsBodyRef` / `tryGetNavAgentRef` / `tryGetBoundingVolume` — sister accessors for batch-5 components.
-6. `Viewport` (render/Camera.hpp) — batch-D2 multi-camera viewport field; round-trip never asserted.
+**Load-bearing gaps requiring new tests:** none open. The six gaps that
+B32 originally flagged were all closed in the same milestone (see the
+"B32 close-out" §). Post-B32 audit refreshes (Q6, 2026-06-17) added
+`CommitBreakdown.hpp` to the audit and confirmed `lastCommitBreakdown()`
++ all post-S0 counters are exercised.
 
 **Trivial gaps (sister getters, default-empty virtuals, named-vs-fielded
-exposure) total ~18 and don't block B32.** Most could be folded into existing
-tests in a 3- to 10-line extension each, but they're correctness-by-inspection
-items, not behavior regressions waiting to happen.
+exposure) total ~18.** Most could be folded into existing tests in a 3-
+to 10-line extension each, but they're correctness-by-inspection items,
+not behavior regressions waiting to happen.
 
-**Telemetry.hpp doc note:** not included in the `threadmaxx.hpp` umbrella;
-worth either adding it or documenting the intentional omission.
+**Telemetry.hpp:** included via the umbrella as of Q1 (2026-06-17).
+No longer requires an explicit include.
