@@ -28,6 +28,7 @@
 #include "threadmaxx/SkipPolicy.hpp"
 #include "threadmaxx/Telemetry.hpp"
 #include "threadmaxx/Trace.hpp"
+#include "threadmaxx/version.hpp"
 
 #include <cstring>
 
@@ -928,6 +929,28 @@ bool EngineImpl::initialize(IGame& game, Engine& publicEngine) {
            << " worker(s), fixedStep=" << cfg_.fixedStepSeconds << "s";
         logger().log(LogLevel::Info, os.str());
     }
+
+    // §3.6 batch 30 — one-shot deprecation warning for the v1.x
+    // byte-mix commit-hash path. Emitted at engine init so the user
+    // sees it once, not every tick. The flag is slated for removal
+    // one MINOR cycle after v1.3 ships per the threadmaxx deprecation
+    // policy; see `doc/migration_v1_2_to_v1_3.md` for the replacement
+    // hash contract.
+    if (cfg_.legacyCommitHash) {
+        logger().log(LogLevel::Warn,
+            "Config::legacyCommitHash = true selects the v1.x byte-mix "
+            "commit-hash path. This flag is transitional and is slated "
+            "for removal once the v1.3 floor ships. See "
+            "doc/migration_v1_2_to_v1_3.md for the replacement.");
+    }
+    // Make the deprecation removal a build-time forcing function: when
+    // v1.4 ships, this static_assert fires and forces the cleanup that
+    // CLAUDE.md's deprecation policy promises. Drop the legacy path,
+    // its tests, and the knob in the same PR that bumps version.hpp.
+    static_assert(THREADMAXX_VERSION < 10400,
+        "v1.4 has shipped — drop Config::legacyCommitHash and "
+        "tests/v1_2_legacy_commit_hash_test.cpp per the deprecation "
+        "policy in include/threadmaxx/version.hpp.");
 
     // Recreate the world with the configured capacity. The default-constructed
     // World used a hard-coded 1024; replace it so the user's config wins.
