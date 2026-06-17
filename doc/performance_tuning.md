@@ -138,7 +138,78 @@ For deterministic replay (lockstep / networked games), record the
 authoritative server's `SystemSkipped` events and replay them on the
 client with `SkipPolicy::Scripted` plus `pushScriptedSkip(tick, name)`.
 
-### 5. `Config::workerCount`
+### 5. `ISystem::preferredWorkerCap()` — per-system fan-out ceiling
+
+`preferredWorkerCap()` returning `N > 0` caps the number of parallel
+sub-jobs the engine dispatches for this system's `parallelFor` calls.
+The cap is a ceiling, not a floor: small workloads still pick fewer
+sub-jobs from the normal grain heuristic. Applies AFTER
+`preferredGrain` / caller-supplied `grain` — if either would produce
+more sub-jobs than the cap, grain is rounded up so the resulting
+sub-job count is at most `preferredWorkerCap()`.
+
+**When to use it.** D12-style profiling shows a system's per-sub-job
+work is small enough that `JobLatch` + cv-wakeup overhead dominates
+beyond a known worker count. The canonical example was rpg_demo's
+`CubeRenderSystem` at 71 workers: ~6 µs/sub-job over a 71-way fan-out
+where the apply itself was sub-µs. Capping at 8 workers landed at the
+D12 worker-sweep sweet spot.
+
+Default `0` is uncapped (fan out across the full pool). Like
+`preferredGrain()` the cap is read once per `update` invocation and
+pinned during the wave.
+
+### 6. Sharded-commit micro-knobs (S6 — S16)
+
+These are off-the-hot-path tuning knobs introduced in the
+`SHARDED_OPTIMISATION.md` sprint. They only do anything when
+`Config::singleThreadedCommit = false`. The defaults are tuned
+conservatively from the bench matrix; flip them only when a profile
+points specifically at the path each one controls.
+
+- **`batchMigrateThreshold` (S6, default `16`).** Per-buffer
+  run-length at which contiguous same-`(srcArch, dstMask)` mask-change
+  runs dispatch through `setMaskAndMigrateBatch`. Lowering below `4`
+  is not useful — the per-cmd path's branch predictor catches up.
+  Setting to `numeric_limits<uint32_t>::max()` fully disables
+  batching (the A/B baseline used by `bench/migration_bench`).
+- **`recordTimeRouting` (S8, default `true`).** Sharded-on only.
+  Toggles record-time per-chunk bucketing in the `CommandBuffer`.
+  Off, Pass A scans every command; on, it walks only the
+  migrating-index list. Effectively never want to turn this off in
+  production — it's the gate that makes sharded commit faster than
+  the serial path at all on routing-active workloads.
+- **`inlineLargestBin` (S9, default `true`).** Sharded-on only.
+  Pass C runs the single largest large-bin inline on sim. On
+  balanced workloads turns "sim waits for workers" into
+  "sim is a peer of workers"; latch wait drops to near zero.
+- **`splitLargestBin` (S10, default `false`, parked).** Off-by-
+  default row-partition of the largest bin into sub-bins. Default
+  off because the per-cmd classify cost (~25-30 ns/cmd) exceeds
+  the apply cost (~13.6 ns/cmd) on every measured workload. The
+  partitioner + `tests/pass_c_split_test.cpp` are preserved as the
+  fixed point for a future record-time row-bucketing revisit.
+- **`jobLatchSpinIters` (S11, default `4096`).** `JobLatch::wait()`
+  spins on the atomic "done" flag for up to this many iterations
+  before falling back to mutex+CV. Empirically `-22%` on
+  `setTransform/MultiArch` commit_us (Pass C wait
+  641 µs → 125 µs). Set to `0` for the legacy mutex+CV path on
+  CPU-conservative builds.
+- **`workloadAwareCommit` (S16, default `false`, opt-in).** Adds a
+  fourth pre-condition to `commitBuffersSharded`'s early-out: when
+  the global-command fraction meets `workloadAwareGlobalPercent`,
+  the call falls through to the per-buffer serial path. Lets the
+  engine pick single-vs-sharded per call without manual workload
+  classification. The default `workloadAwareGlobalPercent = 30`
+  trips on RPG-mix-shaped workloads (≈50% global) and stays out of
+  the way for `setTransform`-shaped ones (≈0% global).
+
+Determinism is preserved across every combination. The published
+`EngineStats::commitHash` is identical regardless of which knob is on
+or off — finalizeCommitHash sorts by `mask.bits()` before folding the
+per-archetype rollups, so lane execution order is irrelevant.
+
+### 7. `Config::workerCount`
 
 Default `0` = `max(1, hardware_concurrency - 1)`. The "minus one"
 leaves the sim thread its own core; on systems where the sim thread
@@ -279,6 +350,14 @@ Three failure modes that have come up in practice:
 - [Tracing](tracing.md) — JSON Lines + Chrome Trace event format.
 - [Migration v1 → v1.2](migration_v1_to_v1_2.md) — the v1.2 hash
   contract change and the `legacyCommitHash` opt-out.
+- [Migration v1.2 → v1.3](migration_v1_2_to_v1_3.md) — the per-
+  archetype-rollup hash contract that `legacyCommitHash = false`
+  selects by default.
 - `OPTIMIZATION_PATH.md` (top-level) — every Phase 8 batch's
   as-shipped numbers; `bench/profile_report.md` (batch 27) names
   the C1/C2/C3 inefficiencies the v1.2 batches attacked.
+- `SHARDED_OPTIMISATION.md` (top-level) — the S6/S8/S9/S10/S11/S16
+  batches with their bench tables and the diagnosis behind each
+  default.
+- `ADAPTIVE_TUNING.md` (top-level) — the Phase-T tuner and
+  `preferredWorkerCap()` rationale.
