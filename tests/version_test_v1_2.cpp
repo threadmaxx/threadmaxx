@@ -1,20 +1,25 @@
-// Batch 33 / v1.2 — pin the library version to 1.2.0.
+// Batch 33 / v1.2 — pin the v1.2 floor.
 //
 // Verifies the v1.2 floor:
 //   1. MAJOR ≥ 1, MINOR ≥ 2 (compile-time).
 //   2. Packed `THREADMAXX_VERSION` ≥ 10200.
-//   3. `version_string()` starts with "1.2." (the v1.2.x family).
 //
-// Companion to `version_test.cpp`, which holds the looser v1.0 floor
-// and the packed-encoding self-consistency check. Both run in the
-// standard ctest sweep.
+// Companion to `version_test.cpp` (loose v1.0 floor + packed-encoding
+// self-consistency) and `version_test_v1_3.cpp` (tight v1.3 family
+// pin). Both run in the standard ctest sweep.
+//
+// History: when this file was written for v1.2.0 it ALSO asserted
+// `version_string()` started with `"1.2."` — i.e. it was a v1.2.x
+// FAMILY pin, not a floor pin. The family check was relaxed when
+// v1.3.0 shipped so the test stays true as the floor rolls forward.
+// The current MINOR's tight family check lives in
+// `version_test_v1_<MINOR>.cpp`.
 
 #include "Check.hpp"
 
 #include <threadmaxx/version.hpp>
 
 #include <cstdio>
-#include <cstring>
 
 int main() {
     using namespace threadmaxx;
@@ -27,12 +32,9 @@ int main() {
     static_assert(THREADMAXX_VERSION >= 10200,
         "packed version has the v1.2 floor");
 
-    // ---- 2. version_string is in the v1.2.x family ----------------------
     const char* v = version_string();
     CHECK(v != nullptr);
-    // Accept "1.2.x" — the family identifier is the leading "1.2.".
-    CHECK(std::strncmp(v, "1.2.", 4) == 0);
-    std::printf("[version_v1_2] %s (packed=%d)\n", v, THREADMAXX_VERSION);
+    std::printf("[version_v1_2_floor] %s (packed=%d)\n", v, THREADMAXX_VERSION);
 
     EXIT_WITH_RESULT();
 }

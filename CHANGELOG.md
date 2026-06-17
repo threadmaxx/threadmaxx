@@ -10,6 +10,87 @@ changelog at `include/threadmaxx_simd/CHANGELOG.md`.
 
 ## [Unreleased]
 
+(no changes since v1.3.0)
+
+## [1.3.0] — 2026-06-17 — Q-audit batch + post-v1.2 accumulation
+
+Minor release. Closes out the path-to-perfection audit batches Q1 — Q8
+(public-surface manifest hygiene, doc modernization, deprecation pin,
+coverage-audit refresh, MSAN documentation) on top of the post-v1.2.1
+example / sibling-library accumulation that had been queued in the
+Unreleased section.
+
+### Added (core engine — Q-audit batch, 2026-06-17)
+
+- **Q1 — manifest hygiene.** Three public headers that had landed on
+  disk since v1.0 (`include/threadmaxx/AdaptiveGrainPolicy.hpp`,
+  `CommitBreakdown.hpp`, `Tuning.hpp`) were never added to
+  `THREADMAXX_PUBLIC_HEADERS` in `CMakeLists.txt`. The install glob
+  caught them either way, but the manifest was stale. The umbrella
+  header `threadmaxx.hpp` also missed `CommitBreakdown.hpp`,
+  `Telemetry.hpp`, and `version.hpp`; all three now ride the
+  one-include path.
+- **Q2 — doc modernization.** `doc/configuration.md` and
+  `doc/performance_tuning.md` now cover every post-v1.0 `Config`
+  knob: the S6 / S8 / S9 / S10 / S11 / S16 sharded-commit micro-
+  knobs and the T2 `preferredWorkerCap` adaptive cap. The
+  configuration table is split into a "Core knobs" group and a
+  "Commit-path knobs" group; the perf-tuning page gets a new
+  "Sharded-commit micro-knobs" section walking each batch's bench
+  rationale. The stale "no first-class time-scale support" claim is
+  removed (`setPaused` / `setTimeScale` have been first-class since
+  v1.1).
+- **Q3 — `legacyCommitHash` deprecation enforcement.**
+  `EngineImpl::initialize` now emits a one-shot `LogLevel::Warn`
+  when the caller opts in to the v1.x byte-mix commit-hash path; a
+  `static_assert(THREADMAXX_VERSION < 10400, …)` will force the
+  cleanup (delete the knob + delete `tests/v1_2_legacy_commit_hash_
+  test.cpp`) when v1.4 ships. The static_assert message names the
+  artifacts to delete so the cleanup PR is self-directing.
+
+### Changed (core engine — Q-audit batch, 2026-06-17)
+
+- **Q4 — Doxygen `@brief` sweep.** Walked every public symbol;
+  result was that the public surface is in excellent shape with no
+  actionable gaps. Documented as a no-op for the record.
+- **Q5 — README + CHANGELOG link audit.** Every README link
+  resolves; CHANGELOG is fresh; sibling-status text matches install
+  rules. Pure verification.
+- **Q6 — `tests/COVERAGE_AUDIT.md` refresh.** Added the missing
+  `CommitBreakdown.hpp` section; removed a self-contradiction in
+  the Summary footer (the six load-bearing gaps B32 originally
+  flagged were all closed in B32, but the footer still listed them
+  as open); dropped a stale "Telemetry.hpp not in umbrella"
+  footnote (Q1 fixed that).
+- **Q8 — MSAN feasibility documented.** Tried bringing up a
+  `build-msan` tree under clang 22 / `-fsanitize=memory`; the core
+  library builds clean, but the first instrumented test trips
+  `use-of-uninitialized-value` inside `std::basic_string::size()`
+  because the system libstdc++ is uninstrumented. Documented in
+  CLAUDE.md as MSAN-not-supported so the next contributor doesn't
+  redo the investigation. ASAN already catches our own
+  stack/heap use-of-uninit.
+
+### Tooling
+
+- `cmake/tsan.supp` now also silences the `pa_mutex_lock` /
+  `pa_xmalloc` race TSAN reports against the uninstrumented
+  `libpulsecommon-17.0` / `libpulse.so` frames in
+  `tests/audio/test_audio_backend_pulse.cpp`. TSAN was failing on
+  this test prior to Q1; with the suppression the whole TSAN tree
+  is green again (518/518) and CLAUDE.md's "ASAN / UBSAN / TSAN
+  trees pass clean" promise holds.
+
+### Version pin
+
+- `tests/version_test_v1_3.cpp` pins the v1.3 family
+  (`version_string()` starts with `"1.3."`, packed ≥ 10300).
+- `tests/version_test_v1_2.cpp` had been a tight v1.2.x family pin
+  via `strncmp(v, "1.2.", 4)`; relaxed to a packed-floor check
+  (`>= 10200`) so it stays true as the floor rolls forward. The
+  family-pin pattern moves to the current MINOR's file as a
+  convention going forward.
+
 ### Added (`examples/rpg_demo`, §3.11.9 batch D9)
 
 - **Particle bursts.** Combat hits, NPC deaths, and pickup collects

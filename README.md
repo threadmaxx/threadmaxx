@@ -6,8 +6,8 @@ physics, AI, render-prep, ...) that read the world in parallel and emit
 commands; the engine commits them deterministically and hands a flat
 `RenderFrame` to whatever renderer you plug in.
 
-**Status: core v1.2.1; full suite shipped.** The core engine sealed at
-v1.0.0 on 2026-05-18 and has shipped two additive minor bumps since.
+**Status: core v1.3.0; full suite shipped.** The core engine sealed at
+v1.0.0 on 2026-05-18 and has shipped three additive minor bumps since.
 Thirteen sibling libraries — `simd`, `reflect`, `editor`, `assets`,
 `input`, `audio`, `animation`, `navmesh`, `physics`, `ui`, `network`,
 `migration`, `studio` — are all at their own v1.0.0. Each has its own

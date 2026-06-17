@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(threadmaxx
-    VERSION 1.2.1
+    VERSION 1.3.0
     DESCRIPTION "Graphics-independent C++20 game backend with a job system"
     LANGUAGES CXX)
 

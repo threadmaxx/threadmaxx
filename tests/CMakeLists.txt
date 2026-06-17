@@ -97,6 +97,7 @@ set(THREADMAXX_TESTS
     for_each_serial_test
     version_test
     version_test_v1_2
+    version_test_v1_3
     worker_cap_test
     sub_job_telemetry_test
     tuning_patch_application_test
