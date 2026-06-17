@@ -9,6 +9,7 @@
 
 #include "AdaptiveGrainPolicy.hpp"
 #include "CommandBuffer.hpp"
+#include "CommitBreakdown.hpp"
 #include "Components.hpp"
 #include "Config.hpp"
 #include "Engine.hpp"
@@ -27,9 +28,11 @@
 #include "Stats.hpp"
 #include "System.hpp"
 #include "TaskTag.hpp"
+#include "Telemetry.hpp"
 #include "Trace.hpp"
 #include "Tuning.hpp"
 #include "UserComponent.hpp"
+#include "version.hpp"
 #include "World.hpp"
 
 #include "render/Camera.hpp"

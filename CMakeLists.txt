@@ -40,30 +40,33 @@ option(THREADMAXX_INSTALL "Generate install rules for threadmaxx" ${THREADMAXX_I
 # --------------------------------------------------------------------------
 set(THREADMAXX_PUBLIC_HEADERS
     include/threadmaxx/threadmaxx.hpp
-    include/threadmaxx/Config.hpp
-    include/threadmaxx/Handles.hpp
-    include/threadmaxx/Components.hpp
+    include/threadmaxx/AdaptiveGrainPolicy.hpp
     include/threadmaxx/CommandBuffer.hpp
-    include/threadmaxx/UserComponent.hpp
+    include/threadmaxx/CommitBreakdown.hpp
+    include/threadmaxx/Components.hpp
+    include/threadmaxx/Config.hpp
+    include/threadmaxx/Engine.hpp
     include/threadmaxx/EventChannel.hpp
+    include/threadmaxx/Game.hpp
+    include/threadmaxx/Handles.hpp
     include/threadmaxx/Logger.hpp
     include/threadmaxx/Query.hpp
+    include/threadmaxx/Renderer.hpp
     include/threadmaxx/RenderFrame.hpp
     include/threadmaxx/Resource.hpp
     include/threadmaxx/ScratchArena.hpp
-    include/threadmaxx/SkipPolicy.hpp
     include/threadmaxx/Serialization.hpp
+    include/threadmaxx/SkipPolicy.hpp
+    include/threadmaxx/SpatialHash.hpp
     include/threadmaxx/Stats.hpp
     include/threadmaxx/System.hpp
     include/threadmaxx/TaskTag.hpp
-    include/threadmaxx/Renderer.hpp
-    include/threadmaxx/Game.hpp
-    include/threadmaxx/SpatialHash.hpp
-    include/threadmaxx/Trace.hpp
     include/threadmaxx/Telemetry.hpp
+    include/threadmaxx/Trace.hpp
+    include/threadmaxx/Tuning.hpp
+    include/threadmaxx/UserComponent.hpp
     include/threadmaxx/version.hpp
     include/threadmaxx/World.hpp
-    include/threadmaxx/Engine.hpp
 )
 
 set(THREADMAXX_SOURCES

@@ -16,6 +16,20 @@
 #   signal        — signal-handling race
 #   called_from_lib:libname — anything from this library
 
+# ---- libpulse (uninstrumented upstream) ------------------------
+#
+# `tests/audio/test_audio_backend_pulse.cpp` instantiates a
+# threaded PulseAudio main-loop via `pa_threaded_mainloop_new`.
+# TSAN reports a race inside libpulsecommon's `pa_mutex_lock`
+# against `pa_xmalloc` / `pa_mutex_new` from main-thread setup.
+# The race is upstream — PulseAudio uses internal synchronization
+# (its own ref-counted op queue) that TSAN can't see through
+# because the library is uninstrumented. Suppressing by library
+# name keeps the threadmaxx-side audio code in scope for races we
+# can actually fix.
+called_from_lib:libpulsecommon
+called_from_lib:libpulse.so
+
 # ---- HudTraceSink seqlock --------------------------------------
 #
 # `HudTraceSink` exposes the latest engine telemetry through a
