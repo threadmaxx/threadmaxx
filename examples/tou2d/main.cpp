@@ -427,6 +427,26 @@ int main(int argc, char** argv) {
     threadmaxx::Engine engine(cfg);
 
     tou2d::TouGame game(window);
+
+    // N4 (2026-06-18) — load settings.dat BEFORE `engine.initialize` so
+    // TouGame::onSetup can fan its gameplay knobs (damageScale /
+    // respawnDelayTicks / KeyMap) to the matching systems at
+    // construction time. The audio AudioVolumeChanged emit + UISystem
+    // working-copy seed still happen below (those need the engine
+    // already up). `settings` is shared between the initial init and
+    // the menu-driven restart cycle, so a Pause → Options → back
+    // → Single Match picks up the just-edited values via
+    // `ui->settings()`. Loader returns false → defaults stand.
+    tou2d::Settings settings{};
+    {
+        const auto sPath = tou2d::defaultSettingsPath();
+        const bool loaded = tou2d::loadSettings(sPath, settings);
+        std::printf("[tou2d] settings.dat: %s (pre-init)\n",
+                    loaded ? "loaded" :
+                    sPath.empty() ? "no XDG_CONFIG_HOME/HOME — defaults"
+                                  : "absent — defaults");
+    }
+    game.setSettings(settings);
     if (useGen) {
         game.setGenerationConfig(genCfg);
         std::printf("[tou2d] proc-gen level: seed=0x%08x ggLevel=%u "
@@ -561,13 +581,10 @@ int main(int argc, char** argv) {
         if (auto* parts = game.particleSystem()) parts->setAccessibility(a);
     };
     {
-        tou2d::Settings settings{};
-        const auto sPath = tou2d::defaultSettingsPath();
-        const bool loaded = tou2d::loadSettings(sPath, settings);
-        std::printf("[tou2d] settings.dat: %s\n",
-                    loaded ? "loaded" :
-                    sPath.empty() ? "no XDG_CONFIG_HOME/HOME — defaults"
-                                  : "absent — defaults");
+        // N4 — settings were already loaded above (pre-init). Here we
+        // just seed the freshly-constructed UISystem's working copy and
+        // fire the side-effect events (accessibility + audio volume)
+        // that depend on systems existing.
         if (game.uiSystem()) {
             game.uiSystem()->setSettings(settings);
         }
@@ -1163,6 +1180,15 @@ int main(int argc, char** argv) {
         }
         game.setLevelDir(resolvedLevelDir);
         game.setMatchSetup(setup);
+        // N4 — capture the UI's working settings (any Options edits the
+        // user made + saved via Back-out) so the new engine's onSetup
+        // sees them. Captured BEFORE engine.shutdown completes
+        // tearing the UISystem down? — actually engine.shutdown() ran
+        // up top before resolvedLevelDir was computed, so the old
+        // ui_ pointer is gone here. The post-shutdown settings live in
+        // the host's `settings` variable, which we keep in sync at the
+        // Options-Back save site below.
+        game.setSettings(settings);
         levelDir = resolvedLevelDir.string();
         if (!engine.initialize(game)) {
             std::fprintf(stderr,
@@ -1439,6 +1465,14 @@ int main(int argc, char** argv) {
                 // systems so the back-out becomes visible immediately on
                 // the next frame, regardless of save outcome.
                 forwardAccessibility(ui->settings().accessibility);
+                // N4 — copy the freshly-saved settings into the host's
+                // `settings` cache so the NEXT restartMatch sees them.
+                // Without this the user could Options→damageScale=2.0→
+                // Back→Restart-match and the new world would still run
+                // at scale 1.0 (game.setSettings reads the cached copy,
+                // not ui->settings(), because at restart time the old
+                // UISystem is already torn down).
+                settings = ui->settings();
                 ui->clearPendingSettingsSave();
             }
         }

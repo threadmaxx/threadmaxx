@@ -73,8 +73,22 @@ public:
     /// Null is fine (host-side tests with no particles wired up).
     void setParticleSystem(ParticleSystem* p) noexcept { particles_ = p; }
 
-    /// 3 s @ 60 Hz fixed step.
+    /// 3 s @ 60 Hz fixed step. Default; runtime override via
+    /// `setRespawnTicks` for the Settings::gameplay.respawnDelayTicks
+    /// knob (N4, 2026-06-18).
     static constexpr std::uint16_t kRespawnTicks = 180;
+
+    /// N4 — Settings::gameplay.respawnDelayTicks read at restart.
+    /// Replaces `kRespawnTicks` for the on-death respawn cooldown
+    /// stamp. Default keeps the pre-N4 3 s behaviour. Clamped to a
+    /// playable band [30, 600] (0.5 s .. 10 s @ 60 Hz) so a corrupted
+    /// settings.dat doesn't softlock the round.
+    void setRespawnTicks(std::uint16_t ticks) noexcept {
+        respawnTicks_ = ticks < 30  ? std::uint16_t{30}
+                      : ticks > 600 ? std::uint16_t{600}
+                                    : ticks;
+    }
+    std::uint16_t respawnTicks() const noexcept { return respawnTicks_; }
 
     /// Visual lifetime of the death starburst, in ticks. Independent of
     /// `kRespawnTicks` — the spark dies well before the ship comes
@@ -107,6 +121,9 @@ private:
     /// giving per-ship phase offsets so simultaneous puffs are
     /// staggered across consecutive ticks.
     std::uint32_t                   tickPhase_ = 0;
+    /// N4 — runtime respawn cooldown override; init to the static
+    /// default so an unset Settings reproduces the pre-N4 timing.
+    std::uint16_t                   respawnTicks_ = kRespawnTicks;
 };
 
 } // namespace tou2d

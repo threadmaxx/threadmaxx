@@ -98,6 +98,18 @@ public:
     /// detection). Null is fine.
     void setParticleSystem(ParticleSystem* p) noexcept { particles_ = p; }
 
+    /// N4 (2026-06-18) — Settings::gameplay.damageScale read at restart.
+    /// Multiplies every bullet's `Bullet::damage` byte when computing
+    /// the victim's HP delta. Defaults to 1.0 (no change). Clamped to
+    /// [0.0, 10.0] defensively — the settings UI exposes a 0.5/1.0/1.5/2.0
+    /// preset row, but a hand-edited settings.dat with a wild value
+    /// can't blow up the simulation.
+    void setDamageScale(float scale) noexcept {
+        damageScale_ = scale < 0.0f ? 0.0f
+                     : scale > 10.0f ? 10.0f : scale;
+    }
+    float damageScale() const noexcept { return damageScale_; }
+
 private:
     UserComponentIds                   ids_;
     threadmaxx::Engine*                engine_      = nullptr;
@@ -106,6 +118,7 @@ private:
     std::uint16_t*                     winnerKills_ = nullptr;
     const MatchMode*                   matchMode_   = nullptr;
     ParticleSystem*                    particles_   = nullptr;
+    float                              damageScale_ = 1.0f;   // N4
 };
 
 } // namespace tou2d

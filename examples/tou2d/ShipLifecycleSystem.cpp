@@ -104,7 +104,7 @@ void ShipLifecycleSystem::update(threadmaxx::SystemContext& ctx) {
                     // Stamp the sentinel so the Disabled-chunk branch
                     // below knows not to count down / respawn.
                     ship.respawnIn = lss ? kPermanentDeathSentinel
-                                         : kRespawnTicks;
+                                         : respawnTicks_;
                     threadmaxx::addUserComponent(cb, idsShip, entities[row], ship);
 
                     threadmaxx::Velocity v = velocities[row];

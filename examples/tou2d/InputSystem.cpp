@@ -150,9 +150,14 @@ void InputSystem::preStep(threadmaxx::SystemContext& ctx) {
                 // in preStep. Replay path mirrors that — `inputs()`
                 // returns the default PlayerInput when `slot` exceeds
                 // the recorded human count.
+                // N4 — settings-driven KeyMap. When `keymapInstalled_`
+                // the per-slot bindings come from settings_.controls;
+                // otherwise the static default (pre-N4 behaviour).
                 const PlayerInput in = replayDriven
                     ? replay_->inputs(slot)
-                    : readKeys(window_, slot);
+                    : keymapInstalled_
+                        ? readMapped(window_, keymap_, slot)
+                        : readKeys(window_, slot);
                 threadmaxx::addUserComponent(cb, idsPi, entities[row], in);
             }
         }

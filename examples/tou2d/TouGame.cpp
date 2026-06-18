@@ -320,6 +320,14 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     movementPtr  ->setParticleSystem(particlesPtr);   // M7.3 §5.1 — thruster plume
     movementPtr  ->setTerrainGrid(&grid_);            // M7.6 — water sampling
     movementPtr  ->setEngine(&engine);                // N3 — wet-thrust splash audio
+
+    // ---- N4 (2026-06-18) — fan settings.dat → systems --------------
+    // Read once at restart-time; the user has to back out of Options
+    // to apply (M6.5 contract). Reproduces the pre-N4 behaviour bit-
+    // for-bit when settings_ is a default-constructed POD.
+    bulletShip ->setDamageScale(settings_.gameplay.damageScale);
+    shipLife   ->setRespawnTicks(settings_.gameplay.respawnDelayTicks);
+    input      ->setKeyMap(settings_.controls);
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera->setNumHumans(numHumans_);
     camera_         = camera.get();

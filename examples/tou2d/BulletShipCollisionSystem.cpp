@@ -188,7 +188,10 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
 
                 Ship victim = shipSpan[row];
                 const bool  wasAlive = victim.currentHp > 0.0f;
-                const float newHp    = victim.currentHp - static_cast<float>(dmg);
+                // N4 — settings-driven damage scale. Default 1.0
+                // reproduces the pre-N4 raw `blt.damage` behaviour.
+                const float scaledDmg = static_cast<float>(dmg) * damageScale_;
+                const float newHp    = victim.currentHp - scaledDmg;
                 victim.currentHp     = newHp < 0.0f ? 0.0f : newHp;
                 threadmaxx::addUserComponent(cb, idsShip, entities[row], victim);
 

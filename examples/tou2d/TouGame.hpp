@@ -3,6 +3,7 @@
 #include "DemoTypes.hpp"
 #include "MatchSetup.hpp"
 #include "ProceduralLevel.hpp"
+#include "Settings.hpp"
 #include "SpriteCompositor.hpp"
 #include "UISystem.hpp"  // for MatchResults — collectMatchResults out-param
 
@@ -134,6 +135,24 @@ public:
         playerSlots_ = setup.playerSlots;
     }
 
+    /// N4 (2026-06-18) — install the host's current persistent settings.
+    /// Call BEFORE `engine.initialize(game)` (and again before each
+    /// menu-driven restart): `onSetup` routes the gameplay-affecting
+    /// fields to the matching systems at construction. v1 surfaces:
+    ///   * gameplay.damageScale       → BulletShipCollisionSystem
+    ///   * gameplay.respawnDelayTicks → ShipLifecycleSystem
+    ///   * controls                   → InputSystem KeyMap
+    ///   * accessibility              → HUD / particles (host also
+    ///                                  pushes these directly on
+    ///                                  Options-back-out save)
+    ///
+    /// Video / audio knobs are NOT consumed here — audio is host-side
+    /// (main.cpp emits `AudioVolumeChanged`), and video knobs are still
+    /// "applies at host restart" (Vulkan swapchain rebuild is out of
+    /// scope for N4).
+    void setSettings(const Settings& s) noexcept { settings_ = s; }
+    const Settings& settings() const noexcept { return settings_; }
+
     void onSetup(threadmaxx::Engine& engine,
                  threadmaxx::World&  world,
                  threadmaxx::CommandBuffer& seed) override;
@@ -264,6 +283,11 @@ private:
     /// CLI run, which never touches this) reproduce the pre-M6.3
     /// auto-cycle.
     std::array<PlayerSlotSetup, kMatchSetupSlotCount> playerSlots_{};
+    /// N4 — persistent settings snapshot used by `onSetup` to fan out
+    /// gameplay knobs to the matching systems. Default-constructed
+    /// reproduces the pre-N4 behaviour bit-for-bit (damageScale 1.0,
+    /// kRespawnTicks 180, default KeyMap, default accessibility).
+    Settings                 settings_{};
     std::filesystem::path    levelDir_;
     std::filesystem::path    assetDir_;
     SpriteCompositor*        compositor_     = nullptr;   // borrowed

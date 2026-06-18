@@ -13,6 +13,39 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N4 — restart-time gameplay settings apply (2026-06-18)
+Pre-N4 the Options menu let the user edit gameplay knobs which then
+round-tripped through `settings.dat` but never actually fed any running
+system — the values persisted but had no effect. The §2.4 plan asked
+for "one read at engine-restart time inside `TouGame::setMatchSetup`"
+per knob; N4 wires that pipe for the three gameplay-affecting fields
+plus the controls remap.
+
+**TouGame plumbing**: new `setSettings(const Settings&)` accessor +
+private `settings_` snapshot. Host (`main.cpp`) calls it BEFORE
+`engine.initialize` (initial launch) and BEFORE each `restartMatch`
+cycle. The cache mirrors the UI's working copy and is re-synced from
+`ui->settings()` whenever Options-back-out fires the save flag.
+
+**Per-system setters wired in `onSetup`**:
+- `BulletShipCollisionSystem::setDamageScale(float)` — multiplies every
+  bullet's `damage` byte when computing the victim HP delta. Clamped to
+  [0, 10] defensively. Default 1.0 reproduces pre-N4 behaviour.
+- `ShipLifecycleSystem::setRespawnTicks(uint16)` — replaces the
+  hardcoded `kRespawnTicks = 180` on-death stamp. Clamped to [30, 600].
+- `InputSystem::setKeyMap(KeyMap)` — when installed, `preStep` polls
+  GLFW against the custom map; without an install the static
+  `defaultKeyMap()` (pre-N4 behaviour) stays in force.
+
+**Out of scope for N4 (still deferred)**: video knobs (resolution /
+fullscreen / vsync / ui_scale) require a Vulkan swapchain rebuild; the
+music driver doesn't exist yet; `GameplaySettings::cameraMode` needs
+CameraSystem to grow modes. These remain "applies at host restart"
+until separate batches lift them.
+
+Pinned by `tests/tou2d_settings_apply_test.cpp` (clamp bands, install
+toggle).
+
 ### N3 — water-splash particles + wet-thrust audio (2026-06-18)
 Tackled the §2.3 non-blocked items (the procedural-generator water
 sprinkle stays blocked on the `ProceduralLevelConfig` header-byte

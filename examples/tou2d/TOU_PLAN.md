@@ -95,16 +95,28 @@ parallel to `repairTileCount`, sprinkle Water cells in the generator.
 Lands when the replay header version bumps (own batch — affects format
 compatibility).
 
-### 2.4 M6.5 sub-screens whose values persist but don't apply mid-run
-All persist round-trip correctly via `settings.dat`; each one is one
-read at engine-restart time inside `TouGame::setMatchSetup` once the
-matching feature ships.
+### 2.4 M6.5 sub-screens — **partially done (2026-06-18, N4)**
 
-- Key rebinding UI (Controls sub-screen).
-- Live music driver (music slider persists; no driver pipes it through).
-- Video knobs: fullscreen, vsync, ui_scale, resolution.
-- Gameplay knobs: damageScale, respawnDelayTicks, cameraMode.
-- Benchmark sub-screen: trace-sink + scripted-skip toggles.
+Three of the seven settings now fan out at restart-time via
+`TouGame::setSettings`:
+
+- ✅ **`gameplay.damageScale`** → `BulletShipCollisionSystem::setDamageScale`
+- ✅ **`gameplay.respawnDelayTicks`** → `ShipLifecycleSystem::setRespawnTicks`
+- ✅ **`controls`** → `InputSystem::setKeyMap`
+
+Still deferred (require infrastructure the current N batch can't lift):
+
+- **Video knobs** (fullscreen, vsync, ui_scale, resolution) — Vulkan
+  swapchain rebuild + GLFW window mode change. Out of scope for the N
+  batch; documented as "applies at host restart" in the Options UI.
+- **Live music driver** — no driver exists; the `music` slider persists
+  but has nothing to bind to.
+- **`gameplay.cameraMode`** — requires `CameraSystem` to grow `Split` /
+  `Follow` / `Fixed` modes; currently `numHumans` indirectly drives the
+  layout.
+- **Benchmark sub-screen** — trace-sink + scripted-skip toggles are
+  already partially routed via existing engine APIs; full apply lands
+  with the benchmark-host follow-up.
 
 ### 2.5 M6.7b HUD polish queue
 Carried forward from the M6.7 split:

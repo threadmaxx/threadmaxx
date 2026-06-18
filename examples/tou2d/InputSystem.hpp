@@ -83,11 +83,23 @@ public:
     /// current tick. The borrowed pointer must outlive the engine.
     void setReplayPlayer(ReplayPlayer* p) noexcept { replay_ = p; }
 
+    /// N4 (2026-06-18) — install a custom KeyMap (typically loaded from
+    /// settings.dat). When set, `preStep` polls GLFW against this map
+    /// rather than the static `defaultKeyMap()`. Default-constructed
+    /// (no override installed) → use `defaultKeyMap()` as before.
+    /// Replay mode bypasses both paths.
+    void setKeyMap(const KeyMap& km) noexcept {
+        keymap_           = km;
+        keymapInstalled_  = true;
+    }
+
 private:
     GLFWwindow*                          window_      = nullptr;
     UserComponentIds                     ids_;
     std::shared_ptr<std::atomic<bool>>   roundEnded_;
     ReplayPlayer*                        replay_      = nullptr;
+    KeyMap                               keymap_{};       // N4 — used when keymapInstalled_
+    bool                                 keymapInstalled_ = false;
 };
 
 } // namespace tou2d
