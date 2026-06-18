@@ -1206,6 +1206,14 @@ int main(int argc, char** argv) {
         // capturing it for restart effectively wipes the user's choice.
         if (game.uiSystem()) {
             game.uiSystem()->matchSetup() = setup;
+            // N1 — fresh match means there is no prior paused world to
+            // resume; reset Continue's enable bit. A later Pause →
+            // "Return to main menu" will flip it back on. The freshly
+            // constructed UISystem starts with the flag at its default
+            // (false), so this explicit reset is for clarity and a
+            // safety net against future UISystem ctors that change the
+            // default.
+            game.uiSystem()->setResumableMatchInFlight(false);
         }
     };
 

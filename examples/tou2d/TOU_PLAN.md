@@ -32,19 +32,33 @@ backwards-compatible field with an all-ones default).
 Surveyed 2026-05-31 during M7.7 closeout. None block acceptance; each is
 its own focused follow-up.
 
-### 2.1 Engine-restart-with-MatchSetup primitive
-Single primitive, four call sites. Unlocks:
+### 2.1 Engine-restart-with-MatchSetup primitive — **DONE (2026-06-18)**
 
-- **M6.2 `StartMatch` apply** — today host-logs only.
-- **M6.4 `RestartMatch` apply** — today host-logs only.
-- **M6.6 `Rematch` apply** — today host-logs only.
-- **M6.1 MainMenu "Continue" enablement** — currently always-disabled.
+Shipped in two waves; the plan's snapshot at M7.7 closeout was already
+stale by then but only audited + closed out in N1 (2026-06-18):
 
-Shape: `Engine::restartWith(MatchSetup)` that tears down + re-builds the
-world from the new config, preserving the renderer + asset registry.
-TouGame-side: `setMatchSetup(...)` then `engine.restart()`. The four call
-sites all already produce a `MatchSetup` POD and log it; they just need
-the host call.
+- **M6.2 `StartMatch` apply** — wired via `restartMatch` lambda in
+  `main.cpp`. Drains `pendingStartMatch_`, tears the engine down
+  (`engine.shutdown` → `game.setMatchSetup` → `engine.initialize`),
+  rebuilds the renderer-side textures + sprite-compositor sizing for
+  the new world.
+- **M6.4 `RestartMatch` apply** — same drain, same lambda.
+- **M6.6 `Rematch` apply** — same drain, same lambda (`prevRoundEnded`
+  rising-edge tracker reset alongside).
+- **N1 — MainMenu "Continue" enablement** (2026-06-18). `UISystem`
+  carries `resumableMatchInFlight_` + a runtime mirror of the MainMenu
+  rows. Flipped on by `Pause → Return to main menu`, off by every
+  restartMatch cycle. Continue accept dismisses MainMenu; the engine's
+  `paused()` bind unfreezes the same world the user left. Pinned by
+  `tests/tou2d_continue_enable_test.cpp`.
+
+What was NOT shipped: the original plan called for a single
+`Engine::restartWith(MatchSetup)` engine-public primitive. The current
+implementation lives entirely in the host as the `restartMatch`
+lambda, which is enough for the four call sites and keeps the engine's
+public surface unchanged. If a third-party host needs the same
+behaviour, the lambda is straightforward to lift into an engine-public
+method later — but no caller has asked for that yet.
 
 ### 2.2 M7.5 kit spawning
 Framework + behavior split landed in M7.5; the demo currently spawns

@@ -110,8 +110,15 @@ int main() {
         CHECK(got == MenuAction::ReturnToMainMenu);
         CHECK(ui.pendingReturnToMainMenu());
         CHECK(ui.current() == UIScreen::MainMenu);
-        // MainMenu's first enabled row is Single Match (index 1).
-        CHECK_EQ(ui.focusIndex(), std::int32_t{1});
+        // N1 (2026-06-18) — Return-to-main-menu now flips Continue's
+        // `resumableMatchInFlight_` true alongside `pendingReturnToMain`,
+        // so MainMenu's first enabled row is Continue (index 0). Before
+        // N1 Continue was always-disabled and focus landed on SingleMatch
+        // (index 1).
+        CHECK(ui.resumableMatchInFlight());
+        CHECK_EQ(ui.focusIndex(), std::int32_t{0});
+        CHECK(ui.currentRows()[0].action == MenuAction::Continue);
+        CHECK(ui.currentRows()[0].enabled);
         ui.clearPendingReturnToMainMenu();
         CHECK(!ui.pendingReturnToMainMenu());
     }

@@ -444,6 +444,27 @@ if (TARGET tou2d_core)
     add_test(NAME tou2d_menu_navigation_test
              COMMAND tou2d_menu_navigation_test)
 
+    # N1 (2026-06-18) — MainMenu Continue row runtime enablement.
+    # Pins the Pause -> Return -> Continue resume cycle and the host
+    # restart cycle's reset of `resumableMatchInFlight_`.
+    add_executable(tou2d_continue_enable_test
+        tou2d_continue_enable_test.cpp)
+    target_link_libraries(tou2d_continue_enable_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_continue_enable_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_continue_enable_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_continue_enable_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_continue_enable_test
+             COMMAND tou2d_continue_enable_test)
+
     # M6.2 — MatchSetup screen row table + scroller cycle + Start /
     # Back accept dispatch + MatchSetup-from-menu byte equality with
     # MatchSetup-from-CLI (determinism contract).

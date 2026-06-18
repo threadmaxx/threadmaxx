@@ -13,6 +13,32 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N1 — MainMenu "Continue" resumability (2026-06-18)
+Audit of TOU_PLAN.md §2.1 surfaced that the StartMatch / RestartMatch /
+Rematch "engine-restart-with-MatchSetup" wiring had already been
+implemented as the `restartMatch` lambda in `main.cpp` (history was
+just stale in the plan). The remaining gap was the MainMenu "Continue"
+row, which had been wired as `enabled = false` at construction and
+never flipped.
+
+Implementation: `UISystem` now carries `resumableMatchInFlight_` and a
+runtime mirror of the MainMenu row table (`mainMenuRowsLive_`). The
+flag flips on inside `MenuAction::ReturnToMainMenu` (Pause → Return to
+main menu — the only path that surfaces a paused-and-resumable world
+behind MainMenu). `MenuAction::Continue` accept dismisses the menu
+(`setCurrent(UIScreen::None)`), so the host's `engine.paused()` bind
+unfreezes the same world the user left. The flag stays sticky so
+repeated Pause → Return → Continue cycles work. Host's `restartMatch`
+lambda resets the flag to false on every fresh restart cycle (Single
+Match / Start / Restart / Rematch) — the new match has no prior
+paused world worth resuming.
+
+Pinned by `tests/tou2d_continue_enable_test.cpp` (default state,
+Pause→Return flip, Continue accept, host reset, disabled-accept no-op).
+
+Engine-side scope: unchanged. The "Continue" affordance is pure
+UISystem state; no engine knob touched.
+
 ### B3 — sky / parallax background layer (2026-06-01)
 The `.lev` container's second embedded JPEG (`parallax.jpg` — extracted
 since B1 but unused at runtime) now renders as a parallax sky behind

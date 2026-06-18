@@ -6,6 +6,7 @@
 
 #include <threadmaxx/System.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -386,6 +387,26 @@ public:
     bool pendingReturnToMainMenu() const noexcept { return pendingReturnToMainMenu_; }
     void clearPendingReturnToMainMenu() noexcept   { pendingReturnToMainMenu_ = false; }
 
+    /// 2026-06-18 (N1) — `Continue` row enablement on `UIScreen::MainMenu`.
+    ///
+    /// Continue is meaningful only when there's a paused match the user
+    /// can step back into. The semantic is:
+    ///   * launch (CLI-less, MainMenu opens behind a default 1H+3B world):
+    ///     `false` — there is technically a world but the user never
+    ///     entered it.
+    ///   * Pause → "Return to main menu": flips to `true`. The world stays
+    ///     paused behind MainMenu, so Continue dismisses the menu and the
+    ///     `menuActive` bind unfreezes the same world the user left.
+    ///   * Any Start/Restart/Rematch through the host's restart cycle:
+    ///     resets to `false` — the just-restarted match doesn't surface
+    ///     a "go back to the one I came from" affordance.
+    ///
+    /// Setter is host-driven (called inside the restartMatch lambda's
+    /// reset path); the `ReturnToMainMenu` accept path flips it true
+    /// inline so the row is enabled by the time the host repaints.
+    bool resumableMatchInFlight() const noexcept { return resumableMatchInFlight_; }
+    void setResumableMatchInFlight(bool v) noexcept;
+
     /// ---- M6.5 Options screen ------------------------------------------
 
     /// Working `Settings` the Options sub-screens edit in-place. Loaded
@@ -453,12 +474,23 @@ private:
     bool                pendingReturnToMainMenu_ = false;
     bool                pendingRematch_          = false;
     bool                pendingSettingsSave_     = false;
+    /// N1 — see `resumableMatchInFlight()`.
+    bool                resumableMatchInFlight_  = false;
     MatchSetup          matchSetup_{};
     MatchResults        matchResults_{};
     Settings            settings_{};
     /// 2026-05-31 — host-supplied enumerated imported-level names.
     /// Default empty disables the Level row in MatchSetup.
     std::vector<std::string> importedLevels_;
+
+    /// N1 — runtime mirror of `kMainMenuRows` (in UISystem.cpp). The
+    /// rows() accessor returns a span pointing at this array so the
+    /// Continue row's `enabled` field can be toggled per-instance
+    /// without sacrificing the constexpr layout source-of-truth.
+    /// Mutable because rows() is const but syncs Continue.enabled at
+    /// call time from `resumableMatchInFlight_`.
+    static constexpr std::size_t kMainMenuRowCount = 7;
+    mutable std::array<MenuRow, kMainMenuRowCount> mainMenuRowsLive_;
 };
 
 } // namespace tou2d

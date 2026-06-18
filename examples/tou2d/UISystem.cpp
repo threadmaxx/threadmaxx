@@ -14,8 +14,14 @@ namespace tou2d {
 
 namespace {
 
-// MainMenu rows — order matches the §M6 spec. "Continue" is greyed
-// until M6.4 wires up the in-flight match resume hook.
+// MainMenu rows — order matches the §M6 spec. "Continue" is now (N1)
+// dynamically enabled when there's a paused match the user can resume
+// (state lives in `UISystem::resumableMatchInFlight_`; the runtime
+// table `UISystem::mainMenuRowsLive_` mirrors this layout and is
+// returned by `rows(UIScreen::MainMenu)` with the Continue row's
+// `enabled` flipped accordingly). This constexpr is the layout
+// source-of-truth; the runtime mirror is initialised from it in the
+// UISystem ctor.
 constexpr MenuRow kMainMenuRows[] = {
     { "Continue",         MenuAction::Continue,    false },
     { "Single Match",     MenuAction::SingleMatch, true  },
@@ -25,6 +31,7 @@ constexpr MenuRow kMainMenuRows[] = {
     { "Credits / About",  MenuAction::Credits,     true  },
     { "Quit",             MenuAction::Quit,        true  },
 };
+inline constexpr std::size_t kMainMenuContinueRowIdx = 0;
 
 // Credits screen — single Back row. Real content lands in M6.6 (or
 // later); this lets the navigation contract be exercised today.
@@ -45,9 +52,11 @@ constexpr MenuRow kCreditsRows[] = {
 // gating in main.cpp).
 //
 // Restart match / Return to main menu are sticky flags read by the
-// host: M6.4 first-cut logs the flag and dismisses the menu; the full
-// engine-restart-with-MatchSetup wiring lands in a focused follow-up
-// (same posture as M6.2 StartMatch).
+// host. The drain wires through main.cpp's `restartMatch` lambda,
+// which performs the full `engine.shutdown` → `setMatchSetup` →
+// `engine.initialize` cycle and rebuilds the renderer-side textures
+// + sprite compositor for the new world (same posture as M6.2
+// StartMatch).
 constexpr MenuRow kPauseRows[] = {
     { "Resume",              MenuAction::Resume,           true },
     { "Restart match",       MenuAction::RestartMatch,     true },
@@ -379,7 +388,19 @@ const char* specialKindLabel_(SpecialKind k) noexcept {
 
 UISystem::UISystem(threadmaxx::Engine* engine, UIScreen initial) noexcept
     : engine_(engine), current_(initial) {
+    static_assert(std::size(kMainMenuRows) == kMainMenuRowCount,
+                  "MainMenu runtime mirror size must match constexpr "
+                  "layout — bump kMainMenuRowCount in UISystem.hpp when "
+                  "adding rows.");
+    for (std::size_t i = 0; i < kMainMenuRowCount; ++i) {
+        mainMenuRowsLive_[i] = kMainMenuRows[i];
+    }
     if (screenHasRows_(current_)) resetFocusToFirstEnabled_();
+}
+
+void UISystem::setResumableMatchInFlight(bool v) noexcept {
+    resumableMatchInFlight_ = v;
+    mainMenuRowsLive_[kMainMenuContinueRowIdx].enabled = v;
 }
 
 bool UISystem::setCurrent(UIScreen newScreen) noexcept {
@@ -423,7 +444,7 @@ void UISystem::update(threadmaxx::SystemContext& ctx) {
 
 std::span<const MenuRow> UISystem::rows(UIScreen screen) const noexcept {
     switch (screen) {
-        case UIScreen::MainMenu:             return { kMainMenuRows,             std::size(kMainMenuRows)             };
+        case UIScreen::MainMenu:             return { mainMenuRowsLive_.data(), mainMenuRowsLive_.size()              };
         case UIScreen::Credits:              return { kCreditsRows,              std::size(kCreditsRows)              };
         case UIScreen::MatchSetup:           return { kMatchSetupRows,           std::size(kMatchSetupRows)           };
         case UIScreen::PlayerSetup:          return { kPlayerSetupRows,          std::size(kPlayerSetupRows)          };
@@ -527,13 +548,13 @@ MenuAction UISystem::acceptFocused() noexcept {
             triggerBack();
             break;
         case MenuAction::StartMatch:
-            // M6.2 — host observes the sticky flag on the next frame,
-            // applies `matchSetup_` (via TouGame::setMatchSetup +
-            // engine restart, the latter landing in M6.4 alongside
-            // "Restart match"), then clears the flag. UISystem
-            // additionally dismisses the menu so the host's
-            // engine.paused() bind unfreezes the simulation cleanly
-            // even before the restart machinery is in place.
+            // M6.2 — host observes the sticky flag on the next frame
+            // and feeds `matchSetup_` to the `restartMatch` lambda in
+            // main.cpp (TouGame::setMatchSetup + engine
+            // shutdown/initialize, plus the renderer-side bg / fg /
+            // sky / sprite-compositor rebuild). UISystem dismisses the
+            // menu so the host's `engine.paused()` bind unfreezes the
+            // simulation cleanly the instant the new engine is up.
             pendingStartMatch_ = true;
             setCurrent(UIScreen::None);
             break;
@@ -547,11 +568,12 @@ MenuAction UISystem::acceptFocused() noexcept {
             break;
         case MenuAction::RestartMatch:
             // M6.4 — sticky flag the host drains, same posture as M6.2
-            // StartMatch. Engine-restart-with-MatchSetup wiring is the
-            // remaining piece (deferred to a focused follow-up, like
-            // M6.2's deferred apply path). Dismissing the menu unblocks
-            // the sim so the host's restart routine runs against an
-            // unpaused engine if it wants to.
+            // StartMatch. The host's `restartMatch` lambda
+            // (main.cpp) re-applies `matchSetup_` via
+            // `Engine::shutdown` → `setMatchSetup` → `Engine::initialize`,
+            // restoring the bg / fg / sky textures + camera viewport at
+            // the end. Dismissing the menu here unblocks the sim so the
+            // host's restart routine runs against an unpaused engine.
             pendingRestartMatch_ = true;
             setCurrent(UIScreen::None);
             break;
@@ -562,7 +584,14 @@ MenuAction UISystem::acceptFocused() noexcept {
             // behind the main menu. The combined behaviour matches the
             // M6.1 "no CLI args" launch posture (engine paused, MainMenu
             // up).
+            //
+            // N1 — flip Continue's enable bit ON so the user can return
+            // to the same paused world they just left. setResumable...
+            // also syncs the runtime mirror's `enabled` field; cleared
+            // again by the host's restartMatch lambda whenever a fresh
+            // match starts (Single Match / Start / Restart / Rematch).
             pendingReturnToMainMenu_ = true;
+            setResumableMatchInFlight(true);
             setCurrent(UIScreen::MainMenu);
             break;
         case MenuAction::Rematch:
@@ -624,6 +653,14 @@ MenuAction UISystem::acceptFocused() noexcept {
             setCurrent(UIScreen::OptionsBenchmark);
             break;
         case MenuAction::Continue:
+            // N1 — dismiss MainMenu. The host's `engine.paused()` bind
+            // reads `!menuActive()` next frame and unfreezes the same
+            // world the user left behind. The flag stays true because
+            // the user might re-pause → Return to main menu again; only
+            // a fresh match (Single Match / Start / Restart / Rematch)
+            // resets it.
+            setCurrent(UIScreen::None);
+            break;
         case MenuAction::None:
             break;
     }
