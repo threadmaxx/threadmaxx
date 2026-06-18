@@ -13,6 +13,29 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N2 — RepairKit spawn + HUD glyph (2026-06-18)
+M7.5 shipped the entity-based `Pickup` user component + `RepairKitSystem`
+behaviour, but `TouGame::onSetup` never actually seeded any kits — the
+affordance existed in code but wasn't visible in gameplay.
+
+N2 sprinkles a deterministic batch of kits at world start. The count
+scales with total ship count (1 kit per 2 ships, floor 2, cap 12);
+each kit is placed at a random Air cell sampled by `sampleRandomRespawn`
+from the same shared `spawnRng` the ship seed loop already uses — so
+same `MatchSetup` → same kit layout. Works against all three level
+sources (synthetic arena, procedural-generated, imported `.lev`).
+
+HUD-side: `HudSystem` now walks `Pickup` chunks in `update()`, latches
+positions of active (state == 0, no `DisabledTag`) kits into
+`kitPositionsXY_`, and `buildRenderFrame()` emits a cyan "+" cross at
+each. Distinct visual from the green `RepairBase` TILES painted into
+the terrain JPG — color + cross shape reads as "collectible kit" vs.
+"static green tile." Latched count is capped at `kMaxKitGlyphs = 64`
+to bound the per-frame draw budget even on dense maps.
+
+Pinned by `tests/tou2d_kit_spawn_test.cpp` (active kits latched,
+respawning kits skipped).
+
 ### N1 — MainMenu "Continue" resumability (2026-06-18)
 Audit of TOU_PLAN.md §2.1 surfaced that the StartMatch / RestartMatch /
 Rematch "engine-restart-with-MatchSetup" wiring had already been

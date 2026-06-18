@@ -9,6 +9,9 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <span>
+#include <utility>
+#include <vector>
 
 namespace tou2d {
 
@@ -108,6 +111,22 @@ private:
     const std::uint16_t*          winnerKills_ = nullptr;
     AccessibilitySettings         access_{};
     std::uint32_t                 pulseTick_ = 0;
+
+    /// N2 (2026-06-18) — latched active-RepairKit positions (world XY)
+    /// for `buildRenderFrame` to glyph as cyan "+" crosses. Repopulated
+    /// each `update()` from the world's Pickup chunks; bounded at
+    /// `kMaxKitGlyphs` so a level can't blow up the per-frame draw
+    /// budget. Respawning (`DisabledTag`) kits are skipped — they're
+    /// invisible until they pop back to state-0.
+    static constexpr std::size_t kMaxKitGlyphs = 64;
+    std::vector<std::pair<float, float>> kitPositionsXY_;
+
+public:
+    /// @internal Test hook: inspect the latched kit positions. Empty
+    /// until `update()` runs against a world holding active Pickups.
+    std::span<const std::pair<float, float>> kitPositionsForTest() const noexcept {
+        return { kitPositionsXY_.data(), kitPositionsXY_.size() };
+    }
 };
 
 } // namespace tou2d

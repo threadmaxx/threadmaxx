@@ -99,16 +99,49 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
     // `pulseTick_` to drive the sine.
     ++pulseTick_;
 
-    const auto idsLp   = ids_.localPlayer;
-    const auto idsShip = ids_.ship;
-    const auto idsLd   = ids_.loadout;
+    const auto idsLp     = ids_.localPlayer;
+    const auto idsShip   = ids_.ship;
+    const auto idsLd     = ids_.loadout;
+    const auto idsPickup = ids_.pickup;
     if (!idsLp.valid() || !idsShip.valid()) return;
 
     // Reset latches each tick.
     for (auto& s : slots_) s = SlotState{};
+    // N2 — clear kit latch; capacity is preserved across ticks.
+    kitPositionsXY_.clear();
 
     ctx.single([&](threadmaxx::Range /*r*/, threadmaxx::CommandBuffer& /*cb*/) {
         const auto& view = ctx.worldView();
+
+        // N2 — pre-pass for active RepairKit positions. Runs over the
+        // same `view.chunks()` snapshot but is gated on idsPickup so it
+        // skips ship chunks entirely. Active kits = state==0 AND no
+        // DisabledTag (respawning kits carry DisabledTag set by
+        // RepairKitSystem).
+        if (idsPickup.valid()) {
+            for (const auto* chunkPtr : view.chunks()) {
+                if (!chunkPtr) continue;
+                const auto& chunk = *chunkPtr;
+                if (!chunk.mask.has(idsPickup.componentBit())) continue;
+                if (chunk.mask.has(threadmaxx::Component::DisabledTag)) continue;
+                if (!chunk.mask.has(threadmaxx::Component::Transform)) continue;
+
+                const auto pickupSpan =
+                    threadmaxx::user::chunkSpan<Pickup>(chunk, idsPickup);
+                const auto transformSpan =
+                    threadmaxx::detail::getChunkSpan<threadmaxx::Transform>(chunk);
+
+                for (std::size_t row = 0, n = pickupSpan.size(); row < n; ++row) {
+                    if (kitPositionsXY_.size() >= kMaxKitGlyphs) break;
+                    const Pickup& pk = pickupSpan[row];
+                    if (pk.state != 0) continue;
+                    const auto& tr = transformSpan[row];
+                    kitPositionsXY_.emplace_back(tr.position.x, tr.position.y);
+                }
+                if (kitPositionsXY_.size() >= kMaxKitGlyphs) break;
+            }
+        }
+
         for (const auto* chunkPtr : view.chunks()) {
             if (!chunkPtr) continue;
             const auto& chunk = *chunkPtr;
@@ -459,6 +492,36 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
         const SpecialWeaponSpec& sspec = specialSpecAt(state.specialKind);
         drawAmmoRow(specialY, sspec.weaponKind, sspec.magazine,
                     state.specialAmmo, state.specialReload);
+    }
+
+    // ---- N2 RepairKit glyphs -----------------------------------------
+    // Cyan "+" cross drawn at every active kit's world position. Visible
+    // from every camera (`cameraMask = 0xFFFFFFFFu`, the default) so each
+    // human's viewport shows the kits in its frustum. Distinct from the
+    // green RepairBase TILE rendered into the terrain JPG — the cross
+    // shape + cyan tint reads as "collectible / restock kit" rather than
+    // "static green tile to stand on."
+    //
+    // Geometry: two perpendicular DebugLine segments. Arm length scales
+    // with hudScale so the glyph stays legible at every accessibility
+    // setting. Size is tuned to be visible at default camera zoom but
+    // not crowd the frame.
+    {
+        constexpr std::uint32_t kKitGlyphColor = 0xFFFFC080u;  // cyan-ish
+        constexpr float         kBaseArmLenWU  = 6.0f;
+        const float armLen = kBaseArmLenWU * sc;
+        for (const auto& [kx, ky] : kitPositionsXY_) {
+            threadmaxx::DebugLine h{};
+            h.a         = {kx - armLen, ky, 0.0f};
+            h.b         = {kx + armLen, ky, 0.0f};
+            h.colorRGBA = kKitGlyphColor;
+            b.addDebugLine(h);
+            threadmaxx::DebugLine v{};
+            v.a         = {kx, ky - armLen, 0.0f};
+            v.b         = {kx, ky + armLen, 0.0f};
+            v.colorRGBA = kKitGlyphColor;
+            b.addDebugLine(v);
+        }
     }
 
     // ---- M4.2 winner banner -------------------------------------------

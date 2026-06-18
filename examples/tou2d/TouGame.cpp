@@ -487,6 +487,62 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
             isBot ? std::uint8_t{1} : std::uint8_t{0},
             kindIdx, atlasIdx, defaultSpecial_, factionId);
     }
+
+    // ---- N2 (2026-06-18) — seed entity-based RepairKits -----------
+    // M7.5 shipped the framework + behaviour (`Pickup` user component,
+    // `RepairKitSystem`, AABB pickup, respawn countdown). N2 sprinkles
+    // a deterministic batch of kits at game start so the affordance is
+    // actually visible in gameplay. Count scales with the ship count
+    // — roughly one kit per two ships so contention exists but kits
+    // aren't ubiquitous. Capped at 12 so a 67-slot match doesn't drown
+    // in glyphs.
+    //
+    // Placement strategy: try `sampleRandomRespawn` to find an Air
+    // cell with a 2-cell margin from the perimeter; if the grid is too
+    // degenerate (synthetic arena's interior is 25×25 Air and that's
+    // plenty), the kit silently goes unspawned for that slot. The
+    // shared `spawnRng` is the same one ships drew from — keeps the
+    // session-local determinism: same `MatchSetup` produces the same
+    // kit layout.
+    //
+    // The seed CommandBuffer commits ship spawns AND these kit spawns
+    // in registration order on the very first tick, so kits are alive
+    // and reservable at tick 0.
+    const std::uint32_t kitCount = [&]() -> std::uint32_t {
+        // 1 kit per 2 ships, floor 2, cap 12. Synthetic arena gets the
+        // floor; procedural-generated maps with many ships get up to 12.
+        const std::uint32_t scaled = std::max<std::uint32_t>(2u, totalShips / 2u);
+        return std::min<std::uint32_t>(scaled, 12u);
+    }();
+    if (ids_.pickup.valid()) {
+        std::uint32_t placed = 0;
+        for (std::uint32_t i = 0; i < kitCount; ++i) {
+            float kx = 0.0f, ky = 0.0f;
+            if (!sampleRandomRespawn(grid_, spawnRng, kx, ky)) break;
+
+            const auto h = engine.reserveEntityHandle();
+            threadmaxx::Bundle b{};
+            b.transform.position = {kx, ky, 0.0f};
+            // Kit footprint is small enough that ships approach it
+            // visually before triggering the AABB; the half-extent in
+            // RepairKitSystem (`kKitHalfExtent`) is the gameplay
+            // boundary, not this transform scale.
+            b.transform.scale    = {14.0f, 14.0f, 14.0f};
+            b.initialMask        = threadmaxx::ComponentSet{
+                threadmaxx::Component::Transform,
+            };
+            seed.spawnBundle(h, b);
+
+            Pickup pk{};
+            pk.kind      = static_cast<std::uint8_t>(PickupKind::RepairKit);
+            pk.state     = 0;  // active
+            pk.respawnIn = 0;
+            threadmaxx::addUserComponent(seed, ids_.pickup, h, pk);
+            ++placed;
+        }
+        std::printf("[tou2d] N2 — seeded %u repair kit(s) (target %u)\n",
+                    unsigned(placed), unsigned(kitCount));
+    }
 }
 
 void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,

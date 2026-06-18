@@ -60,14 +60,23 @@ public surface unchanged. If a third-party host needs the same
 behaviour, the lambda is straightforward to lift into an engine-public
 method later — but no caller has asked for that yet.
 
-### 2.2 M7.5 kit spawning
-Framework + behavior split landed in M7.5; the demo currently spawns
-zero kits. The Pickup user component + `RepairKitSystem` are wired.
-What's missing:
+### 2.2 M7.5 kit spawning — **DONE (2026-06-18, N2)**
 
-- A spawn-time placer (both synthetic-level and procedural-level paths).
-- A render asset (sprite or DebugPoint glyph) distinguishing kit from
-  base on the HUD.
+Both pieces landed in N2:
+
+- **Spawn-time placer.** `TouGame::onSetup` now seeds kits scaled with
+  ship count (1 per 2 ships, floor 2, cap 12). Placement is via
+  `sampleRandomRespawn` against the populated terrain grid so it works
+  uniformly across synthetic-arena, procedural-generated, and imported
+  `.lev` paths. The shared `spawnRng` preserves per-`MatchSetup`
+  determinism.
+- **HUD glyph.** `HudSystem` walks `Pickup` chunks in `update()`,
+  skipping `DisabledTag` (respawning) entries, and emits a cyan "+"
+  cross in `buildRenderFrame()`. Distinct from the green `RepairBase`
+  tile painted into the terrain JPG. Latched count capped at
+  `kMaxKitGlyphs = 64`.
+
+Pinned by `tests/tou2d_kit_spawn_test.cpp`.
 
 ### 2.3 M7.6 procedural water sprinkle (blocked)
 Blocked on bumping `ProceduralLevelConfig` past its 8-byte replay-header
