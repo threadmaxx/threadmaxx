@@ -48,11 +48,12 @@ namespace {
 /// no-op (rest of the bank still works).
 struct SoundEntry { std::uint16_t id; const char* file; };
 constexpr std::array<SoundEntry, audio::kSoundCount> kSoundBank = {{
-    { audio::kSoundDumbfire,  "fire_r.wav"   },  // basic laser zap
-    { audio::kSoundSpread,    "PHOT_R.WAV"   },  // photon / spread
-    { audio::kSoundHit,       "hit1_m.wav"   },  // bullet hits ship
-    { audio::kSoundExplode,   "exp1_m.wav"   },  // ship explosion
-    { audio::kSoundTileBreak, "BRIC_R.WAV"   },  // brick / terrain break
+    { audio::kSoundDumbfire,    "fire_r.wav"   },  // basic laser zap
+    { audio::kSoundSpread,      "PHOT_R.WAV"   },  // photon / spread
+    { audio::kSoundHit,         "hit1_m.wav"   },  // bullet hits ship
+    { audio::kSoundExplode,     "exp1_m.wav"   },  // ship explosion
+    { audio::kSoundTileBreak,   "BRIC_R.WAV"   },  // brick / terrain break
+    { audio::kSoundWaterSplash, "wats_m.wav"   },  // N3 — water splash (bullet entry + thrust over water)
 }};
 
 } // namespace

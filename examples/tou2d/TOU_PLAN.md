@@ -78,18 +78,22 @@ Both pieces landed in N2:
 
 Pinned by `tests/tou2d_kit_spawn_test.cpp`.
 
-### 2.3 M7.6 procedural water sprinkle (blocked)
-Blocked on bumping `ProceduralLevelConfig` past its 8-byte replay-header
-reservation. Once unblocked: add `waterCellCount` knob parallel to
-`repairTileCount`, sprinkle Water cells in the generator. Lands when the
-replay header version bumps (own batch — affects format compatibility).
+### 2.3 M7.6 procedural water sprinkle (still blocked)
 
-**Smaller M7.6 polish items that don't share that blocker**:
+The two non-blocked polish items shipped in N3 (2026-06-18):
 
-- `BulletTerrainSystem` water splash particles (bullets currently fly
-  through Water unchanged — treated as Air via `hp == 0`).
-- Smooth-blend wetness piped into thruster plume audio (a future audio
-  polish batch).
+- **Water-splash particles + bullet consumption** — `BulletTerrainSystem`
+  emits a cyan splash + `kSoundWaterSplash` audio + destroys the bullet
+  on water entry.
+- **Wet-thrust splash + audio** — `MovementSystem` samples wetness at
+  the engine point and emits scaled splash particles + a rate-limited
+  splash sound when wetness ≥ `kWetThrustThreshold`.
+
+What's still blocked: bumping `ProceduralLevelConfig` past its 8-byte
+replay-header reservation. Once unblocked: add `waterCellCount` knob
+parallel to `repairTileCount`, sprinkle Water cells in the generator.
+Lands when the replay header version bumps (own batch — affects format
+compatibility).
 
 ### 2.4 M6.5 sub-screens whose values persist but don't apply mid-run
 All persist round-trip correctly via `settings.dat`; each one is one

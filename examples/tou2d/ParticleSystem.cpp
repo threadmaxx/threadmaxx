@@ -246,6 +246,41 @@ std::uint32_t ParticleSystem::damageSmokeInterval(float hpFrac) noexcept {
     return static_cast<std::uint32_t>(std::max(1.0f, std::floor(interval + 0.5f)));
 }
 
+void ParticleSystem::emitWaterSplash(float x, float y, float intensity) {
+    // N3 — water splash: cyan / pale-blue droplets with vertical-biased
+    // launch velocity. `intensity` in [0, 1] scales burst count and
+    // launch speed so a thruster grazing a wet patch (intensity ≈ 0.3)
+    // produces a quiet 2-droplet flick while a direct bullet impact
+    // (intensity = 1.0) yields a full 5-droplet plume. RGB lies between
+    // the water-tile blue (0xB87038 = 0xFF386B70 in ABGR) and pure
+    // white so the splash reads against either water OR dry terrain.
+    const float clamped = std::clamp(intensity, 0.0f, 1.0f);
+    const int   count   = std::max(1, static_cast<int>(std::round(2.0f + clamped * 3.0f)));
+    const float spLo    = 25.0f + clamped * 25.0f;
+    const float spHi    = 60.0f + clamped * 50.0f;
+    std::uniform_real_distribution<float> angDist (-0.9f, 0.9f);  // narrow upward fan
+    std::uniform_real_distribution<float> spDist  (spLo,  spHi);
+    std::uniform_int_distribution<int>    ttlDist (10, 20);
+    for (int i = 0; i < count; ++i) {
+        const float a = angDist(rng_);
+        const float s = spDist(rng_);
+        Particle p{};
+        p.x = x;  p.y = y;
+        p.vx = std::sin(a) * s;
+        // Upward launch (positive Y in this engine; gravity will
+        // bring the droplet back down — Kind::Debris uses falling
+        // gravity already).
+        p.vy = std::cos(a) * s + 30.0f;
+        p.rgb = 0x00D8B080u;  // cyan-pale-blue (ABGR low-24)
+        const int ttl = ttlDist(rng_);
+        p.ttlTicks = static_cast<std::uint16_t>(ttl);
+        p.maxTtl   = static_cast<std::uint16_t>(ttl);
+        p.pxSize   = 3.0f + clamped * 1.5f;
+        p.kind     = Kind::Debris;
+        spawn(p);
+    }
+}
+
 void ParticleSystem::emitTileBreakDust(float x, float y) {
     std::uniform_real_distribution<float> angDist (0.0f, kTwoPi);
     std::uniform_real_distribution<float> spDist  (20.0f, 70.0f);

@@ -283,12 +283,13 @@ static_assert(sizeof(AudioPlay) == 4, "AudioPlay must stay 4 bytes");
 /// Stable IDs into the AudioSystem sound bank. Add new entries at the
 /// end; never reorder (would invalidate any persisted sound choices).
 namespace audio {
-inline constexpr std::uint16_t kSoundDumbfire   = 0;  ///< basic weapon fire
-inline constexpr std::uint16_t kSoundSpread     = 1;  ///< spread weapon fire
-inline constexpr std::uint16_t kSoundHit        = 2;  ///< bullet hits a ship
-inline constexpr std::uint16_t kSoundExplode    = 3;  ///< ship explosion / death
-inline constexpr std::uint16_t kSoundTileBreak  = 4;  ///< terrain tile destroyed
-inline constexpr std::uint16_t kSoundCount      = 5;
+inline constexpr std::uint16_t kSoundDumbfire    = 0;  ///< basic weapon fire
+inline constexpr std::uint16_t kSoundSpread      = 1;  ///< spread weapon fire
+inline constexpr std::uint16_t kSoundHit         = 2;  ///< bullet hits a ship
+inline constexpr std::uint16_t kSoundExplode     = 3;  ///< ship explosion / death
+inline constexpr std::uint16_t kSoundTileBreak   = 4;  ///< terrain tile destroyed
+inline constexpr std::uint16_t kSoundWaterSplash = 5;  ///< N3 — water splash (bullet impact / wet thrust)
+inline constexpr std::uint16_t kSoundCount       = 6;
 } // namespace audio
 
 /// M4.2 / M4.5 — per-ship weapon ammo + reload state.

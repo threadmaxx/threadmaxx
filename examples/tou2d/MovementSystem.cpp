@@ -3,6 +3,8 @@
 #include "ParticleSystem.hpp"
 
 #include <threadmaxx/CommandBuffer.hpp>
+#include <threadmaxx/Engine.hpp>
+#include <threadmaxx/EventChannel.hpp>
 #include <threadmaxx/Query.hpp>
 #include <threadmaxx/World.hpp>
 
@@ -230,6 +232,27 @@ void MovementSystem::update(threadmaxx::SystemContext& ctx) {
                         ex, ey,
                         -forward.x * ev,
                         -forward.y * ev);
+
+                    // N3 (2026-06-18) — wet-thrust splash. Sample the
+                    // wetness at the ENGINE position (not the ship
+                    // centroid) so a partially-submerged ship pointing
+                    // its nose down emits splashes even when the
+                    // centroid above the surface reads dry. Above the
+                    // threshold, emit a tiny water-splash particle
+                    // proportional to wetness; gate the audio at a
+                    // longer cadence so the soundscape doesn't become
+                    // a wash of splashes.
+                    const float wetAtEngine = (terrain_ != nullptr)
+                        ? sampleWetness(*terrain_, ex, ey)
+                        : 0.0f;
+                    if (wetAtEngine >= kWetThrustThreshold) {
+                        particles_->emitWaterSplash(ex, ey, wetAtEngine);
+                        if (engine_ != nullptr &&
+                            (phase % kWetSplashAudioInterval) == 0) {
+                            engine_->events<AudioPlay>().emit(
+                                AudioPlay{audio::kSoundWaterSplash, 0, 0});
+                        }
+                    }
                 }
             }
         }

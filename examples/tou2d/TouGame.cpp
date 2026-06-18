@@ -319,6 +319,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     repairKit    ->setParticleSystem(particlesPtr);
     movementPtr  ->setParticleSystem(particlesPtr);   // M7.3 §5.1 — thruster plume
     movementPtr  ->setTerrainGrid(&grid_);            // M7.6 — water sampling
+    movementPtr  ->setEngine(&engine);                // N3 — wet-thrust splash audio
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera->setNumHumans(numHumans_);
     camera_         = camera.get();

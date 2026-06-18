@@ -80,6 +80,16 @@ public:
     /// to "wisps" than to a billowing cloud.
     void emitDamageSmoke(float x, float y);
 
+    /// N3 (2026-06-18) — water splash at world `(x, y)`. `intensity` in
+    /// [0.0, 1.0] scales the burst size: low intensity (thruster
+    /// passing over a wet patch) emits ~2 droplets; full intensity
+    /// (bullet impact) emits ~5. Color is cyan / pale-blue against the
+    /// water-tile blue terrain so the splash reads against the
+    /// background; vertical-biased initial velocity gives the splash
+    /// its characteristic up-and-out shape. Reuses the `Debris` motion
+    /// profile so droplets fall under gravity (no need for a new Kind).
+    void emitWaterSplash(float x, float y, float intensity);
+
     /// M7.3 §5.1 — color for a thruster particle at remaining-life
     /// fraction `frac` (1.0 = just spawned, 0.0 = expired). Lerps
     /// from yellow-orange to red-orange in `0xAABBGGRR` packing.

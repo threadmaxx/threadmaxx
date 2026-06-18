@@ -13,6 +13,43 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N3 — water-splash particles + wet-thrust audio (2026-06-18)
+Tackled the §2.3 non-blocked items (the procedural-generator water
+sprinkle stays blocked on the `ProceduralLevelConfig` header-byte
+reservation).
+
+**Bullet-on-water splash**: `BulletTerrainSystem` pre-N3 short-circuited
+both Air and Water cells via the shared `hp == 0` early-out — bullets
+flew through water with zero feedback. N3 splits the check: water cells
+emit a `ParticleSystem::emitWaterSplash(x, y, 1.0f)` plume + a
+`kSoundWaterSplash` audio event, then destroy the bullet. The original
+"fly through unchanged" behaviour is gone — matches the intuition that
+water absorbs projectiles. Bedrock and destructible-rock paths are
+unchanged.
+
+**Wet-thrust splash + audio**: `MovementSystem` re-samples wetness at the
+thruster ejection point (not the ship centroid — a partially-submerged
+nose-down ship can have a dry centroid + wet engine). When wetness ≥
+`kWetThrustThreshold` (0.35), each thruster particle emit additionally
+fires a low-intensity `emitWaterSplash(..., wetness)` and — at a
+slower `kWetSplashAudioInterval` cadence (every 20 ticks ≈ 3 Hz) —
+plays a splash sound. Pre-existing buoyancy + drag integration is
+untouched.
+
+**New audio slot**: `audio::kSoundWaterSplash = 5` (stable ID;
+`kSoundCount` bumped to 6). Sound bank entry points at `wats_m.wav`,
+which exists in the source TOU SFX bank (`TOU/sfx/`) — drop it into
+`assets/sfx/wats_m.wav` for the splash to actually play. The graceful
+missing-file path silences the slot so the demo still runs without it.
+
+**Particle path**: `ParticleSystem::emitWaterSplash(x, y, intensity)` —
+cyan/pale-blue droplets with vertical-biased launch velocity, count and
+speed scaled by intensity ∈ [0, 1]. Reuses `Kind::Debris` so droplets
+fall under gravity naturally.
+
+Pinned by `tests/tou2d_water_splash_test.cpp` (enum stability,
+emit-on-pool, threshold band).
+
 ### N2 — RepairKit spawn + HUD glyph (2026-06-18)
 M7.5 shipped the entity-based `Pickup` user component + `RepairKitSystem`
 behaviour, but `TouGame::onSetup` never actually seeded any kits — the

@@ -67,9 +67,33 @@ void BulletTerrainSystem::update(threadmaxx::SystemContext& ctx) {
 
                 if (!grid_->inBounds(cx, cy)) continue;
                 const std::uint8_t cellHp = grid_->hpAt(cx, cy);
+                const Attribute    cellAttr = grid_->attrAt(cx, cy);
+
+                // N3 (2026-06-18) — water entry. Water cells carry
+                // hp == 0 (so they're not destructible) but a distinct
+                // `Attribute::Water`. Pre-N3 the `hp == 0` early-out
+                // matched both Air AND Water — bullets flew through
+                // water silently. N3: bullet hits water → splash
+                // particles + audio + bullet consumed (matches the
+                // visual intuition that water absorbs the projectile).
+                if (cellAttr == Attribute::Water) {
+                    if (particles_) {
+                        particles_->emitWaterSplash(
+                            cellCenterWorld(cx),
+                            cellCenterWorld(cy),
+                            /*intensity=*/1.0f);
+                    }
+                    if (engine_) {
+                        engine_->events<AudioPlay>().emit(
+                            AudioPlay{audio::kSoundWaterSplash, 0, 0});
+                    }
+                    cb.destroy(entities[row]);
+                    continue;
+                }
+
                 if (cellHp == 0) continue;  // Air — bullet flies on
 
-                if (grid_->attrAt(cx, cy) != Attribute::Solid) continue;
+                if (cellAttr != Attribute::Solid) continue;
 
                 const Bullet& blt = blSpan[row];
 

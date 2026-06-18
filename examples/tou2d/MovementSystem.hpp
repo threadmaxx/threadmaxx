@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+namespace threadmaxx { class Engine; }
+
 namespace tou2d {
 
 class ParticleSystem;
@@ -79,6 +81,27 @@ public:
     /// to the pre-M7.6 air-only path.
     void setTerrainGrid(const TerrainGrid* g) noexcept { terrain_ = g; }
 
+    /// N3 (2026-06-18) — borrowed engine for emitting `AudioPlay` events
+    /// (wetness-modulated thruster splash). Null is fine — wet-thrust
+    /// audio is silenced and the particle path still runs.
+    void setEngine(threadmaxx::Engine* e) noexcept { engine_ = e; }
+
+    /// N3 — minimum wetness at which the wet-thrust splash starts emitting
+    /// (audio + extra particles). Below this the dry-thrust behaviour
+    /// holds; above, the cadence scales smoothly with wetness so a ship
+    /// hovering at the water surface gradually trails more splashes the
+    /// deeper it dips. Public so the test pin can reference the threshold.
+    static constexpr float kWetThrustThreshold = 0.35f;
+
+    /// N3 — audio rate-limit interval (ticks). Each ship at thrust over
+    /// water emits at most one splash sound per `kWetSplashAudioInterval`
+    /// ticks; particles fire on the existing `kThrustEmitInterval` so the
+    /// visual cadence stays at 20 Hz while audio sits at the quieter
+    /// ~3 Hz rate. The phase counter is global (per system tick) so two
+    /// ships at the same water cell don't double-fire; they share the
+    /// same window.
+    static constexpr std::uint32_t kWetSplashAudioInterval = 20;
+
     /// M7.3 §5.1 — emit one thruster puff every `kThrustEmitInterval`
     /// ticks per actively-thrusting ship. 3 → 20 puffs/sec at 60 Hz;
     /// combined with TTL 12-18 each ship caps at ~6 live thrust
@@ -92,9 +115,10 @@ private:
     float            levelMaxX_   = 0.0f;
     float            levelMaxY_   = 0.0f;
     bool             levelActive_ = false;
-    ParticleSystem*    particles_ = nullptr;
-    const TerrainGrid* terrain_   = nullptr;   // M7.6 — water lookup; nullable
-    std::uint32_t      tickPhase_ = 0;   // M7.3 — bumped each update() call
+    ParticleSystem*     particles_ = nullptr;
+    const TerrainGrid*  terrain_   = nullptr;   // M7.6 — water lookup; nullable
+    threadmaxx::Engine* engine_    = nullptr;   // N3  — AudioPlay emit; nullable
+    std::uint32_t       tickPhase_ = 0;   // M7.3 — bumped each update() call
 };
 
 } // namespace tou2d
