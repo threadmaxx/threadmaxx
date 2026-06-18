@@ -444,6 +444,25 @@ if (TARGET tou2d_core)
     add_test(NAME tou2d_menu_navigation_test
              COMMAND tou2d_menu_navigation_test)
 
+    # N5 (2026-06-18) — HUD on-fire glyph + warning threshold pin.
+    add_executable(tou2d_hud_warnings_test
+        tou2d_hud_warnings_test.cpp)
+    target_link_libraries(tou2d_hud_warnings_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_hud_warnings_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_hud_warnings_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_hud_warnings_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_hud_warnings_test
+             COMMAND tou2d_hud_warnings_test)
+
     # N4 (2026-06-18) — restart-time gameplay settings fan-out.
     # Pins damageScale clamp band, respawnTicks clamp band, and
     # InputSystem keymap install.

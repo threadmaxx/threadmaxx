@@ -13,6 +13,34 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N5 — HUD damage flash + ammo/fire warnings (2026-06-18)
+Three of the M6.7b HUD polish items shipped:
+
+- **Damage-tick flash** — `HudSystem::update()` latches the previous tick's
+  hpFrac per slot in `damageFlash_[slot].prevHpFrac`. When a tick reads
+  a strictly-lower hpFrac, `flashTicksLeft = kDamageFlashTicks (6)`.
+  `buildRenderFrame()` overrides the HP bar fill with bright white at
+  alpha proportional to `flashTicksLeft / kDamageFlashTicks`, halved
+  under `accessibility.photosensitive`. Respawn / DisabledTag resets
+  the latch so a freshly-spawned ship doesn't trail a stale flash.
+- **On-fire warning glyph** — orange-red `DebugPoint` anchored above the
+  HP bar (between badge and HP bar) when
+  `kLowHpFracThreshold < hpFrac <= kOnFireFracThreshold`. Threshold
+  matches `ParticleSystem::kDamageSmokeFracThreshold` so the warning
+  shows up at the same moment the ship starts trailing smoke. Below
+  the low-HP threshold the steady red banner takes over and the glyph
+  is suppressed to avoid visual noise.
+- **Low-ammo warning marker** — orange `DebugPoint` above the ammo strip
+  when (a) not reloading and (b) `ammo / magSize <= kLowAmmoFrac (0.25)`.
+  Fires independently for the dumbfire and special rows.
+
+Still deferred from §2.5: weapon icon sprites (needs asset work),
+identity badge (needs text or icon-glyph path; DebugText isn't
+renderable today), match timer countdown (depends on time-cap
+`RoundEnded` event that doesn't exist yet).
+
+Pinned by `tests/tou2d_hud_warnings_test.cpp`.
+
 ### N4 — restart-time gameplay settings apply (2026-06-18)
 Pre-N4 the Options menu let the user edit gameplay knobs which then
 round-tripped through `settings.dat` but never actually fed any running

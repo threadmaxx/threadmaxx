@@ -88,6 +88,24 @@ public:
     /// fires. Exposed for tests.
     static constexpr float kLowHpFracThreshold = 0.25f;
 
+    /// N5 (2026-06-18) — fraction of magazine below which the low-ammo
+    /// warning dot fires. 25% means "you have 25% or less of the
+    /// magazine left." Below this AND with no reload in progress the
+    /// ammo-row corner gets a small orange warning marker.
+    static constexpr float kLowAmmoFrac = 0.25f;
+
+    /// N5 — HP fraction below which the on-fire warning glyph fires.
+    /// Lines up with `ParticleSystem::kDamageSmokeFracThreshold` so
+    /// the warning shows up at the same moment the ship starts
+    /// trailing smoke. Plain-magic-number-aligned (re-declared rather
+    /// than linked so the header doesn't pull in ParticleSystem.hpp).
+    static constexpr float kOnFireFracThreshold = 0.40f;
+
+    /// N5 — ticks the HP bar paints over with bright white after an
+    /// HP decrease ("damage flash"). 6 ticks @ 60 Hz = 100 ms — long
+    /// enough to register, short enough to clear before the next hit.
+    static constexpr std::uint8_t kDamageFlashTicks = 6;
+
 private:
     struct SlotState {
         bool          present       = false; ///< LocalPlayer slot exists this tick
@@ -102,6 +120,18 @@ private:
         std::uint8_t  specialKind   = 0;     ///< M5.6 — SpecialKind enum value
         std::uint8_t  _pad          = 0;
     };
+
+    /// N5 (2026-06-18) — persistent per-slot state for the damage-tick
+    /// flash. Cleared on transition through DisabledTag / respawn so a
+    /// freshly-respawned ship doesn't trail a stale flash. `prevHpFrac`
+    /// latches what we saw last tick so update() can detect an HP
+    /// decrease; `flashTicksLeft` is decremented every tick by
+    /// `buildRenderFrame` so the flash fades naturally.
+    struct DamageFlash {
+        float        prevHpFrac     = -1.0f;  ///< -1 = no prior reading
+        std::uint8_t flashTicksLeft = 0;
+    };
+    std::array<DamageFlash, 4> damageFlash_{};
 
     UserComponentIds              ids_;
     const CameraSystem*           camera_ = nullptr;

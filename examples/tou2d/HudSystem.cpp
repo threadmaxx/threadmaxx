@@ -168,6 +168,26 @@ void HudSystem::update(threadmaxx::SystemContext& ctx) {
                 slots_[slot].kills   = sh.kills;
                 const float maxHp = sh.maxHp > 0.0f ? sh.maxHp : 1.0f;
                 slots_[slot].hpFrac = std::clamp(sh.currentHp / maxHp, 0.0f, 1.0f);
+
+                // N5 (2026-06-18) — damage-tick flash latch. Trigger
+                // when current hpFrac is strictly LESS than the last
+                // tick's reading (and we have a prior reading at all).
+                // Disabled / respawned ships skip the latch entirely
+                // and reset prevHpFrac so a respawn doesn't trigger a
+                // spurious flash on the first frame back.
+                auto& flash = damageFlash_[slot];
+                if (disabled) {
+                    flash.prevHpFrac     = -1.0f;
+                    flash.flashTicksLeft = 0;
+                } else {
+                    if (flash.prevHpFrac >= 0.0f &&
+                        slots_[slot].hpFrac < flash.prevHpFrac - 1e-4f) {
+                        flash.flashTicksLeft = kDamageFlashTicks;
+                    } else if (flash.flashTicksLeft > 0) {
+                        --flash.flashTicksLeft;
+                    }
+                    flash.prevHpFrac = slots_[slot].hpFrac;
+                }
                 if (hasLd) {
                     const WeaponLoadout& ld = ldSpan[row];
                     slots_[slot].dumbfireAmmo   = ld.dumbfireAmmo;
@@ -350,7 +370,41 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                     std::clamp(a8f, 0.0f, 255.0f));
                 fillColor = kLowHpRed | (a8 << 24);
             }
+            // N5 — damage-tick flash overrides the fill color while the
+            // latch is live. Photosensitive mode dampens the flash via
+            // the alpha so the spike doesn't strobe at full saturation.
+            if (damageFlash_[s].flashTicksLeft > 0) {
+                const float frac = static_cast<float>(damageFlash_[s].flashTicksLeft) /
+                                   static_cast<float>(kDamageFlashTicks);
+                float alphaF = 255.0f * frac;
+                if (access_.photosensitive) alphaF *= 0.5f;
+                const std::uint32_t a8 = static_cast<std::uint32_t>(
+                    std::clamp(alphaF, 0.0f, 255.0f));
+                // White flash over the bar.
+                fillColor = 0x00FFFFFFu | (a8 << 24);
+            }
             emitStackedLine(barStart, fillEnd, barY, fillColor);
+        }
+
+        // ---- N5 on-fire warning glyph ---------------------------------
+        // Anchored just above the HP bar (between badge and HP bar).
+        // Plain orange-red point so it reads as "below smoke threshold,
+        // ship is leaking damage smoke." Distinct from the LOW-HP warning
+        // marker at the top of the viewport — that one fires at 25% HP;
+        // this one fires at 40% (matches the smoke threshold).
+        if (state.hpFrac > 0.0f &&
+            state.hpFrac <= kOnFireFracThreshold &&
+            state.hpFrac > kLowHpFracThreshold) {
+            threadmaxx::DebugPoint dp{};
+            dp.position   = {
+                cornerX + dir * 2.0f,
+                cornerY - kRowVerticalWU * 0.4f,
+                0.0f,
+            };
+            dp.colorRGBA  = 0xC02060FFu;  // saturated orange-red
+            dp.pixelSize  = kPipSize * 1.2f;
+            dp.cameraMask = slotCameraMask;
+            b.addDebugPoint(dp);
         }
 
         // M6.7 — top-of-viewport warning marker. Mirrors the low-HP
@@ -481,6 +535,30 @@ void HudSystem::buildRenderFrame(threadmaxx::RenderFrameBuilder& b) {
                     dp.colorRGBA = (color & 0x00FFFFFFu) | (a8 << 24);
                 }
                 b.addDebugPoint(dp);
+            }
+
+            // N5 — low-ammo warning marker. Lights up when (a) not
+            // reloading and (b) `ammo / magSize <= kLowAmmoFrac`.
+            // Anchored just inboard of the glyph so it doesn't collide
+            // with the pip strip. Mid-orange so it reads as warning
+            // without competing with the white damage-flash. Skip the
+            // marker entirely when the row is reloading — the dim
+            // pip track already telegraphs "weapon unavailable."
+            if (reloadIn == 0 && magSize > 0) {
+                const float frac = static_cast<float>(ammo) /
+                                   static_cast<float>(magSize);
+                if (frac <= kLowAmmoFrac) {
+                    threadmaxx::DebugPoint warn{};
+                    warn.position   = {
+                        cornerX + dir * (kWeaponGlyphWidthWU * 0.5f),
+                        rowY + kAmmoPipSize * 1.4f,
+                        0.0f,
+                    };
+                    warn.colorRGBA  = 0x00B0FFC0u;  // ARGB: A=0xC0, mid-orange
+                    warn.pixelSize  = kAmmoPipSize * 1.3f;
+                    warn.cameraMask = slotCameraMask;
+                    b.addDebugPoint(warn);
+                }
             }
         };
 

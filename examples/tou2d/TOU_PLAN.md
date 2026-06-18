@@ -118,15 +118,33 @@ Still deferred (require infrastructure the current N batch can't lift):
   already partially routed via existing engine APIs; full apply lands
   with the benchmark-host follow-up.
 
-### 2.5 M6.7b HUD polish queue
-Carried forward from the M6.7 split:
+### 2.5 M6.7b HUD polish queue — **partially done (2026-06-18, N5)**
 
-- Damage-tick flash on HP bar.
-- Weapon icon sprites (currently glyph-only).
-- Identity badge (depends on M6.3 tag plumb — already shipped, just
-  needs the HUD anchor).
-- Match timer countdown (depends on time-cap `RoundEnded` event).
-- Low-ammo / ship-on-fire warning markers.
+Shipped in N5:
+
+- ✅ **Damage-tick flash on HP bar** — `HudSystem::DamageFlash[slot]`
+  latches an HP-decrease across ticks; bright white overlay for
+  `kDamageFlashTicks = 6` ticks. Photosensitive accessibility halves
+  the flash alpha.
+- ✅ **Low-ammo warning marker** — orange DebugPoint above the ammo
+  strip when ammo ≤ 25% of magazine AND not reloading. Fires
+  independently per row (dumbfire + special).
+- ✅ **Ship-on-fire warning marker** — orange-red glyph above the HP bar
+  when `0.25 < hpFrac ≤ 0.40`. Aligned with
+  `ParticleSystem::kDamageSmokeFracThreshold` so the visual marker
+  shows up at the same moment the ship starts trailing smoke.
+
+Still deferred:
+
+- **Weapon icon sprites** — needs asset work; current geometric glyphs
+  read fine.
+- **Identity badge** — `MatchSetup::playerSlots[].tag[3]` exists but the
+  HUD has no text-rendering path (DebugText isn't supported by the
+  Vulkan renderer). Would need a small icon-glyph encoding for the
+  tag chars.
+- **Match timer countdown** — depends on a time-cap `RoundEnded` event
+  that doesn't exist yet (current modes are frag-limit DM + LSS
+  survival).
 
 ### 2.6 M6.6 scoreboard depth
 Per-slot deaths / damage-dealt / damage-taken columns. Needs
