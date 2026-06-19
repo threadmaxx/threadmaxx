@@ -13,6 +13,59 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N7 — NPC AI overhaul: stuck-detection + difficulty levels (2026-06-19)
+The "bots get stuck on terrain" playtest signal was the most
+production-blocking item left in tou2d. N7 investigates the root cause
+and adds an explicit unstuck pass plus per-difficulty AI tuning.
+
+**Root cause** (BotControlSystem deep-read, 2026-06-19): the pre-N7
+avoidance system rotated the bot's NOSE on a wall hit but never
+compensated for the linear-velocity vector that had already built up
+INTO the wall. Result: nose flipped to "open space," but `v.linear`
+kept carrying the bot back into the obstacle. The `fullyBoxed` clause
+killed thrust but not velocity, so the bot drifted forward into the
+corner anyway, then re-engaged the turn loop. End state: visible loop
+of "turn — slide back into wall — turn again."
+
+**Did we need threadmaxx_navmesh?** No — the terrain is destructible
+(every shot can rewrite topology), so a baked navmesh would go stale
+every tick. The fix is to make the existing grid-based AI smarter
+about its own velocity vector, not to replace the substrate.
+
+**Fix — stuck detection + reverse-thrust escape**:
+- `BotControlSystem` now carries a per-slot `StuckTrace`: an 8-entry
+  ring of recent positions sampled every 4 ticks. When the
+  oldest-newest displacement falls below `config_.unstuckMinDispWU`
+  over `config_.unstuckWindowTicks` AND the bot isn't in retreat
+  (intentional stillness), `unstuckTicks_[slot]` is set to
+  `config_.unstuckCommitTicks`.
+- While `unstuckTicks_[slot] > 0`: PlayerInput is overridden — `back`
+  thrust is applied (reverse to peel off the wall), forward `thrust`
+  is dropped, turn is held in the avoid-latch direction (or a
+  slot-deterministic fallback so two simultaneously-stuck bots don't
+  spin the same way and gridlock), fire is suppressed. Recovery burns
+  ~30 ticks (Normal) then re-evaluates.
+
+**Difficulty levels**: new `BotDifficulty` enum (Easy / Normal / Hard /
+Insane = 0..3) + a `BotConfig` POD bundling every tunable. Built-in
+`kBotConfigPresets[]` table covers all four; `botConfigForDifficulty`
+looks up with an out-of-range fallback to Normal so a corrupted
+settings byte can't break the AI. Monotonic curves: as difficulty
+climbs, aim wobble TIGHTENS, fire arc WIDENS, fire range GROWS, chaos
+fire RISES, special-weapon close chance RISES, stuck-recovery gets
+faster. **The Normal preset reproduces the legacy hardcoded numbers
+bit-for-bit** — pre-N7 replays and the existing bot_behavior_test
+remain valid without any rewiring.
+
+**Settings hookup**: `GameplaySettings::botDifficulty` co-opts the
+trailing pad byte (still 8 bytes total — settings.dat wire shape
+unchanged). `TouGame::onSetup` reads it via `setDifficulty`, clamped
+to the known enum range. Existing `tou2d_settings_io_test` passes
+unchanged.
+
+Pinned by `tests/tou2d_bot_ai_n7_test.cpp` (enum positions, preset
+values, monotonic curves, fallback path, setter wire-up).
+
 ### N6 — scoreboard depth (2026-06-18)
 Closes the §2.6 deferred item. The Results screen previously had a
 `kills` column only; per-slot deaths / damageDealt / damageTaken now

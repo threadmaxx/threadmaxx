@@ -76,10 +76,16 @@ struct GameplaySettings {
     float         damageScale       = 1.0f;
     std::uint16_t respawnDelayTicks = 90;
     std::uint8_t  cameraMode        = 0;   ///< 0=split, 1=follow, 2=fixed
-    std::uint8_t  _pad              = 0;
+    std::uint8_t  botDifficulty     = 1;   ///< N7: 0=Easy, 1=Normal, 2=Hard, 3=Insane
 };
 static_assert(sizeof(GameplaySettings) == 8,
-              "GameplaySettings layout pinned by settings.dat.");
+              "GameplaySettings layout pinned by settings.dat. N7 "
+              "(2026-06-19) co-opted the trailing pad byte for "
+              "`botDifficulty` — keeping the 8-byte stride means "
+              "settings.dat from pre-N7 still loads as Easy (0) "
+              "when the pad happens to be zero. Live runs explicitly "
+              "default-init to Normal (1) so a freshly-launched "
+              "binary doesn't silently downgrade the bot AI.");
 
 /// Accessibility category — four independent toggles / scales.
 struct AccessibilitySettings {

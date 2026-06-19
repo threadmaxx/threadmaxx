@@ -332,6 +332,17 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     bulletShip ->setDamageScale(settings_.gameplay.damageScale);
     shipLife   ->setRespawnTicks(settings_.gameplay.respawnDelayTicks);
     input      ->setKeyMap(settings_.controls);
+    // N7 (2026-06-19) — apply bot difficulty preset. Clamp to a known
+    // value so a corrupted byte (e.g. a pre-N7 settings.dat that had
+    // 0xFF in the trailing pad) doesn't fall off the preset table.
+    {
+        const auto raw = settings_.gameplay.botDifficulty;
+        const auto count =
+            static_cast<std::uint8_t>(BotDifficulty::Count);
+        const auto safe = raw < count ? raw
+                                      : static_cast<std::uint8_t>(BotDifficulty::Normal);
+        botControl->setDifficulty(static_cast<BotDifficulty>(safe));
+    }
     auto camera            = std::make_unique<CameraSystem>(ids_);
     camera->setNumHumans(numHumans_);
     camera_         = camera.get();

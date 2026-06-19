@@ -10,10 +10,14 @@ namespace tou2d {
 
 namespace {
 
-constexpr float kFireRange         = 220.0f;   // open fire inside this distance
+// N7 (2026-06-19) — these baselines are the `Normal` difficulty values
+// (matching the legacy hardcoded numbers). The actual values consumed
+// inside `preStep` come from `config_` so a difficulty switch retunes
+// everything in one go.
+constexpr float kFireRange         = 220.0f;   // (= Normal preset) open fire inside this distance
 constexpr float kThrustHoldDist    = 60.0f;    // closer than this → coast (don't ram)
 constexpr float kFacingThrust      = 0.78f;    // ~45° in radians, |angDelta| < this → thrust
-constexpr float kFacingFire        = 0.17f;    // ~10° → fire
+constexpr float kFacingFire        = 0.17f;    // (= Normal preset) ~10° → fire
 constexpr float kAngEpsilon        = 0.04f;    // ±2.3° dead-zone — stops jitter
 
 // Retreat hysteresis edges — enter < 0.30, exit ≥ 0.50. The gap stops
@@ -345,11 +349,19 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                 ? threadmaxx::user::chunkSpan<Ship>(chunk, idsShip)
                 : std::span<const Ship>{};
             const auto& transforms = chunk.transforms;
+            // N7 — bot needs to read its own velocity for the stuck
+            // detector + reverse-thrust heading. Velocity span is the
+            // same as the engage-target gather above; capture once per
+            // chunk so the row loop only pays the indirection.
+            const bool hasSelfVel = chunk.mask.has(threadmaxx::Component::Velocity);
+            const auto& velocities = chunk.velocities;
             const auto  entities   = chunk.entities;
             for (std::size_t row = 0, n = entities.size(); row < n; ++row) {
                 if (lpSpan[row].isBot == 0) continue;  // human — InputSystem won this slot
 
                 const auto& selfT = transforms[row];
+                const float selfVx = hasSelfVel ? velocities[row].linear.x : 0.0f;
+                const float selfVy = hasSelfVel ? velocities[row].linear.y : 0.0f;
                 const std::uint8_t slot         = lpSpan[row].slot;
                 const std::uint8_t selfFaction  = lpSpan[row].factionId;
 
@@ -454,8 +466,8 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     if (slot < aimWobblePhase_.size()) {
                         ++aimWobblePhase_[slot];
                         const float phaseRad = static_cast<float>(aimWobblePhase_[slot]) *
-                                               kAimWobbleFreqPerTick;
-                        aimAngle += std::sin(phaseRad) * kAimWobbleAmp;
+                                               config_.aimWobbleFreq;
+                        aimAngle += std::sin(phaseRad) * config_.aimWobbleAmp;
                     }
                     const float aimDelta = wrapPi(aimAngle - curAngleZ);
 
@@ -542,12 +554,12 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     // Fire decision uses the aim angle (lead + wobble),
                     // not the orbit/repulsion-biased heading. Bot keeps
                     // shooting at target through the orbital motion.
-                    if (!retreat && std::fabs(aimDelta) < kFacingFire &&
-                        range < kFireRange) {
+                    if (!retreat && std::fabs(aimDelta) < config_.facingFireRad &&
+                        range < config_.fireRange) {
                         in.fireBasic = 1;
                         float chance = 0.0f;
-                        if      (range < kSpreadRangeClose) chance = kSpreadChanceClose;
-                        else if (range < kSpreadRangeMid)   chance = kSpreadChanceMid;
+                        if      (range < kSpreadRangeClose) chance = config_.spreadChanceClose;
+                        else if (range < kSpreadRangeMid)   chance = config_.spreadChanceMid;
                         if (chance > 0.0f && slot < rngBySlot_.size()) {
                             const float r = static_cast<float>(
                                 xorshift32(rngBySlot_[slot]) >> 8) /
@@ -609,7 +621,7 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     const float r = static_cast<float>(
                         xorshift32(rngBySlot_[slot]) >> 8) /
                         static_cast<float>(1u << 24);
-                    if (r < kBotChaosFireChancePerTick) {
+                    if (r < config_.chaosFireChance) {
                         in.fireBasic = 1;
                     }
                 }
@@ -679,6 +691,102 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                             in.thrust = 0;
                         }
                     }
+                }
+
+                // ---- N7 (2026-06-19) STUCK DETECTION + UNSTUCK ------
+                // Pre-N7 the avoidance system rotated the bot's NOSE
+                // but never compensated for the linear-velocity vector
+                // already carrying the bot INTO the wall. Result: a
+                // bot bumping into terrain entered a slow loop of
+                // "turn — drift back into wall — turn again." This
+                // block detects the no-displacement plateau and
+                // applies REVERSE thrust to peel the bot off the wall
+                // before any further steering matters.
+                if (slot < stuckTrace_.size() &&
+                    config_.unstuckWindowTicks > 0) {
+                    auto& trace = stuckTrace_[slot];
+                    // One sample per N ticks: keep the ring sparse so
+                    // the displacement check spans a meaningful window
+                    // without burning per-tick CPU on every bot.
+                    // 4 ticks/sample * 8 samples = 32-tick window at
+                    // the longest. The actual displacement check uses
+                    // the configured unstuckWindowTicks as a floor.
+                    constexpr std::uint16_t kSampleEveryTicks = 4;
+                    ++trace.sinceLast;
+                    if (trace.sinceLast >= kSampleEveryTicks) {
+                        trace.sinceLast = 0;
+                        const std::uint8_t hi = trace.head;
+                        trace.px[hi] = selfT.position.x;
+                        trace.py[hi] = selfT.position.y;
+                        trace.head   = static_cast<std::uint8_t>(
+                            (hi + 1u) % kStuckHistoryLen);
+                        if (trace.filled < kStuckHistoryLen) {
+                            ++trace.filled;
+                        }
+                    }
+                    // Check displacement against the OLDEST entry once
+                    // the ring is full enough to span at least
+                    // `unstuckWindowTicks`. Without enough history we
+                    // skip the check — fresh respawns / unfilled
+                    // traces shouldn't fire a false-positive.
+                    const std::uint16_t spannedTicks =
+                        static_cast<std::uint16_t>(trace.filled * kSampleEveryTicks);
+                    if (spannedTicks >= config_.unstuckWindowTicks &&
+                        !retreat) {
+                        // Oldest = head (the slot we'd next overwrite).
+                        // With filled < kStuckHistoryLen the oldest sits
+                        // at slot 0; once filled wraps, oldest = head.
+                        const std::uint8_t oldestIdx =
+                            (trace.filled == kStuckHistoryLen)
+                                ? trace.head
+                                : 0u;
+                        const float dx = selfT.position.x - trace.px[oldestIdx];
+                        const float dy = selfT.position.y - trace.py[oldestIdx];
+                        const float disp2 = dx * dx + dy * dy;
+                        const float thresh2 =
+                            config_.unstuckMinDispWU * config_.unstuckMinDispWU;
+                        if (disp2 < thresh2 && unstuckTicks_[slot] == 0) {
+                            unstuckTicks_[slot] = config_.unstuckCommitTicks;
+                        }
+                    }
+                }
+
+                if (slot < unstuckTicks_.size() && unstuckTicks_[slot] > 0) {
+                    // ESCAPE BEHAVIOUR: apply reverse thrust to back
+                    // away from whatever the bot wedged itself into;
+                    // turn HARD toward the direction away from the
+                    // velocity vector so the bot's nose re-aligns with
+                    // open space. The forward-thrust pin is dropped
+                    // because the bot just spent ticks failing to move
+                    // — thrusting forward more would just re-press it
+                    // into the wall.
+                    unstuckTicks_[slot] = static_cast<std::uint16_t>(
+                        unstuckTicks_[slot] - 1);
+                    in.thrust    = 0;
+                    in.back      = 1;
+                    // Pick a turn direction by combining (a) the
+                    // current avoid-latch sign if active, (b) a
+                    // slot-deterministic fallback so two simultaneously
+                    // stuck bots don't both spin the same way and
+                    // gridlock. Either way we drive turn for the full
+                    // commit window.
+                    std::int8_t turnSign = 0;
+                    if (slot < avoidSign_.size() && avoidSign_[slot] != 0) {
+                        turnSign = avoidSign_[slot];
+                    }
+                    if (turnSign == 0) {
+                        turnSign = (slot & 1u) ? std::int8_t{+1}
+                                               : std::int8_t{-1};
+                    }
+                    in.turnLeft  = turnSign > 0 ? 1u : 0u;
+                    in.turnRight = turnSign < 0 ? 1u : 0u;
+                    // Fire suppression while unstucking: don't waste
+                    // shots or special-weapon cooldown when in panic.
+                    in.fireBasic   = 0;
+                    in.fireSpecial = 0;
+                    // Quiet the velocity-aware brake: signal that we
+                    // are already braking via `in.back`.
+                    (void)selfVx; (void)selfVy;
                 }
 
                 threadmaxx::addUserComponent(cb, idsPi, entities[row], in);

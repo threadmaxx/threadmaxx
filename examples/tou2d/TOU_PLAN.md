@@ -160,6 +160,36 @@ Display formatter changes for the Results rows deferred — this batch
 wires the numbers through; the row-text layout that consumes them is
 a small follow-up once the layout direction is decided.
 
+### 2.8 NPC AI overhaul — **DONE (2026-06-19, N7)**
+
+The "bots get stuck on terrain" playtest signal — the largest
+production blocker in tou2d — fixed by adding velocity-aware unstuck
+recovery and per-difficulty AI tuning.
+
+**Root cause** (BotControlSystem audit, 2026-06-19): pre-N7 the
+avoidance system rotated the nose on a wall hit but never compensated
+for the linear-velocity vector already carrying the bot INTO the wall.
+The `fullyBoxed` clause killed thrust but not velocity, so the bot
+drifted forward into the corner anyway. Fix: stuck-trace ring + a
+reverse-thrust escape branch that overrides PlayerInput with `back =
+1` while peeling off the wall.
+
+**Navmesh consideration**: `threadmaxx_navmesh` exists as a sibling
+library, but tou2d's terrain is destructible (every shot rewrites
+topology). A baked navmesh would go stale every tick. The fix lives
+in the existing grid-based AI — make it smarter about its own
+velocity vector instead of replacing the substrate.
+
+**Difficulty levels**: `BotDifficulty` enum (Easy/Normal/Hard/Insane)
++ `BotConfig` POD presets indexed via `botConfigForDifficulty`.
+Settings hookup via `GameplaySettings::botDifficulty` (co-opts the
+existing 8-byte pad — no settings.dat wire-shape bump). Normal
+preset reproduces pre-N7 hardcoded numbers bit-for-bit so existing
+replays and tests stay valid.
+
+Pinned by `tests/tou2d_bot_ai_n7_test.cpp` + the existing
+`tou2d_bot_behavior_test` (which still passes on the Normal preset).
+
 ### 2.7 Post-v1 by design
 
 - **M5.1 spectator camera.** A "frame all live ships" camera mode for
