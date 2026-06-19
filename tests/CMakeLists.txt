@@ -466,6 +466,29 @@ if (TARGET tou2d_core)
     add_test(NAME tou2d_bot_ai_n7_test
              COMMAND tou2d_bot_ai_n7_test)
 
+    # N8 (2026-06-19) — regression pins for the two N7-shipped bugs:
+    # (a) default Settings{}.controls being all-zero would dead-bind
+    # the player, (b) bot stuck-wobble cycle after reverse-thrust
+    # window closed. Test pins the keymap-fallback precondition + the
+    # BotConfig stuck tunables that the N8 force-wander lock relies on.
+    add_executable(tou2d_n8_keymap_fallback_test
+        tou2d_n8_keymap_fallback_test.cpp)
+    target_link_libraries(tou2d_n8_keymap_fallback_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_n8_keymap_fallback_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_n8_keymap_fallback_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_n8_keymap_fallback_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_n8_keymap_fallback_test
+             COMMAND tou2d_n8_keymap_fallback_test)
+
     # N6 (2026-06-18) — scoreboard depth accumulators pin.
     # Pins MatchResultsSlot at 16 bytes (was 8), zero-defaults on the
     # three new fields, and the BulletShipCollisionSystem getter/reset

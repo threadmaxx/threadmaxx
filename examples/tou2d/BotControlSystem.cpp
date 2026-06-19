@@ -297,11 +297,19 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
         const auto& view = ctx.worldView();
 
         // ---- Pass 1: gather position + velocity of every live ship --------
-        // "live" = LocalPlayer-tagged and NOT DisabledTag. Cheap pre-scan
-        // because ≤4 ships ever exist. Velocity is captured for aim-lead in
-        // pass 2; transforms+velocities are parallel chunk vectors so the
-        // walk costs one extra span dereference per row.
-        std::array<ShipPos, 16> live;
+        // "live" = LocalPlayer-tagged and NOT DisabledTag. Velocity is
+        // captured for aim-lead in pass 2; transforms+velocities are
+        // parallel chunk vectors so the walk costs one extra span
+        // dereference per row.
+        //
+        // N8.3 (2026-06-19) — sized to `kMaxPlayerSlots` (67). Pre-N8.3
+        // the cap was 16, leftover from the original M1-era single-ship
+        // demo. In a 1-human-+-63-bot match the bots in chunks past the
+        // first 16 entries were INVISIBLE to every bot's target search,
+        // collapsing the engagement to a small fraction of the actual
+        // ship roster — most bots saw no enemy, fell through to wander,
+        // and just drifted forever. See ChatGPT diagnosis 2026-06-19.
+        std::array<ShipPos, kMaxPlayerSlots> live;
         std::size_t             liveCount = 0;
 
         for (const auto* chunkPtr : view.chunks()) {
@@ -428,7 +436,26 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                     const float dy0 = tgt->y - selfT.position.y;
                     engageRange     = std::sqrt(dx0 * dx0 + dy0 * dy0);
                 }
-                const bool engage = hasEngageTarget && engageRange < kWanderRange;
+                // N8 (2026-06-19) — `forceWanderTicks_` is set by the
+                // stuck recovery branch BELOW (last tick's iteration).
+                // While positive, the bot is locked into wander mode so
+                // it doesn't immediately re-aim at the target on the
+                // other side of the wall it just escaped.
+                const bool forcedWander = slot < forceWanderTicks_.size()
+                                       && forceWanderTicks_[slot] > 0;
+                // N8.3 (2026-06-19) — pre-N8.3 engagement was gated by
+                // `engageRange < kWanderRange` (360 wu). With 63 bots
+                // scattered across a procedural arena the average
+                // distance to nearest non-ally was often well past
+                // 360 wu, so bots fell through to the short random-
+                // wander loop and never reached the next fight. Now we
+                // engage on ANY target's mere existence; the bot
+                // pursues across the map and only the FIRE decision
+                // gates on `config_.fireRange`. This produces continuous
+                // map-traversal toward the nearest enemy, eliminating
+                // the "stuck wandering in place" symptom ChatGPT
+                // diagnosed.
+                const bool engage = hasEngageTarget && !forcedWander;
 
                 // 2026-05-30 — terrain-repulsion gradient used by BOTH
                 // engage and wander branches. Cheap (~8 short rays);
@@ -747,8 +774,103 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                             config_.unstuckMinDispWU * config_.unstuckMinDispWU;
                         if (disp2 < thresh2 && unstuckTicks_[slot] == 0) {
                             unstuckTicks_[slot] = config_.unstuckCommitTicks;
+                            // N8 — clear the trace so the next disp
+                            // check starts fresh AFTER reverse-thrust
+                            // has had a chance to move us; without this
+                            // the oldest entries still reflect the
+                            // pre-stuck position, and the stuck trigger
+                            // would fire again the moment we move ~5wu.
+                            trace.filled    = 0;
+                            trace.head      = 0;
+                            trace.sinceLast = 0;
+                            // N8 — lock into wander mode for ~2.5 s past
+                            // the reverse window so the bot actually
+                            // flies AWAY from the wall before the engage
+                            // gate re-aims at the target behind it. Seed
+                            // the wander heading along the strongest
+                            // repulsion direction (= away from nearest
+                            // wall); fall back to a slot-deterministic
+                            // angle if the repulsion sample collapsed.
+                            //
+                            // Heading vector convention used throughout
+                            // the bot AI: forward = (-sin θ, cos θ). To
+                            // make `forward == (repelX, repelY)` we need
+                            // θ = atan2(-repelX, repelY).
+                            float escapeAngle = static_cast<float>(slot) * 1.2566370614f;  // fallback
+                            const float repelMag2 = repelX * repelX + repelY * repelY;
+                            bool        haveRepelDir = false;
+                            float       escFwdX = 0.0f;
+                            float       escFwdY = 1.0f;
+                            if (repelMag2 > 1e-6f) {
+                                const float repelMag = std::sqrt(repelMag2);
+                                escFwdX     = repelX / repelMag;
+                                escFwdY     = repelY / repelMag;
+                                escapeAngle = std::atan2(-escFwdX, escFwdY);
+                                haveRepelDir = true;
+                            } else {
+                                const float sa = std::sin(escapeAngle);
+                                const float ca = std::cos(escapeAngle);
+                                escFwdX = -sa;
+                                escFwdY =  ca;
+                            }
+                            if (slot < forceWanderTicks_.size()) {
+                                forceWanderTicks_[slot] = static_cast<std::uint16_t>(
+                                    config_.unstuckCommitTicks + std::uint16_t{120});
+                            }
+                            if (slot < wanderAngle_.size()) {
+                                wanderAngle_[slot] = escapeAngle;
+                            }
+                            if (slot < wanderTicksLeft_.size()) {
+                                wanderTicksLeft_[slot] = static_cast<std::uint16_t>(
+                                    config_.unstuckCommitTicks + std::uint16_t{120});
+                            }
+
+                            // N8.2 — PANIC RECOVERY. Reverse-thrust alone
+                            // cannot reliably unstick a bot whose linear
+                            // velocity has been zeroed by terrain
+                            // collision response (TerrainCollisionSystem
+                            // clamps the into-wall axis to 0 every tick).
+                            // The bot then sits at the wall with zero
+                            // velocity AND a wall-parallel "forward"
+                            // direction, so neither thrust nor reverse
+                            // moves it away — it just slowly rotates
+                            // against the wall, hence the wobble.
+                            //
+                            // Instead, snap the bot's orientation to
+                            // face the repulsion direction AND replace
+                            // its velocity with an away-from-wall kick.
+                            // This is visible (a small "spook" when the
+                            // bot snaps free) but reliably escapes any
+                            // wedge in a single tick. The forced-wander
+                            // lock above ensures the bot then commits to
+                            // flying away rather than re-engaging.
+                            constexpr float kPanicEscapeSpeed = 80.0f;
+                            threadmaxx::Transform newT = selfT;
+                            // Pure-Z rotation: quat(0, 0, sin(θ/2),
+                            // cos(θ/2)). Same convention as
+                            // `quatFromAngleZ` in MovementSystem.cpp.
+                            const float half = escapeAngle * 0.5f;
+                            newT.orientation = threadmaxx::Quat{
+                                0.0f, 0.0f,
+                                std::sin(half), std::cos(half)};
+                            cb.setTransform(entities[row], newT);
+                            threadmaxx::Velocity newV{};
+                            newV.linear  = { escFwdX * kPanicEscapeSpeed,
+                                             escFwdY * kPanicEscapeSpeed,
+                                             0.0f };
+                            newV.angular = { 0.0f, 0.0f, 0.0f };
+                            cb.setVelocity(entities[row], newV);
+                            (void)haveRepelDir;
                         }
                     }
+                }
+
+                // N8 — decrement the forced-wander timer once per tick.
+                // Decrement happens AFTER the trigger block above so a
+                // freshly-set count lasts the full window.
+                if (slot < forceWanderTicks_.size() && forceWanderTicks_[slot] > 0) {
+                    forceWanderTicks_[slot] = static_cast<std::uint16_t>(
+                        forceWanderTicks_[slot] - 1);
                 }
 
                 if (slot < unstuckTicks_.size() && unstuckTicks_[slot] > 0) {

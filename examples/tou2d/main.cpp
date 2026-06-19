@@ -438,6 +438,12 @@ int main(int argc, char** argv) {
     // → Single Match picks up the just-edited values via
     // `ui->settings()`. Loader returns false → defaults stand.
     tou2d::Settings settings{};
+    // N8 (2026-06-19) — Settings::controls default-constructs to all
+    // zeros (kKeyUnbound) which would dead-lock the player if loadSettings
+    // fails to populate it. Seed with the built-in default KeyMap BEFORE
+    // calling loadSettings so a missing / corrupt settings.dat falls back
+    // to working bindings rather than silent "no keys bound".
+    settings.controls = tou2d::makeDefaultKeyMap();
     {
         const auto sPath = tou2d::defaultSettingsPath();
         const bool loaded = tou2d::loadSettings(sPath, settings);

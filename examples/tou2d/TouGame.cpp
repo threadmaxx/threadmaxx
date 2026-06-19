@@ -331,7 +331,24 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     // for-bit when settings_ is a default-constructed POD.
     bulletShip ->setDamageScale(settings_.gameplay.damageScale);
     shipLife   ->setRespawnTicks(settings_.gameplay.respawnDelayTicks);
-    input      ->setKeyMap(settings_.controls);
+    // N8 (2026-06-19) — skip installing an all-zero keymap. A default-
+    // constructed `Settings{}` (e.g. missing settings.dat path) has
+    // `controls{}` all kKeyUnbound; installing it would silently
+    // un-bind every player input. Only override when at least one
+    // binding is present so a partial / fresh settings.dat still falls
+    // back to the built-in default keymap.
+    {
+        const KeyMap& km = settings_.controls;
+        bool anyBound = false;
+        for (std::size_t slot = 0; slot < kMaxHumans && !anyBound; ++slot) {
+            for (std::size_t a = 0; a < kActionCount; ++a) {
+                if (km.binding[slot][a] != kKeyUnbound) { anyBound = true; break; }
+            }
+        }
+        if (anyBound) {
+            input->setKeyMap(km);
+        }
+    }
     // N7 (2026-06-19) — apply bot difficulty preset. Clamp to a known
     // value so a corrupted byte (e.g. a pre-N7 settings.dat that had
     // 0xFF in the trailing pad) doesn't fall off the preset table.

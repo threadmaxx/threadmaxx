@@ -13,6 +13,158 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N8 — N7 follow-up: player input + bot stuck-wobble fixes (2026-06-19)
+
+Two production-blocking regressions surfaced after N1–N7 shipped:
+
+**Bug 1 — players couldn't move.** N4 added `input->setKeyMap(settings_.controls)`
+in `TouGame::onSetup`. The host's `Settings settings{}` was default-
+constructed BEFORE `loadSettings()` ran. `Settings::controls` defaults
+to an all-zero `KeyMap` (every binding == `kKeyUnbound`). When
+settings.dat was missing (fresh install, no `XDG_CONFIG_HOME`, etc.),
+`loadSettings` returned false without touching the buffer, and the
+zero-keymap was installed into `InputSystem` — every `glfwGetKey`
+call short-circuited at the `kKeyUnbound` check. Pre-N4 worked because
+the unconditional GLFW poll bypassed the keymap path entirely.
+
+**Fix 1:** belt-and-suspenders. (a) `main.cpp` now pre-fills
+`settings.controls = makeDefaultKeyMap()` BEFORE `loadSettings` runs,
+so a missing/short file leaves a playable default in place. (b)
+`TouGame::onSetup` skips the `setKeyMap` call entirely when every
+slot has every binding == `kKeyUnbound` — InputSystem then falls back
+to its built-in default. Either fix alone would close the bug; both
+together harden against future regressions where any other Settings
+construction path leaks an empty keymap.
+
+**Bug 2 — bots still got stuck wobbling on terrain.** N7's stuck
+detector correctly identified the no-displacement plateau and
+applied 30 ticks of reverse-thrust, but the moment that window
+closed, control returned to engage mode — which immediately re-aimed
+the bot at the target on the OTHER side of the wall it had just
+peeled off, thrusted forward, and re-wedged the bot in the same spot.
+At 63 bots all eventually converged on this cycle in the procedural
+benchmark: not actually-frozen, but visibly oscillating against
+terrain instead of dogfighting.
+
+**Fix 2 — force-wander lock past the reverse window + panic recovery:**
+
+The N7 fix could not reliably unstick a bot whose linear velocity had
+already been zeroed by `TerrainCollisionSystem` (which clamps the
+into-wall axis to 0 every tick). The bot then sat at the wall with
+zero velocity AND a wall-parallel "forward" direction, so neither
+thrust nor reverse moved it — it just slowly rotated against the
+wall. This is the wobble pattern in the 63-bot procedural benchmark.
+
+Two complementary fixes, both fire from the stuck-trigger branch in
+`BotControlSystem::preStep`:
+
+(A) **Force-wander lock.** Added `forceWanderTicks_[kMaxPlayerSlots]`.
+On stuck trigger we now (i) clear the stuck-trace ring so the next
+displacement check measures motion AFTER the recovery kicked in,
+(ii) seed `wanderAngle_[slot]` along the strongest terrain-repulsion
+direction (= away from nearest wall), (iii) latch
+`forceWanderTicks_[slot] = unstuckCommitTicks + 120` (~2.5 s past the
+reverse window), and (iv) set `wanderTicksLeft_[slot]` to the same
+value so the wander branch commits to the repulsion-derived heading.
+
+The engage gate now reads `engage = hasEngageTarget && range <
+kWanderRange && !forcedWander`. While `forceWanderTicks_[slot] > 0`,
+the bot ignores its target entirely and flies along the away-from-
+wall heading.
+
+(B) **Panic recovery — snap orientation + away-from-wall velocity kick.**
+The stuck-trigger branch also writes a fresh `Transform` and `Velocity`
+via the CommandBuffer:
+
+- New orientation snaps directly to `escapeAngle` (the seeded wander
+  angle, which faces the away-from-wall direction).
+- New velocity = `escFwd * 80 wu/s` along the same vector. Bot
+  starts moving away on the next tick, no warm-up.
+
+This single-tick "spook" is visible at playtest (the bot's nose snaps
+~30-90° in one frame and it pops away from the wall) but guarantees
+escape from any wedge — including the velocity-zeroed wall-parallel
+case that reverse-thrust alone could not solve. The pattern mirrors
+`RoundRestartSystem`'s pre-existing use of `cb.setTransform` /
+`cb.setVelocity` from preStep, which is sanctioned even though
+`BotControlSystem::writes()` doesn't declare Transform / Velocity
+(preStep flushes serially on the sim thread before any wave fires).
+
+Net effect after both fixes: a stuck bot snaps free in 1 tick, then
+spends ~150 ticks (2.5 s @ 60 Hz) committed to a wander heading
+pointed away from the wall, then re-engages only after it's clearly
+in open space.
+
+**Fix 3 — target search + engagement scope (the harder root cause).**
+Post-N8.1 the user reported "still stuck", and a code-review pass
+surfaced two unrelated issues that produced the same visible symptom:
+
+(A) The Pass-1 target gather uses a fixed-size scratch array
+`std::array<ShipPos, 16> live;` — left over from the M1-era single-
+ship demo. In a 1-human-+-63-bot match, only the first **16** ships
+walked in chunk-creation order ever populated `live`; the other ~51
+bots were INVISIBLE to every bot's target search. With sparse
+targets visible, each bot fell through to the random wander loop and
+drifted aimlessly — visually indistinguishable from "stuck against
+terrain."
+
+Fix: size `live` to `kMaxPlayerSlots` (= 67) so every ship is a
+candidate.
+
+(B) The engage branch was gated by `engageRange < kWanderRange`
+(360 wu). In a procedural arena that's only a small fraction of map
+diameter; bots whose nearest enemy was beyond that radius fell
+through to the 60–180-tick random wander and never traveled toward
+the next fight. ChatGPT diagnosed this as "the bot is only locally
+reactive; it has no global target-seeking behavior" — accurate.
+
+Fix: drop the `kWanderRange` gate entirely. `engage = hasEngageTarget
+&& !forcedWander`. Bots now pursue ANY live target across the entire
+map. The fire decision remains separately gated by
+`config_.fireRange` (220 wu for Normal), so long-range pursuit is
+silent and only short-range engagements actually fire.
+
+Combined with (A), every bot now actively traverses the map toward
+the nearest non-ally instead of wandering in place. Combined with
+fixes 1+2, walls no longer trap them mid-pursuit. The orbit/repulsion
+biases handle close-range avoidance the same as before.
+
+This is the dominant fix for the playtest signal — the previous
+N7/N8.1/N8.2 work was prerequisite plumbing, but the visible
+"stuck" symptom was mostly bots finding no target and quitting.
+
+**Pinned by:** `tests/tou2d_n8_keymap_fallback_test.cpp`:
+
+- (1) `Settings{}.controls` IS empty (preserves the all-zero default
+  as a sentinel — future refactors that "fix" the default to also
+  carry a working map need to also re-audit the wiring that depended
+  on the sentinel).
+- (2) `makeDefaultKeyMap()` returns at least one nonzero binding per
+  slot 0 and slot 1 (rules out a refactor that empties the table).
+- (3) BotConfig::unstuckWindowTicks / unstuckMinDispWU /
+  unstuckCommitTicks are positive and within sane bounds for every
+  difficulty preset.
+- (4) `BotControlSystem` default-constructs with `unstuckCommitTicks > 0`.
+
+Plus full ctest 579/579 green, plus a 600-tick smoke (63 bots, proc-
+gen, with settings.dat) and a 300-tick smoke (63 bots, proc-gen, with
+`XDG_CONFIG_HOME` redirected to a nonexistent path so the no-settings
+fallback path is the one exercised).
+
+**Touched files:**
+- `examples/tou2d/main.cpp` — seed `settings.controls` from
+  `makeDefaultKeyMap()` before `loadSettings`.
+- `examples/tou2d/TouGame.cpp` — skip `setKeyMap` when the installed
+  map is wholly empty.
+- `examples/tou2d/BotControlSystem.hpp` — new `forceWanderTicks_`
+  array.
+- `examples/tou2d/BotControlSystem.cpp` — engage gate consults
+  `forcedWander`; stuck trigger clears trace + seeds wander angle
+  along repulsion gradient + sets `forceWanderTicks_` /
+  `wanderTicksLeft_` to ~150; per-tick decrement.
+- `tests/tou2d_n8_keymap_fallback_test.cpp` — new regression pin.
+- `tests/CMakeLists.txt` — register the new test.
+
 ### N7 — NPC AI overhaul: stuck-detection + difficulty levels (2026-06-19)
 The "bots get stuck on terrain" playtest signal was the most
 production-blocking item left in tou2d. N7 investigates the root cause

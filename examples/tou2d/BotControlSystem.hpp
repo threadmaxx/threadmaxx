@@ -297,6 +297,12 @@ private:
     };
     std::array<StuckTrace,   kMaxPlayerSlots> stuckTrace_{};
     std::array<std::uint16_t, kMaxPlayerSlots> unstuckTicks_{};
+    /// N8 (2026-06-19) — after the reverse-thrust window closes, the bot
+    /// is locked into wander mode for this many additional ticks so it
+    /// can fly away from the wall before the engage logic re-aims at
+    /// a target on the other side of the wall (the N7 wobble cycle).
+    /// Bypasses the `hasEngageTarget && range < kWanderRange` gate.
+    std::array<std::uint16_t, kMaxPlayerSlots> forceWanderTicks_{};
 
     /// N7 — per-difficulty config. Defaults to `Normal` (pre-N7 numbers).
     BotConfig                          config_ = botConfigForDifficulty(BotDifficulty::Normal);
