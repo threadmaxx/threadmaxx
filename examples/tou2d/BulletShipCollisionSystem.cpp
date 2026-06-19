@@ -195,6 +195,31 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                 victim.currentHp     = newHp < 0.0f ? 0.0f : newHp;
                 threadmaxx::addUserComponent(cb, idsShip, entities[row], victim);
 
+                // N6 (2026-06-18) — scoreboard accumulators. Damage
+                // taken always credits the victim; damage dealt is
+                // credited to the firstShooter for this victim this
+                // tick (the same shooter who gets kill credit on a
+                // fatal hit — keeps the bookkeeping symmetric with
+                // the existing "first shot wins" credit policy).
+                const std::uint32_t applied = static_cast<std::uint32_t>(
+                    std::min<float>(scaledDmg, 65535.0f));
+                if (slot < damageTakenBySlot_.size()) {
+                    const std::uint32_t sum =
+                        static_cast<std::uint32_t>(damageTakenBySlot_[slot]) + applied;
+                    damageTakenBySlot_[slot] =
+                        sum > 0xFFFFu ? std::uint16_t{0xFFFFu}
+                                      : static_cast<std::uint16_t>(sum);
+                }
+                const std::uint8_t firstShooter = firstShooterBySlot[slot];
+                if (firstShooter != kNoShooter &&
+                    firstShooter < damageDealtBySlot_.size()) {
+                    const std::uint32_t sum =
+                        static_cast<std::uint32_t>(damageDealtBySlot_[firstShooter]) + applied;
+                    damageDealtBySlot_[firstShooter] =
+                        sum > 0xFFFFu ? std::uint16_t{0xFFFFu}
+                                      : static_cast<std::uint16_t>(sum);
+                }
+
                 // M4.8 — audio cue. Hit on every damage tick; explode on
                 // the transition from alive → 0 HP.
                 if (engine_) {
@@ -207,6 +232,11 @@ void BulletShipCollisionSystem::update(threadmaxx::SystemContext& ctx) {
                 }
 
                 if (wasAlive && victim.currentHp <= 0.0f) {
+                    // N6 — death increment per victim slot.
+                    if (slot < deathsBySlot_.size() &&
+                        deathsBySlot_[slot] < 0xFFFFu) {
+                        ++deathsBySlot_[slot];
+                    }
                     const std::uint8_t shooter = firstShooterBySlot[slot];
                     if (shooter != kNoShooter && shooter != slot) {
                         killerByVictim[slot] = shooter;

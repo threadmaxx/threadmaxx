@@ -110,6 +110,28 @@ public:
     }
     float damageScale() const noexcept { return damageScale_; }
 
+    /// N6 (2026-06-18) — per-slot scoreboard accumulators. Sum across
+    /// the round; `RoundRestartSystem` (and the post-`onSetup` engine
+    /// reinitialise) resets via `resetStats()`. Readers are
+    /// `TouGame::collectMatchResults` (Results-screen depth) and any
+    /// HUD wanting live damage telemetry. All saturate at uint16 max.
+    std::uint16_t damageDealtBySlot(std::uint8_t slot) const noexcept {
+        return slot < kMaxPlayerSlots ? damageDealtBySlot_[slot] : std::uint16_t{0};
+    }
+    std::uint16_t damageTakenBySlot(std::uint8_t slot) const noexcept {
+        return slot < kMaxPlayerSlots ? damageTakenBySlot_[slot] : std::uint16_t{0};
+    }
+    std::uint16_t deathsBySlot(std::uint8_t slot) const noexcept {
+        return slot < kMaxPlayerSlots ? deathsBySlot_[slot] : std::uint16_t{0};
+    }
+    /// Reset all per-slot scoreboard accumulators to 0. Called by the
+    /// host's round-restart flow. Cheap — fixed-size array memset.
+    void resetStats() noexcept {
+        damageDealtBySlot_.fill(0);
+        damageTakenBySlot_.fill(0);
+        deathsBySlot_.fill(0);
+    }
+
 private:
     UserComponentIds                   ids_;
     threadmaxx::Engine*                engine_      = nullptr;
@@ -119,6 +141,10 @@ private:
     const MatchMode*                   matchMode_   = nullptr;
     ParticleSystem*                    particles_   = nullptr;
     float                              damageScale_ = 1.0f;   // N4
+    // N6 — scoreboard accumulators, all init to 0 (round-restart safe).
+    std::array<std::uint16_t, kMaxPlayerSlots> damageDealtBySlot_{};
+    std::array<std::uint16_t, kMaxPlayerSlots> damageTakenBySlot_{};
+    std::array<std::uint16_t, kMaxPlayerSlots> deathsBySlot_{};
 };
 
 } // namespace tou2d

@@ -47,9 +47,11 @@ int main() {
     using tou2d::kMatchSetupSlotCount;
 
     // ---- 1. MatchResults POD layout pin ---------------------------------
-    CHECK_EQ(sizeof(MatchResultsSlot), std::size_t{8});
+    // N6 (2026-06-18) — MatchResultsSlot bumped from 8 to 16 bytes to
+    // carry the new deaths / damageDealt / damageTaken fields.
+    CHECK_EQ(sizeof(MatchResultsSlot), std::size_t{16});
     CHECK_EQ(sizeof(MatchResults),
-             std::size_t{8 + kMatchSetupSlotCount * 8});
+             std::size_t{8 + kMatchSetupSlotCount * 16});
 
     threadmaxx::Engine engine;
 

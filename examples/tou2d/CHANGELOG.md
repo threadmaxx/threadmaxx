@@ -13,6 +13,41 @@ For the user-facing overview, see [`README.md`](README.md).
 
 ## Post-M7 — playtest extensions
 
+### N6 — scoreboard depth (2026-06-18)
+Closes the §2.6 deferred item. The Results screen previously had a
+`kills` column only; per-slot deaths / damageDealt / damageTaken now
+land alongside it.
+
+**Storage**: `MatchResultsSlot` bumped from 8 to 16 bytes with three
+new `uint16_t` fields (`deaths`, `damageDealt`, `damageTaken`).
+`MatchResults` total stride recomputed accordingly. The existing
+results-screen test was updated to reflect the new size.
+
+**Accumulators**: `BulletShipCollisionSystem` now carries three
+`std::array<std::uint16_t, kMaxPlayerSlots>` arrays. In the damage-
+application loop:
+- `damageTakenBySlot_[victim] += applied` — always credited to the
+  victim.
+- `damageDealtBySlot_[firstShooter] += applied` — credited to the same
+  shooter who gets kill credit on a fatal hit, mirroring the engine's
+  "first shot wins" credit policy.
+- `deathsBySlot_[victim] += 1` on alive→dead transition.
+
+All three saturate at uint16 max (65,535) so long sustained rounds
+can't overflow.
+
+**Round reset**: new `BulletShipCollisionSystem::resetStats()` zeroes
+all three arrays. `RoundRestartSystem` carries a borrowed pointer to
+the collision system and calls `resetStats()` at the end of the
+restart pass — Rematch / R-restart cycles start from zero scoreboard.
+
+**Read-out**: `TouGame::collectMatchResults` pulls the per-slot
+accumulators into the new `MatchResultsSlot` fields. Available to the
+Results screen formatter for display (formatter changes deferred —
+this batch just wires the numbers through).
+
+Pinned by `tests/tou2d_scoreboard_depth_test.cpp`.
+
 ### N5 — HUD damage flash + ammo/fire warnings (2026-06-18)
 Three of the M6.7b HUD polish items shipped:
 

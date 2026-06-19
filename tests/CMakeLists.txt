@@ -444,6 +444,28 @@ if (TARGET tou2d_core)
     add_test(NAME tou2d_menu_navigation_test
              COMMAND tou2d_menu_navigation_test)
 
+    # N6 (2026-06-18) — scoreboard depth accumulators pin.
+    # Pins MatchResultsSlot at 16 bytes (was 8), zero-defaults on the
+    # three new fields, and the BulletShipCollisionSystem getter/reset
+    # contract.
+    add_executable(tou2d_scoreboard_depth_test
+        tou2d_scoreboard_depth_test.cpp)
+    target_link_libraries(tou2d_scoreboard_depth_test PRIVATE
+        threadmaxx::threadmaxx tou2d_core)
+    target_include_directories(tou2d_scoreboard_depth_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    set_target_properties(tou2d_scoreboard_depth_test PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    if (NOT MSVC)
+        target_compile_options(tou2d_scoreboard_depth_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+    add_test(NAME tou2d_scoreboard_depth_test
+             COMMAND tou2d_scoreboard_depth_test)
+
     # N5 (2026-06-18) — HUD on-fire glyph + warning threshold pin.
     add_executable(tou2d_hud_warnings_test
         tou2d_hud_warnings_test.cpp)

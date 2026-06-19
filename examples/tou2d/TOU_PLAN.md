@@ -146,10 +146,19 @@ Still deferred:
   that doesn't exist yet (current modes are frag-limit DM + LSS
   survival).
 
-### 2.6 M6.6 scoreboard depth
-Per-slot deaths / damage-dealt / damage-taken columns. Needs
-`BulletShipCollisionSystem` to publish per-slot stats — currently it
-only aggregates kills.
+### 2.6 M6.6 scoreboard depth — **DONE (2026-06-18, N6)**
+
+`BulletShipCollisionSystem` now carries three per-slot accumulator
+arrays (`deathsBySlot_`, `damageDealtBySlot_`, `damageTakenBySlot_`)
+with getters + a `resetStats()` reset hook. `RoundRestartSystem`
+holds a borrowed pointer and clears the accumulators on every round
+restart. `TouGame::collectMatchResults` reads them into the bumped
+`MatchResultsSlot` (8 → 16 bytes) so the Results screen can display
+the full depth.
+
+Display formatter changes for the Results rows deferred — this batch
+wires the numbers through; the row-text layout that consumes them is
+a small follow-up once the layout direction is decided.
 
 ### 2.7 Post-v1 by design
 

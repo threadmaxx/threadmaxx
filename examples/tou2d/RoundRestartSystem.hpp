@@ -13,6 +13,8 @@ struct GLFWwindow;
 
 namespace tou2d {
 
+class BulletShipCollisionSystem;
+
 /// M4.3 — closes the round loop. While `roundEnded_` is true, polls the
 /// GLFW window for the human's restart key (P1 fire — RShift — for
 /// parity with the original arcade-style "press fire to start") and,
@@ -76,6 +78,16 @@ public:
     /// world).
     void setTerrainGrid(const TerrainGrid* g) noexcept { grid_ = g; }
 
+    /// N6 (2026-06-18) — borrowed pointer to the demo's
+    /// `BulletShipCollisionSystem`. When set, the round-restart pass
+    /// also clears its per-slot scoreboard accumulators (deaths /
+    /// damageDealt / damageTaken) so a Rematch or R-restart starts
+    /// from zero. Null is fine — pre-N6 host-side tests didn't wire
+    /// the system and behaviour stays unchanged.
+    void setBulletShipCollisionSystem(BulletShipCollisionSystem* sys) noexcept {
+        bulletShip_ = sys;
+    }
+
 private:
     GLFWwindow*                        window_     = nullptr;
     UserComponentIds                   ids_;
@@ -97,6 +109,9 @@ private:
 
     /// Borrowed terrain grid (random respawn pool source).
     const TerrainGrid*                 grid_         = nullptr;
+
+    /// N6 — borrowed pointer for scoreboard reset on round restart.
+    BulletShipCollisionSystem*         bulletShip_   = nullptr;
 
     /// Per-system RNG, distinct seed from ShipLifecycleSystem so the
     /// two systems' random streams don't braid into the same numbers.

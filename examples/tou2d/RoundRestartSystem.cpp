@@ -1,5 +1,7 @@
 #include "RoundRestartSystem.hpp"
 
+#include "BulletShipCollisionSystem.hpp"
+
 #include <threadmaxx/CommandBuffer.hpp>
 #include <threadmaxx/Components.hpp>
 #include <threadmaxx/Query.hpp>
@@ -132,6 +134,14 @@ void RoundRestartSystem::preStep(threadmaxx::SystemContext& ctx) {
     if (winnerKills_) *winnerKills_ = 0;
     holdoffTicks_  = kRestartHoldoffTicks;
     wasRoundEnded_ = false;
+
+    // N6 (2026-06-18) — clear the scoreboard accumulators so the next
+    // round starts at zero deaths / damageDealt / damageTaken. The
+    // collision system's stats are independent of any ECS state and
+    // need an explicit reset (in-place ship reset above clears the
+    // per-ship `kills`, but the per-slot accumulators are in the
+    // BulletShipCollisionSystem instance itself).
+    if (bulletShip_) bulletShip_->resetStats();
 }
 
 } // namespace tou2d

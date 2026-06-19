@@ -282,6 +282,7 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto roundRestart  = std::make_unique<RoundRestartSystem>(window_, ids_);
     roundRestart->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
     roundRestart->setTerrainGrid(&grid_);
+    auto* roundRestartPtr = roundRestart.get();
     auto movement      = std::make_unique<MovementSystem>(ids_);
     auto* movementPtr  = movement.get();
     auto collision     = std::make_unique<TerrainCollisionSystem>(ids_, &grid_);
@@ -298,6 +299,9 @@ void TouGame::onSetup(threadmaxx::Engine& engine,
     auto bulletShip        = std::make_unique<BulletShipCollisionSystem>(ids_, &engine);
     bulletShip->setRoundEndedFlag(roundEnded_, &winnerSlot_, &winnerKills_);
     bulletShip->setMatchMode(&matchMode_);
+    auto* bulletShipPtr    = bulletShip.get();
+    bulletShip_            = bulletShipPtr;
+    roundRestartPtr->setBulletShipCollisionSystem(bulletShipPtr);  // N6 — score reset on round restart
     auto bulletTerrain     = std::make_unique<BulletTerrainSystem>(ids_, &grid_, &engine);
     auto* bulletTerrainPtr = bulletTerrain.get();
     auto shipLife          = std::make_unique<ShipLifecycleSystem>(ids_);
@@ -567,6 +571,7 @@ void TouGame::onTeardown(threadmaxx::Engine& /*engine*/,
     debugOverlay_  = nullptr;
     toasts_        = nullptr;
     projectile_    = nullptr;
+    bulletShip_    = nullptr;
 }
 
 std::string TouGame::worldSeedDescriptor() const {
@@ -621,6 +626,17 @@ void TouGame::collectMatchResults(threadmaxx::Engine& engine,
         s.kills       = sh->kills;
         s.shipKindIdx = static_cast<std::uint8_t>(
             sh->shipKindIdx < kShipKindCount ? sh->shipKindIdx : 0);
+
+        // N6 (2026-06-18) — pull scoreboard depth from the collision
+        // system's accumulators. Null check covers host-side tests
+        // that don't wire the system; the slot accessor's bounds
+        // check covers any slot index past kMaxPlayerSlots.
+        if (bulletShip_) {
+            const auto u8slot = static_cast<std::uint8_t>(slot);
+            s.deaths      = bulletShip_->deathsBySlot(u8slot);
+            s.damageDealt = bulletShip_->damageDealtBySlot(u8slot);
+            s.damageTaken = bulletShip_->damageTakenBySlot(u8slot);
+        }
 
         // Effective bot/human and tag come from playerSlots_ overrides
         // (same resolution logic as onSetup's spawn loop) so the

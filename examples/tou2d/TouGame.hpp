@@ -22,6 +22,7 @@ struct GLFWwindow;
 
 namespace tou2d {
 
+class BulletShipCollisionSystem;
 class BulletTerrainSystem;
 class CameraSystem;
 class DebugOverlaySystem;
@@ -269,6 +270,7 @@ private:
     DebugOverlaySystem*      debugOverlay_   = nullptr;   // M6.9 — borrowed
     ToastRenderSystem*       toasts_         = nullptr;   // Batch-A §3 — borrowed
     ProjectileSystem*        projectile_     = nullptr;   // M6.9b — borrowed (bullet count)
+    BulletShipCollisionSystem* bulletShip_   = nullptr;   // N6 — borrowed; scoreboard accumulators
     // M5.1 — sized dynamically (1 human + 1 bot minimum, up to
     // kMaxPlayerSlots). Slot index = vector index. Stored solely for
     // playerShip() (smoke-test position log) and onTeardown bookkeeping.

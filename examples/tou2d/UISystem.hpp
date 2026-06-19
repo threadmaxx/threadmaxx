@@ -81,16 +81,25 @@ enum class MenuRowKind : std::uint8_t {
 ///   * `isBot`       — 1 if the slot was AI-driven, 0 if a local human.
 ///   * `shipKindIdx` — index into `kShipKinds` for ship-name lookup.
 struct MatchResultsSlot {
-    std::array<char, 3> tag         = {' ', ' ', ' '};
-    std::uint8_t        active      = 0;
-    std::uint16_t       kills       = 0;
-    std::uint8_t        isBot       = 0;
-    std::uint8_t        shipKindIdx = 0;
+    std::array<char, 3> tag          = {' ', ' ', ' '};
+    std::uint8_t        active       = 0;
+    std::uint16_t       kills        = 0;
+    std::uint8_t        isBot        = 0;
+    std::uint8_t        shipKindIdx  = 0;
+    /// N6 (2026-06-18) — extended scoreboard depth. Populated by
+    /// `BulletShipCollisionSystem` accumulators read in
+    /// `TouGame::collectMatchResults`. Saturate at uint16 max — even
+    /// a long round (60 s @ 60 Hz = 3600 ticks) at ~1 damage point per
+    /// tick per shooter peaks well under that ceiling.
+    std::uint16_t       deaths       = 0;
+    std::uint16_t       damageDealt  = 0;
+    std::uint16_t       damageTaken  = 0;
+    std::uint16_t       _pad2        = 0;
 };
-static_assert(sizeof(MatchResultsSlot) == 8,
-              "MatchResultsSlot stays 8 bytes — embedded in MatchResults as a "
-              "fixed-size array; layout change must update the Results "
-              "row formatter.");
+static_assert(sizeof(MatchResultsSlot) == 16,
+              "MatchResultsSlot bumped to 16 bytes in N6 — embedded in "
+              "MatchResults as a fixed-size array; layout change must "
+              "update the Results row formatter.");
 
 /// M6.6 — snapshot of a finished match. Captured by the host on the
 /// rising edge of `RoundEnded`; handed to `UISystem::showResults` which
@@ -105,7 +114,7 @@ struct MatchResults {
     std::uint8_t  _pad2[4]    = {};
     std::array<MatchResultsSlot, kMatchSetupSlotCount> slots{};
 };
-static_assert(sizeof(MatchResults) == 8 + kMatchSetupSlotCount * 8,
+static_assert(sizeof(MatchResults) == 8 + kMatchSetupSlotCount * 16,
               "MatchResults layout must match the Results-screen row "
               "formatter's expected slot count.");
 
