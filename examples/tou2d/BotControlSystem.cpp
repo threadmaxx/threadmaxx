@@ -805,7 +805,6 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                                 const float repelMag = std::sqrt(repelMag2);
                                 escFwdX     = repelX / repelMag;
                                 escFwdY     = repelY / repelMag;
-                                escapeAngle = std::atan2(-escFwdX, escFwdY);
                                 haveRepelDir = true;
                             } else {
                                 const float sa = std::sin(escapeAngle);
@@ -813,6 +812,38 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                                 escFwdX = -sa;
                                 escFwdY =  ca;
                             }
+                            // N8.4 (2026-06-19) — anti-gravity hop fix.
+                            // When the bot sits on flat ground the
+                            // repulsion gradient points straight up
+                            // (no lateral walls contributing). Escaping
+                            // straight up is a losing battle against
+                            // gravity: bot rises, gravity pulls it
+                            // back down, lands in the same spot,
+                            // stuck-detector re-triggers, bounces. The
+                            // user reports this as "bots jumping on
+                            // the ground terrain". Force a strong
+                            // LATERAL component so the bot peels off
+                            // sideways. Bias toward the engagement
+                            // target when one exists so the escape
+                            // also advances pursuit; otherwise use a
+                            // slot-parity LR split for determinism.
+                            if (escFwdY > 0.6f) {
+                                float lateralSign;
+                                if (hasEngageTarget) {
+                                    const float tgtDx = tgt->x - selfT.position.x;
+                                    lateralSign = (tgtDx >= 0.0f) ? +1.0f : -1.0f;
+                                } else {
+                                    lateralSign = (slot & 1u) ? +1.0f : -1.0f;
+                                }
+                                // Lateral kick dominates (~75°) so the
+                                // bot moves clearly horizontally away
+                                // from the spot it was stuck in, with a
+                                // small upward bias to clear ground
+                                // micro-features.
+                                escFwdX = lateralSign * 0.93f;
+                                escFwdY = 0.36f;
+                            }
+                            escapeAngle = std::atan2(-escFwdX, escFwdY);
                             if (slot < forceWanderTicks_.size()) {
                                 forceWanderTicks_[slot] = static_cast<std::uint16_t>(
                                     config_.unstuckCommitTicks + std::uint16_t{120});
@@ -844,7 +875,13 @@ void BotControlSystem::preStep(threadmaxx::SystemContext& ctx) {
                             // wedge in a single tick. The forced-wander
                             // lock above ensures the bot then commits to
                             // flying away rather than re-engaging.
-                            constexpr float kPanicEscapeSpeed = 80.0f;
+                            // N8.4 — bumped from 80 wu/s. Against gravity
+                            // (120 wu/s²) the lateral component of an
+                            // 80-unit kick decays into a noticeable
+                            // arc; 160 keeps the bot moving long enough
+                            // that the forced-wander branch's continued
+                            // thrust takes over before it falls back.
+                            constexpr float kPanicEscapeSpeed = 160.0f;
                             threadmaxx::Transform newT = selfT;
                             // Pure-Z rotation: quat(0, 0, sin(θ/2),
                             // cos(θ/2)). Same convention as

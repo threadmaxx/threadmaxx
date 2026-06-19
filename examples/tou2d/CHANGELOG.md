@@ -133,6 +133,27 @@ This is the dominant fix for the playtest signal — the previous
 N7/N8.1/N8.2 work was prerequisite plumbing, but the visible
 "stuck" symptom was mostly bots finding no target and quitting.
 
+**Fix 4 — anti-gravity hop fix.** After N8.3 the user reported a
+new variant: bots "jumping on the ground terrain". On flat ground,
+`sampleTerrainRepulsion` only sees the floor below — the repulsion
+gradient is (0, +Y) (straight up). The N8.2 panic recovery then
+snapped the bot's orientation to face straight up and seeded
+velocity = (0, +80 wu/s). Gravity (120 wu/s²) decelerated and
+reversed it; the bot landed in the same spot; stuck-detector
+re-fired; the bot bounced. Visually: hopping in place.
+
+Fix: when the computed escape direction is more than 60° from
+horizontal (`escFwdY > 0.6`), override with a strong lateral kick
+(`escFwdX = lateralSign * 0.93`, `escFwdY = 0.36`). Lateral sign
+biases toward the engagement target when one exists (so escape
+advances pursuit); falls back to slot-parity when no target.
+Escape speed bumped 80 → 160 wu/s so the lateral component decays
+gracefully under continued thrust from the forced-wander branch
+before gravity drops the bot back to ground.
+
+Verified by a 3600-tick (60s @ 60Hz) bounded smoke with 63 bots
+and no settings.dat — runs clean to completion.
+
 **Pinned by:** `tests/tou2d_n8_keymap_fallback_test.cpp`:
 
 - (1) `Settings{}.controls` IS empty (preserves the all-zero default
